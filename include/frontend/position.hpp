@@ -6,8 +6,8 @@
 namespace mc {
 struct Position {
   std::string_view filename;
-  size_t column;
   size_t line;
+  size_t column;
 };
 } // namespace mc
 

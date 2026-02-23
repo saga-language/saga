@@ -7,11 +7,21 @@
 namespace mc {
 
 inline static const std::unordered_map<std::string_view, Token::Kind> keywords =
-    {{"break", Token::Kind::Else},    {"else", Token::Kind::Else},
+    {{"break", Token::Kind::Break},   {"else", Token::Kind::Else},
      {"for", Token::Kind::For},       {"if", Token::Kind::If},
-     {"import", Token::Kind::Import}, {"next", Token::Kind::Next},
-     {"or", Token::Kind::Or},         {"return", Token::Kind::Return},
-     {"spawn", Token::Kind::Spawn},   {"struct", Token::Kind::Struct}};
+     {"import", Token::Kind::Import}, {"interface", Token::Kind::Interface},
+     {"next", Token::Kind::Next},     {"or", Token::Kind::Or},
+     {"pub", Token::Kind::Pub},       {"return", Token::Kind::Return},
+     {"spawn", Token::Kind::Spawn},   {"struct", Token::Kind::Struct},
+     {"switch", Token::Kind::Switch}, {"void", Token::Kind::Void}};
+
+void Lexer::init(File *file) {
+  this->file = file;
+  this->source = file->source;
+  this->state = {Token::Kind::Void};
+  this->offset = 0;
+  this->reading_offset = 0;
+}
 
 Token Lexer::scan() {
   skip_whitespace();
@@ -30,7 +40,7 @@ Token Lexer::scan() {
   case '\n':
     return accept(Token::Kind::Terminator);
   case '"':
-    return scan_string();
+    return scan_string(c);
   case '/':
     if (match('/')) {
       return scan_comment();
@@ -62,11 +72,16 @@ Token Lexer::scan() {
 
   // Two chracter tokens
   case ':':
-    return expect('=', Token::Kind::Assignment);
+    if (match('=')) {
+      return accept(Token::Kind::Assignment);
+    }
+    return accept(Token::Kind::Colon);
 
     // Single character tokens
   case '.':
     return accept(Token::Kind::Dot);
+  case ',':
+    return accept(Token::Kind::Comma);
   case '*':
     return accept(Token::Kind::Multiply);
   case '+':
@@ -82,6 +97,9 @@ Token Lexer::scan() {
   case '{':
     return accept(Token::Kind::LeftBrace);
   case '}':
+    if (is_interpolating()) {
+      return scan_string(c);
+    }
     return accept(Token::Kind::RightBrace);
   case '[':
     return accept(Token::Kind::LeftBracket);
@@ -93,7 +111,8 @@ Token Lexer::scan() {
     return accept(Token::Kind::BitwiseXor);
   default:
     if (c != 0) {
-      error_list.error(file.position_at(reading_offset), "Unexpected token");
+      error_list.report_error(file->position_at(reading_offset),
+                              "Unexpected token");
       return accept(Token::Kind::Invalid);
     }
   }
@@ -102,22 +121,12 @@ Token Lexer::scan() {
 }
 
 Token Lexer::accept(Token::Kind kind) {
-  auto literal = file.source.substr(offset, reading_offset - offset);
+  auto literal = source.substr(offset, reading_offset - offset);
   auto token = Token{kind, literal, offset};
 
   offset = reading_offset;
-  next();
 
   return token;
-}
-
-Token Lexer::expect(const char c, const Token::Kind kind) {
-  if (next() == c) {
-    return accept(kind);
-  }
-
-  error_list.error(file.position_at(reading_offset), "Unexpected character.");
-  return accept(Token::Kind::Invalid);
 }
 
 bool Lexer::match(const char c) {
@@ -140,7 +149,7 @@ char Lexer::peek() {
   if (is_eof()) {
     return 0;
   }
-  return file.source[reading_offset]; // do not advance
+  return source[reading_offset]; // do not advance
 }
 
 bool Lexer::is_alpha(const char c) {
@@ -148,10 +157,15 @@ bool Lexer::is_alpha(const char c) {
 }
 bool Lexer::is_binary(const char c) { return c == '0' || c == '1' || c == '_'; }
 bool Lexer::is_digit(const char c) { return c >= '0' && c <= '9'; }
-bool Lexer::is_eof() { return reading_offset >= file.source.length(); }
+bool Lexer::is_eof() { return reading_offset >= source.length(); }
+bool Lexer::is_escaped() { return state.back() == Token::Kind::BackSlash; }
 bool Lexer::is_hex(const char c) {
   return is_digit(c) || ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) ||
          c == '_';
+}
+bool Lexer::is_interpolating() {
+  return state.back() == Token::Kind::StringStart ||
+         state.back() == Token::Kind::StringMiddle;
 }
 bool Lexer::is_octal(const char c) { return c >= '0' && c <= '7'; }
 bool Lexer::is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
@@ -192,7 +206,12 @@ Token Lexer::scan_identifier() {
     next();
   }
 
-  auto literal = file.source.substr(offset, reading_offset - offset);
+  // allow trailing question marks in identifiers
+  if (peek() == '?') {
+    next();
+  }
+
+  auto literal = source.substr(offset, reading_offset - offset);
   auto kind = kind_for_alphanumeric(literal);
   return accept(kind);
 }
@@ -231,16 +250,46 @@ Token Lexer::scan_octal() {
   return accept(Token::Kind::Number);
 }
 
-Token Lexer::scan_string() {
+Token Lexer::scan_string(const char c) {
+  Token::Kind mode = Token::Kind::String;
+  if (c == '}' && !is_escaped()) {
+    mode = Token::Kind::StringEnd;
+    if (is_interpolating()) {
+      state.pop_back();
+    }
+  }
+
   while (peek() != '"') {
     if (is_eof()) {
-      error_list.error(file.position_at(reading_offset), "Unexpected EOF.");
+      error_list.report_error(file->position_at(reading_offset),
+                              "Unexpected EOF.");
       return accept(Token::Kind::Invalid);
     }
+
+    if (peek() == '\\') {
+      state.push_back(Token::Kind::BackSlash);
+    }
+
+    if (peek() == '{') {
+      if (is_escaped()) {
+        state.pop_back(); // consume the escape
+      } else {
+        // start of interpolated string; stop scanning
+        if (mode == Token::Kind::StringEnd) {
+          mode = Token::Kind::StringMiddle;
+        } else {
+          mode = Token::Kind::StringStart;
+        }
+        state.push_back(mode);
+        break;
+      }
+    }
+
     next();
   }
+
   next();
-  return accept(Token::Kind::String);
+  return accept(mode);
 }
 
 void Lexer::skip_whitespace() {

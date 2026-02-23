@@ -1,7 +1,7 @@
 
 #include "position.hpp"
 
-#include <format>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -15,15 +15,8 @@ struct ErrorList {
   std::vector<Error> errors;
   int max_errors = 10;
 
-  void error(Position p, std::string message);
-  void print();
+  bool max_reached() const;
+  void print_errors(std::ostream &os = std::cerr) const;
+  void report_error(Position p, std::string message);
 };
 } // namespace mc
-
-template <> struct std::formatter<mc::Error> {
-  constexpr auto parse(std::format_parse_context &ctx) { return ctx.begin(); }
-
-  auto format(const mc::Error &err, std::format_context &ctx) const {
-    return std::format_to(ctx.out(), "[{}] Error : {}", err.p, err.message);
-  }
-};

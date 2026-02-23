@@ -49,3 +49,7 @@ Testing/
 _deps/
 build/
 *.cmake
+
+# Editors
+.vscode/
+.zed/

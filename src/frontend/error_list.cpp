@@ -3,19 +3,21 @@
 #include <iostream>
 
 namespace mc {
-void ErrorList::error(Position p, std::string message) {
-  if (errors.size() < max_errors) {
-    errors.push_back(Error{p, message});
+void ErrorList::report_error(Position p, std::string message) {
+  if (!max_reached()) {
+    errors.push_back(Error{p, std::move(message)});
   }
 }
 
-void ErrorList::print() {
+bool ErrorList::max_reached() const { return errors.size() >= max_errors; }
+
+void ErrorList::print_errors(std::ostream &os) const {
   for (auto err : errors) {
-    std::cerr << std::format("{}\n", err);
+    os << std::format("[{}] Error: {}\n", err.p, err.message);
   }
 
-  if (errors.size() == max_errors - 1) {
-    std::cerr << "Too many errors. Further messages suppressed.";
+  if (max_reached()) {
+    os << "Max errors reached. Further messages suppressed.\n";
   }
 }
 } // namespace mc

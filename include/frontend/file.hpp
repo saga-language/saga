@@ -2,20 +2,26 @@
 
 #include "position.hpp"
 
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace mc {
 struct File {
-  std::string_view name;
-  std::string_view source;
-  size_t base_offset = 0;
+  std::string filename;
+  std::string source;
   std::vector<size_t> line_offsets;
 
-  size_t end_offset() const { return base_offset + source.length(); }
-  const Position position_at(std::size_t offset) const;
+  File(std::string filename, std::string source)
+      : filename(std::move(filename)), source(std::move(source)) {
+    line_offsets.push_back(0); // Always a line starting at offset zero
+  }
 
-  static File from_path(const std::string &path);
-  static File from_source(std::string path, std::string source);
+  void add_file_newline(size_t offset);
+  Position position_at(std::size_t offset) const;
+
+  static std::unique_ptr<File> from_source(std::string filename,
+                                           std::string source);
 };
 } // namespace mc

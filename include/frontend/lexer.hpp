@@ -3,14 +3,18 @@
 #include "error_list.hpp"
 #include "file.hpp"
 #include "token.hpp"
+#include <string_view>
 
 namespace mc {
 struct Lexer {
-  File file;
-  ErrorList error_list;
+  File *file = nullptr;
+  std::string_view source;
+  ErrorList error_list = {};
+  std::vector<Token::Kind> state = {Token::Kind::Void};
   size_t offset = 0;
   size_t reading_offset = 0;
 
+  void init(File *file);
   Token scan();
 
 private:
@@ -26,7 +30,9 @@ private:
   bool is_binary(const char c);
   bool is_digit(const char c);
   bool is_eof();
+  bool is_escaped();
   bool is_hex(const char c);
+  bool is_interpolating();
   bool is_octal(const char c);
   bool is_whitespace(char c);
 
@@ -37,7 +43,7 @@ private:
   Token scan_identifier();
   Token scan_number(char c);
   Token scan_octal();
-  Token scan_string();
+  Token scan_string(const char c);
 
   void skip_whitespace();
 
