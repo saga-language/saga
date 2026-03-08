@@ -6,22 +6,25 @@ namespace mc {
 struct Token {
   enum class Kind {
     // Special characters
-    Eof,
-    Invalid,
+    Eof,        // End of File
+    Invalid,    // Bad/Unknown character
     Terminator, // '\n'
     Comment,    // "//"
-    BackSlash,  // '\'
+
     // Literals
-    Identifier,   // _abcABC123
-    Number,       // 42, 1_000, 0b1010, 0x1a3f, 0o755, 123,45, 0.5, 123.45e10
-    String,       // "a", "hello"
-    StringStart,  // "Hello {
-    StringMiddle, // }, I'm {
-    StringEnd,    // } years old."
-    Void,         // "void"
+    Identifier,     // _, _abcABC123, boolean?
+    BoolLiteral,    // true, false
+    FloatLiteral,   // 1_123,45, 0.5, 123.4_5e+1_001
+    IntegerLiteral, // 42, 1_000, 0b1010, 0x1a3f, 0o755
+    StringLiteral,  // "a", "hello", """multi-line string"""
+
     // Keywords
     Break,     // "break"
+    Case,      // "case"
+    Const,     // "const"
     Else,      // "else"
+    Enum,      // "enum"
+    Fn,        // "fn"
     For,       // "for"
     If,        // "if"
     Import,    // "import"
@@ -33,17 +36,34 @@ struct Token {
     Spawn,     // "spawn"
     Struct,    // "struct"
     Switch,    // "switch"
-    // Operators
-    Assignment, // ':='
-    Comma,      // ','
-    Colon,      // ':'
-    Dot,        // '.'
-    // Mathematical Operators
-    Plus,     // '+'
-    Minus,    // '-'
-    Multiply, // '*'
-    Divide,   // '/'
-    Modulo,   // '%'
+
+    // Punctuation
+    Comma,        // ','
+    Colon,        // ':'
+    Dot,          // '.'
+    DotDot,       // '..'
+    Ellipsis,     // '...'
+    QuestionMark, // '?'
+    Semicolon,    // ';'
+
+    // Assignment Operators
+    Assignment,     // '='
+    AddAssignment,  // '+='
+    DeclAssignment, // ':='
+    SubAssignment,  // '-='
+    MulAssignment,  // '*='
+    DivAssignment,  // '/='
+
+    // Arithmetic Operators
+    Add,       // '+'
+    Decrement, // '--'
+    Divide,    // '/'
+    Increment, // '++'
+    Modulo,    // '%'
+    Multiply,  // '*'
+    Pow,       // '**'
+    Sub,       // '-'
+
     // Encapsulation,
     LeftBrace,        // '{'
     RightBrace,       // '}'
@@ -51,22 +71,25 @@ struct Token {
     RightBracket,     // ']'
     LeftParenthesis,  // '('
     RightParenthesis, // ')'
+
     // Logical Operators
     LogicalOr,        // '||'
     LogicalAnd,       // '&&'
-    Equal,            // '='
+    Equal,            // '=='
+    Not,              // '!'
     NotEqual,         // '!='
     LessThan,         // '<'
     LessThanEqual,    // '<='
     GreaterThan,      // '>'
     GreaterThanEqual, // '>='
+
     // Bitwise Operators
-    LeftShift,  // '>>'
-    RightShift, // '<<'
     BitwiseAnd, // '&'
+    BitwiseNot, // '~'
     BitwiseOr,  // '|'
-    BitwiseNot, // '!'
     BitwiseXor, // '^'
+    LeftShift,  // '<<'
+    RightShift, // '>>'
   };
 
   Kind kind;
