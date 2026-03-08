@@ -1,120 +1,188 @@
-```ebnf
-(* ==========================================
-   1. Program Root & Expressions
-   ========================================== *)
-Program        ::= (StatementExpression | Comment)*
+```go
+/*
+Go EBNF Syntax
+  
+Declinition = production_name "=" [ Expression ] ";" ;
+Expression = Term { "|" Term } ;
+Factor = production_name | token [ "..." token ] | Group | Option | Repetition ;
+Group = '(' Expression ')' ;
+Option = '[' Expression ']' ;
+Repetition: '{' Expression '}' ;
 
-StatementExpression ::= Expression (Terminator | EOF)
+PascalCase productions are non-terminal, snake_case productions are terminal.
+*/
 
-Terminator ::= “\n”
-Comment ::= "//" [^\n]*
+Source = { Declaration }
+Declaration = [ public ] ( ConstDecl | EnumDecl | FuncDecl | ImportDecl | InterfaceDecl | StructDecl ) ;
 
-Expression     ::= Binding 
-                 | VarBinding 
-                 | LogicalOr 
-                 | ControlExpr
-                 | BreakStmt
-                 | ContinueStmt
+ConstDecl = "const" Identifier [ Type ] "="  Expression ;
+EnumDecl = "enum" Identifier "{" EnumField { terminal EnumField } "}" ;
+FuncDecl = "fn" [Generic] [ Receiver ] Identifier Signature Block ;
+ImportDecl = "import" StringLiteral ;
+InterfaceDecl = "interface" [ Generic ] Identifier "{" [ InterfaceField { terminal  InterfaceField } ] "}" ;
+StructDecl = "struct" [ Generic ] Identifier [ "<" IdentifierList ] "{" [ StructMember { terminal StructMember } ] "}" ;
 
-(* ==========================================
-   2. Bindings (Definitions)
-   ========================================== *)
-Binding        ::= (Visibility)? (TypeBinding | MethodBinding)
-Visibility     ::= "pub"
+/* Enum */
+EnumField = Identifier [ EnumInitializer ] ;
+EnumInitializer = "{" Identifier ":" Expression [ "," Identifier ":" Expression ]  "}" ;
 
-TypeBinding    ::= Identifier (TypeParams)? "=" TypeDefinition
-TypeParams     ::= "(" Identifier (Constraint)? ("," Identifier (Constraint)?)* ")"
-Constraint     ::= Identifier ( “|” Identifier )*
+/* Function */
+Receiver = "(" Identifier Type ")" ; // example: (u User)
+Signature = "(" [ ParameterList ] ")" TypeList ;
+ParameterList = IdentifierList ParameterType { "," IdentifierList ParameterType } ;
+IdentifierList = Identifier { "," Identifier } ; // example: a, b2, c?, d_e
+Block = "{" { ( Expression | Statement ) [ terminal ] } "}" ;
+ParameterType = Type | VariadicType ;
+VariadicType = "..." Type ;
 
-TypeDefinition ::= StructDef | InterfaceDef | UnionDef | Alias
-UnionDef       ::= Type ( "|" Type )+
-Alias          ::= Type
+/* Interface */
+InterfaceField = [ public ] Identifier Signature ;
 
-StructDef      ::= "struct" "{" (FieldList)? "}"
-FieldList      ::= Field (Separator Field)*
-Field          ::= (Visibility)? IdentifierList (Type | StructDef) | (Visibility)? Type
+/* Struct */
+StructMember = [ public ] ( FieldSpec | FuncDecl ) ;
+FieldSpec = IdentifierList Type ;
 
-InterfaceDef   ::= "interface" "{" (MethodSignature | Identifier)* "}"
-MethodSignature::= Identifier "=" "(" ParamList ")" (ReturnType)?
+/* Expressions */
 
-MethodBinding  ::= "(" Receiver ")" "." Identifier "=" FunctionBody
-Receiver       ::= Identifier Type
+// Precedence (highest to lowest)
+// 1. Access:   . [] ()
+// 2. Unary:    ! - ~
+// 3. Power:    **
+// 4. Multiply: * / %
+// 5. Add:      + -
+// 6. Bitwise:  & | ^ << >> ~
+// 7. Compare:  == != > < >= <=
+// 8. Logical:  && ||
+// 9. Or:       or
+// 10. Assign:  := = += -= *= /=
+Expression = LogicalExpression [ OrExpr ] ;
+LogicalExpression = UnaryExpr | BinaryExpr | PrimaryExpr ;
 
-(* ==========================================
-   3. Variable Bindings & Logical Flow
-   ========================================== *)
-VarBinding     ::= (Visibility)? IdentifierList (Type)? "=" Expression (OrGuard)?
+BinaryExpr = Expression BinaryOperator PrimaryExpr ;
+OrExpr = Expression "or" [ IdentifierPipe ] Block ;
+IdentifierPipe = "|" Identifier "|" ;
+UnaryExpr = unary_operator PrimaryExpr ;
 
-LogicalOr      ::= LogicalAnd ( "||" LogicalAnd )*
-LogicalAnd     ::= BitwiseExpr ( "&&" BitwiseExpr )*
+PrimaryExpr = Identifier | LiteralExpr | Selector | IndexExpr | CallExpr | IfExpr | RangeExpr | SwitchExpr | SpawnExpr | FuncExpr | ImportExpr | TypeExpr | "(" Expression ")" ;
 
-BitwiseExpr    ::= Comparison ( ("|" | "^" | "&" | "<<" | ">>") Comparison )*
-Comparison     ::= Addition ( ("==" | "!=" | ">" | "<" | ">=" | "<=") Addition )*
-Addition       ::= Multiplication ( ("+" | "-") Multiplication )*
-Multiplication ::= Power ( ("*" | "/") Power )*
-Power          ::= Unary ( "**" Power )*
+assignment_operator = ":=" | "+=" | "-=" | "*=" | "/=" | "=" ;
 
-Unary          ::= ("!" | "-" | "~") Primary | Primary
+CallExpr =  PrimaryExpr "(" [ ExpressionList ] ")" ;
+ExpressionList = Expression { "," Expression } ;
 
-(* ==========================================
-   4. Control & Loop Expressions
-   ========================================== *)
-ControlExpr    ::= IfExpr | SwitchExpr | SpawnExpr | Block | ForExpr
+ForExpr = "for" [ ForMode ] [ IdentifierPipe ] Block ;
+ForMode = Expression | IteratorClause | RangeClause
+IteratorClause = Identifier ":=" Expression ";" Expression ";" Assignment ;
+RangeClause = Identifier { "," Identifier } ":" Expression ;
 
-IfExpr         ::= "if" Condition Block (ElseBlock)?
-ElseBlock      ::= "else" (Block | IfExpr)
+FuncExpr = "fn" [ Generic ] Signature Block ;
 
-Condition      ::= BindingMatch | Expression
-BindingMatch   ::= (Identifier)? Type "=" Expression
+IfExpr = "if" Expression Block [ ElseBlock ] ;
+ElseBlock = "else" Block ;
 
-SwitchExpr     ::= "switch" (Expression)? "{" (CaseArm)* (ElseArm)? "}"
-CaseArm        ::= (Identifier)? (Condition | Type) ":" Block
-ElseArm        ::= "else" ":" Block
+ImportExpr = ImportDecl ;
 
-ForExpr        ::= "for" (ForControl)? Block
-ForControl     ::= IdentifierList ":" Expression   (* Iterator style *)
-                 | Expression                      (* While style *)
-                 | ""                              (* Infinite style *)
+IndexExpr = Selector "[" ( Expression | Slice ) "]" ;
+Selector = ( Identifier | PrimaryExpr ) "." Identifier ;
+Slice = [ Expression ] ".." [ Expression ] ;
 
-BreakStmt      ::= "break" (PositionalArgs)?
-NextStmt       ::= "next"
+LiteralExpr = ArrayLiteral | BoolLiteral | FloatLiteral | IntegerLiteral | MapLiteral | StringLiteral | StructLiteral ;
 
-OrGuard        ::= "or" (Identifier)? Block
-SpawnExpr      ::= "spawn" Block
-ImportExpr     ::= "import" String
+RangeExpr = "(" Expression ".." Expression ")" ;
 
-(* ==========================================
-   5. Primary Units & Functions
-   ========================================== *)
-Primary        ::= Literal | Identifier | Instantiation | Access | Call | IndexAccess | "(" Expression ")"
+SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block | Identifier ) ;
 
-IndexAccess    ::= Primary "[" PositionalArgs "]"
-Access         ::= Primary "." Identifier
-Call           ::= Primary "(" (PositionalArgs)? ")"
+SwitchExpr = "switch" Expression SwitchBlock ;
+SwitchBlock = "{" CaseArm { CaseArm } [ ElseArm ] "}" ;
+CaseArm = "case" Expression ":" ( Expression | Block ) ;
+ElseArm = "else:" ( Expression | Block ) ;
 
-FunctionBody   ::= "(" ParamList ")" (ReturnType)? Block
-ParamList      ::= (Identifier Type (Constraint)? ("," Identifier Type (Constraint)?)*)?
-ReturnType     ::= Type | "(" TypeList ")"
-TypeList       ::= Type ("," Type)*
+TypeExpr = Type ;
 
-Block          ::= "{" (Expression)* "}" 
+Statement = Assignment | IncrementStatement | DecrementStatement | VarDecl | ReturnStatement | break_statement | next_statement ;
+IncrementStatement = Identifier "++" ;
+DecrementStatement = Identifier "--" ;
+VarDecl = Identifier Type [ "=" Expression ] ; // Semantic rule: shadowing a variable from an outer scope, or redeclaring an identifier in the current scope, is an error.
+Assignment = AssignTargetList assignment_operator ExpressionList ; // the number of values returned by the rhs must match the lhs
+AssignTarget = Identifier | Selector | IndexExpr ;
+AssignTargetList = AssignTarget { "," AssignTarget } ;
+ReturnStatement = "return" [ ExpressionList ] ;
+break_statement = "break" [ ExpressionList ] ;
+next_statement = "next" ; // continue
 
-(* ==========================================
-   6. Arguments, Instantiation & Literals
-   ========================================== *)
-Instantiation  ::= Type "{" (PositionalArgs | NamedArgs)? "}"
-PositionalArgs ::= Expression ("," Expression)*
-NamedArgs      ::= Identifier ":" Expression ("," Identifier ":" Expression)*
+BinaryOperator = arithmetic_operator | bitwise_operator | logical_operator ;
+arithmetic_operator = "+" | "-" | "*" | "/" | "**" | "%" ;
+bitwise_operator = "&" | "|" | "^" | "~" | "<<" | ">>" ;
+logical_operator = "==" | "!=" | ">" | "<" | ">=" | "<=" | "&&" | "||" ;
+unary_operator = "!" | "-"
 
-Literal        ::= Integer | Float | String | MapLiteral | Bool | "void"
-MapLiteral     ::= "{" (Expression ":" Expression ("," Expression)*)? "}"
-String         ::= "\"" ("{" Expression "}")* "\""
+/* Identifiers */
+Identifier = letter | { letter | decimal_digit } [ "?" ]
+ignored_identifier = "_" { letter | decimal_digit } ; // not allowed in defintions, only local variables
 
-Type           ::= Identifier (TypeArgs)? 
-                 | "[]" Type 
-                 | "[" Integer "]" Type 
-                 | "Task(" Type ")"
+/* Visibility */
+public = "pub" ; // private by default, no need to specify
 
-TypeArgs       ::= Identifier ("," Identifier)*
-IdentifierList ::= Identifier ("," Identifier)*
+/* Types */
+Type = UnionType ;
+UnionType = SingleType { "|" SingleType } ;
+SingleType = Identifier | Selector | IntrinsicType | StructType ;
+Generic = "|" TypeList "|" ;
+TypeList = Type { "," Type } ;
+
+
+IntrinsicType = ArrayType | FuncType | MapType | RangeType | StructType | basic_type | float_type | integer_type | void_type ;
+ArrayType = "[" Type "]" ; // prevent union array types
+FuncType = "fn" Signature ;
+RangeType = "(" Type ")" ; 
+MapType = "{" Type : Type "}" ;
+StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}" ;
+
+basic_type = "Bool" | "Byte" | "Int" | "Float" | "String" ;
+float_type = "Float32" | "Float64" ;
+integer_type = "Int8" | "Int16" | "Int32" | "Int64" | "Uint8" | "Uint16" | "Uint32" | "Uint64" ;
+void_type = "Void" ;
+
+/* Literals */
+ArrayLiteral = "[" [ Expression { "," Expression } ] "]" ;
+
+BoolLiteral = "true" | "false" ;
+
+IntegerLiteral = ( decimal_digit { decimal_digit | "_" } ) | BinaryLiteral | HexLiteral | OctalLiteral ;
+BinaryLiteral = "0b" { binary_digit | "_" } ;
+HexLiteral = "0x" { hex_digit | "_" } ;
+OctalLiteral = "0o" { octal_digit | "_" } ;
+
+FloatLiteral =  decimal_digit { decimal_digit | "_" }  "." FloatEnd ;
+FloatEnd = decimal_digit { decimal_digit | "_" } [ Exponent ];
+Exponent = ( "e" | "E" ) [ "+" | "-" ] decimal_digit { decimal_digit | "_" } ;
+
+MapLiteral = "{" { KeyValuePair } "}" ;
+KeyValuePair = Expression ":" Expression ;
+
+StringLiteral = SingleLineString | MultiLineString ;
+SingleLineString = "\"" { StringContent } "\"" ;
+MultiLineString = "\"\"\"" ( StringContent | "\n" ) "\"\"\"" ;
+StringContent = unicode_char_except_special | EscapeSequence | Interpolation ;
+EscapeSequence = "\\" ( "n" | "t" | "r" | "\\" | "\"" | "{" | "}" ) ;
+Interpolation = "{" Expression "}" ;
+
+StructLiteral = ( Identifier | Selector | StructType ) StructInitializer ;
+StructInitializer = "{" [ FieldAssignment { ( "," | terminal ) FieldAssignment } ] "}" ;
+FieldAssignment = Identifier ":" Expression ;
+
+/* Lexical elements */
+comments = "//" unicode_char newline ;
+
+/* Letters and digits */
+letter = "a" ... "z" | "A" ... "Z" | "_" ;
+decimal_digit = "0" ... "9" ;
+binary_digit = "0" | "1" ;
+octal_digit = "0" ... "7" ;
+hex_digit = decimal_digit | "a" ... "f" | "A" ... "F" ;
+
+/* characters */
+terminal = "\r\n" | "\n" ;
+unicode_char = /* any visible Unicode code point */ ;
+unicode_char_except_special = /* any visible Unicode code point excluding \, {, }, and " */ ;
 ```
