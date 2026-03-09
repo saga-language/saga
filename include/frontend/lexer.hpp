@@ -6,11 +6,14 @@
 #include <string_view>
 
 namespace mc {
+
+enum class LexerState { Default, InString };
+
 struct Lexer {
   File *file = nullptr;
   std::string_view source;
   ErrorList error_list = {};
-  std::vector<Token::Kind> state = {Token::Kind::Void};
+  std::vector<LexerState> state = {};
   size_t offset = 0;
   size_t reading_offset = 0;
 
@@ -19,7 +22,6 @@ struct Lexer {
 
 private:
   Token accept(Token::Kind k);
-  Token expect(const char c, const Token::Kind k);
 
   bool match(const char c);
 
@@ -30,7 +32,6 @@ private:
   bool is_binary(const char c);
   bool is_digit(const char c);
   bool is_eof();
-  bool is_escaped();
   bool is_hex(const char c);
   bool is_interpolating();
   bool is_octal(const char c);

@@ -53,7 +53,7 @@ TEST(Lexer, Scan_DoubleSlash_ReturnsComment) {
   ASSERT_EQ(t.offset, 0);
 }
 
-// // Identifier tests
+// Identifier tests
 TEST(Lexer, Scan_Identifier) {
   auto f = File::from_source("test.txt", "_abc_ABC_123");
   Lexer l;
@@ -105,7 +105,7 @@ TEST(Lexer, Scan_NumberLiteral_Integer) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "42");
   ASSERT_EQ(t.offset, 0);
 }
@@ -116,7 +116,7 @@ TEST(Lexer, Scan_NumberLiteral_Binary) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "0b0101");
   ASSERT_EQ(t.offset, 0);
 }
@@ -127,7 +127,7 @@ TEST(Lexer, Scan_NumberLiteral_BinaryWithUnderscore) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "0b0000_1111");
   ASSERT_EQ(t.offset, 0);
 }
@@ -138,7 +138,7 @@ TEST(Lexer, Scan_NumberLiteral_Hex) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "0x0123456789abcdef");
   ASSERT_EQ(t.offset, 0);
 }
@@ -149,7 +149,7 @@ TEST(Lexer, Scan_NumberLiteral_HexWithUnderscore) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "0xdead_beef");
   ASSERT_EQ(t.offset, 0);
 }
@@ -160,7 +160,7 @@ TEST(Lexer, Scan_NumberLiteral_Octal) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "0o1234567");
   ASSERT_EQ(t.offset, 0);
 }
@@ -171,7 +171,7 @@ TEST(Lexer, Scan_NumberLiteral_Float) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::FloatLiteral);
   ASSERT_EQ(t.literal, "3.14");
   ASSERT_EQ(t.offset, 0);
 }
@@ -182,7 +182,7 @@ TEST(Lexer, Scan_NumberLiteral_Float_StartingZero) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::FloatLiteral);
   ASSERT_EQ(t.literal, "0.42");
   ASSERT_EQ(t.offset, 0);
 }
@@ -194,7 +194,7 @@ TEST(Lexer, Scan_StringLiteral) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::String);
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
   ASSERT_EQ(t.literal, "\"a\"");
   ASSERT_EQ(t.offset, 0);
 }
@@ -205,8 +205,43 @@ TEST(Lexer, Scan_StringLiteral_MultipleCharacters) {
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::String);
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
   ASSERT_EQ(t.literal, "\"hello\"");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_StringLiteral_EscapedQuote) {
+  Lexer l;
+  auto f = File::from_source("test.txt", R"("say \"hello\"")");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, R"("say \"hello\"")");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_StringLiteral_EscapedBrace) {
+  // \{ must not be treated as the start of interpolation
+  Lexer l;
+  auto f = File::from_source("test.txt", R"("a \{ b")");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, R"("a \{ b")");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_StringLiteral_EscapedBackslashThenQuote) {
+  // \\ consumes two chars, leaving the " as the real closing quote
+  Lexer l;
+  auto f = File::from_source("test.txt", R"("a\\")");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, R"("a\\")");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -329,18 +364,7 @@ TEST(Lexer, Scan_RightParenthesis) {
   ASSERT_EQ(t.offset, 0);
 }
 
-// Assignment and Dot operators
-TEST(Lexer, Scan_Assignment) {
-  Lexer l;
-  auto f = File::from_source("test.txt", ":=");
-  l.init(f.get());
-  auto t = l.scan();
-
-  ASSERT_EQ(t.kind, Token::Kind::Assignment);
-  ASSERT_EQ(t.literal, ":=");
-  ASSERT_EQ(t.offset, 0);
-}
-
+// Punctuation
 TEST(Lexer, Scan_Dot) {
   Lexer l;
   auto f = File::from_source("test.txt", ".");
@@ -349,6 +373,28 @@ TEST(Lexer, Scan_Dot) {
 
   ASSERT_EQ(t.kind, Token::Kind::Dot);
   ASSERT_EQ(t.literal, ".");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_DotDot) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "..");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::DotDot);
+  ASSERT_EQ(t.literal, "..");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_Ellipsis) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "...");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Ellipsis);
+  ASSERT_EQ(t.literal, "...");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -374,26 +420,93 @@ TEST(Lexer, Scan_Comma) {
   ASSERT_EQ(t.offset, 0);
 }
 
+TEST(Lexer, Scan_Semicolon) {
+  Lexer l;
+  auto f = File::from_source("test.txt", ";");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Semicolon);
+  ASSERT_EQ(t.literal, ";");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_QuestionMark) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "?");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::QuestionMark);
+  ASSERT_EQ(t.literal, "?");
+  ASSERT_EQ(t.offset, 0);
+}
+
+// Assignment operators
+TEST(Lexer, Scan_Assignment) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "=");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Assignment);
+  ASSERT_EQ(t.literal, "=");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_DeclAssignment) {
+  Lexer l;
+  auto f = File::from_source("test.txt", ":=");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::DeclAssignment);
+  ASSERT_EQ(t.literal, ":=");
+  ASSERT_EQ(t.offset, 0);
+}
+
 // Mathematical operators
-TEST(Lexer, Scan_Plus) {
+TEST(Lexer, Scan_Add) {
   Lexer l;
   auto f = File::from_source("test.txt", "+");
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Plus);
+  ASSERT_EQ(t.kind, Token::Kind::Add);
   ASSERT_EQ(t.literal, "+");
   ASSERT_EQ(t.offset, 0);
 }
 
-TEST(Lexer, Scan_Minus) {
+TEST(Lexer, Scan_Increment) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "++");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Increment);
+  ASSERT_EQ(t.literal, "++");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_Sub) {
   Lexer l;
   auto f = File::from_source("test.txt", "-");
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Minus);
+  ASSERT_EQ(t.kind, Token::Kind::Sub);
   ASSERT_EQ(t.literal, "-");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_Decrement) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "--");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Decrement);
+  ASSERT_EQ(t.literal, "--");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -455,12 +568,23 @@ TEST(Lexer, Scan_LogicalAnd) {
 
 TEST(Lexer, Scan_Equal) {
   Lexer l;
-  auto f = File::from_source("test.txt", "=");
+  auto f = File::from_source("test.txt", "==");
   l.init(f.get());
   auto t = l.scan();
 
   ASSERT_EQ(t.kind, Token::Kind::Equal);
-  ASSERT_EQ(t.literal, "=");
+  ASSERT_EQ(t.literal, "==");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_Not) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "!");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Not);
+  ASSERT_EQ(t.literal, "!");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -566,12 +690,12 @@ TEST(Lexer, Scan_BitwiseOr) {
 
 TEST(Lexer, Scan_BitwiseNot) {
   Lexer l;
-  auto f = File::from_source("test.txt", "!");
+  auto f = File::from_source("test.txt", "~");
   l.init(f.get());
   auto t = l.scan();
 
   ASSERT_EQ(t.kind, Token::Kind::BitwiseNot);
-  ASSERT_EQ(t.literal, "!");
+  ASSERT_EQ(t.literal, "~");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -598,6 +722,17 @@ TEST(Lexer, Scan_BreakKeyword) {
   ASSERT_EQ(t.offset, 0);
 }
 
+TEST(Lexer, Scan_ConstKeyword) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "const");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Const);
+  ASSERT_EQ(t.literal, "const");
+  ASSERT_EQ(t.offset, 0);
+}
+
 TEST(Lexer, Scan_ElseKeyword) {
   Lexer l;
   auto f = File::from_source("test.txt", "else");
@@ -606,6 +741,39 @@ TEST(Lexer, Scan_ElseKeyword) {
 
   ASSERT_EQ(t.kind, Token::Kind::Else);
   ASSERT_EQ(t.literal, "else");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_EnumKeyword) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "enum");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Enum);
+  ASSERT_EQ(t.literal, "enum");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_FalseKeyword) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "false");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::BoolLiteral);
+  ASSERT_EQ(t.literal, "false");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_FnKeyword) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "fn");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Fn);
+  ASSERT_EQ(t.literal, "fn");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -730,14 +898,14 @@ TEST(Lexer, Scan_SwitchKeyword) {
   ASSERT_EQ(t.offset, 0);
 }
 
-TEST(Lexer, Scan_VoidKeyword) {
+TEST(Lexer, Scan_TrueKeyword) {
   Lexer l;
-  auto f = File::from_source("test.txt", "void");
+  auto f = File::from_source("test.txt", "true");
   l.init(f.get());
   auto t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Void);
-  ASSERT_EQ(t.literal, "void");
+  ASSERT_EQ(t.kind, Token::Kind::BoolLiteral);
+  ASSERT_EQ(t.literal, "true");
   ASSERT_EQ(t.offset, 0);
 }
 
@@ -757,16 +925,35 @@ TEST(Lexer, Scan_Multiple) {
   // Second Token
   t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Assignment);
+  ASSERT_EQ(t.kind, Token::Kind::DeclAssignment);
   ASSERT_EQ(t.literal, ":=");
   ASSERT_EQ(t.offset, 2);
 
   // Third Token
   t = l.scan();
 
-  ASSERT_EQ(t.kind, Token::Kind::Number);
+  ASSERT_EQ(t.kind, Token::Kind::IntegerLiteral);
   ASSERT_EQ(t.literal, "42");
   ASSERT_EQ(t.offset, 5);
+}
+
+// Newline position tracking
+TEST(Lexer, Scan_Newline_TracksPosition) {
+  auto f = File::from_source("test.txt", "a\nb");
+  Lexer l;
+  l.init(f.get());
+
+  l.scan(); // 'a' — Identifier on line 1
+  l.scan(); // '\n' — Terminator, registers line 2
+  auto t = l.scan(); // 'b' — Identifier on line 2
+
+  ASSERT_EQ(t.kind, Token::Kind::Identifier);
+  ASSERT_EQ(t.literal, "b");
+  ASSERT_EQ(t.offset, 2);
+
+  auto pos = f->position_at(2);
+  ASSERT_EQ(pos.line, 2);
+  ASSERT_EQ(pos.column, 1);
 }
 
 } // namespace mc

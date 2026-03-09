@@ -17,6 +17,9 @@ struct Token {
     FloatLiteral,   // 1_123,45, 0.5, 123.4_5e+1_001
     IntegerLiteral, // 42, 1_000, 0b1010, 0x1a3f, 0o755
     StringLiteral,  // "a", "hello", """multi-line string"""
+    StringStart,    // "hello {       — opening fragment before interpolation
+    StringMiddle,   // } then {       — fragment between interpolations
+    StringEnd,      // }"             — closing fragment after interpolation
 
     // Keywords
     Break,     // "break"

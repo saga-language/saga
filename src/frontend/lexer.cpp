@@ -7,18 +7,30 @@
 namespace mc {
 
 inline static const std::unordered_map<std::string_view, Token::Kind> keywords =
-    {{"break", Token::Kind::Break},   {"else", Token::Kind::Else},
-     {"for", Token::Kind::For},       {"if", Token::Kind::If},
-     {"import", Token::Kind::Import}, {"interface", Token::Kind::Interface},
-     {"next", Token::Kind::Next},     {"or", Token::Kind::Or},
-     {"pub", Token::Kind::Pub},       {"return", Token::Kind::Return},
-     {"spawn", Token::Kind::Spawn},   {"struct", Token::Kind::Struct},
-     {"switch", Token::Kind::Switch}, {"void", Token::Kind::Void}};
+    {{"break",     Token::Kind::Break},
+     {"case",      Token::Kind::Case},
+     {"const",     Token::Kind::Const},
+     {"else",      Token::Kind::Else},
+     {"enum",      Token::Kind::Enum},
+     {"false",     Token::Kind::BoolLiteral},
+     {"fn",        Token::Kind::Fn},
+     {"for",       Token::Kind::For},
+     {"if",        Token::Kind::If},
+     {"import",    Token::Kind::Import},
+     {"interface", Token::Kind::Interface},
+     {"next",      Token::Kind::Next},
+     {"or",        Token::Kind::Or},
+     {"pub",       Token::Kind::Pub},
+     {"return",    Token::Kind::Return},
+     {"spawn",     Token::Kind::Spawn},
+     {"struct",    Token::Kind::Struct},
+     {"switch",    Token::Kind::Switch},
+     {"true",      Token::Kind::BoolLiteral}};
 
 void Lexer::init(File *file) {
   this->file = file;
   this->source = file->source;
-  this->state = {Token::Kind::Void};
+  this->state = {};
   this->offset = 0;
   this->reading_offset = 0;
 }
@@ -38,6 +50,7 @@ Token Lexer::scan() {
   Token::Kind t;
   switch (c) {
   case '\n':
+    file->add_file_newline(reading_offset);
     return accept(Token::Kind::Terminator);
   case '"':
     return scan_string(c);
@@ -45,7 +58,8 @@ Token Lexer::scan() {
     if (match('/')) {
       return scan_comment();
     }
-    return accept(Token::Kind::Divide);
+    t = match('=') ? Token::Kind::DivAssignment : Token::Kind::Divide;
+    return accept(t);
 
   // One or Two character tokens
   case '&':
@@ -55,7 +69,7 @@ Token Lexer::scan() {
     t = match('|') ? Token::Kind::LogicalOr : Token::Kind::BitwiseOr;
     return accept(t);
   case '!':
-    t = match('=') ? Token::Kind::NotEqual : Token::Kind::BitwiseNot;
+    t = match('=') ? Token::Kind::NotEqual : Token::Kind::Not;
     return accept(t);
   case '<':
     if (match('=')) {
@@ -69,25 +83,33 @@ Token Lexer::scan() {
     }
     t = match('>') ? Token::Kind::RightShift : Token::Kind::GreaterThan;
     return accept(t);
-
-  // Two chracter tokens
   case ':':
-    if (match('=')) {
-      return accept(Token::Kind::Assignment);
+    t = match('=') ? Token::Kind::DeclAssignment : Token::Kind::Colon;
+    return accept(t);
+  case '*':
+    if (match('*')) {
+      return accept(Token::Kind::Pow);
     }
-    return accept(Token::Kind::Colon);
+    t = match('=') ? Token::Kind::MulAssignment : Token::Kind::Multiply;
+    return accept(t);
+  case '+':
+    if (match('+')) return accept(Token::Kind::Increment);
+    t = match('=') ? Token::Kind::AddAssignment : Token::Kind::Add;
+    return accept(t);
+  case '-':
+    if (match('-')) return accept(Token::Kind::Decrement);
+    t = match('=') ? Token::Kind::SubAssignment : Token::Kind::Sub;
+    return accept(t);
 
     // Single character tokens
   case '.':
+    if (match('.')) {
+      t = match('.') ? Token::Kind::Ellipsis : Token::Kind::DotDot;
+      return accept(t);
+    }
     return accept(Token::Kind::Dot);
   case ',':
     return accept(Token::Kind::Comma);
-  case '*':
-    return accept(Token::Kind::Multiply);
-  case '+':
-    return accept(Token::Kind::Plus);
-  case '-':
-    return accept(Token::Kind::Minus);
   case '%':
     return accept(Token::Kind::Modulo);
   case '(':
@@ -106,9 +128,16 @@ Token Lexer::scan() {
   case ']':
     return accept(Token::Kind::RightBracket);
   case '=':
-    return accept(Token::Kind::Equal);
+    t = match('=') ? Token::Kind::Equal : Token::Kind::Assignment;
+    return accept(t);
   case '^':
     return accept(Token::Kind::BitwiseXor);
+  case '~':
+    return accept(Token::Kind::BitwiseNot);
+  case ';':
+    return accept(Token::Kind::Semicolon);
+  case '?':
+    return accept(Token::Kind::QuestionMark);
   default:
     if (c != 0) {
       error_list.report_error(file->position_at(reading_offset),
@@ -158,15 +187,11 @@ bool Lexer::is_alpha(const char c) {
 bool Lexer::is_binary(const char c) { return c == '0' || c == '1' || c == '_'; }
 bool Lexer::is_digit(const char c) { return c >= '0' && c <= '9'; }
 bool Lexer::is_eof() { return reading_offset >= source.length(); }
-bool Lexer::is_escaped() { return state.back() == Token::Kind::BackSlash; }
 bool Lexer::is_hex(const char c) {
   return is_digit(c) || ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) ||
          c == '_';
 }
-bool Lexer::is_interpolating() {
-  return state.back() == Token::Kind::StringStart ||
-         state.back() == Token::Kind::StringMiddle;
-}
+bool Lexer::is_interpolating() { return !state.empty() && state.back() == LexerState::InString; }
 bool Lexer::is_octal(const char c) { return c >= '0' && c <= '7'; }
 bool Lexer::is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
@@ -174,14 +199,13 @@ Token Lexer::scan_binary() {
   while (is_binary(peek())) {
     next();
   }
-  return accept(Token::Kind::Number);
+  return accept(Token::Kind::IntegerLiteral);
 }
 
 Token Lexer::scan_comment() {
   while (peek() != '\n' && !is_eof()) {
     next();
   }
-  next();
   return accept(Token::Kind::Comment);
 }
 
@@ -191,14 +215,14 @@ Token Lexer::scan_float() {
     next();
   }
 
-  return accept(Token::Kind::Number);
+  return accept(Token::Kind::FloatLiteral);
 }
 
 Token Lexer::scan_hex() {
   while (is_hex(peek()) && !is_eof()) {
     next();
   }
-  return accept(Token::Kind::Number);
+  return accept(Token::Kind::IntegerLiteral);
 }
 
 Token Lexer::scan_identifier() {
@@ -240,19 +264,19 @@ Token Lexer::scan_number(const char c) {
     return scan_float();
   }
 
-  return accept(Token::Kind::Number);
+  return accept(Token::Kind::IntegerLiteral);
 }
 
 Token Lexer::scan_octal() {
   while (is_octal(peek())) {
     next();
   }
-  return accept(Token::Kind::Number);
+  return accept(Token::Kind::IntegerLiteral);
 }
 
 Token Lexer::scan_string(const char c) {
-  Token::Kind mode = Token::Kind::String;
-  if (c == '}' && !is_escaped()) {
+  Token::Kind mode = Token::Kind::StringLiteral;
+  if (c == '}') {
     mode = Token::Kind::StringEnd;
     if (is_interpolating()) {
       state.pop_back();
@@ -267,22 +291,20 @@ Token Lexer::scan_string(const char c) {
     }
 
     if (peek() == '\\') {
-      state.push_back(Token::Kind::BackSlash);
+      next(); // consume the backslash
+      next(); // skip whatever follows — don't interpret it
+      continue;
     }
 
     if (peek() == '{') {
-      if (is_escaped()) {
-        state.pop_back(); // consume the escape
+      // start of interpolated expression; stop scanning this fragment
+      if (mode == Token::Kind::StringEnd) {
+        mode = Token::Kind::StringMiddle;
       } else {
-        // start of interpolated string; stop scanning
-        if (mode == Token::Kind::StringEnd) {
-          mode = Token::Kind::StringMiddle;
-        } else {
-          mode = Token::Kind::StringStart;
-        }
-        state.push_back(mode);
-        break;
+        mode = Token::Kind::StringStart;
       }
+      state.push_back(LexerState::InString);
+      break;
     }
 
     next();

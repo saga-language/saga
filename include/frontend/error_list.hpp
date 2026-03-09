@@ -1,4 +1,6 @@
 
+#pragma once
+
 #include "position.hpp"
 
 #include <iostream>

@@ -12,7 +12,7 @@ void ErrorList::report_error(Position p, std::string message) {
 bool ErrorList::max_reached() const { return errors.size() >= max_errors; }
 
 void ErrorList::print_errors(std::ostream &os) const {
-  for (auto err : errors) {
+  for (const auto& err : errors) {
     os << std::format("[{}] Error: {}\n", err.p, err.message);
   }
 
