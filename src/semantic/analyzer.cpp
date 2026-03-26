@@ -220,7 +220,6 @@ void Analyzer::visit_source(const SourceNode &src) {
               resolve_func_decl_body(fn);
             },
             [&](const StructDeclNode &s) {
-              // Resolve names inside struct method bodies.
               for (auto &member : s.members) {
                 if (auto *fn =
                         std::get_if<FuncDeclNode>(&member.member->data)) {
@@ -228,9 +227,30 @@ void Analyzer::visit_source(const SourceNode &src) {
                 }
               }
             },
-            [&](const auto &) {
-              // Other declarations have no bodies to walk.
+            [&](const auto &) {},
+        },
+        decl->data);
+  }
+
+  // Pass 4: type-check top-level declarations and function bodies.
+  for (auto &decl : src.declarations) {
+    std::visit(
+        overloaded{
+            [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
+            [&](const StructDeclNode &s) {
+              check_struct_decl(s);
+              for (auto &member : s.members) {
+                if (auto *fn =
+                        std::get_if<FuncDeclNode>(&member.member->data)) {
+                  check_func_decl_body(*fn);
+                }
+              }
             },
+            [&](const EnumDeclNode &e) { check_enum_decl(e); },
+            [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
+            [&](const ConstDeclNode &c) { check_const_decl(c); },
+            [&](const ImportDeclNode &) { /* deferred */ },
+            [&](const auto &) {},
         },
         decl->data);
   }
@@ -415,8 +435,25 @@ void Analyzer::resolve_declaration(const Node &node) {
 }
 
 void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
-  // Resolve the function's type signature and update the symbol.
   auto fn_type = resolve_signature(fn.signature);
+
+  // If this is a receiver method, attach it to the receiver's struct type.
+  if (fn.receiver) {
+    auto &recv_type_node = fn.receiver->type;
+    // The receiver type should be an identifier referencing a struct.
+    if (auto *ident = std::get_if<IdentifierNode>(&recv_type_node->data)) {
+      auto recv_sym = lookup(std::string(ident->name));
+      if (recv_sym && recv_sym->type &&
+          recv_sym->type->kind == TypeKind::Struct) {
+        auto &struct_info =
+            std::get<StructTypeInfo>(recv_sym->type->detail);
+        struct_info.methods.push_back(
+            {std::string(fn.name.name), fn_type, fn.is_public});
+      }
+    }
+  }
+
+  // Update the function symbol.
   auto sym_it = current_scope->symbols.find(std::string(fn.name.name));
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = fn_type;
@@ -970,178 +1007,1231 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 }
 
 // ===========================================================================
-// Type-checking stubs — to be implemented in later steps
+// Phase 4 — Type-check function/method bodies
 // ===========================================================================
 
-TypePtr Analyzer::check_expr(const Node & /*node*/) {
-  return builtins.error_type; // TODO
+void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
+  push_scope(ScopeKind::Function);
+
+  if (fn.generic)
+    enter_generics(*fn.generic);
+
+  if (fn.receiver) {
+    auto recv_type = resolve_type(*fn.receiver->type);
+    declare_local(Symbol::parameter(std::string(fn.receiver->name.name),
+                                    recv_type, fn.receiver->name.span));
+  }
+
+  for (auto &r : fn.signature.returns)
+    current_scope->return_types.push_back(resolve_type(*r));
+
+  declare_parameters(fn.signature);
+
+  auto &block = std::get<BlockNode>(fn.body->data);
+  auto body_type = check_block(block);
+
+  // Check that the tail expression matches the return type (if non-Void).
+  // If the last statement is a return, it already checked its own values.
+  if (!current_scope->return_types.empty() && !block.stmts.empty()) {
+    bool tail_is_return =
+        std::holds_alternative<ReturnNode>(block.stmts.back()->data);
+    if (!tail_is_return) {
+      auto &expected = current_scope->return_types;
+      if (expected.size() == 1 && !is_error_type(body_type)) {
+        if (!types_equal(expected[0], builtins.void_type)) {
+          expect_assignable(fn.body->span, expected[0], body_type,
+                            "return type");
+        }
+      }
+    }
+  }
+
+  pop_scope();
 }
 
-TypePtr Analyzer::check_identifier(const IdentifierNode & /*node*/,
-                                   const Node & /*parent*/) {
-  return builtins.error_type; // TODO
+// ===========================================================================
+// Expression type-checking
+// ===========================================================================
+
+TypePtr Analyzer::check_expr(const Node &node) {
+  auto type = std::visit(
+      overloaded{
+          [&](const IdentifierNode &n) -> TypePtr {
+            return check_identifier(n, node);
+          },
+          [&](const BoolLiteralNode &n) -> TypePtr {
+            return check_bool_literal(n);
+          },
+          [&](const IntegerLiteralNode &n) -> TypePtr {
+            return check_int_literal(n);
+          },
+          [&](const FloatLiteralNode &n) -> TypePtr {
+            return check_float_literal(n);
+          },
+          [&](const StringLiteralNode &n) -> TypePtr {
+            return check_string_literal(n);
+          },
+          [&](const StringFragmentNode &) -> TypePtr {
+            return builtins.string_type;
+          },
+          [&](const ArrayLiteralNode &n) -> TypePtr {
+            return check_array_literal(n);
+          },
+          [&](const MapLiteralNode &n) -> TypePtr {
+            return check_map_literal(n);
+          },
+          [&](const StructLiteralNode &n) -> TypePtr {
+            return check_struct_literal(n);
+          },
+          [&](const BinaryExprNode &n) -> TypePtr {
+            return check_binary_expr(n);
+          },
+          [&](const UnaryExprNode &n) -> TypePtr {
+            return check_unary_expr(n);
+          },
+          [&](const GroupExprNode &n) -> TypePtr {
+            return check_group_expr(n);
+          },
+          [&](const CallExprNode &n) -> TypePtr {
+            return check_call_expr(n);
+          },
+          [&](const IndexExprNode &n) -> TypePtr {
+            return check_index_expr(n);
+          },
+          [&](const SelectorNode &n) -> TypePtr {
+            return check_selector(n, node);
+          },
+          [&](const IfExprNode &n) -> TypePtr {
+            return check_if_expr(n);
+          },
+          [&](const SwitchExprNode &n) -> TypePtr {
+            return check_switch_expr(n);
+          },
+          [&](const ForExprNode &n) -> TypePtr {
+            return check_for_expr(n);
+          },
+          [&](const RangeExprNode &n) -> TypePtr {
+            return check_range_expr(n);
+          },
+          [&](const SpawnExprNode &n) -> TypePtr {
+            return check_spawn_expr(n);
+          },
+          [&](const OrExprNode &n) -> TypePtr {
+            return check_or_expr(n);
+          },
+          [&](const FuncExprNode &n) -> TypePtr {
+            return check_func_expr(n);
+          },
+          [&](const ImportExprNode &n) -> TypePtr {
+            return check_import_expr(n);
+          },
+          [&](const BlockNode &n) -> TypePtr {
+            push_scope(ScopeKind::Block);
+            auto t = check_block(n);
+            pop_scope();
+            return t;
+          },
+          // Statements appearing in expression position return Void.
+          [&](const VarDeclNode &n) -> TypePtr {
+            check_var_decl(n, node);
+            return builtins.void_type;
+          },
+          [&](const DeclAssignNode &n) -> TypePtr {
+            check_decl_assign(n);
+            return builtins.void_type;
+          },
+          [&](const AssignNode &n) -> TypePtr {
+            check_assign(n);
+            return builtins.void_type;
+          },
+          [&](const IncrementNode &n) -> TypePtr {
+            check_increment(n);
+            return builtins.void_type;
+          },
+          [&](const DecrementNode &n) -> TypePtr {
+            check_decrement(n);
+            return builtins.void_type;
+          },
+          [&](const ReturnNode &n) -> TypePtr {
+            check_return(n);
+            return builtins.void_type;
+          },
+          [&](const BreakNode &n) -> TypePtr {
+            check_break(n);
+            return builtins.void_type;
+          },
+          [&](const NextNode &) -> TypePtr {
+            return builtins.void_type;
+          },
+          [&](const auto &) -> TypePtr {
+            return builtins.error_type;
+          },
+      },
+      node.data);
+
+  record_type(node, type);
+  return type;
 }
 
-TypePtr Analyzer::check_bool_literal(const BoolLiteralNode & /*node*/) {
+TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
+                                   const Node &parent) {
+  std::string name(ident.name);
+  if (!name.empty() && name[0] == '_')
+    return builtins.void_type;
+
+  auto sym = lookup(name);
+  if (!sym) {
+    // Already reported during name resolution.
+    return builtins.error_type;
+  }
+  record_symbol(parent, *sym);
+  return sym->type ? sym->type : builtins.error_type;
+}
+
+TypePtr Analyzer::check_bool_literal(const BoolLiteralNode &) {
   return builtins.bool_type;
 }
 
-TypePtr Analyzer::check_int_literal(const IntegerLiteralNode & /*node*/) {
+TypePtr Analyzer::check_int_literal(const IntegerLiteralNode &) {
   return builtins.int_type;
 }
 
-TypePtr Analyzer::check_float_literal(const FloatLiteralNode & /*node*/) {
+TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
   return builtins.float_type;
 }
 
-TypePtr Analyzer::check_string_literal(const StringLiteralNode & /*node*/) {
+TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
+  // Verify all interpolated expressions implement Stringer (have .String()).
+  // For now, just check all fragments; a deeper Stringer check is deferred.
+  for (auto &frag : node.fragments) {
+    if (!std::holds_alternative<StringFragmentNode>(frag->data)) {
+      check_expr(*frag);
+    }
+  }
   return builtins.string_type;
 }
 
-TypePtr Analyzer::check_array_literal(const ArrayLiteralNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
+  if (node.elements.empty()) {
+    // Empty array — type must be inferred from context.  Return a
+    // placeholder; the assignment checker will fill it in.
+    return make_array_type(builtins.error_type);
+  }
+  auto elem_type = check_expr(*node.elements[0]);
+  for (size_t i = 1; i < node.elements.size(); ++i) {
+    auto t = check_expr(*node.elements[i]);
+    if (!is_error_type(t) && !is_error_type(elem_type)) {
+      expect_assignable(node.elements[i]->span, elem_type, t,
+                        "array element");
+    }
+  }
+  return make_array_type(elem_type);
 }
 
-TypePtr Analyzer::check_map_literal(const MapLiteralNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
+  if (node.entries.empty()) {
+    return make_map_type(builtins.error_type, builtins.error_type);
+  }
+  auto key_type = check_expr(*node.entries[0].key);
+  auto val_type = check_expr(*node.entries[0].value);
+  for (size_t i = 1; i < node.entries.size(); ++i) {
+    auto kt = check_expr(*node.entries[i].key);
+    auto vt = check_expr(*node.entries[i].value);
+    if (!is_error_type(kt))
+      expect_assignable(node.entries[i].key->span, key_type, kt, "map key");
+    if (!is_error_type(vt))
+      expect_assignable(node.entries[i].value->span, val_type, vt,
+                        "map value");
+  }
+  return make_map_type(key_type, val_type);
 }
 
-TypePtr Analyzer::check_struct_literal(const StructLiteralNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
+  auto type_expr_type = check_expr(*node.type_expr);
+  if (is_error_type(type_expr_type))
+    return builtins.error_type;
+
+  if (type_expr_type->kind != TypeKind::Struct) {
+    error(node.type_expr->span,
+          std::format("'{}' is not a struct type",
+                      type_to_string(type_expr_type)));
+    return builtins.error_type;
+  }
+
+  auto &info = std::get<StructTypeInfo>(type_expr_type->detail);
+
+  // Collect all fields including those from embedded types.
+  auto all_fields = info.fields;
+  for (auto &embed : info.embeds) {
+    if (embed && embed->kind == TypeKind::Struct) {
+      auto &embed_info = std::get<StructTypeInfo>(embed->detail);
+      all_fields.insert(all_fields.end(), embed_info.fields.begin(),
+                        embed_info.fields.end());
+    }
+  }
+
+  // Check each field assignment.
+  for (auto &fa : node.fields) {
+    std::string fname(fa.name.name);
+    auto val_type = check_expr(*fa.value);
+
+    bool found = false;
+    for (auto &fi : all_fields) {
+      if (fi.name == fname) {
+        found = true;
+        if (fi.type && !is_error_type(val_type)) {
+          expect_assignable(fa.value->span, fi.type, val_type,
+                            std::format("field '{}'", fname));
+        }
+        break;
+      }
+    }
+    if (!found) {
+      error(fa.name.span,
+            std::format("struct '{}' has no field '{}'", info.name, fname));
+    }
+  }
+
+  return type_expr_type;
 }
 
-TypePtr Analyzer::check_binary_expr(const BinaryExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
+  auto lhs = check_expr(*node.lhs);
+  auto rhs = check_expr(*node.rhs);
+
+  if (is_error_type(lhs) || is_error_type(rhs))
+    return builtins.error_type;
+
+  using K = Token::Kind;
+  switch (node.op) {
+  // Arithmetic: + - * ** %
+  case K::Add:
+  case K::Sub:
+  case K::Multiply:
+  case K::Pow:
+  case K::Modulo: {
+    // String concatenation with +.
+    if (node.op == K::Add && lhs->kind == TypeKind::String &&
+        rhs->kind == TypeKind::String) {
+      return builtins.string_type;
+    }
+    if (!is_numeric(lhs)) {
+      error(node.lhs->span,
+            std::format("arithmetic operator requires numeric type, got {}",
+                        type_to_string(lhs)));
+      return builtins.error_type;
+    }
+    if (!is_numeric(rhs)) {
+      error(node.rhs->span,
+            std::format("arithmetic operator requires numeric type, got {}",
+                        type_to_string(rhs)));
+      return builtins.error_type;
+    }
+    return common_type(lhs, rhs);
+  }
+
+  // Division: returns T | Error (division by zero).
+  case K::Divide: {
+    if (!is_numeric(lhs) || !is_numeric(rhs)) {
+      error(node.span,
+            std::format("division requires numeric types, got {} and {}",
+                        type_to_string(lhs), type_to_string(rhs)));
+      return builtins.error_type;
+    }
+    auto result = common_type(lhs, rhs);
+    return make_union_type({result, builtins.error_iface});
+  }
+
+  // Comparison: == != > < >= <=
+  case K::Equal:
+  case K::NotEqual: {
+    if (!is_equatable(lhs)) {
+      error(node.lhs->span,
+            std::format("type {} does not support equality",
+                        type_to_string(lhs)));
+      return builtins.error_type;
+    }
+    expect_assignable(node.rhs->span, lhs, rhs, "comparison");
+    return builtins.bool_type;
+  }
+  case K::LessThan:
+  case K::LessThanEqual:
+  case K::GreaterThan:
+  case K::GreaterThanEqual: {
+    if (!is_ordered(lhs)) {
+      error(node.lhs->span,
+            std::format("type {} does not support ordering",
+                        type_to_string(lhs)));
+      return builtins.error_type;
+    }
+    expect_assignable(node.rhs->span, lhs, rhs, "comparison");
+    return builtins.bool_type;
+  }
+
+  // Logical: && ||
+  case K::LogicalAnd:
+  case K::LogicalOr: {
+    expect_bool(node.lhs->span, lhs, "logical operator lhs");
+    expect_bool(node.rhs->span, rhs, "logical operator rhs");
+    return builtins.bool_type;
+  }
+
+  // Bitwise: & | ^ << >>
+  case K::BitwiseAnd:
+  case K::BitwiseOr:
+  case K::BitwiseXor:
+  case K::LeftShift:
+  case K::RightShift: {
+    if (lhs->kind != TypeKind::Int) {
+      error(node.lhs->span,
+            std::format("bitwise operator requires integer type, got {}",
+                        type_to_string(lhs)));
+      return builtins.error_type;
+    }
+    if (rhs->kind != TypeKind::Int) {
+      error(node.rhs->span,
+            std::format("bitwise operator requires integer type, got {}",
+                        type_to_string(rhs)));
+      return builtins.error_type;
+    }
+    return common_type(lhs, rhs);
+  }
+
+  default:
+    error(node.span, "unsupported binary operator");
+    return builtins.error_type;
+  }
 }
 
-TypePtr Analyzer::check_unary_expr(const UnaryExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
+  auto operand = check_expr(*node.operand);
+  if (is_error_type(operand))
+    return builtins.error_type;
+
+  if (node.op == Token::Kind::Not) {
+    expect_bool(node.operand->span, operand, "logical not");
+    return builtins.bool_type;
+  }
+  if (node.op == Token::Kind::Sub) {
+    if (!is_numeric(operand)) {
+      error(node.operand->span,
+            std::format("negation requires numeric type, got {}",
+                        type_to_string(operand)));
+      return builtins.error_type;
+    }
+    return operand;
+  }
+
+  error(node.span, "unsupported unary operator");
+  return builtins.error_type;
 }
 
-TypePtr Analyzer::check_call_expr(const CallExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_group_expr(const GroupExprNode &node) {
+  return check_expr(*node.inner);
 }
 
-TypePtr Analyzer::check_index_expr(const IndexExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
+  auto callee_type = check_expr(*node.callee);
+  if (is_error_type(callee_type))
+    return builtins.error_type;
+
+  if (!is_callable(callee_type)) {
+    error(node.callee->span,
+          std::format("'{}' is not callable", type_to_string(callee_type)));
+    return builtins.error_type;
+  }
+
+  auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
+
+  // Check argument count.
+  if (!fn_info.is_variadic) {
+    if (node.args.size() != fn_info.params.size()) {
+      error(node.span,
+            std::format("expected {} argument(s), got {}",
+                        fn_info.params.size(), node.args.size()));
+      return builtins.error_type;
+    }
+  } else {
+    // Variadic: at least (params.size() - 1) required args.
+    if (fn_info.params.size() > 0 &&
+        node.args.size() < fn_info.params.size() - 1) {
+      error(node.span,
+            std::format("expected at least {} argument(s), got {}",
+                        fn_info.params.size() - 1, node.args.size()));
+      return builtins.error_type;
+    }
+  }
+
+  // Check argument types.
+  for (size_t i = 0; i < node.args.size(); ++i) {
+    auto arg_type = check_expr(*node.args[i]);
+    if (i < fn_info.params.size()) {
+      expect_assignable(node.args[i]->span, fn_info.params[i], arg_type,
+                        std::format("argument {}", i + 1));
+    } else if (fn_info.is_variadic && !fn_info.params.empty()) {
+      // Variadic args match the last param's element type.
+      auto &last = fn_info.params.back();
+      if (last->kind == TypeKind::Array) {
+        auto &arr = std::get<ArrayTypeInfo>(last->detail);
+        expect_assignable(node.args[i]->span, arr.element, arg_type,
+                          std::format("variadic argument {}", i + 1));
+      }
+    }
+  }
+
+  // Return type.
+  if (fn_info.returns.empty())
+    return builtins.void_type;
+  if (fn_info.returns.size() == 1)
+    return fn_info.returns[0];
+  // Multiple returns — for now, return a void; multi-return handling
+  // is done at the assignment level.
+  return builtins.void_type;
 }
 
-TypePtr Analyzer::check_selector(const SelectorNode & /*node*/,
-                                 const Node & /*parent*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
+  auto obj_type = check_expr(*node.object);
+  if (is_error_type(obj_type))
+    return builtins.error_type;
+
+  // Check for slice.
+  if (std::holds_alternative<SliceNode>(node.index->data)) {
+    auto &slice = std::get<SliceNode>(node.index->data);
+    if (slice.low)
+      check_expr(**slice.low);
+    if (slice.high)
+      check_expr(**slice.high);
+
+    // Slicing a string or array returns the same type.
+    if (obj_type->kind == TypeKind::String)
+      return builtins.string_type;
+    if (obj_type->kind == TypeKind::Array)
+      return obj_type;
+
+    error(node.span,
+          std::format("cannot slice type {}", type_to_string(obj_type)));
+    return builtins.error_type;
+  }
+
+  auto index_type = check_expr(*node.index);
+
+  switch (obj_type->kind) {
+  case TypeKind::Array: {
+    auto &arr = std::get<ArrayTypeInfo>(obj_type->detail);
+    if (!is_error_type(index_type) && index_type->kind != TypeKind::Int) {
+      error(node.index->span, "array index must be an integer");
+    }
+    // Indexing returns T | Error (out of bounds).
+    return make_union_type({arr.element, builtins.error_iface});
+  }
+  case TypeKind::Map: {
+    auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
+    if (!is_error_type(index_type)) {
+      expect_assignable(node.index->span, map_info.key, index_type,
+                        "map key");
+    }
+    // Map access returns V | Error (missing key).
+    return make_union_type({map_info.value, builtins.error_iface});
+  }
+  case TypeKind::String: {
+    if (!is_error_type(index_type) && index_type->kind != TypeKind::Int) {
+      error(node.index->span, "string index must be an integer");
+    }
+    return builtins.string_type;
+  }
+  default:
+    error(node.span,
+          std::format("type {} does not support indexing",
+                      type_to_string(obj_type)));
+    return builtins.error_type;
+  }
 }
 
-TypePtr Analyzer::check_if_expr(const IfExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_selector(const SelectorNode &node,
+                                 const Node &parent) {
+  auto obj_type = check_expr(*node.object);
+  if (is_error_type(obj_type))
+    return builtins.error_type;
+
+  std::string field_name(node.field.name);
+
+  // Look up fields and methods on the type.
+  if (obj_type->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(obj_type->detail);
+    for (auto &f : info.fields) {
+      if (f.name == field_name)
+        return f.type ? f.type : builtins.error_type;
+    }
+    for (auto &m : info.methods) {
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+    }
+    // Check embedded types.
+    for (auto &embed : info.embeds) {
+      if (embed && embed->kind == TypeKind::Struct) {
+        auto &embed_info = std::get<StructTypeInfo>(embed->detail);
+        for (auto &f : embed_info.fields) {
+          if (f.name == field_name)
+            return f.type ? f.type : builtins.error_type;
+        }
+        for (auto &m : embed_info.methods) {
+          if (m.name == field_name)
+            return m.signature ? m.signature : builtins.error_type;
+        }
+      }
+    }
+  }
+
+  if (obj_type->kind == TypeKind::Enum) {
+    auto &info = std::get<EnumTypeInfo>(obj_type->detail);
+    for (auto &v : info.variants) {
+      if (v.name == field_name)
+        return obj_type; // Enum.Variant has the enum type itself.
+    }
+  }
+
+  // Check built-in methods for the type kind.
+  auto methods = builtin_methods(obj_type->kind, builtins);
+  for (auto &m : methods) {
+    if (m.name == field_name)
+      return m.signature ? m.signature : builtins.error_type;
+  }
+
+  error(node.field.span,
+        std::format("type {} has no member '{}'", type_to_string(obj_type),
+                    field_name));
+  return builtins.error_type;
 }
 
-TypePtr Analyzer::check_switch_expr(const SwitchExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
+  auto cond_type = check_expr(*node.condition);
+  expect_bool(node.condition->span, cond_type);
+
+  push_scope(ScopeKind::Block);
+  auto &then_block = std::get<BlockNode>(node.then_block->data);
+  auto then_type = check_block(then_block);
+  pop_scope();
+
+  if (node.else_block) {
+    push_scope(ScopeKind::Block);
+    auto &else_block = std::get<BlockNode>((*node.else_block)->data);
+    auto else_type = check_block(else_block);
+    pop_scope();
+    return common_type(then_type, else_type);
+  }
+
+  return then_type;
 }
 
-TypePtr Analyzer::check_for_expr(const ForExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
+  auto subject_type = check_expr(*node.subject);
+  TypePtr result_type = nullptr;
+
+  for (auto &arm : node.arms) {
+    auto pattern_type = check_expr(*arm.pattern);
+    // Value matching: pattern must be same type as subject.
+    if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+      expect_assignable(arm.pattern->span, subject_type, pattern_type,
+                        "case pattern");
+    }
+
+    TypePtr arm_type;
+    if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
+      push_scope(ScopeKind::Block);
+      arm_type = check_block(*block);
+      pop_scope();
+    } else {
+      arm_type = check_expr(*arm.body);
+    }
+
+    if (!result_type)
+      result_type = arm_type;
+    else
+      result_type = common_type(result_type, arm_type);
+  }
+
+  if (node.else_body) {
+    TypePtr else_type;
+    if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
+      push_scope(ScopeKind::Block);
+      else_type = check_block(*block);
+      pop_scope();
+    } else {
+      else_type = check_expr(**node.else_body);
+    }
+    if (!result_type)
+      result_type = else_type;
+    else
+      result_type = common_type(result_type, else_type);
+  }
+
+  return result_type ? result_type : builtins.void_type;
 }
 
-TypePtr Analyzer::check_range_expr(const RangeExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_for_expr(const ForExprNode &node) {
+  push_scope(ScopeKind::Loop);
+
+  if (node.mode) {
+    std::visit(
+        overloaded{
+            [&](const ForRangeClauseNode &range) {
+              auto iter_type = check_expr(*range.iterable);
+              // Infer loop variable types from the iterable.
+              TypePtr elem_type = builtins.error_type;
+              TypePtr key_type = builtins.int_type;
+
+              if (!is_error_type(iter_type)) {
+                switch (iter_type->kind) {
+                case TypeKind::Array: {
+                  auto &arr = std::get<ArrayTypeInfo>(iter_type->detail);
+                  elem_type = arr.element;
+                  break;
+                }
+                case TypeKind::Map: {
+                  auto &m = std::get<MapTypeInfo>(iter_type->detail);
+                  key_type = m.key;
+                  elem_type = m.value;
+                  break;
+                }
+                case TypeKind::Range: {
+                  auto &r = std::get<RangeTypeInfo>(iter_type->detail);
+                  elem_type = r.element;
+                  break;
+                }
+                case TypeKind::String:
+                  elem_type = builtins.string_type;
+                  break;
+                default:
+                  error(range.iterable->span,
+                        std::format("type {} is not iterable",
+                                    type_to_string(iter_type)));
+                  break;
+                }
+              }
+
+              if (range.vars.size() == 1) {
+                current_scope->symbols.emplace(
+                    std::string(range.vars[0].name),
+                    Symbol::variable(std::string(range.vars[0].name),
+                                     elem_type, range.vars[0].span));
+              } else if (range.vars.size() == 2) {
+                current_scope->symbols.emplace(
+                    std::string(range.vars[0].name),
+                    Symbol::variable(std::string(range.vars[0].name),
+                                     key_type, range.vars[0].span));
+                current_scope->symbols.emplace(
+                    std::string(range.vars[1].name),
+                    Symbol::variable(std::string(range.vars[1].name),
+                                     elem_type, range.vars[1].span));
+              }
+            },
+            [&](const ForIterClauseNode &iter) {
+              check_stmt(*iter.init);
+              auto cond = check_expr(*iter.condition);
+              expect_bool(iter.condition->span, cond, "for condition");
+              check_stmt(*iter.update);
+            },
+            [&](const auto &) {
+              // Bare condition expression.
+              auto cond = check_expr(**node.mode);
+              expect_bool((*node.mode)->span, cond, "for condition");
+            },
+        },
+        (*node.mode)->data);
+  }
+
+  // Accumulator pipe.
+  if (node.accumulator) {
+    current_scope->symbols.emplace(
+        std::string(node.accumulator->name),
+        Symbol::variable(std::string(node.accumulator->name), nullptr,
+                         node.accumulator->span));
+  }
+
+  auto &body_block = std::get<BlockNode>(node.body->data);
+  check_block(body_block);
+
+  pop_scope();
+  return builtins.void_type;
 }
 
-TypePtr Analyzer::check_spawn_expr(const SpawnExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_range_expr(const RangeExprNode &node) {
+  auto low = check_expr(*node.low);
+  auto high = check_expr(*node.high);
+
+  if (!is_error_type(low) && !is_numeric(low)) {
+    error(node.low->span,
+          std::format("range requires numeric type, got {}",
+                      type_to_string(low)));
+  }
+  if (!is_error_type(high) && !is_numeric(high)) {
+    error(node.high->span,
+          std::format("range requires numeric type, got {}",
+                      type_to_string(high)));
+  }
+
+  auto elem = common_type(low, high);
+  return make_range_type(elem ? elem : builtins.int_type);
 }
 
-TypePtr Analyzer::check_or_expr(const OrExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node) {
+  push_scope(ScopeKind::Spawn);
+
+  if (node.pipe) {
+    current_scope->symbols.emplace(
+        std::string(node.pipe->name),
+        Symbol::variable(std::string(node.pipe->name), builtins.context_type,
+                         node.pipe->span));
+  }
+
+  if (auto *block = std::get_if<BlockNode>(&node.body->data)) {
+    check_block(*block);
+  } else {
+    check_expr(*node.body);
+  }
+
+  pop_scope();
+  return builtins.task_type;
 }
 
-TypePtr Analyzer::check_func_expr(const FuncExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
+  auto expr_type = check_expr(*node.expr);
+
+  // The expression should be an impure type (contains Error).
+  // The or-clause strips the Error from the union.
+
+  push_scope(ScopeKind::Block);
+
+  if (node.pipe) {
+    current_scope->symbols.emplace(
+        std::string(node.pipe->name),
+        Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
+                         node.pipe->span));
+  }
+
+  auto &block = std::get<BlockNode>(node.fallback->data);
+  auto fallback_type = check_block(block);
+
+  pop_scope();
+
+  if (is_error_type(expr_type))
+    return builtins.error_type;
+
+  // Strip Error/Missing from the union to get the purified type.
+  if (expr_type->kind == TypeKind::Union) {
+    auto &info = std::get<UnionTypeInfo>(expr_type->detail);
+    std::vector<TypePtr> purified;
+    for (auto &alt : info.alternatives) {
+      if (alt->kind != TypeKind::Interface ||
+          std::get<InterfaceTypeInfo>(alt->detail).name != "Error") {
+        purified.push_back(alt);
+      }
+    }
+    if (purified.empty())
+      return fallback_type;
+    if (purified.size() == 1)
+      return purified[0];
+    return make_union_type(std::move(purified));
+  }
+
+  return expr_type;
 }
 
-TypePtr Analyzer::check_group_expr(const GroupExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
+  push_scope(ScopeKind::Function);
+
+  if (node.generic)
+    enter_generics(*node.generic);
+
+  auto fn_type = resolve_signature(node.signature);
+
+  for (auto &r : node.signature.returns)
+    current_scope->return_types.push_back(resolve_type(*r));
+
+  // Re-declare parameters into the type-checking scope.
+  for (auto &p : node.signature.params) {
+    auto pt = resolve_type(*p.type);
+    for (auto &ident : p.names.identifiers) {
+      auto param_type = p.is_variadic ? make_array_type(pt) : pt;
+      current_scope->symbols.emplace(
+          std::string(ident.name),
+          Symbol::parameter(std::string(ident.name), param_type,
+                            ident.span));
+    }
+  }
+
+  auto &block = std::get<BlockNode>(node.body->data);
+  auto body_type = check_block(block);
+
+  // Check tail expression matches return type (unless tail is a return).
+  auto &fn_info = std::get<FuncTypeInfo>(fn_type->detail);
+  bool tail_is_return =
+      !block.stmts.empty() &&
+      std::holds_alternative<ReturnNode>(block.stmts.back()->data);
+  if (!tail_is_return && fn_info.returns.size() == 1 &&
+      !is_error_type(body_type)) {
+    if (!types_equal(fn_info.returns[0], builtins.void_type)) {
+      expect_assignable(node.body->span, fn_info.returns[0], body_type,
+                        "return type");
+    }
+  }
+
+  pop_scope();
+  return fn_type;
 }
 
-TypePtr Analyzer::check_import_expr(const ImportExprNode & /*node*/) {
-  return builtins.error_type; // TODO
+TypePtr Analyzer::check_import_expr(const ImportExprNode &) {
+  // Module support deferred.
+  return builtins.error_type;
 }
 
-void Analyzer::check_stmt(const Node & /*node*/) {
-  // TODO
+// ===========================================================================
+// Statement type-checking
+// ===========================================================================
+
+void Analyzer::check_stmt(const Node &node) {
+  std::visit(
+      overloaded{
+          [&](const VarDeclNode &n) { check_var_decl(n, node); },
+          [&](const DeclAssignNode &n) { check_decl_assign(n); },
+          [&](const AssignNode &n) { check_assign(n); },
+          [&](const IncrementNode &n) { check_increment(n); },
+          [&](const DecrementNode &n) { check_decrement(n); },
+          [&](const ReturnNode &n) { check_return(n); },
+          [&](const BreakNode &n) { check_break(n); },
+          [&](const NextNode &) { check_next({}); },
+          [&](const auto &) { check_expr(node); },
+      },
+      node.data);
 }
 
-void Analyzer::check_var_decl(const VarDeclNode & /*node*/,
-                              const Node & /*parent*/) {
-  // TODO
+void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
+  TypePtr declared_type = nullptr;
+  if (var.type)
+    declared_type = resolve_type(**var.type);
+
+  TypePtr final_type = declared_type;
+
+  if (var.init) {
+    auto init_type = check_expr(**var.init);
+    if (declared_type && !is_error_type(init_type)) {
+      expect_assignable((*var.init)->span, declared_type, init_type,
+                        "variable initializer");
+    }
+    if (!final_type)
+      final_type = init_type;
+  }
+
+  // Update or create the symbol in the current scope.
+  std::string name(var.name.name);
+  auto sym_it = current_scope->symbols.find(name);
+  if (sym_it != current_scope->symbols.end()) {
+    sym_it->second.type = final_type;
+  } else {
+    current_scope->symbols.emplace(
+        name, Symbol::variable(name, final_type, var.name.span));
+  }
 }
 
-void Analyzer::check_decl_assign(const DeclAssignNode & /*node*/) {
-  // TODO
+void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
+  auto rhs_type = check_expr(*decl.value);
+
+  for (auto &ident : decl.targets.identifiers) {
+    std::string name(ident.name);
+    auto sym_it = current_scope->symbols.find(name);
+    if (sym_it != current_scope->symbols.end()) {
+      sym_it->second.type = rhs_type;
+    } else {
+      // Symbol was declared during name resolution in a different scope
+      // tree.  Re-declare it here so type information propagates.
+      current_scope->symbols.emplace(
+          name, Symbol::variable(name, rhs_type, ident.span));
+    }
+  }
 }
 
-void Analyzer::check_assign(const AssignNode & /*node*/) {
-  // TODO
+void Analyzer::check_assign(const AssignNode &node) {
+  // Check each target and value.
+  for (size_t i = 0; i < node.targets.size(); ++i) {
+    auto target_type = check_expr(*node.targets[i]);
+    if (i < node.values.size()) {
+      auto val_type = check_expr(*node.values[i]);
+
+      if (node.op == Token::Kind::Assignment) {
+        expect_assignable(node.values[i]->span, target_type, val_type,
+                          "assignment");
+      } else {
+        // Compound assignment: +=, -=, *=, /=
+        // Target must be numeric (or String for +=).
+        if (node.op == Token::Kind::AddAssignment &&
+            target_type->kind == TypeKind::String) {
+          expect_assignable(node.values[i]->span, builtins.string_type,
+                            val_type, "string concatenation assignment");
+        } else {
+          if (!is_numeric(target_type)) {
+            error(node.targets[i]->span,
+                  std::format("compound assignment requires numeric type, "
+                              "got {}",
+                              type_to_string(target_type)));
+          }
+          if (!is_error_type(val_type)) {
+            expect_assignable(node.values[i]->span, target_type, val_type,
+                              "compound assignment");
+          }
+        }
+      }
+    }
+  }
 }
 
-void Analyzer::check_increment(const IncrementNode & /*node*/) {
-  // TODO
+void Analyzer::check_increment(const IncrementNode &node) {
+  auto t = check_expr(*node.operand);
+  if (!is_error_type(t) && t->kind != TypeKind::Int) {
+    error(node.span,
+          std::format("increment requires integer type, got {}",
+                      type_to_string(t)));
+  }
 }
 
-void Analyzer::check_decrement(const DecrementNode & /*node*/) {
-  // TODO
+void Analyzer::check_decrement(const DecrementNode &node) {
+  auto t = check_expr(*node.operand);
+  if (!is_error_type(t) && t->kind != TypeKind::Int) {
+    error(node.span,
+          std::format("decrement requires integer type, got {}",
+                      type_to_string(t)));
+  }
 }
 
-void Analyzer::check_return(const ReturnNode & /*node*/) {
-  // TODO
+void Analyzer::check_return(const ReturnNode &node) {
+  auto func_scope = current_scope->nearest(ScopeKind::Function);
+  if (!func_scope) {
+    error(node.span, "'return' outside of function");
+    return;
+  }
+
+  auto &expected = func_scope->return_types;
+  if (node.values.empty()) {
+    // Bare return — function must be Void or have no return types.
+    if (!expected.empty() && !types_equal(expected[0], builtins.void_type)) {
+      error(node.span, "missing return value");
+    }
+    return;
+  }
+
+  if (node.values.size() != expected.size()) {
+    error(node.span,
+          std::format("return has {} value(s), expected {}",
+                      node.values.size(), expected.size()));
+    return;
+  }
+
+  for (size_t i = 0; i < node.values.size(); ++i) {
+    auto val_type = check_expr(*node.values[i]);
+    expect_assignable(node.values[i]->span, expected[i], val_type,
+                      "return value");
+  }
 }
 
-void Analyzer::check_break(const BreakNode & /*node*/) {
-  // TODO
+void Analyzer::check_break(const BreakNode &node) {
+  if (!current_scope->is_inside(ScopeKind::Loop)) {
+    error(node.span, "'break' outside of loop");
+    return;
+  }
+  for (auto &val : node.values) {
+    check_expr(*val);
+  }
 }
 
-void Analyzer::check_next(const NextNode & /*node*/) {
-  // TODO
+void Analyzer::check_next(const NextNode &) {
+  // Nothing to type-check for next.
 }
 
-void Analyzer::check_const_decl(const ConstDeclNode & /*node*/) {
-  // TODO
+// ===========================================================================
+// Block type-checking
+// ===========================================================================
+
+TypePtr Analyzer::check_block(const BlockNode &block) {
+  TypePtr last_type = builtins.void_type;
+  for (auto &stmt : block.stmts) {
+    last_type = check_expr(*stmt);
+  }
+  return last_type;
 }
 
-void Analyzer::check_enum_decl(const EnumDeclNode & /*node*/) {
-  // TODO
+// ===========================================================================
+// Top-level declaration type-checking
+// ===========================================================================
+
+void Analyzer::check_const_decl(const ConstDeclNode &c) {
+  TypePtr declared_type = nullptr;
+  if (c.type)
+    declared_type = resolve_type(**c.type);
+
+  auto init_type = check_expr(*c.value);
+
+  if (declared_type && !is_error_type(init_type)) {
+    expect_assignable(c.value->span, declared_type, init_type,
+                      "constant initializer");
+  }
+
+  // Update symbol type.
+  auto sym_it = current_scope->symbols.find(std::string(c.name.name));
+  if (sym_it != current_scope->symbols.end()) {
+    sym_it->second.type = declared_type ? declared_type : init_type;
+  }
 }
 
-void Analyzer::check_func_decl(const FuncDeclNode & /*node*/) {
-  // TODO
+void Analyzer::check_enum_decl(const EnumDeclNode &e) {
+  auto sym = lookup(std::string(e.name.name));
+  if (!sym || !sym->type)
+    return;
+
+  // Check enum field initializer expressions.
+  for (auto &field : e.fields) {
+    for (auto &fa : field.initializer) {
+      check_expr(*fa.value);
+    }
+  }
 }
 
-void Analyzer::check_struct_decl(const StructDeclNode & /*node*/) {
-  // TODO
+void Analyzer::check_func_decl(const FuncDeclNode &fn) {
+  // The body is checked via check_func_decl_body.
 }
 
-void Analyzer::check_interface_decl(const InterfaceDeclNode & /*node*/) {
-  // TODO
+void Analyzer::check_struct_decl(const StructDeclNode &s) {
+  // Struct fields and methods are resolved in Phase 2b.  Here we check
+  // for duplicate field names and duplicate method names.
+  auto sym = lookup(std::string(s.name.name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Struct)
+    return;
+
+  auto &info = std::get<StructTypeInfo>(sym->type->detail);
+
+  // Check duplicate fields.
+  std::unordered_map<std::string, bool> seen_fields;
+  for (auto &f : info.fields) {
+    if (seen_fields.count(f.name)) {
+      error(s.span,
+            std::format("duplicate field '{}' in struct '{}'", f.name,
+                        info.name));
+    }
+    seen_fields[f.name] = true;
+  }
+
+  // Check duplicate methods.
+  std::unordered_map<std::string, bool> seen_methods;
+  for (auto &m : info.methods) {
+    if (seen_methods.count(m.name)) {
+      error(s.span,
+            std::format("duplicate method '{}' in struct '{}'", m.name,
+                        info.name));
+    }
+    seen_methods[m.name] = true;
+  }
 }
 
-void Analyzer::check_import_decl(const ImportDeclNode & /*node*/) {
-  // TODO
+void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
+  auto sym = lookup(std::string(i.name.name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Interface)
+    return;
+
+  // Check duplicate methods.
+  auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+  std::unordered_map<std::string, bool> seen;
+  for (auto &m : info.methods) {
+    if (seen.count(m.name)) {
+      error(i.span,
+            std::format("duplicate method '{}' in interface '{}'", m.name,
+                        info.name));
+    }
+    seen[m.name] = true;
+  }
 }
 
-TypePtr Analyzer::check_block(const BlockNode & /*node*/) {
-  return builtins.void_type; // TODO
+void Analyzer::check_import_decl(const ImportDeclNode &) {
+  // Deferred to module support.
 }
+
+// ===========================================================================
+// Generic instantiation
+// ===========================================================================
 
 TypePtr Analyzer::instantiate_generic_call(
-    const TypePtr & /*callee_type*/,
-    const std::vector<TypeParam> & /*type_params*/,
-    const std::vector<TypePtr> & /*arg_types*/, Span /*call_span*/) {
-  return builtins.error_type; // TODO
+    const TypePtr &callee_type, const std::vector<TypeParam> &type_params,
+    const std::vector<TypePtr> &arg_types, Span call_span) {
+  if (!callee_type || callee_type->kind != TypeKind::Func)
+    return builtins.error_type;
+
+  auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
+  std::unordered_map<uint32_t, TypePtr> bindings;
+
+  // Attempt to unify each parameter type with the argument type.
+  size_t count = std::min(fn_info.params.size(), arg_types.size());
+  for (size_t i = 0; i < count; ++i) {
+    if (!unify(fn_info.params[i], arg_types[i], bindings)) {
+      error(call_span,
+            std::format("cannot infer type parameter from argument {}",
+                        i + 1));
+      return builtins.error_type;
+    }
+  }
+
+  // Verify all type params were bound.
+  for (auto &tp : type_params) {
+    if (bindings.find(tp.id) == bindings.end()) {
+      error(call_span,
+            std::format("could not infer type for parameter '{}'", tp.name));
+      return builtins.error_type;
+    }
+  }
+
+  return substitute(callee_type, bindings);
 }
 
-bool Analyzer::satisfies_interface(const TypePtr & /*concrete*/,
-                                   const TypePtr & /*iface*/) {
-  return false; // TODO
+// ===========================================================================
+// Interface conformance
+// ===========================================================================
+
+bool Analyzer::satisfies_interface(const TypePtr &concrete,
+                                   const TypePtr &iface) {
+  if (!concrete || !iface)
+    return false;
+  if (iface->kind != TypeKind::Interface)
+    return false;
+
+  auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
+
+  // Collect methods from the concrete type.
+  std::vector<MethodInfo> concrete_methods;
+
+  if (concrete->kind == TypeKind::Struct) {
+    auto &s = std::get<StructTypeInfo>(concrete->detail);
+    concrete_methods = s.methods;
+  } else {
+    // Check built-in methods.
+    concrete_methods = builtin_methods(concrete->kind, builtins);
+  }
+
+  // Every interface method must be present on the concrete type with a
+  // compatible signature.
+  for (auto &im : iface_info.methods) {
+    bool found = false;
+    for (auto &cm : concrete_methods) {
+      if (cm.name == im.name) {
+        found = true;
+        if (im.signature && cm.signature) {
+          if (!types_equal(im.signature, cm.signature)) {
+            return false; // Signature mismatch.
+          }
+        }
+        break;
+      }
+    }
+    if (!found)
+      return false;
+  }
+
+  return true;
 }
 
 } // namespace mc

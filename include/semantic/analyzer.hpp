@@ -159,6 +159,9 @@ private:
   // Phase 3: Resolve names inside function/method bodies.
   void resolve_func_decl_body(const FuncDeclNode &fn);
 
+  // Phase 4: Type-check function/method bodies.
+  void check_func_decl_body(const FuncDeclNode &fn);
+
   // Phase 3: Name resolution in expressions — resolve identifiers,
   // record symbols, and walk all sub-expressions.
   void resolve_expr(const Node &node);
