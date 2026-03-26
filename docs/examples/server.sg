@@ -1,0 +1,25 @@
+import "std/http"
+
+fn indexHandler(req http.Request, resp http.Response) Void {
+  resp.SetHeader("Content-Type", "text/plain")
+  resp.SetStatus(200) // 200 OK would probably be the default
+}
+
+pub fn Main() Void {
+  router := http.Router{}
+  router.Get("/", indexHandler)
+
+  host := os.Env("HOST") or { "localhost" }
+  port := os.Env("PORT") or { "8080" }
+
+  server := http.Server{
+    host:,
+    port:,
+    router:,
+  }
+
+  log.Info("Server starting on port {port}...")
+  server.Listen() or |err| {
+    log.error("failed to listen: {err}")
+  }
+}

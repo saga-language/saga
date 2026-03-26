@@ -54,3 +54,6 @@ build/
 *.swp
 .vscode/
 .zed/
+
+# AI
+ai/

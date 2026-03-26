@@ -1,4 +1,4 @@
-```go
+```ebnf
 /*
 Go EBNF Syntax
   
