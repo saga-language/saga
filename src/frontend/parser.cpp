@@ -228,6 +228,7 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::BitwiseOr: // |T| generic prefix for spawn / fn
   case Token::Kind::Fn:
   case Token::Kind::Import:
+  case Token::Kind::Struct:          // anonymous struct literal
     return true;
   default:
     return false;
@@ -1031,8 +1032,20 @@ NodePtr Parser::parse_prefix() {
   case Token::Kind::BitwiseOr:
     return parse_spawn_expr();
 
+  // ── Anonymous struct type (prefix for struct literal) ──────────────────────
+  //
+  // Grammar: StructLiteral = StructType StructInitializer
+  //          StructType    = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
+  //
+  // parse_struct_type() produces a StructTypeNode.  The Pratt loop then sees
+  // the following "{" as an infix LeftBrace (bp = 1) and dispatches to
+  // parse_struct_literal(), which consumes the StructInitializer.
+  case Token::Kind::Struct:
+    return parse_struct_type();
+
     // ── Compound expressions (Group 4 remainder) ─────────────────────────────
-    // LeftBrace (map literal or bare block)
+  case Token::Kind::LeftBrace:
+    return parse_map_or_block();
 
   default:
     error("unexpected token in expression: " +
@@ -1043,51 +1056,441 @@ NodePtr Parser::parse_prefix() {
 
 // parse_infix — left denotation (led): tokens that extend a left-hand side.
 //
-// Partially implemented: LeftBrace dispatches to parse_struct_literal.
-// All other operators still use the stub (advance + return lhs).
-NodePtr Parser::parse_infix(NodePtr lhs, int /*bp*/) {
-  if (current.kind == Token::Kind::LeftBrace)
+// Dispatch by token kind:
+//   LeftBrace       → struct literal initialiser
+//   Dot             → selector (member access)
+//   LeftParenthesis → call expression
+//   LeftBracket     → index or slice expression
+//   Or              → or-clause (error resolution)
+//   DotDot          → binary range operator (inside index/slice context)
+//   Pow             → right-associative binary operator
+//   all others      → left-associative binary operator
+NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
+  auto start_offset = lhs->span.start;
+
+  switch (current.kind) {
+  case Token::Kind::LeftBrace:
     return parse_struct_literal(std::move(lhs));
 
-  advance(); // stub: consume one token and return lhs unchanged
-  return lhs;
+  case Token::Kind::Dot:
+    return parse_selector(std::move(lhs));
+
+  case Token::Kind::LeftParenthesis:
+    return parse_call_args(std::move(lhs));
+
+  case Token::Kind::LeftBracket:
+    return parse_index_or_slice(std::move(lhs));
+
+  case Token::Kind::Or:
+    return parse_or_expr(std::move(lhs));
+
+  case Token::Kind::Pow: {
+    Token op = advance();
+    NodePtr rhs = parse_expr_bp(bp - 1);
+    if (!rhs)
+      return nullptr;
+    return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
+                                     op.kind, std::move(rhs));
+  }
+
+  default: {
+    Token op = advance();
+    NodePtr rhs = parse_expr_bp(bp);
+    if (!rhs)
+      return nullptr;
+    return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
+                                     op.kind, std::move(rhs));
+  }
+  }
 }
 
-// ── Declaration stubs
-// ─────────────────────────────────────────────────────────
+// parse_selector — Selector = PrimaryExpr "." Identifier
+NodePtr Parser::parse_selector(NodePtr object) {
+  auto start_offset = object->span.start;
+  advance(); // consume "."
+
+  auto field_start = mark();
+  Token field_tok = expect(Token::Kind::Identifier);
+  IdentifierNode field{span_from(field_start), field_tok.literal};
+
+  return make_node<SelectorNode>(span_from(start_offset), std::move(object),
+                                 std::move(field));
+}
+
+// parse_call_args — CallExpr = PrimaryExpr "(" [ ExpressionList ] ")"
 //
-// Each stub consumes its leading keyword then calls synchronize() so that
-// parse_source's loop always makes forward progress and can continue parsing
-// subsequent declarations without getting stuck.
+// ExpressionList = Expression { "," Expression }
+//
+// Newlines are insignificant inside the argument list.  Trailing commas
+// are tolerated.
+NodePtr Parser::parse_call_args(NodePtr callee) {
+  auto start_offset = callee->span.start;
+  advance(); // consume "("
+  skip_terminators();
 
-NodePtr Parser::parse_const_decl(bool /*is_public*/) {
-  advance();     // consume 'const'
-  synchronize(); // skip to next safe point
-  return nullptr;
+  std::vector<NodePtr> args;
+  while (!check(Token::Kind::RightParenthesis) && !is_at_end()) {
+    args.push_back(parse_expression());
+    skip_terminators();
+    if (!check(Token::Kind::Comma))
+      break;
+    advance(); // consume ","
+    skip_terminators();
+  }
+
+  skip_terminators_before(Token::Kind::RightParenthesis);
+  expect(Token::Kind::RightParenthesis);
+
+  return make_node<CallExprNode>(span_from(start_offset), std::move(callee),
+                                 std::move(args));
 }
 
-NodePtr Parser::parse_enum_decl(bool /*is_public*/) {
-  advance(); // consume 'enum'
-  synchronize();
-  return nullptr;
+// parse_index_or_slice — IndexExpr = PrimaryExpr "[" ( Expression | Slice ) "]"
+//                        Slice     = [ Expression ] ".." [ Expression ]
+//
+// Disambiguation: after "[", if we immediately see ".." it is a slice with
+// an absent low bound.  Otherwise parse an expression; if ".." follows it
+// is a slice (the expression is the low bound), otherwise it is an index.
+NodePtr Parser::parse_index_or_slice(NodePtr object) {
+  auto start_offset = object->span.start;
+  advance(); // consume "["
+  skip_terminators();
+
+  if (check(Token::Kind::DotDot)) {
+    auto slice_start = mark();
+    advance(); // consume ".."
+    skip_terminators();
+
+    std::optional<NodePtr> high;
+    if (!check(Token::Kind::RightBracket))
+      high = parse_expression();
+
+    skip_terminators_before(Token::Kind::RightBracket);
+    expect(Token::Kind::RightBracket);
+
+    NodePtr slice = make_node<SliceNode>(
+        span_from(slice_start), std::optional<NodePtr>{}, std::move(high));
+    return make_node<IndexExprNode>(span_from(start_offset), std::move(object),
+                                    std::move(slice));
+  }
+
+  NodePtr first = parse_expr_bp(25);
+  if (!first)
+    return nullptr;
+  skip_terminators();
+
+  if (check(Token::Kind::DotDot)) {
+    auto slice_start = first->span.start;
+    advance(); // consume ".."
+    skip_terminators();
+
+    std::optional<NodePtr> high;
+    if (!check(Token::Kind::RightBracket))
+      high = parse_expression();
+
+    skip_terminators_before(Token::Kind::RightBracket);
+    expect(Token::Kind::RightBracket);
+
+    NodePtr slice = make_node<SliceNode>(span_from(slice_start),
+                                         std::make_optional(std::move(first)),
+                                         std::move(high));
+    return make_node<IndexExprNode>(span_from(start_offset), std::move(object),
+                                    std::move(slice));
+  }
+
+  skip_terminators_before(Token::Kind::RightBracket);
+  expect(Token::Kind::RightBracket);
+
+  return make_node<IndexExprNode>(span_from(start_offset), std::move(object),
+                                  std::move(first));
 }
 
-NodePtr Parser::parse_func_decl(bool /*is_public*/) {
-  advance(); // consume 'fn'
-  synchronize();
-  return nullptr;
+// parse_or_expr — OrExpr = Expression "or" [ IdentifierPipe ] Block
+NodePtr Parser::parse_or_expr(NodePtr expr) {
+  auto start_offset = expr->span.start;
+  advance(); // consume "or"
+
+  std::optional<IdentifierNode> pipe = parse_pipe();
+
+  skip_terminators();
+  NodePtr fallback = parse_block();
+
+  return make_node<OrExprNode>(span_from(start_offset), std::move(expr),
+                               std::move(pipe), std::move(fallback));
 }
 
-NodePtr Parser::parse_interface_decl(bool /*is_public*/) {
-  advance(); // consume 'interface'
-  synchronize();
-  return nullptr;
+// parse_const_decl — ConstDecl = "const" Identifier [ Type ] "=" Expression
+//
+// The optional Type is present when the token after the identifier is not "=".
+// Since "=" is never a valid type-start, the disambiguation is unambiguous.
+NodePtr Parser::parse_const_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Const);
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<NodePtr> type;
+  if (!check(Token::Kind::Assignment)) {
+    type = parse_type();
+  }
+
+  expect(Token::Kind::Assignment);
+
+  NodePtr value = parse_expression();
+
+  return make_node<ConstDeclNode>(span_from(start), is_public, std::move(name),
+                                  std::move(type), std::move(value));
 }
 
-NodePtr Parser::parse_struct_decl(bool /*is_public*/) {
-  advance(); // consume 'struct'
-  synchronize();
-  return nullptr;
+// parse_enum_decl — EnumDecl = "enum" Identifier "{" EnumField
+//                              { terminal EnumField } "}"
+//
+// EnumField      = Identifier [ EnumInitializer ]
+// EnumInitializer = "{" Identifier ":" Expression
+//                   [ "," Identifier ":" Expression ] "}"
+//
+// Fields are separated by terminators (newlines).
+NodePtr Parser::parse_enum_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Enum);
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  skip_terminators();
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  std::vector<EnumFieldNode> fields;
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    fields.push_back(parse_enum_field());
+    skip_terminators();
+  }
+
+  expect(Token::Kind::RightBrace);
+
+  return make_node<EnumDeclNode>(span_from(start), is_public, std::move(name),
+                                 std::move(fields));
+}
+
+// parse_enum_field — EnumField = Identifier [ EnumInitializer ]
+// EnumInitializer = "{" Identifier ":" Expression
+//                   [ "," Identifier ":" Expression ] "}"
+EnumFieldNode Parser::parse_enum_field() {
+  auto start = mark();
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::vector<FieldAssignmentNode> initializer;
+
+  if (check(Token::Kind::LeftBrace)) {
+    advance();
+    skip_terminators();
+
+    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+      auto fa_start = mark();
+
+      auto fa_name_start = mark();
+      Token fa_name_tok = expect(Token::Kind::Identifier);
+      IdentifierNode fa_name{span_from(fa_name_start), fa_name_tok.literal};
+
+      expect(Token::Kind::Colon);
+
+      NodePtr value = parse_expression();
+
+      initializer.push_back(FieldAssignmentNode{
+          span_from(fa_start), std::move(fa_name), std::move(value)});
+
+      skip_terminators();
+      if (check(Token::Kind::Comma)) {
+        advance();
+        skip_terminators();
+      }
+    }
+
+    expect(Token::Kind::RightBrace);
+  }
+
+  return EnumFieldNode{span_from(start), std::move(name),
+                       std::move(initializer)};
+}
+
+// parse_func_decl — FuncDecl = "fn" [ Generic ] [ Receiver ] Identifier
+//                              Signature Block
+//
+// Grammar:
+//   Generic   = "|" TypeList "|"
+//   Receiver  = "(" Identifier Type ")"
+//   Signature = "(" [ ParameterList ] ")" TypeList
+//   Block     = "{" { Statement | Expression } "}"
+//
+// Disambiguation of Receiver vs Identifier:
+//   After "fn" and the optional Generic, if the current token is "(" the
+//   next production is a Receiver (e.g. `fn (u User) Name(…) …`).  Otherwise,
+//   the current token must be the function name Identifier (e.g. `fn Name(…)
+//   …`). This is unambiguous because the function name is always a plain
+//   identifier and Signature's opening "(" only appears after the name.
+NodePtr Parser::parse_func_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Fn); // consume "fn"
+
+  std::optional<GenericNode> generic = parse_generic();
+
+  std::optional<ReceiverNode> receiver = parse_receiver();
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  SignatureNode sig = parse_signature();
+
+  skip_terminators();
+  NodePtr body = parse_block();
+
+  return make_node<FuncDeclNode>(
+      span_from(start), is_public, std::move(generic), std::move(receiver),
+      std::move(name), std::move(sig), std::move(body));
+}
+
+// parse_receiver — Receiver = "(" Identifier Type ")"
+//
+// Returns std::nullopt when the current token is not "(" (leaving the
+// token stream unchanged so the caller can treat the receiver as absent).
+//
+// Inside the parentheses exactly two things appear: a binding name (an
+// Identifier token) and a Type.  Example: `(u User)`, `(s *MyStruct)`.
+std::optional<ReceiverNode> Parser::parse_receiver() {
+  if (!check(Token::Kind::LeftParenthesis))
+    return std::nullopt;
+
+  auto start = mark();
+  advance(); // consume "("
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  NodePtr type = parse_type();
+
+  expect(Token::Kind::RightParenthesis); // ")"
+
+  return ReceiverNode{span_from(start), std::move(name), std::move(type)};
+}
+
+// parse_interface_decl — InterfaceDecl = "interface" [ Generic ] Identifier
+//                        "{" [ InterfaceField { terminal InterfaceField } ] "}"
+//
+// InterfaceField = [ "pub" ] Identifier Signature
+//
+// Fields are separated by terminators (newlines).  The closing "}" may appear
+// on the same line as the last field or on a new line.
+NodePtr Parser::parse_interface_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Interface);
+
+  std::optional<GenericNode> generic = parse_generic();
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  skip_terminators();
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  std::vector<InterfaceFieldNode> methods;
+
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    auto field_start = mark();
+    bool field_public = match(Token::Kind::Pub);
+
+    auto field_name_start = mark();
+    Token field_name_tok = expect(Token::Kind::Identifier);
+    IdentifierNode field_name{span_from(field_name_start),
+                              field_name_tok.literal};
+
+    SignatureNode sig = parse_signature();
+
+    methods.push_back(InterfaceFieldNode{span_from(field_start), field_public,
+                                         std::move(field_name),
+                                         std::move(sig)});
+    skip_terminators();
+  }
+
+  expect(Token::Kind::RightBrace);
+
+  return make_node<InterfaceDeclNode>(span_from(start), is_public,
+                                      std::move(generic), std::move(name),
+                                      std::move(methods));
+}
+
+// parse_struct_decl — StructDecl = "struct" [ Generic ] Identifier
+//                     [ "<" IdentifierList ] "{" [ StructMember
+//                     { terminal StructMember } ] "}"
+//
+// StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
+//
+// Disambiguation: after optional "pub", "fn" starts a FuncDecl; anything
+// else starts a FieldSpec.  Members are separated by terminators (newlines).
+NodePtr Parser::parse_struct_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Struct);
+
+  std::optional<GenericNode> generic = parse_generic();
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::vector<IdentifierNode> embeds;
+  if (check(Token::Kind::LessThan)) {
+    advance();
+    auto id_start = mark();
+    Token id_tok = expect(Token::Kind::Identifier);
+    embeds.push_back(IdentifierNode{span_from(id_start), id_tok.literal});
+
+    while (check(Token::Kind::Comma)) {
+      advance();
+      auto eid_start = mark();
+      Token eid_tok = expect(Token::Kind::Identifier);
+      embeds.push_back(IdentifierNode{span_from(eid_start), eid_tok.literal});
+    }
+  }
+
+  skip_terminators();
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  std::vector<StructMemberNode> members;
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    auto member_start = mark();
+    bool member_public = match(Token::Kind::Pub);
+
+    if (check(Token::Kind::Fn)) {
+      NodePtr func = parse_func_decl(member_public);
+      members.push_back(StructMemberNode{span_from(member_start), member_public,
+                                         std::move(func)});
+    } else {
+      FieldSpecNode field = parse_field_spec();
+      NodePtr field_node = make_node<FieldSpecNode>(
+          field.span, std::move(field.names), std::move(field.type));
+      members.push_back(StructMemberNode{span_from(member_start), member_public,
+                                         std::move(field_node)});
+    }
+
+    skip_terminators();
+  }
+
+  expect(Token::Kind::RightBrace);
+
+  return make_node<StructDeclNode>(span_from(start), is_public,
+                                   std::move(generic), std::move(name),
+                                   std::move(embeds), std::move(members));
 }
 
 // ── parse_import_decl ────────────────────────────────────────────────────────
@@ -1538,6 +1941,138 @@ NodePtr Parser::parse_array_literal() {
   skip_terminators_before(Token::Kind::RightBracket);
   expect(Token::Kind::RightBracket);
   return make_node<ArrayLiteralNode>(span_from(start), std::move(elements));
+}
+
+// parse_map_or_block — disambiguate "{" in expression prefix position.
+//
+// MapLiteral   = "{" { KeyValuePair } "}"
+// KeyValuePair = Expression ":" Expression
+//
+// Disambiguation after consuming "{" and skipping terminators:
+//   "}"                      → empty map literal
+//   Expression then ":"      → map literal (key-value pair follows)
+//   anything else            → bare block (delegate to parse_block logic)
+//
+// The first expression is parsed with parse_expr_bp(1) so that "{" is not
+// consumed as a struct-literal infix operator.  If ":" follows, the
+// expression was a key and we continue as a map.  Otherwise, the expression
+// was the first statement of a block and we fall through to block parsing
+// with that expression already in hand.
+NodePtr Parser::parse_map_or_block() {
+  auto start = mark();
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  if (check(Token::Kind::RightBrace)) {
+    advance();
+    return make_node<MapLiteralNode>(span_from(start),
+                                     std::vector<KeyValueNode>{});
+  }
+
+  size_t pos_before = current.offset;
+  NodePtr first = parse_expr_bp(1);
+  if (!first)
+    return nullptr;
+
+  if (check(Token::Kind::Colon)) {
+    advance();
+    NodePtr first_value = parse_expression();
+
+    std::vector<KeyValueNode> entries;
+    Span kv_span{first->span.start, first_value->span.end};
+    entries.push_back(
+        KeyValueNode{kv_span, std::move(first), std::move(first_value)});
+
+    skip_terminators();
+    if (check(Token::Kind::Comma)) {
+      advance();
+      skip_terminators();
+    }
+
+    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+      auto kv_start = mark();
+      NodePtr key = parse_expr_bp(1);
+      expect(Token::Kind::Colon);
+      NodePtr value = parse_expression();
+      entries.push_back(
+          KeyValueNode{span_from(kv_start), std::move(key), std::move(value)});
+
+      skip_terminators();
+      if (check(Token::Kind::Comma)) {
+        advance();
+        skip_terminators();
+      }
+    }
+
+    expect(Token::Kind::RightBrace);
+    return make_node<MapLiteralNode>(span_from(start), std::move(entries));
+  }
+
+  // Block fallback: the first expression was already consumed. To properly
+  // handle statements that start with an expression (assignments, increments,
+  // VarDecl, etc.) we re-delegate to parse_block, but we need to "put back"
+  // the first expression. Instead, we complete the first statement inline
+  // using the same post-expression dispatch that parse_statement uses, then
+  // parse the remaining statements normally.
+  std::vector<NodePtr> stmts;
+
+  auto first_start = first->span.start;
+
+  if (check(Token::Kind::Increment)) {
+    advance();
+    stmts.push_back(
+        make_node<IncrementNode>(span_from(first_start), std::move(first)));
+  } else if (check(Token::Kind::Decrement)) {
+    advance();
+    stmts.push_back(
+        make_node<DecrementNode>(span_from(first_start), std::move(first)));
+  } else if (check(Token::Kind::DeclAssignment)) {
+    auto *id_ptr = std::get_if<IdentifierNode>(&first->data);
+    if (!id_ptr)
+      error("':=' requires an identifier on the left-hand side");
+    IdentifierListNode id_list{first->span,
+                               id_ptr ? std::vector<IdentifierNode>{*id_ptr}
+                                      : std::vector<IdentifierNode>{}};
+    advance();
+    NodePtr value = parse_expression();
+    stmts.push_back(make_node<DeclAssignNode>(span_from(first_start),
+                                              std::move(id_list),
+                                              std::move(value)));
+  } else if (is_assign_op(current.kind)) {
+    stmts.push_back(parse_assignment(std::move(first)));
+  } else if (auto *id_ptr = std::get_if<IdentifierNode>(&first->data);
+             id_ptr && (current.kind == Token::Kind::Identifier ||
+                        current.kind == Token::Kind::Fn ||
+                        current.kind == Token::Kind::Struct)) {
+    IdentifierNode name = *id_ptr;
+    NodePtr type = parse_type();
+    std::optional<NodePtr> init;
+    if (check(Token::Kind::Assignment)) {
+      advance();
+      init = parse_expression();
+    }
+    stmts.push_back(make_node<VarDeclNode>(span_from(first_start), name,
+                                           std::make_optional(std::move(type)),
+                                           std::move(init)));
+  } else {
+    stmts.push_back(std::move(first));
+  }
+
+  skip_terminators();
+
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    size_t stmt_pos = current.offset;
+    NodePtr stmt = parse_statement();
+    if (stmt) {
+      stmts.push_back(std::move(stmt));
+    } else if (current.offset == stmt_pos) {
+      advance();
+    }
+    skip_terminators();
+  }
+
+  expect(Token::Kind::RightBrace);
+  return make_node<BlockNode>(span_from(start), std::move(stmts));
 }
 
 // ============================================================================
@@ -2129,9 +2664,11 @@ NodePtr Parser::parse_for_expr() {
       }
 
       expect(Token::Kind::Colon);
-      // parse_expr_bp(1): stop before "{" so the for-body block is not
-      // consumed as a struct literal opened by the iterable expression.
-      NodePtr iterable = parse_expr_bp(1);
+      // parse_expr_bp(60): stop before "{" (bp 1) AND before "|" (bp 60).
+      // BitwiseOr would otherwise consume the accumulator pipe "|acc|" as
+      // an infix operator.  Bitwise operations on iterables are not
+      // meaningful; parenthesise if ever needed: `for i : (a | b) |acc|`.
+      NodePtr iterable = parse_expr_bp(60);
 
       mode = make_node<ForRangeClauseNode>(
           span_from(mode_start), std::move(vars), std::move(iterable));
