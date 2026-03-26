@@ -113,6 +113,18 @@ struct Analyzer {
   /// Report a duplicate-declaration error.
   void redeclaration_error(Span span, const std::string &name);
 
+  /// Report a shadowing error (inner scope reuses outer scope name).
+  void shadowing_error(Span span, const std::string &name);
+
+  /// Check whether any error message contains the given substring.
+  bool has_error_containing(const std::string &substr) const;
+
+  // ── Local declaration helper ─────────────────────────────────────────
+
+  /// Declare a local symbol, checking for both same-scope redeclaration
+  /// and outer-scope shadowing.  Returns false on error.
+  bool declare_local(const Symbol &sym);
+
 private:
   // ── Node visitors (to be implemented in phases) ──────────────────────
 
@@ -131,7 +143,61 @@ private:
   TypePtr resolve_struct_type(const StructTypeNode &node);
   TypePtr resolve_union_type(const UnionTypeNode &node);
 
-  // Phase 3: Expression type-checking — infer/check expression types.
+  // Phase 2b: Resolve top-level declaration bodies — fills in TypePtrs
+  // that were left nullptr during collection.
+  void resolve_declaration(const Node &node);
+  void resolve_func_decl(const FuncDeclNode &node);
+  void resolve_struct_decl(const StructDeclNode &node);
+  void resolve_enum_decl(const EnumDeclNode &node);
+  void resolve_interface_decl(const InterfaceDeclNode &node);
+  void resolve_const_decl(const ConstDeclNode &node);
+
+  // Signature / parameter helpers.
+  TypePtr resolve_signature(const SignatureNode &sig);
+  void declare_parameters(const SignatureNode &sig);
+
+  // Phase 3: Resolve names inside function/method bodies.
+  void resolve_func_decl_body(const FuncDeclNode &fn);
+
+  // Phase 3: Name resolution in expressions — resolve identifiers,
+  // record symbols, and walk all sub-expressions.
+  void resolve_expr(const Node &node);
+  void resolve_identifier(const IdentifierNode &node, const Node &parent);
+  void resolve_block(const BlockNode &node);
+  void resolve_call_expr(const CallExprNode &node);
+  void resolve_index_expr(const IndexExprNode &node);
+  void resolve_selector(const SelectorNode &node);
+  void resolve_binary_expr(const BinaryExprNode &node);
+  void resolve_unary_expr(const UnaryExprNode &node);
+  void resolve_if_expr(const IfExprNode &node);
+  void resolve_switch_expr(const SwitchExprNode &node);
+  void resolve_for_expr(const ForExprNode &node);
+  void resolve_range_expr(const RangeExprNode &node);
+  void resolve_spawn_expr(const SpawnExprNode &node);
+  void resolve_or_expr(const OrExprNode &node);
+  void resolve_func_expr(const FuncExprNode &node);
+  void resolve_group_expr(const GroupExprNode &node);
+  void resolve_string_literal(const StringLiteralNode &node);
+  void resolve_array_literal(const ArrayLiteralNode &node);
+  void resolve_map_literal(const MapLiteralNode &node);
+  void resolve_struct_literal(const StructLiteralNode &node);
+
+  // Phase 4: Name resolution in statements.
+  void resolve_stmt(const Node &node);
+  void resolve_var_decl(const VarDeclNode &node, const Node &parent);
+  void resolve_decl_assign(const DeclAssignNode &node, const Node &parent);
+  void resolve_assign(const AssignNode &node);
+  void resolve_return(const ReturnNode &node);
+  void resolve_break(const BreakNode &node);
+  void resolve_increment(const IncrementNode &node);
+  void resolve_decrement(const DecrementNode &node);
+
+  // Phase 3–4 combined: resolve a block statement or expression.
+  void resolve_block_stmt(const Node &node);
+
+  // ── Type-checking stubs (later phases) ───────────────────────────────
+
+  // Phase 5: Expression type-checking — infer/check expression types.
   TypePtr check_expr(const Node &node);
   TypePtr check_identifier(const IdentifierNode &node, const Node &parent);
   TypePtr check_bool_literal(const BoolLiteralNode &node);
@@ -156,7 +222,7 @@ private:
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
 
-  // Phase 4: Statement checking.
+  // Phase 6: Statement checking.
   void check_stmt(const Node &node);
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
@@ -167,7 +233,7 @@ private:
   void check_break(const BreakNode &node);
   void check_next(const NextNode &node);
 
-  // Phase 5: Top-level declaration checking.
+  // Phase 7: Top-level declaration checking.
   void check_const_decl(const ConstDeclNode &node);
   void check_enum_decl(const EnumDeclNode &node);
   void check_func_decl(const FuncDeclNode &node);
