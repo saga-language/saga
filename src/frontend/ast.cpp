@@ -497,6 +497,11 @@ void dump_impl(const Node& node, std::ostream& os, int indent) {
       for (const auto& s : n.stmts)
         dump_ptr(s, os, c);
     },
+    [&](const PackageNode& n) {
+      os << pad(indent) << "PackageNode\n";
+      for (const auto& s : n.sources)
+        dump_ptr(s, os, c);
+    },
     [&](const SourceNode& n) {
       os << pad(indent) << "SourceNode\n";
       for (const auto& d : n.declarations)

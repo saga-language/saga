@@ -51,5 +51,6 @@ build/
 *.cmake
 
 # Editors
+*.swp
 .vscode/
 .zed/

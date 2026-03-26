@@ -28,10 +28,10 @@ using NodePtr = std::unique_ptr<Node>;
 //   }, node.data);
 // ---------------------------------------------------------------------------
 
-template <typename... Ts>
-struct overloaded : Ts... { using Ts::operator()...; };
-template <typename... Ts>
-overloaded(Ts...) -> overloaded<Ts...>;
+template <typename... Ts> struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+template <typename... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 // ===========================================================================
 // Section 1: Leaf / atom nodes
@@ -42,13 +42,13 @@ overloaded(Ts...) -> overloaded<Ts...>;
 
 // Identifier = letter { letter | decimal_digit } [ "?" ]
 struct IdentifierNode {
-  Span            span;
+  Span span;
   std::string_view name;
 };
 
 // IdentifierList = Identifier { "," Identifier }
 struct IdentifierListNode {
-  Span                        span;
+  Span span;
   std::vector<IdentifierNode> identifiers;
 };
 
@@ -59,19 +59,19 @@ struct IdentifierListNode {
 
 // BoolLiteral = "true" | "false"
 struct BoolLiteralNode {
-  Span             span;
+  Span span;
   std::string_view literal; // "true" or "false"
 };
 
 // IntegerLiteral = decimal | "0b" binary | "0x" hex | "0o" octal
 struct IntegerLiteralNode {
-  Span             span;
+  Span span;
   std::string_view literal; // e.g. "42", "0b1010", "0xdead_beef"
 };
 
 // FloatLiteral = digits "." digits [ Exponent ]
 struct FloatLiteralNode {
-  Span             span;
+  Span span;
   std::string_view literal; // e.g. "3.14", "1.5e+10"
 };
 
@@ -79,47 +79,47 @@ struct FloatLiteralNode {
 // whole string if there is no interpolation). Escape sequences are stored
 // verbatim; interpretation is deferred to a semantic pass.
 struct StringFragmentNode {
-  Span             span;
+  Span span;
   std::string_view text;
 };
 
 // StringLiteral = fragments of StringFragmentNode and interpolated expressions.
 // A plain string with no interpolation has a single StringFragmentNode child.
 struct StringLiteralNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> fragments; // StringFragmentNode | any expression node
 };
 
 // ArrayLiteral = "[" [ Expression { "," Expression } ] "]"
 struct ArrayLiteralNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> elements;
 };
 
 // KeyValuePair = Expression ":" Expression  (one entry of a map literal)
 struct KeyValueNode {
-  Span    span;
+  Span span;
   NodePtr key;
   NodePtr value;
 };
 
 // MapLiteral = "{" { KeyValuePair } "}"
 struct MapLiteralNode {
-  Span                     span;
+  Span span;
   std::vector<KeyValueNode> entries;
 };
 
 // FieldAssignment = Identifier ":" Expression  (inside a struct literal)
 struct FieldAssignmentNode {
-  Span           span;
+  Span span;
   IdentifierNode name;
-  NodePtr        value;
+  NodePtr value;
 };
 
 // StructLiteral = ( Identifier | Selector | StructType ) StructInitializer
 struct StructLiteralNode {
-  Span                           span;
-  NodePtr                        type_expr; // IdentifierNode, SelectorNode, or StructTypeNode
+  Span span;
+  NodePtr type_expr; // IdentifierNode, SelectorNode, or StructTypeNode
   std::vector<FieldAssignmentNode> fields;
 };
 
@@ -132,52 +132,52 @@ struct StructLiteralNode {
 
 // UnionType = SingleType { "|" SingleType }   (2 or more alternatives)
 struct UnionTypeNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> types;
 };
 
 // ArrayType = "[" Type "]"
 struct ArrayTypeNode {
-  Span    span;
+  Span span;
   NodePtr element_type;
 };
 
 // MapType = "{" Type ":" Type "}"
 struct MapTypeNode {
-  Span    span;
+  Span span;
   NodePtr key_type;
   NodePtr value_type;
 };
 
 // FuncType = "fn" Signature  (a function type expression)
 struct FuncTypeNode {
-  Span                 span;
-  std::vector<NodePtr> params;  // type nodes only (no names at type level)
+  Span span;
+  std::vector<NodePtr> params; // type nodes only (no names at type level)
   std::vector<NodePtr> returns;
 };
 
 // RangeType = "(" Type ")"
 struct RangeTypeNode {
-  Span    span;
+  Span span;
   NodePtr element_type;
 };
 
 // FieldSpec = IdentifierList Type  (one field declaration in a struct)
 struct FieldSpecNode {
-  Span               span;
+  Span span;
   IdentifierListNode names;
-  NodePtr            type;
+  NodePtr type;
 };
 
 // StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
 struct StructTypeNode {
-  Span                     span;
+  Span span;
   std::vector<FieldSpecNode> fields;
 };
 
 // Generic = "|" TypeList "|"   e.g. |T|, |T, U|
 struct GenericNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> type_params; // IdentifierNode for each type variable
 };
 
@@ -189,7 +189,7 @@ struct GenericNode {
 // CaseArm = "case" Expression ":" ( Expression | Block )
 // Stored by value in std::vector<CaseArmNode> inside SwitchExprNode.
 struct CaseArmNode {
-  Span    span;
+  Span span;
   NodePtr pattern; // expression (value match) or type node (type match)
   NodePtr body;    // expression or BlockNode
 };
@@ -197,18 +197,18 @@ struct CaseArmNode {
 // ParameterType = Type | VariadicType ("..." Type)
 // Stored by value in std::vector<ParameterNode> inside SignatureNode.
 struct ParameterNode {
-  Span               span;
+  Span span;
   IdentifierListNode names;
-  NodePtr            type;
-  bool               is_variadic; // true for "...Type"
+  NodePtr type;
+  bool is_variadic; // true for "...Type"
 };
 
 // Signature = "(" [ ParameterList ] ")" TypeList
 // Stored by value inside FuncExprNode, FuncDeclNode, InterfaceFieldNode.
 struct SignatureNode {
-  Span                      span;
+  Span span;
   std::vector<ParameterNode> params;
-  std::vector<NodePtr>       returns; // type nodes; empty means Void
+  std::vector<NodePtr> returns; // type nodes; empty means Void
 };
 
 // ===========================================================================
@@ -217,79 +217,80 @@ struct SignatureNode {
 
 // BinaryExpr = Expression BinaryOperator PrimaryExpr
 struct BinaryExprNode {
-  Span         span;
-  NodePtr      lhs;
-  Token::Kind  op;
-  NodePtr      rhs;
+  Span span;
+  NodePtr lhs;
+  Token::Kind op;
+  NodePtr rhs;
 };
 
 // UnaryExpr = unary_operator PrimaryExpr   (! or -)
 struct UnaryExprNode {
-  Span        span;
-  Token::Kind op;      // Token::Kind::Not or Token::Kind::Sub
-  NodePtr     operand;
+  Span span;
+  Token::Kind op; // Token::Kind::Not or Token::Kind::Sub
+  NodePtr operand;
 };
 
 // "(" Expression ")"
 struct GroupExprNode {
-  Span    span;
+  Span span;
   NodePtr inner;
 };
 
 // CallExpr = PrimaryExpr "(" [ ExpressionList ] ")"
 struct CallExprNode {
-  Span                 span;
-  NodePtr              callee;
+  Span span;
+  NodePtr callee;
   std::vector<NodePtr> args;
 };
 
 // Slice = [ Expression ] ".." [ Expression ]
 struct SliceNode {
-  Span                    span;
-  std::optional<NodePtr>  low;  // absent = from beginning
-  std::optional<NodePtr>  high; // absent = to end
+  Span span;
+  std::optional<NodePtr> low;  // absent = from beginning
+  std::optional<NodePtr> high; // absent = to end
 };
 
 // IndexExpr = Selector "[" ( Expression | Slice ) "]"
 struct IndexExprNode {
-  Span    span;
+  Span span;
   NodePtr object;
   NodePtr index; // expression node or SliceNode
 };
 
 // Selector = ( Identifier | PrimaryExpr ) "." Identifier
 struct SelectorNode {
-  Span           span;
-  NodePtr        object;
+  Span span;
+  NodePtr object;
   IdentifierNode field;
 };
 
 // IfExpr = "if" Expression Block [ "else" Block ]
 struct IfExprNode {
-  Span                   span;
-  NodePtr                condition;
-  NodePtr                then_block;              // BlockNode
-  std::optional<NodePtr> else_block;              // BlockNode or IfExprNode (chained)
+  Span span;
+  NodePtr condition;
+  NodePtr then_block;                // BlockNode
+  std::optional<NodePtr> else_block; // BlockNode only — "else if" is not valid
 };
 
 // SwitchExpr = "switch" Expression SwitchBlock
 struct SwitchExprNode {
-  Span                      span;
-  NodePtr                   subject;
-  std::vector<CaseArmNode>  arms;
-  std::optional<NodePtr>    else_body; // expression or BlockNode
+  Span span;
+  NodePtr subject;
+  std::vector<CaseArmNode> arms;
+  std::optional<NodePtr> else_body; // expression or BlockNode
 };
 
 // ForMode: range iteration  —  Identifier { "," Identifier } ":" Expression
 struct ForRangeClauseNode {
-  Span                        span;
-  std::vector<IdentifierNode> vars;     // one (value) or two (key, value) identifiers
-  NodePtr                     iterable;
+  Span span;
+  std::vector<IdentifierNode>
+      vars; // one (value) or two (key, value) identifiers
+  NodePtr iterable;
 };
 
 // ForMode: C-style iterator  —  init ";" condition ";" update
 struct ForIterClauseNode {
-  Span    span;
+  Span span;
   NodePtr init;      // VarDeclNode or DeclAssignNode
   NodePtr condition; // boolean expression
   NodePtr update;    // AssignNode, IncrementNode, or DecrementNode
@@ -297,48 +298,48 @@ struct ForIterClauseNode {
 
 // ForExpr = "for" [ ForMode ] [ IdentifierPipe ] Block
 struct ForExprNode {
-  Span                          span;
-  std::optional<NodePtr>        mode;        // ForRangeClauseNode, ForIterClauseNode,
-                                             // or bare condition expression;
-                                             // absent = infinite loop
+  Span span;
+  std::optional<NodePtr> mode; // ForRangeClauseNode, ForIterClauseNode,
+                               // or bare condition expression;
+                               // absent = infinite loop
   std::optional<IdentifierNode> accumulator; // |acc| pipe name, if present
-  NodePtr                       body;        // BlockNode
+  NodePtr body;                              // BlockNode
 };
 
 // RangeExpr = "(" Expression ".." Expression ")"
 struct RangeExprNode {
-  Span    span;
+  Span span;
   NodePtr low;  // inclusive start
   NodePtr high; // exclusive end
 };
 
 // SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block | Identifier )
 struct SpawnExprNode {
-  Span                          span;
-  std::optional<GenericNode>    generic; // |String| channel type, if present
-  std::optional<IdentifierNode> pipe;    // named task argument: |task|
-  NodePtr                       body;    // BlockNode or IdentifierNode
+  Span span;
+  std::optional<GenericNode> generic; // |String| channel type, if present
+  std::optional<IdentifierNode> pipe; // named task argument: |task|
+  NodePtr body;                       // BlockNode or IdentifierNode
 };
 
 // OrExpr = Expression "or" [ IdentifierPipe ] Block
 struct OrExprNode {
-  Span                          span;
-  NodePtr                       expr;     // the expression that may be an error
-  std::optional<IdentifierNode> pipe;     // |err| capture, if present
-  NodePtr                       fallback; // BlockNode — the or-clause body
+  Span span;
+  NodePtr expr;                       // the expression that may be an error
+  std::optional<IdentifierNode> pipe; // |err| capture, if present
+  NodePtr fallback;                   // BlockNode — the or-clause body
 };
 
 // FuncExpr = "fn" [ Generic ] Signature Block
 struct FuncExprNode {
-  Span                       span;
+  Span span;
   std::optional<GenericNode> generic;
-  SignatureNode               signature;
-  NodePtr                     body; // BlockNode
+  SignatureNode signature;
+  NodePtr body; // BlockNode
 };
 
 // ImportExpr = "import" StringLiteral  (used as an expression)
 struct ImportExprNode {
-  Span             span;
+  Span span;
   std::string_view path; // string literal contents, without surrounding quotes
 };
 
@@ -348,48 +349,48 @@ struct ImportExprNode {
 
 // VarDecl = Identifier Type [ "=" Expression ]
 struct VarDeclNode {
-  Span                   span;
-  IdentifierNode         name;
+  Span span;
+  IdentifierNode name;
   std::optional<NodePtr> type; // explicit type annotation, if present
   std::optional<NodePtr> init; // initialiser expression, if present
 };
 
 // DeclAssign = IdentifierList ":=" ExpressionList
 struct DeclAssignNode {
-  Span               span;
+  Span span;
   IdentifierListNode targets;
-  NodePtr            value; // rhs expression (or TupleNode for multi-value)
+  NodePtr value; // rhs expression (or TupleNode for multi-value)
 };
 
 // Assignment = AssignTargetList assignment_operator ExpressionList
 struct AssignNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> targets; // IdentifierNode, SelectorNode, IndexExprNode
-  Token::Kind          op;      // Assignment, AddAssignment, SubAssignment, etc.
+  Token::Kind op; // Assignment, AddAssignment, SubAssignment, etc.
   std::vector<NodePtr> values;
 };
 
 // Identifier "++"
 struct IncrementNode {
-  Span    span;
+  Span span;
   NodePtr operand;
 };
 
 // Identifier "--"
 struct DecrementNode {
-  Span    span;
+  Span span;
   NodePtr operand;
 };
 
 // "return" [ ExpressionList ]
 struct ReturnNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> values; // empty = bare `return`
 };
 
 // "break" [ ExpressionList ]
 struct BreakNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> values; // value passed to break expression, if any
 };
 
@@ -412,84 +413,88 @@ struct NextNode {
 
 // ConstDecl = [ "pub" ] "const" Identifier [ Type ] "=" Expression
 struct ConstDeclNode {
-  Span                   span;
-  bool                   is_public;
-  IdentifierNode         name;
-  std::optional<NodePtr> type;  // explicit type, if provided
-  NodePtr                value; // initialiser (required)
+  Span span;
+  bool is_public;
+  IdentifierNode name;
+  std::optional<NodePtr> type; // explicit type, if provided
+  NodePtr value;               // initialiser (required)
 };
 
 // EnumField = Identifier [ "{" Identifier ":" Expression { "," ... } "}" ]
 struct EnumFieldNode {
-  Span                           span;
-  IdentifierNode                 name;
-  std::vector<FieldAssignmentNode> initializer; // {name: expr, ...}; empty if none
+  Span span;
+  IdentifierNode name;
+  std::vector<FieldAssignmentNode>
+      initializer; // {name: expr, ...}; empty if none
 };
 
-// EnumDecl = [ "pub" ] "enum" Identifier "{" EnumField { terminal EnumField } "}"
+// EnumDecl = [ "pub" ] "enum" Identifier "{" EnumField { terminal EnumField }
+// "}"
 struct EnumDeclNode {
-  Span                     span;
-  bool                     is_public;
-  IdentifierNode           name;
+  Span span;
+  bool is_public;
+  IdentifierNode name;
   std::vector<EnumFieldNode> fields;
 };
 
 // Receiver = "(" Identifier Type ")"   e.g. (u User)
 struct ReceiverNode {
-  Span           span;
+  Span span;
   IdentifierNode name; // the receiver variable name (e.g. `u`)
-  NodePtr        type; // the receiver type
+  NodePtr type;        // the receiver type
 };
 
 // FuncDecl = [ "pub" ] "fn" [ Generic ] [ Receiver ] Identifier Signature Block
 struct FuncDeclNode {
-  Span                       span;
-  bool                       is_public;
+  Span span;
+  bool is_public;
   std::optional<GenericNode> generic;
   std::optional<ReceiverNode> receiver;
-  IdentifierNode              name;
-  SignatureNode               signature;
-  NodePtr                     body; // BlockNode
+  IdentifierNode name;
+  SignatureNode signature;
+  NodePtr body; // BlockNode
 };
 
 // ImportDecl = "import" StringLiteral  (used as a declaration)
 struct ImportDeclNode {
-  Span             span;
+  Span span;
   std::string_view path; // string literal contents, without surrounding quotes
 };
 
 // InterfaceField = [ "pub" ] Identifier Signature
 struct InterfaceFieldNode {
-  Span           span;
-  bool           is_public;
+  Span span;
+  bool is_public;
   IdentifierNode name;
-  SignatureNode   signature;
+  SignatureNode signature;
 };
 
-// InterfaceDecl = [ "pub" ] "interface" [ Generic ] Identifier "{" [ InterfaceField ... ] "}"
+// InterfaceDecl = [ "pub" ] "interface" [ Generic ] Identifier "{" [
+// InterfaceField ... ] "}"
 struct InterfaceDeclNode {
-  Span                           span;
-  bool                           is_public;
-  std::optional<GenericNode>     generic;
-  IdentifierNode                 name;
+  Span span;
+  bool is_public;
+  std::optional<GenericNode> generic;
+  IdentifierNode name;
   std::vector<InterfaceFieldNode> methods;
 };
 
 // StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
 // The member field holds either a FieldSpecNode or a FuncDeclNode.
 struct StructMemberNode {
-  Span    span;
-  bool    is_public;
+  Span span;
+  bool is_public;
   NodePtr member; // FieldSpecNode or FuncDeclNode
 };
 
-// StructDecl = [ "pub" ] "struct" [ Generic ] Identifier [ "<" IdentifierList ] "{" ... "}"
+// StructDecl = [ "pub" ] "struct" [ Generic ] Identifier [ "<" IdentifierList ]
+// "{" ... "}"
 struct StructDeclNode {
-  Span                       span;
-  bool                       is_public;
+  Span span;
+  bool is_public;
   std::optional<GenericNode> generic;
-  IdentifierNode              name;
-  std::vector<IdentifierNode> embeds;  // mixin names from `< A, B` clause
+  IdentifierNode name;
+  std::vector<IdentifierNode> embeds; // mixin names from `< A, B` clause
   std::vector<StructMemberNode> members;
 };
 
@@ -499,14 +504,21 @@ struct StructDeclNode {
 
 // Block = "{" { ( Expression | Statement ) [ terminal ] } "}"
 struct BlockNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> stmts;
 };
 
 // SourceNode is the root of one file's AST.
 struct SourceNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> declarations; // top-level declarations for this file
+};
+
+// PackageNode is the root of the AST for one package (one directory).
+// Each child SourceNode corresponds to one source file in the package.
+struct PackageNode {
+  Span                 span;
+  std::vector<NodePtr> sources; // one SourceNode per file
 };
 
 // ===========================================================================
@@ -557,11 +569,11 @@ struct Node {
     StructDeclNode,      StructMemberNode,    FieldSpecNode,
 
     // --- Structure ---
-    BlockNode, SourceNode
+    BlockNode, PackageNode, SourceNode
   >;
   // clang-format on
 
-  Span    span;
+  Span span;
   Variant data;
 
   template <typename T>
@@ -579,11 +591,12 @@ struct Node {
 // declaration order, excluding the leading span.
 //
 // Example:
-//   auto n = make_node<BinaryExprNode>(span, std::move(lhs), op, std::move(rhs));
+//   auto n = make_node<BinaryExprNode>(span, std::move(lhs), op,
+//   std::move(rhs));
 // ---------------------------------------------------------------------------
 
 template <typename T, typename... Args>
-NodePtr make_node(Span span, Args&&... args) {
+NodePtr make_node(Span span, Args &&...args) {
   return std::make_unique<Node>(span, T{span, std::forward<Args>(args)...});
 }
 
@@ -592,6 +605,6 @@ NodePtr make_node(Span span, Args&&... args) {
 // Each node type name is printed with inline scalar fields, followed by
 // child nodes recursively indented by two spaces per level.
 // ---------------------------------------------------------------------------
-void dump_ast(const Node& node, std::ostream& os, int indent = 0);
+void dump_ast(const Node &node, std::ostream &os, int indent = 0);
 
 } // namespace mc
