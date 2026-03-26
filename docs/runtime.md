@@ -25,6 +25,8 @@ that a user can make: function, procedure, and method.
 
 ## Internal
 
+These are only available when the `--allow-unsafe` flag is passed to the compiler.
+
 `intrinsic_alloc(size Int) Any`: Request heap memory
 `intrinsic_copy(src, dst Any, len Int) Void`: Raw mem copy
 `intrinsic_panic(String) Void`: Unrecoverable, kills program
@@ -32,7 +34,10 @@ that a user can make: function, procedure, and method.
 `intrinsic_syscall(id Int, args ...Any) Int | Error`: OS syscall
 `|T| intrinsic_sizeof() Int`: Byte size of the type
 `|T| intrinsic_typeid() Int`: Unique ID for each type
-
+`intrinsic_yield() Void`: Release a hardware thread and return an actor the back of the queue. Resets the reduction counter.
+`|T| intrinsic_atomic_add(ptr *T, val T) T`: Thread-safe Arena memory bypassing for fetch-and-add.
+`intrinsic_trap(reason String) Void`: Force actor into a "zombie" state.
+ 
 ## Enums
 
 ```
