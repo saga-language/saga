@@ -715,12 +715,7 @@ TEST_F(ParserPrefixTest, Group_Unary_Inside) {
 // ─────────────────────────────────────────────────────────
 
 TEST_F(ParserPrefixTest, Range_IntegerLiterals) {
-  // Spaces around ".." are required: the lexer greedily reads "1." as the
-  // start of a float literal, so "1..10" tokenises as FloatLiteral("1.") +
-  // Dot + IntegerLiteral("10") rather than the expected
-  // IntegerLiteral("1") + DotDot + IntegerLiteral("10").
-  // Tracked as a lexer bug to fix separately.
-  auto r = ExprResult::from("(1 .. 10)");
+  auto r = ExprResult::from("(1..10)");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<RangeExprNode>();
   ASSERT_NE(n, nullptr);
@@ -2048,7 +2043,7 @@ TEST_F(ParserInfixTest, Index_Expression) {
 }
 
 TEST_F(ParserInfixTest, Slice_Full) {
-  auto r = ExprResult::from("arr[1 .. 4]");
+  auto r = ExprResult::from("arr[1..4]");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<IndexExprNode>();
   ASSERT_NE(n, nullptr);
@@ -2059,7 +2054,7 @@ TEST_F(ParserInfixTest, Slice_Full) {
 }
 
 TEST_F(ParserInfixTest, Slice_LowOnly) {
-  auto r = ExprResult::from("arr[3 ..]");
+  auto r = ExprResult::from("arr[3..]");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<IndexExprNode>();
   ASSERT_NE(n, nullptr);
@@ -2556,7 +2551,7 @@ TEST_F(ParserTypeCoverageTest, MapType) {
 }
 
 TEST_F(ParserTypeCoverageTest, RangeType) {
-  auto r = ParseResult::from("fn Foo() (Int) { (0 .. 1) }\n");
+  auto r = ParseResult::from("fn Foo() (Int) { (0..1) }\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);

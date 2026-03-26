@@ -10,7 +10,7 @@
 
 namespace mc {
 
-enum class LexerState { Default, InString };
+enum class LexerState { Default, InString, InMultiLineString };
 
 struct Lexer {
   File *file = nullptr;
@@ -37,6 +37,7 @@ private:
   bool is_eof();
   bool is_hex(const char c);
   bool is_interpolating();
+  bool is_interpolating_multi_line();
   bool is_octal(const char c);
   bool is_whitespace(char c);
 
@@ -47,6 +48,7 @@ private:
   Token scan_identifier();
   Token scan_number(char c);
   Token scan_octal();
+  Token scan_multi_line_string(const char c);
   Token scan_string(const char c);
 
   void skip_whitespace();
