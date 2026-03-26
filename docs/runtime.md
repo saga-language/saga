@@ -68,8 +68,28 @@ interface |T| Iterable {
 
 ## Types
 
-All scalars implement the following methods:
+|Identifier|Type|Notes|
+|---|---|---|
+|Bool|boolean||
+|Byte|raw byte|alias to Uint8|
+|Char|utf-8 character|???|
+|Float|float|alias to system word size|
+|Float32|float|32 bit floating point|
+|Float64|float|64 bit floating point|
+|Int|integer|alias to system word size|
+|Int8|integer|signed 8 bit integer|
+|Int16|integer|signed 16 bit integer|
+|Int32|integer|signed 32 bit integer|
+|Int64|integer|signed 64 bit integer|
+|Uint8|integer|unsigned 8 bit integer|
+|Uint16|integer|unsigned 16 bit integer|
+|Uint32|integer|unsigned 32 bit integer|
+|Uint64|integer|unsigned 64 bit integer|
+|Void|void|no value|
 
+All types implement the following methods:
+
+`.String() String`: string representation of the value
 
 ### Array
 
@@ -188,3 +208,7 @@ Strings can be sliced but they're immutable.
 `.Runes() [Int32]`: Returns an array of UTF-8 points
 `.Size() Int`: Returns the number of Bytes in the string
 `.Upper() String`: Transforms the string into all uppercase
+
+### Compare
+
+An enum with the types: Less, Equal, Greater.
