@@ -16,12 +16,45 @@ namespace mc {
 // ---------------------------------------------------------------------------
 
 struct BuiltinTypes {
+  // Primitive types
   TypePtr void_type;
   TypePtr bool_type;
-  TypePtr int_type;
-  TypePtr float_type;
   TypePtr string_type;
-  TypePtr error_type;   // error-recovery sentinel
+
+  // Platform word-size aliases
+  TypePtr int_type;      // Int  (alias to word-size signed integer)
+  TypePtr float_type;    // Float (alias to word-size float)
+  TypePtr byte_type;     // Byte (alias to Uint8)
+
+  // Sized integers
+  TypePtr int8_type;
+  TypePtr int16_type;
+  TypePtr int32_type;
+  TypePtr int64_type;
+  TypePtr uint8_type;
+  TypePtr uint16_type;
+  TypePtr uint32_type;
+  TypePtr uint64_type;
+
+  // Sized floats
+  TypePtr float32_type;
+  TypePtr float64_type;
+
+  // Internal interfaces
+  TypePtr error_iface;     // Error { Message() String }
+  TypePtr iterable_iface;  // |T| Iterable { Next() T | Error }
+
+  // Internal structs
+  TypePtr missing_type;    // Missing (implements Error)
+  TypePtr task_type;       // Task (returned from spawn)
+  TypePtr context_type;    // Context (available inside spawn block)
+  TypePtr any_type;        // Any
+
+  // Internal enums
+  TypePtr comparison_type; // Comparison { Less, Equal, Greater }
+
+  // Error-recovery sentinel (not a language type)
+  TypePtr error_type;
 
   /// Initialise all built-in type singletons.
   void init();

@@ -114,6 +114,39 @@ TEST(Types, TypeToString) {
   EXPECT_EQ(type_to_string(make_type_param(0, "T")), "T");
 }
 
+TEST(Types, SizedIntTypeToString) {
+  EXPECT_EQ(type_to_string(make_int_type(8, true)), "Int8");
+  EXPECT_EQ(type_to_string(make_int_type(16, true)), "Int16");
+  EXPECT_EQ(type_to_string(make_int_type(32, true)), "Int32");
+  EXPECT_EQ(type_to_string(make_int_type(64, true)), "Int64");
+  EXPECT_EQ(type_to_string(make_int_type(8, false)), "Uint8");
+  EXPECT_EQ(type_to_string(make_int_type(16, false)), "Uint16");
+  EXPECT_EQ(type_to_string(make_int_type(32, false)), "Uint32");
+  EXPECT_EQ(type_to_string(make_int_type(64, false)), "Uint64");
+}
+
+TEST(Types, SizedFloatTypeToString) {
+  EXPECT_EQ(type_to_string(make_float_type(32)), "Float32");
+  EXPECT_EQ(type_to_string(make_float_type(64)), "Float64");
+}
+
+TEST(Types, SizedIntEquality) {
+  // Same size and signedness are equal.
+  EXPECT_TRUE(types_equal(make_int_type(32, true), make_int_type(32, true)));
+  // Different size are not.
+  EXPECT_FALSE(types_equal(make_int_type(32, true), make_int_type(64, true)));
+  // Different signedness are not.
+  EXPECT_FALSE(types_equal(make_int_type(32, true), make_int_type(32, false)));
+  // Platform Int is distinct from Int32/Int64.
+  EXPECT_FALSE(types_equal(make_int_type(), make_int_type(64, true)));
+}
+
+TEST(Types, SizedFloatEquality) {
+  EXPECT_TRUE(types_equal(make_float_type(64), make_float_type(64)));
+  EXPECT_FALSE(types_equal(make_float_type(32), make_float_type(64)));
+  EXPECT_FALSE(types_equal(make_float_type(), make_float_type(64)));
+}
+
 // ===========================================================================
 // Equality
 // ===========================================================================

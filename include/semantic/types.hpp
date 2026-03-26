@@ -59,8 +59,16 @@ struct TypeParam {
 
 struct VoidType {};
 struct BoolType {};
-struct IntType {};
-struct FloatType {};
+
+struct IntType {
+  uint8_t bits;          // 8, 16, 32, 64; 0 = platform word size (Int)
+  bool is_signed;        // false for Uint variants and Byte
+};
+
+struct FloatType {
+  uint8_t bits;          // 32, 64; 0 = platform word size (Float)
+};
+
 struct StringType {};
 struct ErrorType {};      // error-recovery sentinel
 
@@ -171,8 +179,8 @@ struct Type {
 
 TypePtr make_void_type();
 TypePtr make_bool_type();
-TypePtr make_int_type();
-TypePtr make_float_type();
+TypePtr make_int_type(uint8_t bits = 0, bool is_signed = true);
+TypePtr make_float_type(uint8_t bits = 0);
 TypePtr make_string_type();
 TypePtr make_error_type();
 

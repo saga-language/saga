@@ -21,12 +21,12 @@ TypePtr make_bool_type() {
   return std::make_shared<Type>(TypeKind::Bool, BoolType{});
 }
 
-TypePtr make_int_type() {
-  return std::make_shared<Type>(TypeKind::Int, IntType{});
+TypePtr make_int_type(uint8_t bits, bool is_signed) {
+  return std::make_shared<Type>(TypeKind::Int, IntType{bits, is_signed});
 }
 
-TypePtr make_float_type() {
-  return std::make_shared<Type>(TypeKind::Float, FloatType{});
+TypePtr make_float_type(uint8_t bits) {
+  return std::make_shared<Type>(TypeKind::Float, FloatType{bits});
 }
 
 TypePtr make_string_type() {
@@ -158,10 +158,20 @@ std::string type_to_string(const TypePtr &t) {
     return "Void";
   case TypeKind::Bool:
     return "Bool";
-  case TypeKind::Int:
-    return "Int";
-  case TypeKind::Float:
-    return "Float";
+  case TypeKind::Int: {
+    auto &info = std::get<IntType>(t->detail);
+    if (info.bits == 0)
+      return "Int";
+    if (!info.is_signed)
+      return "Uint" + std::to_string(info.bits);
+    return "Int" + std::to_string(info.bits);
+  }
+  case TypeKind::Float: {
+    auto &info = std::get<FloatType>(t->detail);
+    if (info.bits == 0)
+      return "Float";
+    return "Float" + std::to_string(info.bits);
+  }
   case TypeKind::String:
     return "String";
   case TypeKind::Error:
@@ -266,10 +276,20 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
   switch (a->kind) {
   case TypeKind::Void:
   case TypeKind::Bool:
-  case TypeKind::Int:
-  case TypeKind::Float:
   case TypeKind::String:
     return true; // singletons
+
+  case TypeKind::Int: {
+    auto &ai = std::get<IntType>(a->detail);
+    auto &bi = std::get<IntType>(b->detail);
+    return ai.bits == bi.bits && ai.is_signed == bi.is_signed;
+  }
+
+  case TypeKind::Float: {
+    auto &ai = std::get<FloatType>(a->detail);
+    auto &bi = std::get<FloatType>(b->detail);
+    return ai.bits == bi.bits;
+  }
 
   case TypeKind::Array: {
     auto &ai = std::get<ArrayTypeInfo>(a->detail);
