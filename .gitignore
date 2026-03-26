@@ -39,3 +39,18 @@
 
 # debug information files
 *.dwo
+
+# CMake directories and files
+.cache/
+.clangd
+CMakeCache.txt
+CMakeFiles/
+Testing/
+_deps/
+build/
+*.cmake
+
+# Editors
+*.swp
+.vscode/
+.zed/
