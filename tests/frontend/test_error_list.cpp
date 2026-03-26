@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #include "frontend/error_list.hpp"
 
 #include <gmock/gmock.h>

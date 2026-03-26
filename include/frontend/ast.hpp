@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include "span.hpp"
@@ -517,7 +520,7 @@ struct SourceNode {
 // PackageNode is the root of the AST for one package (one directory).
 // Each child SourceNode corresponds to one source file in the package.
 struct PackageNode {
-  Span                 span;
+  Span span;
   std::vector<NodePtr> sources; // one SourceNode per file
 };
 

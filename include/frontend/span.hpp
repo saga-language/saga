@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <cstddef>

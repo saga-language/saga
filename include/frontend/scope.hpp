@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <memory>
@@ -5,16 +8,16 @@
 #include <string>
 #include <unordered_map>
 namespace mc {
-    struct Symbol {
-        std::string name;
-    };
+struct Symbol {
+  std::string name;
+};
 
-    struct Scope {
-      std::shared_ptr<Scope> parent; // top-level scope is null
-      std::unordered_map<std::string, Symbol> symbols;
+struct Scope {
+  std::shared_ptr<Scope> parent; // top-level scope is null
+  std::unordered_map<std::string, Symbol> symbols;
 
-      bool declare(const Symbol& sym);
+  bool declare(const Symbol &sym);
 
-      std::optional<Symbol> lookup(const std::string& name) const;
-    };
-}
+  std::optional<Symbol> lookup(const std::string &name) const;
+};
+} // namespace mc

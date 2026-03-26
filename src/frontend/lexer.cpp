@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #include "frontend/lexer.hpp"
 #include "frontend/token.hpp"
 
@@ -7,25 +10,25 @@
 namespace mc {
 
 inline static const std::unordered_map<std::string_view, Token::Kind> keywords =
-    {{"break",     Token::Kind::Break},
-     {"case",      Token::Kind::Case},
-     {"const",     Token::Kind::Const},
-     {"else",      Token::Kind::Else},
-     {"enum",      Token::Kind::Enum},
-     {"false",     Token::Kind::BoolLiteral},
-     {"fn",        Token::Kind::Fn},
-     {"for",       Token::Kind::For},
-     {"if",        Token::Kind::If},
-     {"import",    Token::Kind::Import},
+    {{"break", Token::Kind::Break},
+     {"case", Token::Kind::Case},
+     {"const", Token::Kind::Const},
+     {"else", Token::Kind::Else},
+     {"enum", Token::Kind::Enum},
+     {"false", Token::Kind::BoolLiteral},
+     {"fn", Token::Kind::Fn},
+     {"for", Token::Kind::For},
+     {"if", Token::Kind::If},
+     {"import", Token::Kind::Import},
      {"interface", Token::Kind::Interface},
-     {"next",      Token::Kind::Next},
-     {"or",        Token::Kind::Or},
-     {"pub",       Token::Kind::Pub},
-     {"return",    Token::Kind::Return},
-     {"spawn",     Token::Kind::Spawn},
-     {"struct",    Token::Kind::Struct},
-     {"switch",    Token::Kind::Switch},
-     {"true",      Token::Kind::BoolLiteral}};
+     {"next", Token::Kind::Next},
+     {"or", Token::Kind::Or},
+     {"pub", Token::Kind::Pub},
+     {"return", Token::Kind::Return},
+     {"spawn", Token::Kind::Spawn},
+     {"struct", Token::Kind::Struct},
+     {"switch", Token::Kind::Switch},
+     {"true", Token::Kind::BoolLiteral}};
 
 void Lexer::init(File *file) {
   this->file = file;
@@ -93,11 +96,13 @@ Token Lexer::scan() {
     t = match('=') ? Token::Kind::MulAssignment : Token::Kind::Multiply;
     return accept(t);
   case '+':
-    if (match('+')) return accept(Token::Kind::Increment);
+    if (match('+'))
+      return accept(Token::Kind::Increment);
     t = match('=') ? Token::Kind::AddAssignment : Token::Kind::Add;
     return accept(t);
   case '-':
-    if (match('-')) return accept(Token::Kind::Decrement);
+    if (match('-'))
+      return accept(Token::Kind::Decrement);
     t = match('=') ? Token::Kind::SubAssignment : Token::Kind::Sub;
     return accept(t);
 
@@ -191,7 +196,9 @@ bool Lexer::is_hex(const char c) {
   return is_digit(c) || ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) ||
          c == '_';
 }
-bool Lexer::is_interpolating() { return !state.empty() && state.back() == LexerState::InString; }
+bool Lexer::is_interpolating() {
+  return !state.empty() && state.back() == LexerState::InString;
+}
 bool Lexer::is_octal(const char c) { return c >= '0' && c <= '7'; }
 bool Lexer::is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 

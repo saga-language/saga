@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #include "frontend/lexer.hpp"
 #include "frontend/token.hpp"
 
@@ -943,8 +946,8 @@ TEST(Lexer, Scan_Newline_TracksPosition) {
   Lexer l;
   l.init(f.get());
 
-  l.scan(); // 'a' — Identifier on line 1
-  l.scan(); // '\n' — Terminator, registers line 2
+  l.scan();          // 'a' — Identifier on line 1
+  l.scan();          // '\n' — Terminator, registers line 2
   auto t = l.scan(); // 'b' — Identifier on line 2
 
   ASSERT_EQ(t.kind, Token::Kind::Identifier);

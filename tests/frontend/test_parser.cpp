@@ -1,3 +1,6 @@
+// Copywrite 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
 #include "frontend/ast.hpp"
 #include "frontend/file.hpp"
 #include "frontend/fileset.hpp"
@@ -26,15 +29,15 @@ namespace mc {
 // ---------------------------------------------------------------------------
 
 struct ParseResult {
-  FileSet       fs;
-  NodePtr       root;
+  FileSet fs;
+  NodePtr root;
   std::vector<Error> errors;
 
   static ParseResult from(const std::string &source) {
     ParseResult r;
     r.fs.add_file(File::from_source("test.rg", source));
     Parser p(r.fs);
-    r.root   = p.parse();
+    r.root = p.parse();
     r.errors = p.errors.errors;
     return r;
   }
@@ -48,10 +51,10 @@ struct ParseResult {
   // Unwrap the Nth top-level declaration as type T.
   // Returns nullptr if the index is out of range or the type does not match,
   // so callers can use ASSERT_NE(r.decl_as<T>(n), nullptr) before accessing.
-  template <typename T>
-  const T *decl_as(size_t index) const {
+  template <typename T> const T *decl_as(size_t index) const {
     const auto &decls = source_node().declarations;
-    if (index >= decls.size()) return nullptr;
+    if (index >= decls.size())
+      return nullptr;
     return std::get_if<T>(&decls.at(index)->data);
   }
 };
@@ -344,10 +347,9 @@ TEST(ParserDeclaration, Pub_Alone_ReportsError) {
 // A bad token between two valid imports: the bad token produces an error,
 // but the parser recovers and the second import is still parsed.
 TEST(ParserDeclaration, Recovery_BadTokenBetweenImports) {
-  auto r = ParseResult::from(
-      "import \"std/io\"\n"
-      "?\n"
-      "import \"std/math\"\n");
+  auto r = ParseResult::from("import \"std/io\"\n"
+                             "?\n"
+                             "import \"std/math\"\n");
 
   EXPECT_EQ(r.errors.size(), 1u);
   ASSERT_EQ(r.source_node().declarations.size(), 2u);
@@ -369,8 +371,8 @@ TEST(ParserDeclaration, Recovery_BadTokenBetweenImports) {
 // =============================================================================
 
 struct ExprResult {
-  FileSet            fs;
-  NodePtr            expr;
+  FileSet fs;
+  NodePtr expr;
   std::vector<Error> errors;
 
   static ExprResult from(const std::string &source) {
@@ -378,16 +380,16 @@ struct ExprResult {
     r.fs.add_file(File::from_source("test.rg", source));
     Parser p(r.fs);
     p.init_for_file(r.fs.files[0].get());
-    r.expr   = p.parse_expression();
+    r.expr = p.parse_expression();
     r.errors = p.errors.errors;
     return r;
   }
 
   // Unwrap the root expression as T; returns nullptr on type mismatch or when
   // expr is null.
-  template <typename T>
-  const T *as() const {
-    if (!expr) return nullptr;
+  template <typename T> const T *as() const {
+    if (!expr)
+      return nullptr;
     return std::get_if<T>(&expr->data);
   }
 };
@@ -518,7 +520,8 @@ TEST_F(ParserPrefixTest, Unary_Not_Identifier) {
   EXPECT_EQ(n->op, Token::Kind::Not);
 }
 
-// ── Grouped expressions ───────────────────────────────────────────────────────
+// ── Grouped expressions
+// ───────────────────────────────────────────────────────
 
 TEST_F(ParserPrefixTest, Group_Integer) {
   auto r = ExprResult::from("(42)");
@@ -550,7 +553,8 @@ TEST_F(ParserPrefixTest, Group_Unary_Inside) {
   EXPECT_EQ(inner->op, Token::Kind::Not);
 }
 
-// ── Range expressions ─────────────────────────────────────────────────────────
+// ── Range expressions
+// ─────────────────────────────────────────────────────────
 
 TEST_F(ParserPrefixTest, Range_IntegerLiterals) {
   // Spaces around ".." are required: the lexer greedily reads "1." as the
@@ -583,7 +587,8 @@ TEST_F(ParserPrefixTest, Range_Identifiers) {
   EXPECT_EQ(hi->name, "end");
 }
 
-// ── Array literals ────────────────────────────────────────────────────────────
+// ── Array literals
+// ────────────────────────────────────────────────────────────
 
 TEST_F(ParserPrefixTest, Array_Empty) {
   auto r = ExprResult::from("[]");
@@ -629,9 +634,12 @@ TEST_F(ParserPrefixTest, Array_IdentifierElements) {
   auto *a = std::get_if<IdentifierNode>(&n->elements[0]->data);
   auto *b = std::get_if<IdentifierNode>(&n->elements[1]->data);
   auto *c = std::get_if<IdentifierNode>(&n->elements[2]->data);
-  ASSERT_NE(a, nullptr); EXPECT_EQ(a->name, "a");
-  ASSERT_NE(b, nullptr); EXPECT_EQ(b->name, "b");
-  ASSERT_NE(c, nullptr); EXPECT_EQ(c->name, "c");
+  ASSERT_NE(a, nullptr);
+  EXPECT_EQ(a->name, "a");
+  ASSERT_NE(b, nullptr);
+  EXPECT_EQ(b->name, "b");
+  ASSERT_NE(c, nullptr);
+  EXPECT_EQ(c->name, "c");
 }
 
 // Nested array: [[1, 2], [3, 4]]
@@ -649,7 +657,8 @@ TEST_F(ParserPrefixTest, Array_Nested) {
   EXPECT_EQ(inner1->elements.size(), 2u);
 }
 
-// ── Import expression ─────────────────────────────────────────────────────────
+// ── Import expression
+// ─────────────────────────────────────────────────────────
 
 TEST_F(ParserPrefixTest, ImportExpr_Simple) {
   auto r = ExprResult::from("import \"std/io\"");
@@ -667,7 +676,8 @@ TEST_F(ParserPrefixTest, ImportExpr_NestedPath) {
   EXPECT_EQ(n->path, "mega/long/mathematics");
 }
 
-// ── Error cases ────────────────────────────────────────────────────────────────
+// ── Error cases
+// ────────────────────────────────────────────────────────────────
 
 TEST_F(ParserPrefixTest, Error_UnknownPrefixToken) {
   auto r = ExprResult::from("?");
@@ -683,8 +693,8 @@ TEST_F(ParserPrefixTest, Error_UnknownPrefixToken) {
 // =============================================================================
 
 struct BlockResult {
-  FileSet            fs;
-  NodePtr            block;
+  FileSet fs;
+  NodePtr block;
   std::vector<Error> errors;
 
   static BlockResult from(const std::string &source) {
@@ -692,21 +702,22 @@ struct BlockResult {
     r.fs.add_file(File::from_source("test.rg", source));
     Parser p(r.fs);
     p.init_for_file(r.fs.files[0].get());
-    r.block  = p.parse_block();
+    r.block = p.parse_block();
     r.errors = p.errors.errors;
     return r;
   }
 
   const BlockNode *as_block() const {
-    if (!block) return nullptr;
+    if (!block)
+      return nullptr;
     return std::get_if<BlockNode>(&block->data);
   }
 
   // Unwrap the Nth statement inside the block as type T.
-  template <typename T>
-  const T *stmt_as(size_t index) const {
+  template <typename T> const T *stmt_as(size_t index) const {
     auto *blk = as_block();
-    if (!blk || index >= blk->stmts.size()) return nullptr;
+    if (!blk || index >= blk->stmts.size())
+      return nullptr;
     return std::get_if<T>(&blk->stmts.at(index)->data);
   }
 
@@ -722,7 +733,8 @@ struct BlockResult {
 
 class ParserBlockTest : public ::testing::Test {};
 
-// ── Block structure ───────────────────────────────────────────────────────────
+// ── Block structure
+// ───────────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Block_Empty) {
   auto r = BlockResult::from("{}");
@@ -756,7 +768,8 @@ TEST_F(ParserBlockTest, Block_StatementsOnOneLine) {
   EXPECT_EQ(r.stmt_count(), 2u);
 }
 
-// ── return / break / next ─────────────────────────────────────────────────────
+// ── return / break / next
+// ─────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Statement_Return_NoValue) {
   auto r = BlockResult::from("{ return }");
@@ -807,7 +820,8 @@ TEST_F(ParserBlockTest, Statement_Next) {
   EXPECT_NE(r.stmt_as<NextNode>(0), nullptr);
 }
 
-// ── VarDecl ───────────────────────────────────────────────────────────────────
+// ── VarDecl
+// ───────────────────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Statement_VarDecl_NoInit) {
   auto r = BlockResult::from("{ x Int }");
@@ -847,7 +861,8 @@ TEST_F(ParserBlockTest, Statement_VarDecl_FnType) {
   EXPECT_NE(std::get_if<FuncTypeNode>(&(*n->type)->data), nullptr);
 }
 
-// ── DeclAssign (:=) ───────────────────────────────────────────────────────────
+// ── DeclAssign (:=)
+// ───────────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Statement_DeclAssign_Single) {
   auto r = BlockResult::from("{ x := 42 }");
@@ -931,7 +946,8 @@ TEST_F(ParserBlockTest, Statement_Assign_Multi_Target) {
   EXPECT_EQ(n->values.size(), 2u);
 }
 
-// ── Increment / Decrement ─────────────────────────────────────────────────────
+// ── Increment / Decrement
+// ─────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Statement_Increment) {
   auto r = BlockResult::from("{ x++ }");
@@ -953,22 +969,22 @@ TEST_F(ParserBlockTest, Statement_Decrement) {
   EXPECT_EQ(operand->name, "x");
 }
 
-// ── Mixed block ───────────────────────────────────────────────────────────────
+// ── Mixed block
+// ───────────────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Block_Mixed_Statements) {
-  auto r = BlockResult::from(
-      "{\n"
-      "  x Int = 0\n"
-      "  x += 1\n"
-      "  x++\n"
-      "  return x\n"
-      "}");
+  auto r = BlockResult::from("{\n"
+                             "  x Int = 0\n"
+                             "  x += 1\n"
+                             "  x++\n"
+                             "  return x\n"
+                             "}");
   EXPECT_TRUE(r.errors.empty());
   EXPECT_EQ(r.stmt_count(), 4u);
-  EXPECT_NE(r.stmt_as<VarDeclNode>(0),    nullptr);
-  EXPECT_NE(r.stmt_as<AssignNode>(1),     nullptr);
-  EXPECT_NE(r.stmt_as<IncrementNode>(2),  nullptr);
-  EXPECT_NE(r.stmt_as<ReturnNode>(3),     nullptr);
+  EXPECT_NE(r.stmt_as<VarDeclNode>(0), nullptr);
+  EXPECT_NE(r.stmt_as<AssignNode>(1), nullptr);
+  EXPECT_NE(r.stmt_as<IncrementNode>(2), nullptr);
+  EXPECT_NE(r.stmt_as<ReturnNode>(3), nullptr);
 }
 
 // =============================================================================
@@ -977,7 +993,8 @@ TEST_F(ParserBlockTest, Block_Mixed_Statements) {
 
 class ParserCompoundTest : public ::testing::Test {};
 
-// ── if expression ─────────────────────────────────────────────────────────────
+// ── if expression
+// ─────────────────────────────────────────────────────────────
 
 TEST_F(ParserCompoundTest, If_NoElse) {
   auto r = ExprResult::from("if true { 42 }");
@@ -1035,7 +1052,8 @@ TEST_F(ParserCompoundTest, If_MultiStatement_Body) {
   EXPECT_EQ(blk->stmts.size(), 2u);
 }
 
-// ── switch expression ─────────────────────────────────────────────────────────
+// ── switch expression
+// ─────────────────────────────────────────────────────────
 
 TEST_F(ParserCompoundTest, Switch_SingleArm_ExprBody) {
   auto r = ExprResult::from("switch x {\ncase 1: 42\n}");
@@ -1086,7 +1104,8 @@ TEST_F(ParserCompoundTest, Switch_ArmWithBlockBody) {
 }
 
 TEST_F(ParserCompoundTest, Switch_ElseArmWithBlockBody) {
-  auto r = ExprResult::from("switch x {\ncase 1: 10\nelse: {\n  return 99\n}\n}");
+  auto r =
+      ExprResult::from("switch x {\ncase 1: 10\nelse: {\n  return 99\n}\n}");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<SwitchExprNode>();
   ASSERT_NE(n, nullptr);
@@ -1096,13 +1115,12 @@ TEST_F(ParserCompoundTest, Switch_ElseArmWithBlockBody) {
 
 // switch inside a block (statement context)
 TEST_F(ParserCompoundTest, Switch_InsideBlock) {
-  auto r = BlockResult::from(
-      "{\n"
-      "  result := switch x {\n"
-      "    case 1: true\n"
-      "    else: false\n"
-      "  }\n"
-      "}");
+  auto r = BlockResult::from("{\n"
+                             "  result := switch x {\n"
+                             "    case 1: true\n"
+                             "    else: false\n"
+                             "  }\n"
+                             "}");
   EXPECT_TRUE(r.errors.empty());
   // The DeclAssign wraps a SwitchExprNode as its value.
   auto *decl = r.stmt_as<DeclAssignNode>(0);
@@ -1252,7 +1270,8 @@ TEST_F(ParserForTest, For_Iterator_WithAddAssign) {
   EXPECT_EQ(update->op, Token::Kind::AddAssignment);
 }
 
-// ── for as a statement value ──────────────────────────────────────────────────
+// ── for as a statement value
+// ──────────────────────────────────────────────────
 
 TEST_F(ParserForTest, For_AsValueInBlock) {
   auto r = BlockResult::from("{ result := for item : items { item } }");
@@ -1268,13 +1287,15 @@ TEST_F(ParserForTest, For_AsValueInBlock) {
 
 class ParserFuncExprTest : public ::testing::Test {};
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// ── helpers
+// ───────────────────────────────────────────────────────────────────
 
 static const FuncExprNode *func_expr(const ExprResult &r) {
   return r.as<FuncExprNode>();
 }
 
-// ── basic forms ───────────────────────────────────────────────────────────────
+// ── basic forms
+// ───────────────────────────────────────────────────────────────
 
 TEST_F(ParserFuncExprTest, FuncExpr_NoParamsNoReturn) {
   auto r = ExprResult::from("fn() { }");
@@ -1341,8 +1362,10 @@ TEST_F(ParserFuncExprTest, FuncExpr_MultiReturn) {
   ASSERT_EQ(n->signature.returns.size(), 2u);
   auto *r0 = std::get_if<IdentifierNode>(&n->signature.returns[0]->data);
   auto *r1 = std::get_if<IdentifierNode>(&n->signature.returns[1]->data);
-  ASSERT_NE(r0, nullptr); EXPECT_EQ(r0->name, "Int");
-  ASSERT_NE(r1, nullptr); EXPECT_EQ(r1->name, "Bool");
+  ASSERT_NE(r0, nullptr);
+  EXPECT_EQ(r0->name, "Int");
+  ASSERT_NE(r1, nullptr);
+  EXPECT_EQ(r1->name, "Bool");
 }
 
 // Variadic parameter
@@ -1355,7 +1378,8 @@ TEST_F(ParserFuncExprTest, FuncExpr_Variadic) {
   EXPECT_TRUE(n->signature.params[0].is_variadic);
 }
 
-// ── generic ───────────────────────────────────────────────────────────────────
+// ── generic
+// ───────────────────────────────────────────────────────────────────
 
 TEST_F(ParserFuncExprTest, FuncExpr_Generic_Single) {
   auto r = ExprResult::from("fn |T| (x T) T { }");
@@ -1416,7 +1440,8 @@ static const SpawnExprNode *spawn_expr(const ExprResult &r) {
   return r.as<SpawnExprNode>();
 }
 
-// ── block body ────────────────────────────────────────────────────────────────
+// ── block body
+// ────────────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_BlockBody) {
   auto r = ExprResult::from("spawn { }");
@@ -1438,7 +1463,8 @@ TEST_F(ParserSpawnTest, Spawn_BlockBody_WithStatements) {
   EXPECT_EQ(blk->stmts.size(), 2u);
 }
 
-// ── identifier body ───────────────────────────────────────────────────────────
+// ── identifier body
+// ───────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_IdentifierBody) {
   auto r = ExprResult::from("spawn workerFn");
@@ -1452,7 +1478,8 @@ TEST_F(ParserSpawnTest, Spawn_IdentifierBody) {
   EXPECT_EQ(id->name, "workerFn");
 }
 
-// ── named task pipe ───────────────────────────────────────────────────────────
+// ── named task pipe
+// ───────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_WithPipe_Block) {
   auto r = ExprResult::from("spawn |task| { }");
@@ -1465,7 +1492,8 @@ TEST_F(ParserSpawnTest, Spawn_WithPipe_Block) {
   EXPECT_NE(std::get_if<BlockNode>(&n->body->data), nullptr);
 }
 
-// ── generic (typed channel) ───────────────────────────────────────────────────
+// ── generic (typed channel)
+// ───────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_Generic_BlockBody) {
   auto r = ExprResult::from("|String| spawn { }");
@@ -1492,7 +1520,8 @@ TEST_F(ParserSpawnTest, Spawn_Generic_IdentifierBody) {
   EXPECT_EQ(id->name, "workerFn");
 }
 
-// ── all three together ────────────────────────────────────────────────────────
+// ── all three together
+// ────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_Generic_Pipe_Block) {
   auto r = ExprResult::from("|String| spawn |task| { }");
@@ -1506,7 +1535,8 @@ TEST_F(ParserSpawnTest, Spawn_Generic_Pipe_Block) {
   EXPECT_NE(std::get_if<BlockNode>(&n->body->data), nullptr);
 }
 
-// ── as a value ────────────────────────────────────────────────────────────────
+// ── as a value
+// ────────────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_AsValueInDeclAssign) {
   auto r = BlockResult::from("{ ch := |String| spawn { } }");
@@ -1526,7 +1556,8 @@ static const StructLiteralNode *struct_lit(const ExprResult &r) {
   return r.as<StructLiteralNode>();
 }
 
-// ── empty initialiser ─────────────────────────────────────────────────────────
+// ── empty initialiser
+// ─────────────────────────────────────────────────────────
 
 TEST_F(ParserStructLiteralTest, StructLit_Empty) {
   auto r = ExprResult::from("Point { }");
@@ -1539,7 +1570,8 @@ TEST_F(ParserStructLiteralTest, StructLit_Empty) {
   EXPECT_TRUE(n->fields.empty());
 }
 
-// ── comma-separated fields ────────────────────────────────────────────────────
+// ── comma-separated fields
+// ────────────────────────────────────────────────────
 
 TEST_F(ParserStructLiteralTest, StructLit_CommaSeparated) {
   auto r = ExprResult::from("Point { x: 0, y: 1 }");
@@ -1571,7 +1603,8 @@ TEST_F(ParserStructLiteralTest, StructLit_NewlineSeparated) {
   EXPECT_EQ(n->fields[1].name.name, "y");
 }
 
-// ── trailing comma ────────────────────────────────────────────────────────────
+// ── trailing comma
+// ────────────────────────────────────────────────────────────
 
 TEST_F(ParserStructLiteralTest, StructLit_TrailingComma) {
   auto r = ExprResult::from("Point { x: 0, y: 1, }");
@@ -1581,7 +1614,8 @@ TEST_F(ParserStructLiteralTest, StructLit_TrailingComma) {
   EXPECT_EQ(n->fields.size(), 2u);
 }
 
-// ── field values are expressions ──────────────────────────────────────────────
+// ── field values are expressions
+// ──────────────────────────────────────────────
 
 TEST_F(ParserStructLiteralTest, StructLit_ExprValue) {
   auto r = ExprResult::from("Circle { active: true }");
@@ -1592,7 +1626,8 @@ TEST_F(ParserStructLiteralTest, StructLit_ExprValue) {
   EXPECT_NE(std::get_if<BoolLiteralNode>(&n->fields[0].value->data), nullptr);
 }
 
-// ── nested struct literal as field value ──────────────────────────────────────
+// ── nested struct literal as field value
+// ──────────────────────────────────────
 
 TEST_F(ParserStructLiteralTest, StructLit_NestedValue) {
   auto r = ExprResult::from("Line { start: Point { x: 0, y: 0 } }");
@@ -1609,7 +1644,8 @@ TEST_F(ParserStructLiteralTest, StructLit_NestedValue) {
   EXPECT_EQ(inner->fields.size(), 2u);
 }
 
-// ── in statement context ──────────────────────────────────────────────────────
+// ── in statement context
+// ──────────────────────────────────────────────────────
 
 TEST_F(ParserStructLiteralTest, StructLit_InDeclAssign) {
   auto r = BlockResult::from("{ p := Point { x: 1, y: 2 } }");
@@ -1630,7 +1666,8 @@ TEST_F(ParserStructLiteralTest, StructLit_InReturn) {
   EXPECT_NE(std::get_if<StructLiteralNode>(&ret->values[0]->data), nullptr);
 }
 
-// ── if/switch bodies are not confused with struct initialisers ────────────────
+// ── if/switch bodies are not confused with struct initialisers
+// ────────────────
 
 TEST_F(ParserStructLiteralTest, IfBody_NotConsumedAsStructLit) {
   // If `{` had no special treatment the condition "x" followed by "{42}"
