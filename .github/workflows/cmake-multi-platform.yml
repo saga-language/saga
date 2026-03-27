@@ -58,29 +58,42 @@ jobs:
             C:/llvm-sdk
           key: ${{ runner.os }}-llvm-20
 
-      - name: Install Dependencies
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux' && steps.cache-llvm.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update
-            sudo apt-get install -y llvm-20-dev libclang-20-dev clang-20 libc++-dev libc++abi-dev g++
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            brew install llvm@20
-          fi
+          sudo apt-get update
+          sudo apt-get install -y llvm-20-dev libclang-20-dev clang-20 libc++-dev libc++abi-dev g++
 
-      - name: Install LLVM (Windows)
+      - name: Install Dependencies (MacOS)
+        if: runner.os == 'macOS' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: brew install llvm@20
+
+      - name: Install Dependencies (Windows)
         if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $version = "18.1.8"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-$version-windows-x64.7z"
+          $filename = "clang+llvm-$version-x86_64-pc-windows-msvc"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$filename.tar.xz"
 
-          # Download and Extract using built-in tools
-          Invoke-WebRequest -Uri $url -OutFile "llvm_sdk.7z"
-          7z x llvm_sdk.7z -o"C:\llvm-sdk" -y
+          Write-Host "Downloading LLVM 20 SDK..."
+          curl.exe -L $url -o llvm.tar.xz
 
-          # Set paths for the next steps
+          # Extract the .tar.xz (tar on Windows handles .xz automatically)
+          mkdir C:\llvm-sdk
+          tar -xf llvm.tar.xz -C C:\llvm-sdk --strip-components=1
+
+          # Final Verification
+          if (Test-Path "C:\llvm-sdk\lib\cmake\llvm\LLVMConfig.cmake") {
+              Write-Host "SUCCESS: LLVM 20 SDK extracted to C:\llvm-sdk"
+          } else {
+              Write-Error "FAILURE: SDK files not found in extracted archive."
+              exit 1
+          }
+
+          # Set paths for the rest of the workflow
           echo "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm" >> $GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=C:/llvm-sdk" >> $GITHUB_ENV
           echo "C:/llvm-sdk/bin" >> $GITHUB_PATH
