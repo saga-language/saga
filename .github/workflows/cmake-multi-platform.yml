@@ -67,10 +67,8 @@ jobs:
             sudo apt-get install -y llvm-20-dev libclang-20-dev clang-20 libc++-dev libc++abi-dev g++
           elif [ "$RUNNER_OS" == "macOS" ]; then
             brew install llvm@20
-          elif [ "$RUNNER_OS" == "Windows"]; then
-            if [ ! -d "C:/Program Files/LLVM" ]; then
-              choco install llvm -y
-            fi
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            choco install llvm -y --force --no-progress
           fi
 
       - name: Set LLVM Path
@@ -78,12 +76,18 @@ jobs:
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
             echo "LLVM_DIR=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
           elif [ "$RUNNER_OS" == "macOS" ]; then
             LLVM_PATH=$(brew --prefix llvm@20)
             echo "LLVM_DIR=$LLVM_PATH/lib/cmake/llvm" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
             echo "$LLVM_PATH/bin" >> $GITHUB_PATH
           elif [ "$RUNNER_OS" == "Windows" ]; then
             echo "LLVM_DIR=C:/Program Files/LLVM/lib/cmake/llvm" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=C:/Program Files/LLVM" >> $GITHUB_ENV
+
+            # Add the bin directory to PATH so 'clang' or 'lld' can be found if needed
+            echo "C:/Program Files/LLVM/bin" >> $GITHUB_PATH
           fi
 
       - name: Set reusable strings
@@ -96,6 +100,7 @@ jobs:
       - name: Configure CMake
         # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
         # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
+        # DLLVM_DIR is passed for Windows builds
         env:
           CC: ${{ matrix.c_compiler }}
           CXX: ${{ matrix.cxx_compiler }}
@@ -104,7 +109,8 @@ jobs:
           -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
           -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-          -DCMAKE_PREFIX_PATH="${{ env.LLVM_DIR }}"
+          -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
+          -DLLVM_DIR="${{ env.LLVM_DIR }}"
           -S ${{ github.workspace }}
 
       - name: Build
