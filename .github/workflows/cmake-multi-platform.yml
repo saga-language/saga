@@ -1,0 +1,148 @@
+# This starter workflow is for a CMake project running on multiple platforms. There is a different starter workflow if you just want a single platform.
+# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-single-platform.yml
+name: CMake on multiple platforms
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. Consider changing this to true when your workflow is stable.
+      fail-fast: false
+
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        build_type: [Release]
+        c_compiler: [gcc, clang, cl]
+        include:
+          - os: windows-latest
+            c_compiler: cl
+            cpp_compiler: cl
+          - os: ubuntu-latest
+            c_compiler: gcc
+            cpp_compiler: g++
+          - os: ubuntu-latest
+            c_compiler: clang
+            cpp_compiler: clang++
+          - os: macos-latest
+            c_compiler: clang
+            cpp_compiler: clang++
+        exclude:
+          - os: macos-latest
+            c_compiler: cl
+          - os: macos-latest
+            c_compiler: gcc
+          - os: ubuntu-latest
+            c_compiler: cl
+          - os: windows-latest
+            c_compiler: gcc
+          - os: windows-latest
+            c_compiler: clang
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/opt/llvm@20
+            C:/llvm-sdk
+          key: ${{ runner.os }}-llvm-20
+
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-20-dev libclang-20-dev clang-20 libc++-dev libc++abi-dev g++
+
+      - name: Install Dependencies (MacOS)
+        if: runner.os == 'macOS' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: brew install llvm@20
+
+      - name: Install Dependencies (Windows)
+        if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          VERSION="20.1.8"
+          FILENAME="clang+llvm-$VERSION-x86_64-pc-windows-msvc"
+          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$VERSION/$FILENAME.tar.xz"
+
+          echo "Downloading LLVM 20 SDK..."
+          curl -L "$URL" -o llvm.tar.xz
+
+          mkdir -p /c/llvm-sdk
+
+          # Note: Git Bash uses /c/ for C:/
+          tar -xf llvm.tar.xz -C /c/llvm-sdk --strip-components=1
+
+          if [ -f "/c/llvm-sdk/lib/cmake/llvm/LLVMConfig.cmake" ]; then
+            echo "SUCCESS: LLVM 20 SDK extracted."
+          else
+            echo "FAILURE: SDK files not found."
+            exit 1
+          fi
+
+      - name: Set LLVM Path
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            echo "LLVM_DIR=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            LLVM_PATH=$(brew --prefix llvm@20)
+            echo "LLVM_DIR=$LLVM_PATH/lib/cmake/llvm" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
+            echo "$LLVM_PATH/bin" >> $GITHUB_PATH
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            echo "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=C:/llvm-sdk" >> $GITHUB_ENV
+            echo "C:/llvm-sdk/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Set reusable strings
+        # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
+        id: strings
+        shell: bash
+        run: |
+          echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+
+      - name: Configure CMake
+        shell: bash
+        # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
+        # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
+        # DLLVM_DIR is passed for Windows builds
+        env:
+          CC: ${{ matrix.c_compiler }}
+          CXX: ${{ matrix.cpp_compiler }}
+        run: |
+          # This prevents Bash from escaping characters in Windows paths
+          SAFE_BUILD_DIR=$(echo "${{ steps.strings.outputs.build-output-dir }}" | sed 's/\\/\//g')
+          SAFE_WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+
+          cmake -B "$SAFE_BUILD_DIR" \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
+            -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
+            -DLLVM_DIR="${{ env.LLVM_DIR }}" \
+            -S "$SAFE_WORKSPACE"
+
+      - name: Build
+        # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
+        run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+
+      - name: Test
+        working-directory: ${{ steps.strings.outputs.build-output-dir }}
+        # Execute tests defined by the CMake configuration. Note that --build-config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
+        # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
+        run: ctest --build-config ${{ matrix.build_type }}

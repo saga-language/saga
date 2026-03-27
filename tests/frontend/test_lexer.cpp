@@ -215,12 +215,12 @@ TEST(Lexer, Scan_StringLiteral_MultipleCharacters) {
 
 TEST(Lexer, Scan_StringLiteral_EscapedQuote) {
   Lexer l;
-  auto f = File::from_source("test.txt", R"("say \"hello\"")");
+  auto f = File::from_source("test.txt", R"str("say \"hello\"")str");
   l.init(f.get());
   auto t = l.scan();
 
   ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
-  ASSERT_EQ(t.literal, R"("say \"hello\"")");
+  ASSERT_EQ(t.literal, R"str("say \"hello\"")str");
   ASSERT_EQ(t.offset, 0);
 }
 
