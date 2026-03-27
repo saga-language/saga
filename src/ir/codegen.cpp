@@ -82,6 +82,26 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "mc_bool_to_string", module.get());
+
+  // mc_array* mc_array_new(i64 elem_size, i64 initial_cap)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_array_new", module.get());
+
+  // void mc_array_push(mc_array* arr, void* elem)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_array_push", module.get());
+
+  // void* mc_array_at(mc_array* arr, i64 index)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_array_at", module.get());
+
+  // i64 mc_array_size(mc_array* arr)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_array_size", module.get());
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -618,6 +638,12 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           },
           [&](const SelectorNode &n) -> llvm::Value * {
             return emit_selector(n, node);
+          },
+          [&](const ArrayLiteralNode &n) -> llvm::Value * {
+            return emit_array_literal(n);
+          },
+          [&](const IndexExprNode &n) -> llvm::Value * {
+            return emit_index_expr(n);
           },
           [&](const BreakNode &) -> llvm::Value * {
             if (!loop_stack.empty())
@@ -1180,9 +1206,88 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       emit_expr(*iter->update);
       builder.CreateBr(cond_bb);
 
-    } else if (std::get_if<ForRangeClauseNode>(&mode_node->data)) {
-      // ── Range-based: for v : iterable { ... } — deferred to Slice 9.
-      builder.CreateBr(exit_bb);
+    } else if (auto *range = std::get_if<ForRangeClauseNode>(&mode_node->data)) {
+      // ── Range-based: for v : iterable { ... } ─────────────────────
+      auto *iterable = emit_expr(*range->iterable);
+      if (!iterable) {
+        builder.CreateBr(exit_bb);
+      } else {
+        auto iter_sem = semantic_type(*range->iterable);
+        bool is_array = iter_sem && iter_sem->kind == TypeKind::Array;
+
+        if (is_array) {
+          // Get array size.
+          auto *size_fn = module->getFunction("mc_array_size");
+          auto *arr_len = builder.CreateCall(size_fn, {iterable}, "arr.len");
+
+          // Create index variable.
+          auto *idx_alloca = create_entry_alloca(func, ".idx", i64_type);
+          builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx_alloca);
+
+          // Create allocas for loop variables.
+          llvm::AllocaInst *key_alloca = nullptr;
+          llvm::AllocaInst *val_alloca = nullptr;
+
+          auto &arr_info = std::get<ArrayTypeInfo>(iter_sem->detail);
+          auto *elem_ll = llvm_type(arr_info.element);
+
+          if (range->vars.size() == 1) {
+            val_alloca = create_entry_alloca(
+                func, std::string(range->vars[0].name), elem_ll);
+            locals[std::string(range->vars[0].name)] = val_alloca;
+          } else if (range->vars.size() == 2) {
+            key_alloca = create_entry_alloca(
+                func, std::string(range->vars[0].name), i64_type);
+            locals[std::string(range->vars[0].name)] = key_alloca;
+            val_alloca = create_entry_alloca(
+                func, std::string(range->vars[1].name), elem_ll);
+            locals[std::string(range->vars[1].name)] = val_alloca;
+          }
+
+          // Branch to condition.
+          builder.CreateBr(cond_bb);
+
+          // Condition: idx < len.
+          builder.SetInsertPoint(cond_bb);
+          auto *cur_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
+          auto *cmp = builder.CreateICmpSLT(cur_idx, arr_len, "range.cmp");
+          builder.CreateCondBr(cmp, body_bb, exit_bb);
+
+          // Body: load element, store to loop var(s).
+          func->insert(func->end(), body_bb);
+          builder.SetInsertPoint(body_bb);
+
+          auto *at_fn = module->getFunction("mc_array_at");
+          auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
+          auto *elem_ptr =
+              builder.CreateCall(at_fn, {iterable, body_idx}, "at");
+          auto *elem_val =
+              builder.CreateLoad(elem_ll, elem_ptr, "elem");
+
+          if (key_alloca)
+            builder.CreateStore(body_idx, key_alloca);
+          if (val_alloca)
+            builder.CreateStore(elem_val, val_alloca);
+
+          auto &body_block = std::get<BlockNode>(node.body->data);
+          emit_block(body_block);
+          if (!builder.GetInsertBlock()->getTerminator())
+            builder.CreateBr(update_bb);
+
+          // Update: idx++.
+          func->insert(func->end(), update_bb);
+          builder.SetInsertPoint(update_bb);
+          auto *upd_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
+          auto *next_idx =
+              builder.CreateAdd(upd_idx, llvm::ConstantInt::get(i64_type, 1),
+                                "idx.next");
+          builder.CreateStore(next_idx, idx_alloca);
+          builder.CreateBr(cond_bb);
+        } else {
+          // Non-array iterable — not yet supported.
+          builder.CreateBr(exit_bb);
+        }
+      }
 
     } else {
       // ── Condition-only: for cond { ... } ──────────────────────────
@@ -1222,6 +1327,90 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
   func->insert(func->end(), exit_bb);
   builder.SetInsertPoint(exit_bb);
 
+  return nullptr;
+}
+
+// ===========================================================================
+// Array literals
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
+  // Determine element size from the semantic type.
+  auto sem = semantic_type(
+      *reinterpret_cast<const Node *>(&node)); // hack: node is embedded
+  // Try to get element type from the first element.
+  int64_t elem_size = 8; // default to i64 size
+  llvm::Type *elem_ll_type = i64_type;
+
+  if (!node.elements.empty()) {
+    auto first_sem = semantic_type(*node.elements[0]);
+    if (first_sem) {
+      elem_ll_type = llvm_type(first_sem);
+      if (elem_ll_type->isDoubleTy())
+        elem_size = 8;
+      else if (elem_ll_type->isIntegerTy(1))
+        elem_size = 1;
+      else if (elem_ll_type->isIntegerTy(64))
+        elem_size = 8;
+      else if (elem_ll_type->isPointerTy())
+        elem_size = 8;
+    }
+  }
+
+  // Create the array: mc_array_new(elem_size, initial_cap)
+  auto *new_fn = module->getFunction("mc_array_new");
+  auto *arr = builder.CreateCall(
+      new_fn,
+      {llvm::ConstantInt::get(i64_type, elem_size),
+       llvm::ConstantInt::get(i64_type,
+                              std::max((int64_t)node.elements.size(), (int64_t)4))},
+      "arr");
+
+  // Push each element.
+  auto *push_fn = module->getFunction("mc_array_push");
+  auto *func = builder.GetInsertBlock()->getParent();
+
+  for (auto &elem_node : node.elements) {
+    auto *val = emit_expr(*elem_node);
+    if (!val)
+      continue;
+
+    // mc_array_push takes a void* to the element.  We need to store the
+    // value to a temporary alloca and pass its address.
+    auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
+    builder.CreateStore(val, tmp);
+    builder.CreateCall(push_fn, {arr, tmp});
+  }
+
+  return arr;
+}
+
+// ===========================================================================
+// Index expressions
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
+  auto *obj = emit_expr(*node.object);
+  if (!obj)
+    return nullptr;
+
+  // Check if this is an array index.
+  auto obj_sem = semantic_type(*node.object);
+  if (obj_sem && obj_sem->kind == TypeKind::Array) {
+    auto *idx = emit_expr(*node.index);
+    if (!idx)
+      return nullptr;
+
+    auto *at_fn = module->getFunction("mc_array_at");
+    auto *elem_ptr = builder.CreateCall(at_fn, {obj, idx}, "at");
+
+    // Determine the element type to load.
+    auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
+    auto *elem_ll = llvm_type(arr_info.element);
+    return builder.CreateLoad(elem_ll, elem_ptr, "elem");
+  }
+
+  // String indexing — deferred for now.
   return nullptr;
 }
 
@@ -1354,6 +1543,7 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
       return builder.CreateLoad(ftype, gep, field_name);
   }
 
+  // Array built-in methods accessed via selector (handled in call).
   return nullptr;
 }
 
@@ -1362,6 +1552,63 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
 // ===========================================================================
 
 llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
+  // Check for method calls on objects (selector calls like arr.Size()).
+  if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
+    std::string method(sel->field.name);
+    auto *obj = emit_expr(*sel->object);
+    if (!obj)
+      return nullptr;
+
+    auto obj_sem = semantic_type(*sel->object);
+
+    // Array methods.
+    if (obj_sem && obj_sem->kind == TypeKind::Array) {
+      if (method == "Size") {
+        auto *size_fn = module->getFunction("mc_array_size");
+        return builder.CreateCall(size_fn, {obj}, "size");
+      }
+      if (method == "Push" && !node.args.empty()) {
+        auto *val = emit_expr(*node.args[0]);
+        if (!val) return nullptr;
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *tmp = create_entry_alloca(func, "push.tmp", val->getType());
+        builder.CreateStore(val, tmp);
+        auto *push_fn = module->getFunction("mc_array_push");
+        builder.CreateCall(push_fn, {obj, tmp});
+        return obj; // Push returns the array.
+      }
+    }
+
+    // String methods.
+    if (obj_sem && obj_sem->kind == TypeKind::String) {
+      if (method == "Size") {
+        // String size = load the len field from mc_string.
+        auto *len_gep = builder.CreateStructGEP(string_type, obj, 1, "len.ptr");
+        return builder.CreateLoad(i64_type, len_gep, "len");
+      }
+    }
+
+    // Int/Float/Bool .String() method — convert to string.
+    if (method == "String" && obj_sem) {
+      if (obj_sem->kind == TypeKind::Int) {
+        return builder.CreateCall(
+            module->getFunction("mc_int_to_string"), {obj}, "str");
+      }
+      if (obj_sem->kind == TypeKind::Float) {
+        return builder.CreateCall(
+            module->getFunction("mc_float_to_string"), {obj}, "str");
+      }
+      if (obj_sem->kind == TypeKind::Bool) {
+        auto *ext = builder.CreateZExt(obj, i64_type, "bext");
+        return builder.CreateCall(
+            module->getFunction("mc_bool_to_string"), {ext}, "str");
+      }
+    }
+
+    return nullptr;
+  }
+
+  // Direct function call.
   auto *ident = std::get_if<IdentifierNode>(&node.callee->data);
   if (!ident)
     return nullptr;

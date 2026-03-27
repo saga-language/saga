@@ -143,6 +143,8 @@ private:
   llvm::Value *emit_for_expr(const ForExprNode &node);
   llvm::Value *emit_struct_literal(const StructLiteralNode &node);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
+  llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
+  llvm::Value *emit_index_expr(const IndexExprNode &node);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   std::pair<llvm::Value *, llvm::Type *>

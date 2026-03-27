@@ -1292,7 +1292,141 @@ TEST(CodeGen, MultipleStructTypes) {
             nullptr);
 }
 
+// ===========================================================================
+// Slice 9 — Arrays: literal, indexing, for-range, Size, Push
+// ===========================================================================
+
+TEST(CodeGen, ArrayLiteralCreated) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [1, 2, 3]\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should call mc_array_new.
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_array_new")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, ArrayPushCalled) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [10, 20]\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  int push_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_array_push")
+          push_count++;
+  EXPECT_EQ(push_count, 2);
+}
+
+TEST(CodeGen, ArrayIndexAccess) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [10, 20, 30]\n"
+      "  x := arr[1]\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_at = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_array_at")
+          found_at = true;
+  EXPECT_TRUE(found_at);
+}
+
+TEST(CodeGen, ArraySizeMethod) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [1, 2, 3]\n"
+      "  n := arr.Size()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_array_size")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, ArrayPushMethod) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [1, 2]\n"
+      "  arr.Push(3)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have 3 push calls: 2 from literal + 1 from .Push()
+  int push_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_array_push")
+          push_count++;
+  EXPECT_EQ(push_count, 3);
+}
+
+TEST(CodeGen, ForRangeArray) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [10, 20, 30]\n"
+      "  for v : arr {\n"
+      "    intrinsic_print(\".\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have for.cond and for.body blocks.
+  bool found_cond = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.cond"))
+      found_cond = true;
+  EXPECT_TRUE(found_cond);
+}
+
+TEST(CodeGen, ForRangeKeyValue) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [10, 20]\n"
+      "  for k, v : arr {\n"
+      "    intrinsic_print(\"*\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_GE(main->size(), 4u);
+}
+
+TEST(CodeGen, ArrayRuntimeDeclared) {
+  auto r = CG::from("pub fn Main() Void {}");
+  EXPECT_NE(r.func("mc_array_new"), nullptr);
+  EXPECT_NE(r.func("mc_array_push"), nullptr);
+  EXPECT_NE(r.func("mc_array_at"), nullptr);
+  EXPECT_NE(r.func("mc_array_size"), nullptr);
+}
+
 } // namespace mc
+
 
 
 

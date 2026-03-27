@@ -144,26 +144,30 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
         {"Equals", make_func_type({t.string_type}, {t.bool_type}), true});
     break;
 
-  case TypeKind::Array:
-    // Generic methods — T is the element type, resolved during type-checking.
+  case TypeKind::Array: {
+    // Array methods use a type-param placeholder for the element type.
+    // The analyzer's type-checker resolves the concrete element type at
+    // each call site; these signatures just need the right arity.
+    auto tp = make_type_param(9990, "T");
     methods.push_back(
-        {"At", make_func_type({t.int_type}, {}), true}); // return type TBD
+        {"At", make_func_type({t.int_type}, {tp}), true});
     methods.push_back(
-        {"Find", make_func_type({}, {}), true}); // generic signature TBD
+        {"Find", make_func_type({tp}, {make_union_type({t.int_type, t.error_iface})}), true});
     methods.push_back(
-        {"Insert", make_func_type({}, {t.void_type}), true});
+        {"Insert", make_func_type({tp, t.int_type}, {t.void_type}), true});
     methods.push_back(
-        {"Push", make_func_type({}, {}), true});
+        {"Push", make_func_type({tp}, {tp}), true});
     methods.push_back(
-        {"Pop", make_func_type({}, {}), true});
+        {"Pop", make_func_type({}, {tp}), true});
     methods.push_back(
-        {"Set", make_func_type({}, {t.void_type}), true});
+        {"Set", make_func_type({t.int_type, tp}, {t.void_type}), true});
     methods.push_back(
         {"Size", make_func_type({}, {t.int_type}), true});
     // Universal methods
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
+  }
 
   case TypeKind::Map:
     methods.push_back(

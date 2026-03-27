@@ -98,6 +98,46 @@ mc_string *mc_bool_to_string(int64_t val) {
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* Array                                                                    */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+  void *data;
+  int64_t len;
+  int64_t cap;
+  int64_t elem_size;
+} mc_array;
+
+mc_array *mc_array_new(int64_t elem_size, int64_t initial_cap) {
+  if (initial_cap < 4) initial_cap = 4;
+  mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
+  arr->data = malloc((size_t)(elem_size * initial_cap));
+  arr->len = 0;
+  arr->cap = initial_cap;
+  arr->elem_size = elem_size;
+  return arr;
+}
+
+void mc_array_push(mc_array *arr, const void *elem) {
+  if (!arr) return;
+  if (arr->len >= arr->cap) {
+    arr->cap = arr->cap * 2;
+    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
+  }
+  memcpy((char *)arr->data + arr->elem_size * arr->len, elem, (size_t)arr->elem_size);
+  arr->len++;
+}
+
+void *mc_array_at(mc_array *arr, int64_t index) {
+  if (!arr || index < 0 || index >= arr->len) return NULL;
+  return (char *)arr->data + arr->elem_size * index;
+}
+
+int64_t mc_array_size(mc_array *arr) {
+  return arr ? arr->len : 0;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* Intrinsics                                                               */
 /* ───────────────────────────────────────────────────────────────────────── */
 
