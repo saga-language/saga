@@ -26,7 +26,7 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DPENDS
 
 add_library(compiler_core STATIC ${CORE_SOURCES})
 
-target_link_libraries(compiler_core PUBLIC {LLVM_AVAILABLE_LIBS})
+target_link_libraries(compiler_core PUBLIC ${LLVM_AVAILABLE_LIBS})
 
 target_include_directories(compiler_core
     PUBLIC
