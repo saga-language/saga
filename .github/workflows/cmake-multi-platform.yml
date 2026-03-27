@@ -55,7 +55,7 @@ jobs:
           path: |
             /usr/lib/llvm-20
             /usr/local/opt/llvm@20
-            C:/Program Files/LLVM
+            C:/llvm-sdk
           key: ${{ runner.os }}-llvm-20
 
       - name: Install Dependencies
@@ -69,11 +69,21 @@ jobs:
             brew install llvm@20
           fi
 
-      - name: Install LLVM (Windows vcpkg)
+      - name: Install LLVM (Windows)
         if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          vcpkg install llvm:x64-windows
+          $version = "18.1.8"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/llvm-$version-windows-x64.7z"
+
+          # Download and Extract using built-in tools
+          Invoke-WebRequest -Uri $url -OutFile "llvm_sdk.7z"
+          7z x llvm_sdk.7z -o"C:\llvm-sdk" -y
+
+          # Set paths for the next steps
+          echo "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:/llvm-sdk" >> $GITHUB_ENV
+          echo "C:/llvm-sdk/bin" >> $GITHUB_PATH
 
       - name: Set LLVM Path
         shell: bash
@@ -86,9 +96,6 @@ jobs:
             echo "LLVM_DIR=$LLVM_PATH/lib/cmake/llvm" >> $GITHUB_ENV
             echo "CMAKE_PREFIX_PATH=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
             echo "$LLVM_PATH/bin" >> $GITHUB_PATH
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            echo "LLVM_DIR=C:/msys64/mingw64/lib/cmake/llvm" >> $GITHUB_ENV
-            echo "CMAKE_PREFIX_PATH=C:/msys64/mingw64" >> $GITHUB_ENV
           fi
 
       - name: Set reusable strings
@@ -106,20 +113,13 @@ jobs:
           CC: ${{ matrix.c_compiler }}
           CXX: ${{ matrix.cxx_compiler }}
         run: >
-          if [ "$RUNNER_OS" == "Windows" ]; then
-           cmake -B build \
-             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-             -DCMAKE_BUILD_TYPE=Release \
-             -S ${{ github.workspace }}
-          else
-           cmake -B ${{ steps.strings.outputs.build-output-dir }} \
-             -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
-             -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
-             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-             -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
-             -DLLVM_DIR="${{ env.LLVM_DIR }}" \
-             -S ${{ github.workspace }}
-           fi
+          cmake -B ${{ steps.strings.outputs.build-output-dir }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
+            -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
+            -DLLVM_DIR="${{ env.LLVM_DIR }}" \
+            -S ${{ github.workspace }}
 
       - name: Build
         # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
