@@ -112,9 +112,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // Link with the system linker (cc).
+  // Link with the system linker (cc), including the Saga runtime.
+#ifndef SAGA_RUNTIME_LIB
+#define SAGA_RUNTIME_LIB ""
+#endif
+  std::string runtime_lib = SAGA_RUNTIME_LIB;
   std::string link_cmd =
-      std::format("cc {} -o {} -no-pie", obj_path, output_path);
+      std::format("cc {} {} -o {} -no-pie", obj_path, runtime_lib, output_path);
   int link_status = std::system(link_cmd.c_str());
 
   // Clean up the temporary object file.

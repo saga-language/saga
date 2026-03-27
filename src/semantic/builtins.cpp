@@ -313,6 +313,11 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       Symbol::builtin("true", SymbolKind::Constant, types.bool_type));
   global_scope->declare(
       Symbol::builtin("false", SymbolKind::Constant, types.bool_type));
+
+  // -- Built-in intrinsic functions ----------------------------------------
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_print", SymbolKind::Function,
+      make_func_type({types.string_type}, {types.void_type})));
 }
 
 } // namespace mc

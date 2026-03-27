@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace mc {
 
@@ -35,6 +36,15 @@ struct CodeGen {
   Analyzer &analyzer;
   ErrorList errors;
 
+  // ── LLVM type cache ──────────────────────────────────────────────────
+
+  /// The canonical mc_string struct type: { ptr, i64 }
+  llvm::StructType *string_type = nullptr;
+
+  // ── String constant deduplication ────────────────────────────────────
+
+  std::unordered_map<std::string, llvm::Value *> string_constants;
+
   // ── Construction ─────────────────────────────────────────────────────
 
   CodeGen(const std::string &module_name, Analyzer &analyzer);
@@ -56,11 +66,37 @@ struct CodeGen {
   bool write_object(const std::string &path);
 
 private:
+  // ── Type helpers ─────────────────────────────────────────────────────
+
+  /// Initialise cached LLVM types (string struct, etc.).
+  void init_types();
+
+  /// Declare external runtime functions (mc_intrinsic_print, etc.).
+  void declare_runtime();
+
   // ── Visitors ─────────────────────────────────────────────────────────
 
   void emit_source(const SourceNode &node);
   void emit_package(const PackageNode &node);
   void emit_func_decl(const FuncDeclNode &node);
+
+  // ── Block / statement emission ───────────────────────────────────────
+
+  void emit_block(const BlockNode &block);
+  void emit_stmt(const Node &node);
+
+  // ── Expression emission ──────────────────────────────────────────────
+
+  /// Emit an expression and return its LLVM value (may be nullptr for Void).
+  llvm::Value *emit_expr(const Node &node);
+  llvm::Value *emit_string_literal(const StringLiteralNode &node);
+  llvm::Value *emit_call_expr(const CallExprNode &node);
+  llvm::Value *emit_identifier(const IdentifierNode &node);
+
+  // ── String helpers ───────────────────────────────────────────────────
+
+  /// Create a global constant mc_string struct for the given text.
+  llvm::Value *make_string_constant(const std::string &text);
 };
 
 } // namespace mc
