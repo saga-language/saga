@@ -125,6 +125,10 @@ struct Analyzer {
   /// and outer-scope shadowing.  Returns false on error.
   bool declare_local(const Symbol &sym);
 
+  // Phase 2: Type resolution — resolve type annotations to TypePtrs.
+  // Public so codegen can query return types from signature nodes.
+  TypePtr resolve_type(const Node &node);
+
 private:
   // ── Node visitors (to be implemented in phases) ──────────────────────
 
@@ -132,9 +136,6 @@ private:
   void visit_package(const PackageNode &node);
   void visit_source(const SourceNode &node);
   void collect_declaration(const Node &node);
-
-  // Phase 2: Type resolution — resolve type annotations to TypePtrs.
-  TypePtr resolve_type(const Node &node);
   TypePtr resolve_identifier_type(const IdentifierNode &node);
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);

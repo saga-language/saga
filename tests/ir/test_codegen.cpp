@@ -222,4 +222,323 @@ TEST(CodeGen, DuplicateStringsDeduplicated) {
   EXPECT_EQ(args[0], args[1]) << "Identical strings should share a global";
 }
 
+// ===========================================================================
+// Helper: count instructions of a given opcode in a function
+// ===========================================================================
+
+static int count_opcodes(llvm::Function *fn, unsigned opcode) {
+  int count = 0;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (inst.getOpcode() == opcode)
+        count++;
+  return count;
+}
+
+static bool has_alloca_named(llvm::Function *fn, const std::string &name) {
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getName() == name)
+          return true;
+  return false;
+}
+
+// ===========================================================================
+// Slice 3 — Integer arithmetic, variables, and control
+// ===========================================================================
+
+TEST(CodeGen, IntLiteralConstant) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 42\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+}
+
+TEST(CodeGen, IntAddition) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 + 32\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // LLVM will constant-fold 10+32 to 42, so we just check it compiles
+  // and the variable exists.
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+}
+
+TEST(CodeGen, IntSubtraction) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 50 - 8\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
+TEST(CodeGen, IntMultiplication) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 6 * 7\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
+TEST(CodeGen, IntDivision) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 100 / 7\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
+TEST(CodeGen, IntModulo) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 100 % 7\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
+TEST(CodeGen, VariableLoadAndArithmetic) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 10\n"
+      "  b := 20\n"
+      "  c := a + b\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "a"));
+  EXPECT_TRUE(has_alloca_named(main, "b"));
+  EXPECT_TRUE(has_alloca_named(main, "c"));
+  // Should have load instructions to read a and b.
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Load), 2);
+}
+
+TEST(CodeGen, CompoundAddAssignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  x += 5\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a load, add, and store for the compound assignment.
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Load), 1);
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Add), 1);
+}
+
+TEST(CodeGen, CompoundSubAssignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  x -= 3\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Sub), 1);
+}
+
+TEST(CodeGen, CompoundMulAssignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  x *= 2\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Mul), 1);
+}
+
+TEST(CodeGen, CompoundDivAssignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  x /= 2\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::SDiv), 1);
+}
+
+TEST(CodeGen, Increment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 0\n"
+      "  x++\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Add), 1);
+}
+
+TEST(CodeGen, Decrement) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  x--\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Sub), 1);
+}
+
+TEST(CodeGen, UnaryNegation) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 5\n"
+      "  y := -x\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "y"));
+}
+
+TEST(CodeGen, UnaryLogicalNot) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := true\n"
+      "  y := !x\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "y"));
+}
+
+TEST(CodeGen, BoolLiterals) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := true\n"
+      "  f := false\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_TRUE(has_alloca_named(main, "t"));
+  EXPECT_TRUE(has_alloca_named(main, "f"));
+}
+
+TEST(CodeGen, ComparisonEq) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 1\n"
+      "  b := 2\n"
+      "  x := a == b\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::ICmp), 1);
+}
+
+TEST(CodeGen, ComparisonLt) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 1\n"
+      "  b := 2\n"
+      "  x := a < b\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::ICmp), 1);
+}
+
+TEST(CodeGen, BitwiseOps) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 0xFF & 0x0F\n"
+      "  b := 0xFF | 0x0F\n"
+      "  c := 0xFF ^ 0x0F\n"
+      "  d := 1 << 4\n"
+      "  e := 16 >> 2\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "a"));
+  EXPECT_TRUE(has_alloca_named(main, "e"));
+}
+
+TEST(CodeGen, GroupedExpression) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := (1 + 2) * 3\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
+TEST(CodeGen, VarDeclExplicitType) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int = 42\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
+TEST(CodeGen, VarDeclZeroInit) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  // Should store a zero value.
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Store), 1);
+}
+
+TEST(CodeGen, SimpleAssignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1\n"
+      "  x = 2\n"
+      "}");
+  auto *main = r.func("main");
+  // Two stores: initial := 1 and reassignment = 2.
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Store), 2);
+}
+
+TEST(CodeGen, FloatLiteral) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 3.14\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+}
+
+TEST(CodeGen, FloatArithmetic) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1.5 + 2.5\n"
+      "  y := 3.0 * 2.0\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  EXPECT_TRUE(has_alloca_named(main, "y"));
+}
+
+TEST(CodeGen, NonMainFuncReturnType) {
+  auto r = CG::from(
+      "fn answer() Int { 42 }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("answer");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, HexAndBinaryLiterals) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 0xFF\n"
+      "  b := 0b1010\n"
+      "  c := 0o777\n"
+      "}");
+  auto *main = r.func("main");
+  EXPECT_TRUE(has_alloca_named(main, "a"));
+  EXPECT_TRUE(has_alloca_named(main, "b"));
+  EXPECT_TRUE(has_alloca_named(main, "c"));
+}
+
+TEST(CodeGen, UnderscoresInLiterals) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1_000_000\n"
+      "}");
+  EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
+}
+
 } // namespace mc
+

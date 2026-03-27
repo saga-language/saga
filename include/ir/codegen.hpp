@@ -14,18 +14,12 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace mc {
 
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
-//
-// Usage:
-//   CodeGen codegen("module_name", analyzer);
-//   codegen.emit(root_node);
-//   codegen.dump();                     // print IR to stderr
-//   codegen.write_object("out.o");      // write native object file
-//   codegen.write_ir("out.ll");         // write textual IR
 // ---------------------------------------------------------------------------
 
 struct CodeGen {
@@ -38,12 +32,23 @@ struct CodeGen {
 
   // ── LLVM type cache ──────────────────────────────────────────────────
 
-  /// The canonical mc_string struct type: { ptr, i64 }
-  llvm::StructType *string_type = nullptr;
+  llvm::StructType *string_type = nullptr;   // { ptr, i64 }
+  llvm::Type *i64_type = nullptr;
+  llvm::Type *f64_type = nullptr;
+  llvm::Type *i1_type = nullptr;
+  llvm::Type *void_ll_type = nullptr;
 
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
+
+  // ── Local variable storage (per-function) ────────────────────────────
+
+  /// Maps local variable names to their alloca instructions.
+  std::unordered_map<std::string, llvm::AllocaInst *> locals;
+
+  /// True when the current function is Main (return type is i32).
+  bool current_func_is_main = false;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -51,28 +56,27 @@ struct CodeGen {
 
   // ── Entry point ──────────────────────────────────────────────────────
 
-  /// Emit LLVM IR for the entire AST.
   void emit(const Node &root);
 
   // ── Output ───────────────────────────────────────────────────────────
 
-  /// Print the module IR to stderr.
   void dump() const;
-
-  /// Write textual LLVM IR to a file.  Returns false on I/O error.
   bool write_ir(const std::string &path) const;
-
-  /// Write a native object file.  Returns false on error.
   bool write_object(const std::string &path);
 
 private:
   // ── Type helpers ─────────────────────────────────────────────────────
 
-  /// Initialise cached LLVM types (string struct, etc.).
   void init_types();
-
-  /// Declare external runtime functions (mc_intrinsic_print, etc.).
   void declare_runtime();
+
+  /// Get the LLVM type corresponding to a semantic TypePtr.
+  llvm::Type *llvm_type(const TypePtr &t);
+
+  /// Create an alloca at the function entry block.
+  llvm::AllocaInst *create_entry_alloca(llvm::Function *fn,
+                                        const std::string &name,
+                                        llvm::Type *type);
 
   // ── Visitors ─────────────────────────────────────────────────────────
 
@@ -85,17 +89,30 @@ private:
   void emit_block(const BlockNode &block);
   void emit_stmt(const Node &node);
 
+  // ── Statement emitters ───────────────────────────────────────────────
+
+  void emit_var_decl(const VarDeclNode &node);
+  void emit_decl_assign(const DeclAssignNode &node);
+  void emit_assign(const AssignNode &node);
+  void emit_return(const ReturnNode &node);
+  void emit_increment(const IncrementNode &node);
+  void emit_decrement(const DecrementNode &node);
+
   // ── Expression emission ──────────────────────────────────────────────
 
-  /// Emit an expression and return its LLVM value (may be nullptr for Void).
   llvm::Value *emit_expr(const Node &node);
+  llvm::Value *emit_int_literal(const IntegerLiteralNode &node);
+  llvm::Value *emit_float_literal(const FloatLiteralNode &node);
+  llvm::Value *emit_bool_literal(const BoolLiteralNode &node);
   llvm::Value *emit_string_literal(const StringLiteralNode &node);
   llvm::Value *emit_call_expr(const CallExprNode &node);
   llvm::Value *emit_identifier(const IdentifierNode &node);
+  llvm::Value *emit_binary_expr(const BinaryExprNode &node);
+  llvm::Value *emit_unary_expr(const UnaryExprNode &node);
+  llvm::Value *emit_group_expr(const GroupExprNode &node);
 
   // ── String helpers ───────────────────────────────────────────────────
 
-  /// Create a global constant mc_string struct for the given text.
   llvm::Value *make_string_constant(const std::string &text);
 };
 
