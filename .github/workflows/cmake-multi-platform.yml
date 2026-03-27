@@ -126,13 +126,17 @@ jobs:
           CC: ${{ matrix.c_compiler }}
           CXX: ${{ matrix.cpp_compiler }}
         run: |
-          cmake -B ${{ steps.strings.outputs.build-output-dir }} \
+          # This prevents Bash from escaping characters in Windows paths
+          SAFE_BUILD_DIR=$(echo "${{ steps.strings.outputs.build-output-dir }}" | sed 's/\\/\//g')
+          SAFE_WORKSPACE=$(echo "${{ github.workspace }}" | sed 's/\\/\//g')
+
+          cmake -B "$SAFE_BUILD_DIR" \
             -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
             -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
             -DLLVM_DIR="${{ env.LLVM_DIR }}" \
-            -S "${{ github.workspace }}"
+            -S "${{ SAFE_WORKSPACE }}"
 
       - name: Build
         # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
