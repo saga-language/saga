@@ -71,6 +71,11 @@ jobs:
             choco install llvm -y --force --no-progress
           fi
 
+      - name: Find LLVM Files
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "C:\Program Files\LLVM" -Filter "LLVMConfig.cmake" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+
       - name: Set LLVM Path
         shell: bash
         run: |
