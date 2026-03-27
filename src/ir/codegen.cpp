@@ -472,6 +472,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const GroupExprNode &n) -> llvm::Value * {
             return emit_group_expr(n);
           },
+          [&](const IfExprNode &n) -> llvm::Value * {
+            return emit_if_expr(n);
+          },
           [&](const CallExprNode &n) -> llvm::Value * {
             return emit_call_expr(n);
           },
@@ -826,6 +829,125 @@ llvm::Value *CodeGen::emit_unary_expr(const UnaryExprNode &node) {
 
 llvm::Value *CodeGen::emit_group_expr(const GroupExprNode &node) {
   return emit_expr(*node.inner);
+}
+
+// ===========================================================================
+// If/else expression
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
+  auto *cond = emit_expr(*node.condition);
+  if (!cond)
+    return nullptr;
+
+  // If the condition is an i64 (from a comparison that got widened), truncate
+  // to i1.  If it's already i1, use it directly.
+  if (!cond->getType()->isIntegerTy(1)) {
+    cond = builder.CreateICmpNE(
+        cond, llvm::Constant::getNullValue(cond->getType()), "tobool");
+  }
+
+  auto *func = builder.GetInsertBlock()->getParent();
+
+  // Create basic blocks.
+  auto *then_bb = llvm::BasicBlock::Create(context, "then", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "merge");
+  llvm::BasicBlock *else_bb = nullptr;
+
+  if (node.else_block) {
+    else_bb = llvm::BasicBlock::Create(context, "else");
+    builder.CreateCondBr(cond, then_bb, else_bb);
+  } else {
+    builder.CreateCondBr(cond, then_bb, merge_bb);
+  }
+
+  // ── Then block ─────────────────────────────────────────────────────
+  builder.SetInsertPoint(then_bb);
+  auto &then_block = std::get<BlockNode>(node.then_block->data);
+  auto *then_val = emit_block(then_block);
+
+  // If the then block didn't terminate, branch to merge.
+  bool then_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+  if (!then_terminated)
+    builder.CreateBr(merge_bb);
+  // Record the actual ending block (may differ from then_bb if sub-blocks
+  // were created).
+  auto *then_end_bb = builder.GetInsertBlock();
+
+  // ── Else block ─────────────────────────────────────────────────────
+  llvm::Value *else_val = nullptr;
+  llvm::BasicBlock *else_end_bb = nullptr;
+  bool else_terminated = false;
+
+  if (else_bb) {
+    func->insert(func->end(), else_bb);
+    builder.SetInsertPoint(else_bb);
+    auto &else_block = std::get<BlockNode>((*node.else_block)->data);
+    else_val = emit_block(else_block);
+    else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+    if (!else_terminated)
+      builder.CreateBr(merge_bb);
+    else_end_bb = builder.GetInsertBlock();
+  }
+
+  // ── Merge block ────────────────────────────────────────────────────
+  // The merge block is reachable if at least one branch doesn't terminate.
+  // With no else block, the false branch always reaches merge.
+  bool merge_reachable = !then_terminated || !else_terminated;
+  if (!node.else_block)
+    merge_reachable = true; // false-branch falls through to merge
+
+  // Only emit merge if both branches with else terminated — then it's dead.
+  if (node.else_block && then_terminated && else_terminated) {
+    // Both branches returned/broke — merge is unreachable.
+    // Don't insert it; just leave the insert point at a terminated block.
+    // We need a valid insert point though, so add it and mark unreachable.
+    func->insert(func->end(), merge_bb);
+    builder.SetInsertPoint(merge_bb);
+    builder.CreateUnreachable();
+    return nullptr;
+  }
+
+  func->insert(func->end(), merge_bb);
+  builder.SetInsertPoint(merge_bb);
+
+  // Build a PHI node if both branches produce a value of the same type.
+  if (then_val && else_val &&
+      then_val->getType() == else_val->getType() &&
+      !then_terminated && !else_terminated) {
+    auto *phi = builder.CreatePHI(then_val->getType(), 2, "ifval");
+    phi->addIncoming(then_val, then_end_bb);
+    phi->addIncoming(else_val, else_end_bb);
+    return phi;
+  }
+
+  // If there's no else branch but the then branch produced a non-void value,
+  // create a PHI with the zero value on the false path.
+  if (then_val && !node.else_block && !then_terminated &&
+      !then_val->getType()->isVoidTy()) {
+    auto *zero = llvm::Constant::getNullValue(then_val->getType());
+    // The false path comes directly from the entry (before the branch).
+    // We need the predecessor of merge that isn't then_end_bb.
+    // That's the block that had the conditional branch (entry).
+    auto *false_pred = merge_bb->getSinglePredecessor();
+    if (!false_pred) {
+      // merge has two predecessors: then_end_bb and the original entry.
+      for (auto *pred : llvm::predecessors(merge_bb)) {
+        if (pred != then_end_bb) {
+          false_pred = pred;
+          break;
+        }
+      }
+    }
+    if (false_pred) {
+      auto *phi = builder.CreatePHI(then_val->getType(), 2, "ifval");
+      phi->addIncoming(then_val, then_end_bb);
+      phi->addIncoming(zero, false_pred);
+      return phi;
+    }
+  }
+
+  return then_val;
 }
 
 // ===========================================================================

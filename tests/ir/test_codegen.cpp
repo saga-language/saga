@@ -868,7 +868,166 @@ TEST(CodeGen, CallChainResult) {
   EXPECT_TRUE(found_add);
 }
 
+// ===========================================================================
+// Slice 6 — If/else branching
+// ===========================================================================
+
+TEST(CodeGen, IfWithoutElse) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  if x > 5 {\n"
+      "    intrinsic_print(\"big\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have at least 3 basic blocks: entry, then, merge.
+  EXPECT_GE(main->size(), 3u);
+}
+
+TEST(CodeGen, IfElseBranching) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  if x > 5 {\n"
+      "    intrinsic_print(\"big\\n\")\n"
+      "  } else {\n"
+      "    intrinsic_print(\"small\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have at least 4 basic blocks: entry, then, else, merge.
+  EXPECT_GE(main->size(), 4u);
+}
+
+TEST(CodeGen, IfExpressionWithPhi) {
+  auto r = CG::from(
+      "fn Max(a, b Int) Int {\n"
+      "  if a > b { a } else { b }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Max");
+  ASSERT_NE(fn, nullptr);
+  // Should have a PHI node in the merge block.
+  bool found_phi = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::PHINode>(&inst))
+        found_phi = true;
+  EXPECT_TRUE(found_phi) << "If-else expression should produce a PHI node";
+}
+
+TEST(CodeGen, IfExprReturnedAsTail) {
+  auto r = CG::from(
+      "fn Max(a, b Int) Int {\n"
+      "  if a > b { a } else { b }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Max");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
+  // The merge block should have a ret.
+  bool found_ret = false;
+  for (auto &bb : *fn)
+    if (auto *term = bb.getTerminator())
+      if (auto *ret = llvm::dyn_cast<llvm::ReturnInst>(term))
+        if (ret->getReturnValue() &&
+            ret->getReturnValue()->getType()->isIntegerTy(64))
+          found_ret = true;
+  EXPECT_TRUE(found_ret);
+}
+
+TEST(CodeGen, IfStringExpression) {
+  auto r = CG::from(
+      "fn Label(n Int) String {\n"
+      "  if n > 0 { \"pos\" } else { \"neg\" }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Label");
+  ASSERT_NE(fn, nullptr);
+  bool found_phi = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::PHINode>(&inst))
+        found_phi = true;
+  EXPECT_TRUE(found_phi);
+}
+
+TEST(CodeGen, IfWithEarlyReturn) {
+  // if-without-else where the then block returns, code continues after.
+  auto r = CG::from(
+      "fn Guard(n Int) Int {\n"
+      "  if n < 0 {\n"
+      "    return 0\n"
+      "  }\n"
+      "  n\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Guard");
+  ASSERT_NE(fn, nullptr);
+  // Should have at least 3 blocks: entry, then (with ret), merge (with ret n).
+  EXPECT_GE(fn->size(), 3u);
+  // Should have two ret instructions (one in then, one in merge).
+  int ret_count = 0;
+  for (auto &bb : *fn)
+    if (auto *term = bb.getTerminator())
+      if (llvm::isa<llvm::ReturnInst>(term))
+        ret_count++;
+  EXPECT_EQ(ret_count, 2);
+}
+
+TEST(CodeGen, IfBothBranchesReturn) {
+  auto r = CG::from(
+      "fn Choose(n Int) Int {\n"
+      "  if n > 0 { n } else { -n }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Choose");
+  ASSERT_NE(fn, nullptr);
+  // The PHI result should be returned.
+  bool found_phi = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::PHINode>(&inst))
+        found_phi = true;
+  EXPECT_TRUE(found_phi);
+}
+
+TEST(CodeGen, IfCondBranch) {
+  // Verify the conditional branch instruction exists.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1\n"
+      "  if x > 0 {\n"
+      "    intrinsic_print(\"yes\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_br = false;
+  for (auto &bb : *main)
+    if (auto *term = bb.getTerminator())
+      if (auto *br = llvm::dyn_cast<llvm::BranchInst>(term))
+        if (br->isConditional())
+          found_br = true;
+  EXPECT_TRUE(found_br) << "Should have a conditional branch";
+}
+
+TEST(CodeGen, IfElseAssignVariable) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  y := if x > 5 { 1 } else { 0 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "y"));
+}
+
 } // namespace mc
+
 
 
 

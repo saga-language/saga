@@ -119,6 +119,7 @@ private:
   llvm::Value *emit_binary_expr(const BinaryExprNode &node);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
+  llvm::Value *emit_if_expr(const IfExprNode &node);
 
   // ── Type query helpers ───────────────────────────────────────────────
 
