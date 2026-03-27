@@ -74,29 +74,26 @@ jobs:
         if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $version = "18.1.8"
+          $version = "20.1.8"
           $filename = "clang+llvm-$version-x86_64-pc-windows-msvc"
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$filename.tar.xz"
 
           Write-Host "Downloading LLVM 20 SDK..."
           curl.exe -L $url -o llvm.tar.xz
 
-          # Extract the .tar.xz (tar on Windows handles .xz automatically)
-          mkdir C:\llvm-sdk
+          mkdir C:\llvm-sdk -Force
           tar -xf llvm.tar.xz -C C:\llvm-sdk --strip-components=1
 
-          # Final Verification
           if (Test-Path "C:\llvm-sdk\lib\cmake\llvm\LLVMConfig.cmake") {
-              Write-Host "SUCCESS: LLVM 20 SDK extracted to C:\llvm-sdk"
+            Write-Host "SUCCESS: LLVM 20 SDK extracted."
+            # Use Add-Content for reliable GitHub Environment updates in PWSH
+            Add-Content -Path $env:GITHUB_ENV -Value "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm"
+            Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=C:/llvm-sdk"
+            Add-Content -Path $env:GITHUB_PATH -Value "C:/llvm-sdk/bin"
           } else {
-              Write-Error "FAILURE: SDK files not found in extracted archive."
-              exit 1
+            Write-Error "FAILURE: SDK files not found."
+            exit 1
           }
-
-          # Set paths for the rest of the workflow
-          echo "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm" >> $GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=C:/llvm-sdk" >> $GITHUB_ENV
-          echo "C:/llvm-sdk/bin" >> $GITHUB_PATH
 
       - name: Set LLVM Path
         shell: bash
