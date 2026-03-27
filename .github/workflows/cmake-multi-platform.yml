@@ -106,6 +106,10 @@ jobs:
             echo "LLVM_DIR=$LLVM_PATH/lib/cmake/llvm" >> $GITHUB_ENV
             echo "CMAKE_PREFIX_PATH=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
             echo "$LLVM_PATH/bin" >> $GITHUB_PATH
+          elif [ "$RUNNER_OS" == "Windows" ]; then
+            echo "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm" >> $GITHUB_ENV
+            echo "CMAKE_PREFIX_PATH=C:/llvm-sdk" >> $GITHUB_ENV
+            echo "C:/llvm-sdk/bin" >> $GITHUB_PATH
           fi
 
       - name: Set reusable strings
@@ -122,8 +126,8 @@ jobs:
         # DLLVM_DIR is passed for Windows builds
         env:
           CC: ${{ matrix.c_compiler }}
-          CXX: ${{ matrix.cxx_compiler }}
-        run: >
+          CXX: ${{ matrix.cpp_compiler }}
+        run: |
           cmake -B ${{ steps.strings.outputs.build-output-dir }} \
             -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
             -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
