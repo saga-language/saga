@@ -111,6 +111,11 @@ private:
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
 
+  // ── Type query helpers ───────────────────────────────────────────────
+
+  /// Look up the semantic type of an AST node (recorded by the analyzer).
+  TypePtr semantic_type(const Node &node) const;
+
   // ── String helpers ───────────────────────────────────────────────────
 
   llvm::Value *make_string_constant(const std::string &text);

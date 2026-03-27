@@ -51,13 +51,37 @@ void CodeGen::init_types() {
 }
 
 void CodeGen::declare_runtime() {
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+
   // void mc_intrinsic_print(mc_string* s)
-  auto *print_type = llvm::FunctionType::get(
-      void_ll_type,
-      {llvm::PointerType::getUnqual(context)},
-      /*isVarArg=*/false);
-  llvm::Function::Create(print_type, llvm::Function::ExternalLinkage,
-                         "mc_intrinsic_print", module.get());
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_intrinsic_print", module.get());
+
+  // mc_string* mc_string_concat(mc_string* a, mc_string* b)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_string_concat", module.get());
+
+  // int64_t mc_string_compare(mc_string* a, mc_string* b)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_string_compare", module.get());
+
+  // mc_string* mc_int_to_string(int64_t val)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_int_to_string", module.get());
+
+  // mc_string* mc_float_to_string(double val)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {f64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_float_to_string", module.get());
+
+  // mc_string* mc_bool_to_string(int64_t val)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_bool_to_string", module.get());
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -270,12 +294,22 @@ void CodeGen::emit_assign(const AssignNode &node) {
       // Compound assignment: load current, apply op, store.
       auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
       llvm::Value *result = nullptr;
-      switch (node.op) {
-      case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
-      case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
-      case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
-      case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
-      default: result = rhs; break;
+
+      // Check if this is a string compound assignment.
+      auto target_sem = semantic_type(*node.targets[i]);
+      bool is_str = target_sem && target_sem->kind == TypeKind::String;
+
+      if (is_str && node.op == K::AddAssignment) {
+        auto *concat_fn = module->getFunction("mc_string_concat");
+        result = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
+      } else {
+        switch (node.op) {
+        case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
+        case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
+        case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
+        case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
+        default: result = rhs; break;
+        }
       }
       builder.CreateStore(result, alloca);
     }
@@ -538,10 +572,80 @@ llvm::Value *CodeGen::make_string_constant(const std::string &text) {
 }
 
 // ===========================================================================
+// Semantic type query
+// ===========================================================================
+
+TypePtr CodeGen::semantic_type(const Node &node) const {
+  auto it = analyzer.node_types.find(&node);
+  if (it != analyzer.node_types.end())
+    return it->second;
+  return nullptr;
+}
+
+// ===========================================================================
 // Binary expressions
 // ===========================================================================
 
 llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
+  // Check semantic types to detect string operations.
+  auto lhs_sem = semantic_type(*node.lhs);
+  bool is_string = lhs_sem && lhs_sem->kind == TypeKind::String;
+
+  // ── String operations ────────────────────────────────────────────────
+  if (is_string) {
+    auto *lhs = emit_expr(*node.lhs);
+    auto *rhs = emit_expr(*node.rhs);
+    if (!lhs || !rhs)
+      return nullptr;
+
+    using K = Token::Kind;
+    switch (node.op) {
+    case K::Add: {
+      auto *concat_fn = module->getFunction("mc_string_concat");
+      return builder.CreateCall(concat_fn, {lhs, rhs}, "concat");
+    }
+    case K::Equal: {
+      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
+      return builder.CreateICmpEQ(cmp, llvm::ConstantInt::get(i64_type, 0),
+                                  "eq");
+    }
+    case K::NotEqual: {
+      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
+      return builder.CreateICmpNE(cmp, llvm::ConstantInt::get(i64_type, 0),
+                                  "ne");
+    }
+    case K::LessThan: {
+      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
+      return builder.CreateICmpSLT(cmp, llvm::ConstantInt::get(i64_type, 0),
+                                   "lt");
+    }
+    case K::GreaterThan: {
+      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
+      return builder.CreateICmpSGT(cmp, llvm::ConstantInt::get(i64_type, 0),
+                                   "gt");
+    }
+    case K::LessThanEqual: {
+      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
+      return builder.CreateICmpSLE(cmp, llvm::ConstantInt::get(i64_type, 0),
+                                   "le");
+    }
+    case K::GreaterThanEqual: {
+      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
+      return builder.CreateICmpSGE(cmp, llvm::ConstantInt::get(i64_type, 0),
+                                   "ge");
+    }
+    default:
+      return nullptr;
+    }
+  }
+
+  // ── Numeric / bool operations ────────────────────────────────────────
   auto *lhs = emit_expr(*node.lhs);
   auto *rhs = emit_expr(*node.rhs);
   if (!lhs || !rhs)
@@ -549,7 +653,7 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
 
   bool is_float = lhs->getType()->isDoubleTy() || rhs->getType()->isDoubleTy();
 
-  // If one side is float and the other int, promote the int to float.
+  // Int→Float promotion if mixed.
   if (is_float) {
     if (lhs->getType()->isIntegerTy(64))
       lhs = builder.CreateSIToFP(lhs, f64_type, "itof");
@@ -559,7 +663,7 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
 
   using K = Token::Kind;
 
-  // ── Arithmetic ───────────────────────────────────────────────────────
+  // ── Float arithmetic ─────────────────────────────────────────────────
   if (is_float) {
     switch (node.op) {
     case K::Add:      return builder.CreateFAdd(lhs, rhs, "fadd");
@@ -579,15 +683,11 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
   case K::Divide:   return builder.CreateSDiv(lhs, rhs, "div");
   case K::Modulo:   return builder.CreateSRem(lhs, rhs, "mod");
   case K::Pow: {
-    // Integer exponentiation via runtime call or loop.
-    // For now, emit a simple loop.  Could be replaced with llvm.powi later.
-    // Simple approach: call a helper.  For Slice 3, just use repeated mul
-    // for small exponents or fallback to 1 for non-constant.
-    // TODO: proper pow intrinsic.  For now, emit 0 as placeholder.
+    // TODO: proper pow intrinsic.
     return llvm::ConstantInt::get(i64_type, 0);
   }
 
-  // ── Comparison (integer) ───────────────────────────────────────────
+  // ── Comparison ─────────────────────────────────────────────────────
   case K::Equal:
     return is_float ? builder.CreateFCmpOEQ(lhs, rhs, "eq")
                     : builder.CreateICmpEQ(lhs, rhs, "eq");

@@ -540,5 +540,149 @@ TEST(CodeGen, UnderscoresInLiterals) {
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
 }
 
+// ===========================================================================
+// Slice 4 — String values, concatenation, comparisons, conversions
+// ===========================================================================
+
+TEST(CodeGen, StringVariable) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"hello\"\n"
+      "  intrinsic_print(s)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "s"));
+  // Should have a call to mc_intrinsic_print.
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, StringConcatEmitsCall) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := \"hello\"\n"
+      "  b := \" world\"\n"
+      "  c := a + b\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_concat = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_concat")
+          found_concat = true;
+  EXPECT_TRUE(found_concat) << "Expected call to mc_string_concat";
+}
+
+TEST(CodeGen, StringConcatAssignEmitsCall) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"hello\"\n"
+      "  s += \" world\"\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_concat = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_concat")
+          found_concat = true;
+  EXPECT_TRUE(found_concat) << "Expected call to mc_string_concat for +=";
+}
+
+TEST(CodeGen, StringEqualityEmitsCompare) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := \"hello\"\n"
+      "  b := \"world\"\n"
+      "  x := a == b\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_cmp = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_compare")
+          found_cmp = true;
+  EXPECT_TRUE(found_cmp) << "Expected call to mc_string_compare";
+}
+
+TEST(CodeGen, StringLessThanEmitsCompare) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := \"abc\"\n"
+      "  b := \"def\"\n"
+      "  x := a < b\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_cmp = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_compare")
+          found_cmp = true;
+  EXPECT_TRUE(found_cmp);
+}
+
+TEST(CodeGen, RuntimeConversionsDeclared) {
+  auto r = CG::from("pub fn Main() Void {}");
+  EXPECT_NE(r.func("mc_string_concat"), nullptr);
+  EXPECT_NE(r.func("mc_string_compare"), nullptr);
+  EXPECT_NE(r.func("mc_int_to_string"), nullptr);
+  EXPECT_NE(r.func("mc_float_to_string"), nullptr);
+  EXPECT_NE(r.func("mc_bool_to_string"), nullptr);
+}
+
+TEST(CodeGen, StringNotAddedAsInteger) {
+  // Verify that string + string does NOT emit an integer add instruction.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := \"x\"\n"
+      "  b := \"y\"\n"
+      "  c := a + b\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // There should be no integer add (only concat call).
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (inst.getOpcode() == llvm::Instruction::Add)
+        FAIL() << "String concatenation should not use integer add";
+}
+
+TEST(CodeGen, MultipleConcatenations) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := \"a\" + \"b\" + \"c\"\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have two concat calls: ("a"+"b") then (result+"c").
+  int concat_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_concat")
+          concat_count++;
+  EXPECT_EQ(concat_count, 2);
+}
+
 } // namespace mc
+
 
