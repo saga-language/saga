@@ -215,7 +215,7 @@ TEST(Lexer, Scan_StringLiteral_MultipleCharacters) {
 
 TEST(Lexer, Scan_StringLiteral_EscapedQuote) {
   Lexer l;
-  auto f = File::from_source("test.txt", R"("say \"hello\"")");
+  auto f = File::from_source("test.txt", R"str("say \"hello\"")str");
   l.init(f.get());
   auto t = l.scan();
 
