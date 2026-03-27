@@ -69,6 +69,12 @@ jobs:
             brew install llvm@20
           fi
 
+      - name: Install LLVM (Windows vcpkg)
+        if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          vcpkg install llvm:x64-windows
+
       - name: Set LLVM Path
         shell: bash
         run: |
@@ -100,13 +106,20 @@ jobs:
           CC: ${{ matrix.c_compiler }}
           CXX: ${{ matrix.cxx_compiler }}
         run: >
-          cmake -B ${{ steps.strings.outputs.build-output-dir }}
-          -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
-          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-          -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}"
-          -DLLVM_DIR="${{ env.LLVM_DIR }}"
-          -S ${{ github.workspace }}
+          if [ "$RUNNER_OS" == "Windows" ]; then
+           cmake -B build \
+             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+             -DCMAKE_BUILD_TYPE=Release \
+             -S ${{ github.workspace }}
+          else
+           cmake -B ${{ steps.strings.outputs.build-output-dir }} \
+             -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
+             -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
+             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+             -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
+             -DLLVM_DIR="${{ env.LLVM_DIR }}" \
+             -S ${{ github.workspace }}
+           fi
 
       - name: Build
         # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
