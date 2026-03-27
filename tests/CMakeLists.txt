@@ -22,6 +22,7 @@ target_link_libraries(compiler_tests
     PRIVATE
     compiler_core
     GTest::gtest_main
+    GTest::gmock
 )
 
 target_include_directories(compiler_tests
