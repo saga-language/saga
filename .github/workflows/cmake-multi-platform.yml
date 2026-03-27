@@ -72,28 +72,26 @@ jobs:
 
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
-        shell: pwsh
+        shell: bash
         run: |
-          $version = "20.1.8"
-          $filename = "clang+llvm-$version-x86_64-pc-windows-msvc"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$filename.tar.xz"
+          VERSION="20.1.8"
+          FILENAME="clang+llvm-$VERSION-x86_64-pc-windows-msvc"
+          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$VERSION/$FILENAME.tar.xz"
 
-          Write-Host "Downloading LLVM 20 SDK..."
-          curl.exe -L $url -o llvm.tar.xz
+          echo "Downloading LLVM 20 SDK..."
+          curl -L "$URL" -o llvm.tar.xz
 
-          mkdir C:\llvm-sdk -Force
-          tar -xf llvm.tar.xz -C C:\llvm-sdk --strip-components=1
+          mkdir -p /c/llvm-sdk
 
-          if (Test-Path "C:\llvm-sdk\lib\cmake\llvm\LLVMConfig.cmake") {
-            Write-Host "SUCCESS: LLVM 20 SDK extracted."
-            # Use Add-Content for reliable GitHub Environment updates in PWSH
-            Add-Content -Path $env:GITHUB_ENV -Value "LLVM_DIR=C:/llvm-sdk/lib/cmake/llvm"
-            Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=C:/llvm-sdk"
-            Add-Content -Path $env:GITHUB_PATH -Value "C:/llvm-sdk/bin"
-          } else {
-            Write-Error "FAILURE: SDK files not found."
+          # Note: Git Bash uses /c/ for C:/
+          tar -xf llvm.tar.xz -C /c/llvm-sdk --strip-components=1
+
+          if [ -f "/c/llvm-sdk/lib/cmake/llvm/LLVMConfig.cmake" ]; then
+            echo "SUCCESS: LLVM 20 SDK extracted."
+          else
+            echo "FAILURE: SDK files not found."
             exit 1
-          }
+          fi
 
       - name: Set LLVM Path
         shell: bash
