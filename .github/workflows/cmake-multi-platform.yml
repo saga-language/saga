@@ -67,9 +67,16 @@ jobs:
             sudo apt-get install -y llvm-20-dev libclang-20-dev clang-20 libc++-dev libc++abi-dev g++
           elif [ "$RUNNER_OS" == "macOS" ]; then
             brew install llvm@20
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            choco install llvm -y --force --no-progress
           fi
+
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # Use the version pre-installed in the MSYS2 directory on the runner
+          # This version actually contains the /lib/cmake/llvm folder
+          echo "LLVM_DIR=C:/msys64/mingw64/lib/cmake/llvm" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:/msys64/mingw64" >> $GITHUB_ENV
 
       - name: Find LLVM Files
         shell: pwsh
