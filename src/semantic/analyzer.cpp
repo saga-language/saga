@@ -435,12 +435,28 @@ void Analyzer::resolve_declaration(const Node &node) {
 }
 
 void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
+  // If the function is generic, push a temporary scope to hold type params
+  // so the signature can reference them.
+  bool has_generics = fn.generic.has_value();
+  if (has_generics) {
+    push_scope(ScopeKind::Block);
+    enter_generics(*fn.generic);
+  }
+
   auto fn_type = resolve_signature(fn.signature);
+
+  // Mark the function type as variadic if the last param is.
+  if (!fn.signature.params.empty() && fn.signature.params.back().is_variadic) {
+    auto &fi = std::get<FuncTypeInfo>(fn_type->detail);
+    fi.is_variadic = true;
+  }
+
+  if (has_generics)
+    pop_scope();
 
   // If this is a receiver method, attach it to the receiver's struct type.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
-    // The receiver type should be an identifier referencing a struct.
     if (auto *ident = std::get_if<IdentifierNode>(&recv_type_node->data)) {
       auto recv_sym = lookup(std::string(ident->name));
       if (recv_sym && recv_sym->type &&
@@ -1258,7 +1274,24 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
     return builtins.error_type;
   }
 
-  auto &info = std::get<StructTypeInfo>(type_expr_type->detail);
+  // Check each field value first and collect types for generic inference.
+  std::vector<std::pair<std::string, TypePtr>> field_vals;
+  for (auto &fa : node.fields) {
+    auto val_type = check_expr(*fa.value);
+    field_vals.push_back({std::string(fa.name.name), val_type});
+  }
+
+  // If the struct is generic, instantiate it by inferring type params.
+  auto &raw_info = std::get<StructTypeInfo>(type_expr_type->detail);
+  auto effective_type = type_expr_type;
+  if (!raw_info.type_params.empty()) {
+    effective_type =
+        instantiate_generic_struct(type_expr_type, field_vals, node.span);
+    if (is_error_type(effective_type))
+      return builtins.error_type;
+  }
+
+  auto &info = std::get<StructTypeInfo>(effective_type->detail);
 
   // Collect all fields including those from embedded types.
   auto all_fields = info.fields;
@@ -1270,29 +1303,26 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
     }
   }
 
-  // Check each field assignment.
-  for (auto &fa : node.fields) {
-    std::string fname(fa.name.name);
-    auto val_type = check_expr(*fa.value);
-
+  // Validate each field assignment against the (possibly instantiated) type.
+  for (auto &[fname, val_type] : field_vals) {
     bool found = false;
     for (auto &fi : all_fields) {
       if (fi.name == fname) {
         found = true;
         if (fi.type && !is_error_type(val_type)) {
-          expect_assignable(fa.value->span, fi.type, val_type,
+          expect_assignable(node.span, fi.type, val_type,
                             std::format("field '{}'", fname));
         }
         break;
       }
     }
     if (!found) {
-      error(fa.name.span,
+      error(node.span,
             std::format("struct '{}' has no field '{}'", info.name, fname));
     }
   }
 
-  return type_expr_type;
+  return effective_type;
 }
 
 TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
@@ -1421,6 +1451,15 @@ TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
     }
     return operand;
   }
+  if (node.op == Token::Kind::BitwiseNot) {
+    if (operand->kind != TypeKind::Int) {
+      error(node.operand->span,
+            std::format("bitwise NOT requires integer type, got {}",
+                        type_to_string(operand)));
+      return builtins.error_type;
+    }
+    return operand;
+  }
 
   error(node.span, "unsupported unary operator");
   return builtins.error_type;
@@ -1441,39 +1480,51 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
     return builtins.error_type;
   }
 
-  auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
+  // Check arguments first to collect their types.
+  std::vector<TypePtr> arg_types;
+  for (auto &arg : node.args) {
+    arg_types.push_back(check_expr(*arg));
+  }
+
+  // If the callee contains type parameters, attempt generic instantiation.
+  auto effective_type = callee_type;
+  if (has_type_params(callee_type)) {
+    auto instantiated =
+        instantiate_generic_call(callee_type, arg_types, node.span);
+    if (!is_error_type(instantiated))
+      effective_type = instantiated;
+  }
+
+  auto &fn_info = std::get<FuncTypeInfo>(effective_type->detail);
 
   // Check argument count.
   if (!fn_info.is_variadic) {
-    if (node.args.size() != fn_info.params.size()) {
+    if (arg_types.size() != fn_info.params.size()) {
       error(node.span,
             std::format("expected {} argument(s), got {}",
-                        fn_info.params.size(), node.args.size()));
+                        fn_info.params.size(), arg_types.size()));
       return builtins.error_type;
     }
   } else {
-    // Variadic: at least (params.size() - 1) required args.
     if (fn_info.params.size() > 0 &&
-        node.args.size() < fn_info.params.size() - 1) {
+        arg_types.size() < fn_info.params.size() - 1) {
       error(node.span,
             std::format("expected at least {} argument(s), got {}",
-                        fn_info.params.size() - 1, node.args.size()));
+                        fn_info.params.size() - 1, arg_types.size()));
       return builtins.error_type;
     }
   }
 
-  // Check argument types.
-  for (size_t i = 0; i < node.args.size(); ++i) {
-    auto arg_type = check_expr(*node.args[i]);
+  // Check argument types against the (possibly instantiated) signature.
+  for (size_t i = 0; i < arg_types.size(); ++i) {
     if (i < fn_info.params.size()) {
-      expect_assignable(node.args[i]->span, fn_info.params[i], arg_type,
+      expect_assignable(node.args[i]->span, fn_info.params[i], arg_types[i],
                         std::format("argument {}", i + 1));
     } else if (fn_info.is_variadic && !fn_info.params.empty()) {
-      // Variadic args match the last param's element type.
       auto &last = fn_info.params.back();
       if (last->kind == TypeKind::Array) {
         auto &arr = std::get<ArrayTypeInfo>(last->detail);
-        expect_assignable(node.args[i]->span, arr.element, arg_type,
+        expect_assignable(node.args[i]->span, arr.element, arg_types[i],
                           std::format("variadic argument {}", i + 1));
       }
     }
@@ -1484,8 +1535,6 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
     return builtins.void_type;
   if (fn_info.returns.size() == 1)
     return fn_info.returns[0];
-  // Multiple returns — for now, return a void; multi-return handling
-  // is done at the assignment level.
   return builtins.void_type;
 }
 
@@ -1960,24 +2009,35 @@ void Analyzer::check_assign(const AssignNode &node) {
       if (node.op == Token::Kind::Assignment) {
         expect_assignable(node.values[i]->span, target_type, val_type,
                           "assignment");
+      } else if (node.op == Token::Kind::AddAssignment &&
+                 target_type->kind == TypeKind::String) {
+        // String concatenation assignment: s += "..."
+        expect_assignable(node.values[i]->span, builtins.string_type,
+                          val_type, "string concatenation assignment");
+      } else if (node.op == Token::Kind::DivAssignment) {
+        // Division assignment: x /= y — division can fail (div by zero),
+        // so validate numeric but note the impure semantics.
+        if (!is_numeric(target_type)) {
+          error(node.targets[i]->span,
+                std::format("/= requires numeric type, got {}",
+                            type_to_string(target_type)));
+        }
+        if (!is_error_type(val_type)) {
+          expect_assignable(node.values[i]->span, target_type, val_type,
+                            "division assignment");
+        }
       } else {
-        // Compound assignment: +=, -=, *=, /=
-        // Target must be numeric (or String for +=).
-        if (node.op == Token::Kind::AddAssignment &&
-            target_type->kind == TypeKind::String) {
-          expect_assignable(node.values[i]->span, builtins.string_type,
-                            val_type, "string concatenation assignment");
-        } else {
-          if (!is_numeric(target_type)) {
-            error(node.targets[i]->span,
-                  std::format("compound assignment requires numeric type, "
-                              "got {}",
-                              type_to_string(target_type)));
-          }
-          if (!is_error_type(val_type)) {
-            expect_assignable(node.values[i]->span, target_type, val_type,
-                              "compound assignment");
-          }
+        // Compound assignment: +=, -=, *=
+        // Target must be numeric.
+        if (!is_numeric(target_type)) {
+          error(node.targets[i]->span,
+                std::format("compound assignment requires numeric type, "
+                            "got {}",
+                            type_to_string(target_type)));
+        }
+        if (!is_error_type(val_type)) {
+          expect_assignable(node.values[i]->span, target_type, val_type,
+                            "compound assignment");
         }
       }
     }
@@ -2157,8 +2217,8 @@ void Analyzer::check_import_decl(const ImportDeclNode &) {
 // ===========================================================================
 
 TypePtr Analyzer::instantiate_generic_call(
-    const TypePtr &callee_type, const std::vector<TypeParam> &type_params,
-    const std::vector<TypePtr> &arg_types, Span call_span) {
+    const TypePtr &callee_type, const std::vector<TypePtr> &arg_types,
+    Span call_span) {
   if (!callee_type || callee_type->kind != TypeKind::Func)
     return builtins.error_type;
 
@@ -2176,16 +2236,67 @@ TypePtr Analyzer::instantiate_generic_call(
     }
   }
 
-  // Verify all type params were bound.
-  for (auto &tp : type_params) {
-    if (bindings.find(tp.id) == bindings.end()) {
-      error(call_span,
-            std::format("could not infer type for parameter '{}'", tp.name));
-      return builtins.error_type;
+  if (bindings.empty())
+    return callee_type; // No type params to substitute.
+
+  return substitute(callee_type, bindings);
+}
+
+TypePtr Analyzer::instantiate_generic_struct(
+    const TypePtr &struct_type,
+    const std::vector<std::pair<std::string, TypePtr>> &field_types,
+    Span span) {
+  if (!struct_type || struct_type->kind != TypeKind::Struct)
+    return builtins.error_type;
+
+  auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  if (info.type_params.empty())
+    return struct_type; // Not generic.
+
+  std::unordered_map<uint32_t, TypePtr> bindings;
+
+  // Unify each provided field value type against the struct's field type.
+  for (auto &[fname, ftype] : field_types) {
+    for (auto &fi : info.fields) {
+      if (fi.name == fname && fi.type) {
+        if (!unify(fi.type, ftype, bindings)) {
+          error(span,
+                std::format("cannot infer type parameter from field '{}'",
+                            fname));
+          return builtins.error_type;
+        }
+        break;
+      }
     }
   }
 
-  return substitute(callee_type, bindings);
+  if (bindings.empty())
+    return struct_type;
+
+  // Build the substituted struct type.
+  std::vector<FieldInfo> new_fields;
+  for (auto &f : info.fields) {
+    new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
+  }
+  std::vector<MethodInfo> new_methods;
+  for (auto &m : info.methods) {
+    new_methods.push_back(
+        {m.name, substitute(m.signature, bindings), m.is_public});
+  }
+
+  auto result = make_struct_type(info.name, std::move(new_fields),
+                                 std::move(new_methods));
+  auto &result_info = std::get<StructTypeInfo>(result->detail);
+  result_info.type_params = info.type_params;
+  // Record the concrete type arguments.
+  for (auto &tp : info.type_params) {
+    auto it = bindings.find(tp.id);
+    if (it != bindings.end())
+      result_info.type_args.push_back(it->second);
+  }
+  result_info.embeds = info.embeds;
+
+  return result;
 }
 
 // ===========================================================================

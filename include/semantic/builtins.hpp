@@ -36,6 +36,9 @@ struct BuiltinTypes {
   TypePtr uint32_type;
   TypePtr uint64_type;
 
+  // Character type
+  TypePtr char_type;     // Char (utf-8 character)
+
   // Sized floats
   TypePtr float32_type;
   TypePtr float64_type;

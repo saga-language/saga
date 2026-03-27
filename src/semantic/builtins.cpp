@@ -19,6 +19,7 @@ void BuiltinTypes::init() {
   int_type = make_int_type(0, true);
   float_type = make_float_type(0);
   byte_type = make_int_type(8, false); // Byte = Uint8
+  char_type = make_int_type(32, false); // Char = utf-8 codepoint (Uint32)
 
   // -- Sized integers ------------------------------------------------------
   int8_type = make_int_type(8, true);
@@ -217,6 +218,8 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
         {"Uint32", make_func_type({}, {t.uint32_type}), true});
     methods.push_back(
         {"Uint64", make_func_type({}, {t.uint64_type}), true});
+    methods.push_back(
+        {"Char", make_func_type({}, {t.char_type}), true});
     break;
 
   case TypeKind::Float:
@@ -276,6 +279,7 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   reg_type("Int", types.int_type);
   reg_type("Float", types.float_type);
   reg_type("Byte", types.byte_type);
+  reg_type("Char", types.char_type);
 
   // -- Sized integers ------------------------------------------------------
   reg_type("Int8", types.int8_type);

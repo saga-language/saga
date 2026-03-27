@@ -570,4 +570,75 @@ TEST(TypeCheck, ReceiverMethodAccess) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// Bitwise NOT (~)
+// ===========================================================================
+
+TEST(TypeCheck, BitwiseNotOnInt) {
+  auto r = TC::from("fn f() Int {\n  x := 42\n  ~x\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, BitwiseNotOnNonInt) {
+  auto r = TC::from("fn f() {\n  x := 3.14\n  ~x\n}");
+  EXPECT_TRUE(r.has_err("bitwise NOT requires integer type"));
+}
+
+TEST(TypeCheck, BitwiseNotOnBool) {
+  auto r = TC::from("fn f() {\n  x := true\n  ~x\n}");
+  EXPECT_TRUE(r.has_err("bitwise NOT requires integer type"));
+}
+
+// ===========================================================================
+// Compound assignment operators
+// ===========================================================================
+
+TEST(TypeCheck, SubAssignmentNumeric) {
+  auto r = TC::from("fn f() {\n  x := 10\n  x -= 3\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, MulAssignmentNumeric) {
+  auto r = TC::from("fn f() {\n  x := 10\n  x *= 2\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, DivAssignmentNumeric) {
+  auto r = TC::from("fn f() {\n  x := 10\n  x /= 2\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, SubAssignmentOnString) {
+  auto r = TC::from("fn f() {\n  x := \"hello\"\n  x -= \"h\"\n}");
+  EXPECT_TRUE(r.has_err("compound assignment requires numeric type"));
+}
+
+TEST(TypeCheck, DivAssignmentOnString) {
+  auto r = TC::from("fn f() {\n  x := \"hello\"\n  x /= \"h\"\n}");
+  EXPECT_TRUE(r.has_err("/= requires numeric type"));
+}
+
+// ===========================================================================
+// Char builtin type
+// ===========================================================================
+
+TEST(TypeCheck, CharTypeExists) {
+  // Char is a recognized builtin type and can be declared.
+  auto r = TC::from("fn f() {\n  c Char\n}");
+  EXPECT_TRUE(r.ok()) << "Char should be a recognized type";
+}
+
+TEST(TypeCheck, CharNotDirectlyAssignableFromInt) {
+  // Int and Char are different integer types (signed vs unsigned, different
+  // bit widths).  Per the spec, types must be converted, not cast.
+  auto r = TC::from("fn f() {\n  c Char = 65\n}");
+  EXPECT_FALSE(r.ok()) << "Int should not be directly assignable to Char";
+  EXPECT_TRUE(r.has_err("variable initializer"));
+}
+
+TEST(TypeCheck, IntCharConversion) {
+  auto r = TC::from("fn f() {\n  x := 65\n  x.Char()\n}");
+  EXPECT_TRUE(r.ok()) << "Int should have a .Char() method";
+}
+
 } // namespace mc

@@ -541,6 +541,43 @@ TypePtr substitute(const TypePtr &t,
 // Generics — unification
 // ===========================================================================
 
+bool has_type_params(const TypePtr &t) {
+  if (!t)
+    return false;
+  if (t->kind == TypeKind::TypeParam)
+    return true;
+
+  switch (t->kind) {
+  case TypeKind::Array:
+    return has_type_params(std::get<ArrayTypeInfo>(t->detail).element);
+  case TypeKind::Map: {
+    auto &m = std::get<MapTypeInfo>(t->detail);
+    return has_type_params(m.key) || has_type_params(m.value);
+  }
+  case TypeKind::Range:
+    return has_type_params(std::get<RangeTypeInfo>(t->detail).element);
+  case TypeKind::Func: {
+    auto &f = std::get<FuncTypeInfo>(t->detail);
+    for (auto &p : f.params)
+      if (has_type_params(p))
+        return true;
+    for (auto &r : f.returns)
+      if (has_type_params(r))
+        return true;
+    return false;
+  }
+  case TypeKind::Union: {
+    auto &u = std::get<UnionTypeInfo>(t->detail);
+    for (auto &a : u.alternatives)
+      if (has_type_params(a))
+        return true;
+    return false;
+  }
+  default:
+    return false;
+  }
+}
+
 bool unify(const TypePtr &param_type, const TypePtr &arg_type,
            std::unordered_map<uint32_t, TypePtr> &out) {
   if (!param_type || !arg_type)

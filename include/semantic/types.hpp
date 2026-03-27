@@ -260,4 +260,8 @@ TypePtr substitute(const TypePtr &t,
 bool unify(const TypePtr &param_type, const TypePtr &arg_type,
            std::unordered_map<uint32_t, TypePtr> &out);
 
+/// Returns true if the type (or any nested type within it) contains at
+/// least one TypeParam node.
+bool has_type_params(const TypePtr &t);
+
 } // namespace mc

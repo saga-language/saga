@@ -249,12 +249,17 @@ private:
 
   // ── Generic instantiation ────────────────────────────────────────────
 
-  /// Instantiate a generic callable: infer type args from call-site
-  /// arguments and return the substituted signature.
+  /// Instantiate a generic callable: infer type-parameter bindings from
+  /// call-site argument types and return the fully substituted signature.
   TypePtr instantiate_generic_call(const TypePtr &callee_type,
-                                   const std::vector<TypeParam> &type_params,
                                    const std::vector<TypePtr> &arg_types,
                                    Span call_span);
+
+  /// Instantiate a generic struct type: infer type-parameter bindings from
+  /// field initializer values and return the fully substituted struct type.
+  TypePtr instantiate_generic_struct(const TypePtr &struct_type,
+                                     const std::vector<std::pair<std::string, TypePtr>> &field_types,
+                                     Span span);
 
   // ── Interface conformance ────────────────────────────────────────────
 
