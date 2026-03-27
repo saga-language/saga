@@ -300,6 +300,117 @@ TEST(Lexer, Scan_StringEnd_AfterStringMiddle) {
   ASSERT_EQ(t.offset, 16);
 }
 
+// Multi-line string literal tests
+TEST(Lexer, Scan_MultiLineString_Simple) {
+  Lexer l;
+  auto f = File::from_source("test.txt", R"("""hello
+world""")");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, "\"\"\"hello\nworld\"\"\"");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_MultiLineString_Empty) {
+  Lexer l;
+  auto f = File::from_source("test.txt", R"("""""")");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, "\"\"\"\"\"\"");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_MultiLineString_WithNewlines) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"\"\"line1\nline2\nline3\"\"\"");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, "\"\"\"line1\nline2\nline3\"\"\"");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_MultiLineString_Interpolation) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"\"\"hello\n{name}\nworld\"\"\"");
+  l.init(f.get());
+
+  auto t1 = l.scan();
+  ASSERT_EQ(t1.kind, Token::Kind::StringStart);
+  ASSERT_EQ(t1.literal, "\"\"\"hello\n{");
+
+  auto t2 = l.scan();
+  ASSERT_EQ(t2.kind, Token::Kind::Identifier);
+  ASSERT_EQ(t2.literal, "name");
+
+  auto t3 = l.scan();
+  ASSERT_EQ(t3.kind, Token::Kind::StringEnd);
+  ASSERT_EQ(t3.literal, "}\nworld\"\"\"");
+}
+
+TEST(Lexer, Scan_MultiLineString_MultipleInterpolations) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"\"\"a\n{x} b {y}\nc\"\"\"");
+  l.init(f.get());
+
+  auto t1 = l.scan();
+  ASSERT_EQ(t1.kind, Token::Kind::StringStart);
+  ASSERT_EQ(t1.literal, "\"\"\"a\n{");
+
+  auto t2 = l.scan();
+  ASSERT_EQ(t2.kind, Token::Kind::Identifier);
+  ASSERT_EQ(t2.literal, "x");
+
+  auto t3 = l.scan();
+  ASSERT_EQ(t3.kind, Token::Kind::StringMiddle);
+  ASSERT_EQ(t3.literal, "} b {");
+
+  auto t4 = l.scan();
+  ASSERT_EQ(t4.kind, Token::Kind::Identifier);
+  ASSERT_EQ(t4.literal, "y");
+
+  auto t5 = l.scan();
+  ASSERT_EQ(t5.kind, Token::Kind::StringEnd);
+  ASSERT_EQ(t5.literal, "}\nc\"\"\"");
+}
+
+TEST(Lexer, Scan_MultiLineString_UnterminatedIsInvalid) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"\"\"hello\nworld");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Invalid);
+}
+
+TEST(Lexer, Scan_MultiLineString_EscapedContent) {
+  Lexer l;
+  auto f = File::from_source("test.txt", R"("""hello\nworld""")");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, R"("""hello\nworld""")");
+  ASSERT_EQ(t.offset, 0);
+}
+
+TEST(Lexer, Scan_MultiLineString_SingleQuoteInsideNotTerminator) {
+  // A single " inside a multi-line string should not end it
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"\"\"say \"hello\"\nworld\"\"\"");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::StringLiteral);
+  ASSERT_EQ(t.literal, "\"\"\"say \"hello\"\nworld\"\"\"");
+  ASSERT_EQ(t.offset, 0);
+}
+
 // Encapsulation operators
 TEST(Lexer, Scan_LeftBrace) {
   Lexer l;

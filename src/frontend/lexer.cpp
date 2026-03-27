@@ -56,6 +56,12 @@ Token Lexer::scan() {
     file->add_file_newline(reading_offset);
     return accept(Token::Kind::Terminator);
   case '"':
+    if (peek() == '"' && reading_offset + 1 < source.length() &&
+        source[reading_offset + 1] == '"') {
+      next(); // consume second "
+      next(); // consume third "
+      return scan_multi_line_string(c);
+    }
     return scan_string(c);
   case '/':
     if (match('/')) {
@@ -124,6 +130,9 @@ Token Lexer::scan() {
   case '{':
     return accept(Token::Kind::LeftBrace);
   case '}':
+    if (is_interpolating_multi_line()) {
+      return scan_multi_line_string(c);
+    }
     if (is_interpolating()) {
       return scan_string(c);
     }
@@ -197,7 +206,11 @@ bool Lexer::is_hex(const char c) {
          c == '_';
 }
 bool Lexer::is_interpolating() {
-  return !state.empty() && state.back() == LexerState::InString;
+  return !state.empty() && (state.back() == LexerState::InString ||
+                            state.back() == LexerState::InMultiLineString);
+}
+bool Lexer::is_interpolating_multi_line() {
+  return !state.empty() && state.back() == LexerState::InMultiLineString;
 }
 bool Lexer::is_octal(const char c) { return c >= '0' && c <= '7'; }
 bool Lexer::is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
@@ -266,7 +279,7 @@ Token Lexer::scan_number(const char c) {
     next();
   }
 
-  if (peek() == '.') {
+  if (peek() == '.' && !(reading_offset + 1 < source.length() && source[reading_offset + 1] == '.')) {
     next();
     return scan_float();
   }
@@ -279,6 +292,60 @@ Token Lexer::scan_octal() {
     next();
   }
   return accept(Token::Kind::IntegerLiteral);
+}
+
+Token Lexer::scan_multi_line_string(const char c) {
+  Token::Kind mode = Token::Kind::StringLiteral;
+  if (c == '}') {
+    mode = Token::Kind::StringEnd;
+    if (is_interpolating()) {
+      state.pop_back();
+    }
+  }
+
+  while (true) {
+    if (is_eof()) {
+      error_list.report_error(file->position_at(reading_offset),
+                              "Unexpected EOF in multi-line string.");
+      return accept(Token::Kind::Invalid);
+    }
+
+    // Check for closing """
+    if (peek() == '"' && reading_offset + 2 < source.length() &&
+        source[reading_offset + 1] == '"' &&
+        source[reading_offset + 2] == '"') {
+      next(); // consume first "
+      next(); // consume second "
+      next(); // consume third "
+      return accept(mode);
+    }
+
+    if (peek() == '\\') {
+      next(); // consume the backslash
+      next(); // skip whatever follows — don't interpret it
+      continue;
+    }
+
+    if (peek() == '{') {
+      // start of interpolated expression; stop scanning this fragment
+      if (mode == Token::Kind::StringEnd) {
+        mode = Token::Kind::StringMiddle;
+      } else {
+        mode = Token::Kind::StringStart;
+      }
+      state.push_back(LexerState::InMultiLineString);
+      break;
+    }
+
+    if (peek() == '\n') {
+      file->add_file_newline(reading_offset + 1);
+    }
+
+    next();
+  }
+
+  next(); // consume the '{' that triggered the break
+  return accept(mode);
 }
 
 Token Lexer::scan_string(const char c) {
