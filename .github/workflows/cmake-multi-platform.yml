@@ -27,6 +27,9 @@ jobs:
           - os: ubuntu-latest
             c_compiler: gcc
             cpp_compiler: g++
+          - os: ubuntu-latest
+            c_compiler: clang
+            cpp_compiler: clang++
           - os: macos-latest
             c_compiler: clang
             cpp_compiler: clang++
@@ -74,7 +77,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            echo "LLVM_DIR=$(llvm-config --cmakedir)" >> $GITHUB_ENV
+            echo "LLVM_DIR=$(llvm-config-20 --cmakedir)" >> $GITHUB_ENV
           elif [ "$RUNNER_OS" == "macOS" ]; then
             LLVM_PATH=$(brew --prefix llvm@20)
             echo "LLVM_DIR=$LLVM_PATH/lib/cmake/llvm" >> $GITHUB_ENV
