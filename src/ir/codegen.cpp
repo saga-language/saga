@@ -475,6 +475,19 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const IfExprNode &n) -> llvm::Value * {
             return emit_if_expr(n);
           },
+          [&](const ForExprNode &n) -> llvm::Value * {
+            return emit_for_expr(n);
+          },
+          [&](const BreakNode &) -> llvm::Value * {
+            if (!loop_stack.empty())
+              builder.CreateBr(loop_stack.back().break_bb);
+            return nullptr;
+          },
+          [&](const NextNode &) -> llvm::Value * {
+            if (!loop_stack.empty())
+              builder.CreateBr(loop_stack.back().next_bb);
+            return nullptr;
+          },
           [&](const CallExprNode &n) -> llvm::Value * {
             return emit_call_expr(n);
           },
@@ -948,6 +961,127 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
   }
 
   return then_val;
+}
+
+// ===========================================================================
+// For loop expression
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
+  auto *func = builder.GetInsertBlock()->getParent();
+
+  // Create basic blocks for the loop structure.
+  auto *cond_bb = llvm::BasicBlock::Create(context, "for.cond", func);
+  auto *body_bb = llvm::BasicBlock::Create(context, "for.body");
+  auto *update_bb = llvm::BasicBlock::Create(context, "for.update");
+  auto *exit_bb = llvm::BasicBlock::Create(context, "for.exit");
+
+  // Push loop context for break/next.
+  loop_stack.push_back({exit_bb, update_bb});
+
+  if (!node.mode) {
+    // ── Infinite loop: for { ... } ─────────────────────────────────
+    // No condition — branch directly to body, condition block is just
+    // a trampoline.
+    builder.CreateBr(body_bb);
+
+    // Condition block (used as the "next" target — just jumps to body).
+    // We already branched to body from entry, so cond_bb becomes the
+    // "next" landing.  Rewrite: next goes to cond_bb which goes to body.
+    builder.SetInsertPoint(cond_bb);
+    builder.CreateBr(body_bb);
+
+    // Update the loop context: next → cond_bb (which goes to body).
+    loop_stack.back().next_bb = cond_bb;
+
+    // Body.
+    func->insert(func->end(), body_bb);
+    builder.SetInsertPoint(body_bb);
+    auto &body_block = std::get<BlockNode>(node.body->data);
+    emit_block(body_block);
+    if (!builder.GetInsertBlock()->getTerminator())
+      builder.CreateBr(cond_bb);
+
+  } else {
+    auto &mode_node = *node.mode;
+
+    if (auto *iter = std::get_if<ForIterClauseNode>(&mode_node->data)) {
+      // ── C-style: for init; cond; update { ... } ───────────────────
+      // Emit init in the current block.
+      emit_expr(*iter->init);
+
+      // Branch to condition.
+      builder.CreateBr(cond_bb);
+
+      // Condition block.
+      builder.SetInsertPoint(cond_bb);
+      auto *cond_val = emit_expr(*iter->condition);
+      if (cond_val && !cond_val->getType()->isIntegerTy(1))
+        cond_val = builder.CreateICmpNE(
+            cond_val, llvm::Constant::getNullValue(cond_val->getType()),
+            "tobool");
+      if (cond_val)
+        builder.CreateCondBr(cond_val, body_bb, exit_bb);
+      else
+        builder.CreateBr(body_bb);
+
+      // Body.
+      func->insert(func->end(), body_bb);
+      builder.SetInsertPoint(body_bb);
+      auto &body_block = std::get<BlockNode>(node.body->data);
+      emit_block(body_block);
+      if (!builder.GetInsertBlock()->getTerminator())
+        builder.CreateBr(update_bb);
+
+      // Update block.
+      func->insert(func->end(), update_bb);
+      builder.SetInsertPoint(update_bb);
+      emit_expr(*iter->update);
+      builder.CreateBr(cond_bb);
+
+    } else if (std::get_if<ForRangeClauseNode>(&mode_node->data)) {
+      // ── Range-based: for v : iterable { ... } — deferred to Slice 9.
+      builder.CreateBr(exit_bb);
+
+    } else {
+      // ── Condition-only: for cond { ... } ──────────────────────────
+      builder.CreateBr(cond_bb);
+
+      // Condition block.
+      builder.SetInsertPoint(cond_bb);
+      auto *cond_val = emit_expr(*mode_node);
+      if (cond_val && !cond_val->getType()->isIntegerTy(1))
+        cond_val = builder.CreateICmpNE(
+            cond_val, llvm::Constant::getNullValue(cond_val->getType()),
+            "tobool");
+      if (cond_val)
+        builder.CreateCondBr(cond_val, body_bb, exit_bb);
+      else
+        builder.CreateBr(body_bb);
+
+      // Body.
+      func->insert(func->end(), body_bb);
+      builder.SetInsertPoint(body_bb);
+      auto &body_block = std::get<BlockNode>(node.body->data);
+      emit_block(body_block);
+      if (!builder.GetInsertBlock()->getTerminator())
+        builder.CreateBr(update_bb);
+
+      // Update block (just loops back to condition).
+      func->insert(func->end(), update_bb);
+      builder.SetInsertPoint(update_bb);
+      builder.CreateBr(cond_bb);
+    }
+  }
+
+  // Pop loop context.
+  loop_stack.pop_back();
+
+  // Exit block.
+  func->insert(func->end(), exit_bb);
+  builder.SetInsertPoint(exit_bb);
+
+  return nullptr;
 }
 
 // ===========================================================================

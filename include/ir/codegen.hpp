@@ -50,6 +50,14 @@ struct CodeGen {
   /// True when the current function is Main (return type is i32).
   bool current_func_is_main = false;
 
+  // ── Loop context (for break/next) ────────────────────────────────────
+
+  struct LoopContext {
+    llvm::BasicBlock *break_bb;   // target of `break`
+    llvm::BasicBlock *next_bb;    // target of `next`
+  };
+  std::vector<LoopContext> loop_stack;
+
   // ── Construction ─────────────────────────────────────────────────────
 
   CodeGen(const std::string &module_name, Analyzer &analyzer);
@@ -120,6 +128,7 @@ private:
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
+  llvm::Value *emit_for_expr(const ForExprNode &node);
 
   // ── Type query helpers ───────────────────────────────────────────────
 

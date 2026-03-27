@@ -1026,7 +1026,155 @@ TEST(CodeGen, IfElseAssignVariable) {
   EXPECT_TRUE(has_alloca_named(main, "y"));
 }
 
+// ===========================================================================
+// Slice 7 — For loops (condition, C-style, infinite + break/next)
+// ===========================================================================
+
+TEST(CodeGen, ConditionLoop) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 0\n"
+      "  for x < 5 {\n"
+      "    x += 1\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have loop blocks: entry, for.cond, for.body, for.update, for.exit.
+  EXPECT_GE(main->size(), 4u);
+  // Should have a conditional branch in the cond block.
+  bool found_cond_br = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.cond"))
+      if (auto *br = llvm::dyn_cast<llvm::BranchInst>(bb.getTerminator()))
+        if (br->isConditional())
+          found_cond_br = true;
+  EXPECT_TRUE(found_cond_br);
+}
+
+TEST(CodeGen, CStyleLoop) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  for i := 0; i < 10; i++ {\n"
+      "    intrinsic_print(\"x\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_GE(main->size(), 4u);
+  // Should have an alloca for i.
+  bool found_i = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getName() == "i")
+          found_i = true;
+  EXPECT_TRUE(found_i);
+}
+
+TEST(CodeGen, InfiniteLoopWithBreak) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 0\n"
+      "  for {\n"
+      "    if x >= 3 { break }\n"
+      "    x += 1\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a for.exit block.
+  bool found_exit = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.exit"))
+      found_exit = true;
+  EXPECT_TRUE(found_exit);
+}
+
+TEST(CodeGen, NextSkipsIteration) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  for i := 0; i < 5; i++ {\n"
+      "    if i == 2 { next }\n"
+      "    intrinsic_print(\".\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // The for.update block should exist (next jumps there).
+  bool found_update = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.update"))
+      found_update = true;
+  EXPECT_TRUE(found_update);
+}
+
+TEST(CodeGen, LoopBackEdge) {
+  // Verify the loop body branches back to the condition.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 0\n"
+      "  for x < 3 {\n"
+      "    x += 1\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // for.update should branch to for.cond (back edge).
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("for.update")) {
+      auto *br = llvm::dyn_cast<llvm::BranchInst>(bb.getTerminator());
+      ASSERT_NE(br, nullptr);
+      EXPECT_TRUE(br->isUnconditional());
+      EXPECT_TRUE(br->getSuccessor(0)->getName().starts_with("for.cond"));
+    }
+  }
+}
+
+TEST(CodeGen, NestedLoops) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  for i := 0; i < 3; i++ {\n"
+      "    for j := 0; j < 3; j++ {\n"
+      "      intrinsic_print(\".\")\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have multiple for.cond blocks.
+  int cond_count = 0;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.cond"))
+      cond_count++;
+  EXPECT_GE(cond_count, 2) << "Nested loops should have 2 condition blocks";
+}
+
+TEST(CodeGen, LoopWithFunctionCall) {
+  auto r = CG::from(
+      "fn Inc(n Int) Int { n + 1 }\n"
+      "pub fn Main() Void {\n"
+      "  x := 0\n"
+      "  for x < 3 {\n"
+      "    x = Inc(x)\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a call to Inc inside the loop body.
+  bool found_inc = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.body"))
+      for (auto &inst : bb)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (call->getCalledFunction() &&
+              call->getCalledFunction()->getName() == "Inc")
+            found_inc = true;
+  EXPECT_TRUE(found_inc);
+}
+
 } // namespace mc
+
 
 
 
