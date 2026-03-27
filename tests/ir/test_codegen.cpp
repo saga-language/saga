@@ -683,6 +683,192 @@ TEST(CodeGen, MultipleConcatenations) {
   EXPECT_EQ(concat_count, 2);
 }
 
+// ===========================================================================
+// Slice 5 — Function parameters, calls, tail returns, forward refs
+// ===========================================================================
+
+TEST(CodeGen, FuncWithIntParams) {
+  auto r = CG::from(
+      "fn Add(a, b Int) Int { a + b }\n"
+      "pub fn Main() Void {}");
+  auto *add = r.func("Add");
+  ASSERT_NE(add, nullptr);
+  EXPECT_EQ(add->arg_size(), 2u);
+  EXPECT_TRUE(add->getReturnType()->isIntegerTy(64));
+  // Both params should be i64.
+  for (auto &arg : add->args())
+    EXPECT_TRUE(arg.getType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, FuncParamNames) {
+  auto r = CG::from(
+      "fn Add(a, b Int) Int { a + b }\n"
+      "pub fn Main() Void {}");
+  auto *add = r.func("Add");
+  ASSERT_NE(add, nullptr);
+  EXPECT_EQ(add->getArg(0)->getName(), "a");
+  EXPECT_EQ(add->getArg(1)->getName(), "b");
+}
+
+TEST(CodeGen, FuncWithStringParam) {
+  auto r = CG::from(
+      "fn Greet(name String) Void { intrinsic_print(name) }\n"
+      "pub fn Main() Void {}");
+  auto *greet = r.func("Greet");
+  ASSERT_NE(greet, nullptr);
+  EXPECT_EQ(greet->arg_size(), 1u);
+  EXPECT_TRUE(greet->getReturnType()->isVoidTy());
+  // String param is passed as ptr.
+  EXPECT_TRUE(greet->getArg(0)->getType()->isPointerTy());
+}
+
+TEST(CodeGen, TailExpressionReturn) {
+  auto r = CG::from(
+      "fn Double(n Int) Int { n + n }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Double");
+  ASSERT_NE(fn, nullptr);
+  // The function should end with a ret i64 (the tail expression).
+  auto *term = fn->back().getTerminator();
+  ASSERT_NE(term, nullptr);
+  EXPECT_TRUE(llvm::isa<llvm::ReturnInst>(term));
+  auto *ret = llvm::cast<llvm::ReturnInst>(term);
+  EXPECT_NE(ret->getReturnValue(), nullptr);
+  EXPECT_TRUE(ret->getReturnValue()->getType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, CallUserFunction) {
+  auto r = CG::from(
+      "fn Add(a, b Int) Int { a + b }\n"
+      "pub fn Main() Void {\n"
+      "  x := Add(10, 32)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "Add") {
+          found = true;
+          EXPECT_EQ(call->arg_size(), 2u);
+        }
+  EXPECT_TRUE(found) << "Expected call to Add";
+}
+
+TEST(CodeGen, NestedCalls) {
+  auto r = CG::from(
+      "fn Mul(x, y Int) Int { x * y }\n"
+      "fn Square(n Int) Int { Mul(n, n) }\n"
+      "pub fn Main() Void {\n"
+      "  x := Square(5)\n"
+      "}");
+  auto *sq = r.func("Square");
+  ASSERT_NE(sq, nullptr);
+  bool found_mul = false;
+  for (auto &bb : *sq)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "Mul")
+          found_mul = true;
+  EXPECT_TRUE(found_mul) << "Square should call Mul";
+}
+
+TEST(CodeGen, ForwardReference) {
+  // Main is defined before Double.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := Double(21)\n"
+      "}\n"
+      "fn Double(n Int) Int { n + n }");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "Double")
+          found = true;
+  EXPECT_TRUE(found) << "Main should call Double via forward reference";
+  // Double should also be fully defined.
+  auto *dbl = r.func("Double");
+  ASSERT_NE(dbl, nullptr);
+  EXPECT_FALSE(dbl->isDeclaration()) << "Double should have a body";
+}
+
+TEST(CodeGen, MultipleParamTypes) {
+  auto r = CG::from(
+      "fn Mixed(n Int, x Float) Float { x }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Mixed");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->arg_size(), 2u);
+  EXPECT_TRUE(fn->getArg(0)->getType()->isIntegerTy(64));
+  EXPECT_TRUE(fn->getArg(1)->getType()->isDoubleTy());
+  EXPECT_TRUE(fn->getReturnType()->isDoubleTy());
+}
+
+TEST(CodeGen, VoidFuncNoReturnValue) {
+  auto r = CG::from(
+      "fn DoNothing() Void {}\n"
+      "pub fn Main() Void { DoNothing() }");
+  auto *fn = r.func("DoNothing");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->getReturnType()->isVoidTy());
+  EXPECT_EQ(fn->arg_size(), 0u);
+}
+
+TEST(CodeGen, ParamsCreateAllocas) {
+  auto r = CG::from(
+      "fn Add(a, b Int) Int { a + b }\n"
+      "pub fn Main() Void {}");
+  auto *add = r.func("Add");
+  ASSERT_NE(add, nullptr);
+  // Allocas may be named "a1", "b2" etc. because the LLVM arg already
+  // has the name "a"/"b".  Just check that allocas exist.
+  int alloca_count = 0;
+  for (auto &bb : *add)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::AllocaInst>(&inst))
+        alloca_count++;
+  EXPECT_GE(alloca_count, 2) << "Should have allocas for both parameters";
+}
+
+TEST(CodeGen, BoolReturnType) {
+  auto r = CG::from(
+      "fn IsPositive(n Int) Bool { n > 0 }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("IsPositive");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->getReturnType()->isIntegerTy(1));
+}
+
+TEST(CodeGen, CallChainResult) {
+  // Add(10, Square(5)) — nested call as argument.
+  auto r = CG::from(
+      "fn Add(a, b Int) Int { a + b }\n"
+      "fn Square(n Int) Int { n * n }\n"
+      "pub fn Main() Void {\n"
+      "  x := Add(10, Square(5))\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have calls to both Square and Add.
+  bool found_sq = false, found_add = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (call->getCalledFunction()->getName() == "Square") found_sq = true;
+        if (call->getCalledFunction()->getName() == "Add") found_add = true;
+      }
+  EXPECT_TRUE(found_sq);
+  EXPECT_TRUE(found_add);
+}
+
 } // namespace mc
+
 
 

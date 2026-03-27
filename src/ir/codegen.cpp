@@ -136,6 +136,10 @@ void CodeGen::emit_package(const PackageNode &pkg) {
 }
 
 void CodeGen::emit_source(const SourceNode &src) {
+  // Pass 1: forward-declare all functions so they can call each other.
+  declare_functions(src);
+
+  // Pass 2: emit function bodies.
   for (auto &decl : src.declarations) {
     std::visit(
         overloaded{
@@ -147,12 +151,38 @@ void CodeGen::emit_source(const SourceNode &src) {
 }
 
 // ===========================================================================
-// Function emission
+// Function forward-declarations
 // ===========================================================================
 
-void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
-  std::string name(fn.name.name);
-  bool is_main = (name == "Main");
+void CodeGen::declare_functions(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    if (auto *fn = std::get_if<FuncDeclNode>(&decl->data)) {
+      std::string name(fn->name.name);
+      bool is_main = (name == "Main");
+      std::string link_name = is_main ? "main" : name;
+
+      // Skip if already declared (e.g. by a previous source file).
+      if (module->getFunction(link_name))
+        continue;
+
+      auto *fn_type = build_func_type(*fn);
+      auto *func = llvm::Function::Create(
+          fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+
+      // Name the arguments for readability.
+      size_t arg_idx = 0;
+      for (auto &param : fn->signature.params) {
+        for (auto &ident : param.names.identifiers) {
+          if (arg_idx < func->arg_size())
+            func->getArg(arg_idx++)->setName(std::string(ident.name));
+        }
+      }
+    }
+  }
+}
+
+llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
+  bool is_main = (fn.name.name == "Main");
 
   // Return type.
   llvm::Type *ret_type = void_ll_type;
@@ -163,11 +193,32 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
     ret_type = llvm_type(sem_type);
   }
 
-  auto *fn_type = llvm::FunctionType::get(ret_type, /*isVarArg=*/false);
+  // Parameter types.
+  std::vector<llvm::Type *> param_types;
+  if (!is_main) {
+    for (auto &param : fn.signature.params) {
+      auto sem_type = analyzer.resolve_type(*param.type);
+      auto *ll_type = llvm_type(sem_type);
+      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+        param_types.push_back(ll_type);
+    }
+  }
+
+  return llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
+}
+
+// ===========================================================================
+// Function body emission
+// ===========================================================================
+
+void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
+  std::string name(fn.name.name);
+  bool is_main = (name == "Main");
   std::string link_name = is_main ? "main" : name;
 
-  auto *func = llvm::Function::Create(
-      fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+  auto *func = module->getFunction(link_name);
+  if (!func)
+    return; // Should have been forward-declared.
 
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
@@ -176,19 +227,35 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   locals.clear();
   current_func_is_main = is_main;
 
+  // Create allocas for parameters and store the incoming argument values.
+  size_t arg_idx = 0;
+  for (auto &param : fn.signature.params) {
+    auto sem_type = analyzer.resolve_type(*param.type);
+    auto *ll_type = llvm_type(sem_type);
+    for (auto &ident : param.names.identifiers) {
+      std::string pname(ident.name);
+      auto *alloca = create_entry_alloca(func, pname, ll_type);
+      builder.CreateStore(func->getArg(arg_idx++), alloca);
+      locals[pname] = alloca;
+    }
+  }
+
   // Emit body.
   auto &block = std::get<BlockNode>(fn.body->data);
-  emit_block(block);
+  auto *tail_val = emit_block(block);
 
-  // If the block didn't terminate, add an implicit return.
+  // If the block didn't already terminate, add the implicit return.
   if (!builder.GetInsertBlock()->getTerminator()) {
+    auto *ret_type = func->getReturnType();
     if (is_main) {
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
     } else if (ret_type->isVoidTy()) {
       builder.CreateRetVoid();
+    } else if (tail_val && tail_val->getType() == ret_type) {
+      // Tail expression: the last expression's value is the return value.
+      builder.CreateRet(tail_val);
     } else {
-      // Return zero value for the type.
       builder.CreateRet(llvm::Constant::getNullValue(ret_type));
     }
   }
@@ -200,9 +267,15 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
 // Block / statement emission
 // ===========================================================================
 
-void CodeGen::emit_block(const BlockNode &block) {
-  for (auto &stmt : block.stmts)
-    emit_stmt(*stmt);
+llvm::Value *CodeGen::emit_block(const BlockNode &block) {
+  llvm::Value *last = nullptr;
+  for (auto &stmt : block.stmts) {
+    // If we already have a terminator (e.g. from a return), stop.
+    if (builder.GetInsertBlock()->getTerminator())
+      break;
+    last = emit_expr(*stmt);
+  }
+  return last;
 }
 
 void CodeGen::emit_stmt(const Node &node) {

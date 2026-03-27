@@ -82,11 +82,20 @@ private:
 
   void emit_source(const SourceNode &node);
   void emit_package(const PackageNode &node);
+
+  /// Forward-declare all functions in a source (signatures only).
+  void declare_functions(const SourceNode &src);
+
+  /// Build the LLVM FunctionType for a Saga function declaration.
+  llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
+
+  /// Emit a full function definition (entry block + body).
   void emit_func_decl(const FuncDeclNode &node);
 
   // ── Block / statement emission ───────────────────────────────────────
 
-  void emit_block(const BlockNode &block);
+  /// Emit a block, returning the value of the last expression (or nullptr).
+  llvm::Value *emit_block(const BlockNode &block);
   void emit_stmt(const Node &node);
 
   // ── Statement emitters ───────────────────────────────────────────────
