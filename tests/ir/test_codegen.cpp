@@ -1173,7 +1173,127 @@ TEST(CodeGen, LoopWithFunctionCall) {
   EXPECT_TRUE(found_inc);
 }
 
+// ===========================================================================
+// Slice 8 — Structs: declaration, literal, field access, assignment
+// ===========================================================================
+
+TEST(CodeGen, StructTypeCreated) {
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "pub fn Main() Void {}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc.Point");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(1)->isIntegerTy(64));
+}
+
+TEST(CodeGen, StructLiteralAlloca) {
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "pub fn Main() Void {\n"
+      "  p := Point{x: 1, y: 2}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an alloca for the struct.
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getAllocatedType()->isStructTy())
+          found = true;
+  EXPECT_TRUE(found) << "Struct literal should create a struct alloca";
+}
+
+TEST(CodeGen, StructFieldGEP) {
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "pub fn Main() Void {\n"
+      "  p := Point{x: 10, y: 20}\n"
+      "  a := p.x\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have GEP instructions for field access.
+  int gep_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::GetElementPtrInst>(&inst))
+        gep_count++;
+  EXPECT_GE(gep_count, 1) << "Field access should use GEP";
+}
+
+TEST(CodeGen, StructFieldWrite) {
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "pub fn Main() Void {\n"
+      "  p := Point{x: 1, y: 2}\n"
+      "  p.x = 42\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have stores after GEPs.
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Store), 3);
+}
+
+TEST(CodeGen, StructReturnType) {
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "fn Make() Point { Point{x: 0, y: 0} }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Make");
+  ASSERT_NE(fn, nullptr);
+  // Structs are returned as ptr.
+  EXPECT_TRUE(fn->getReturnType()->isPointerTy());
+}
+
+TEST(CodeGen, StructMixedFieldTypes) {
+  auto r = CG::from(
+      "struct User {\n"
+      "  name String\n"
+      "  age Int\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  u := User{name: \"Alice\", age: 30}\n"
+      "}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc.User");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 2u);
+  // name is ptr (string), age is i64.
+  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
+  EXPECT_TRUE(st->getElementType(1)->isIntegerTy(64));
+}
+
+TEST(CodeGen, StructFieldReadWrite) {
+  // Full round-trip: write a field then read it back.
+  auto r = CG::from(
+      "struct Counter { n Int }\n"
+      "pub fn Main() Void {\n"
+      "  c := Counter{n: 0}\n"
+      "  c.n = 42\n"
+      "  x := c.n\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+}
+
+TEST(CodeGen, MultipleStructTypes) {
+  auto r = CG::from(
+      "struct A { x Int }\n"
+      "struct B { y Float }\n"
+      "pub fn Main() Void {}");
+  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc.A"),
+            nullptr);
+  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc.B"),
+            nullptr);
+}
+
 } // namespace mc
+
 
 
 

@@ -38,6 +38,14 @@ struct CodeGen {
   llvm::Type *i1_type = nullptr;
   llvm::Type *void_ll_type = nullptr;
 
+  // ── Struct type registry ──────────────────────────────────────────
+
+  /// Maps struct name → LLVM struct type.
+  std::unordered_map<std::string, llvm::StructType *> struct_types;
+
+  /// Maps struct name → ordered list of field names (matches LLVM layout).
+  std::unordered_map<std::string, std::vector<std::string>> struct_fields;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -94,6 +102,10 @@ private:
   /// Forward-declare all functions in a source (signatures only).
   void declare_functions(const SourceNode &src);
 
+  /// Create LLVM struct types for all struct declarations.
+  void declare_structs(const SourceNode &src);
+  void emit_struct_decl(const StructDeclNode &node);
+
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
 
@@ -129,6 +141,13 @@ private:
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
   llvm::Value *emit_for_expr(const ForExprNode &node);
+  llvm::Value *emit_struct_literal(const StructLiteralNode &node);
+  llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
+
+  /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
+  std::pair<llvm::Value *, llvm::Type *>
+  struct_field_gep(llvm::Value *struct_ptr, const TypePtr &struct_sem_type,
+                   const std::string &field_name);
 
   // ── Type query helpers ───────────────────────────────────────────────
 

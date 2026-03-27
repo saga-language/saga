@@ -99,6 +99,14 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to mc_string
   case TypeKind::Void:
     return void_ll_type;
+  case TypeKind::Struct: {
+    auto &info = std::get<StructTypeInfo>(t->detail);
+    auto it = struct_types.find(info.name);
+    if (it != struct_types.end())
+      return it->second;
+    // Struct not yet registered — return opaque ptr as fallback.
+    return llvm::PointerType::getUnqual(context);
+  }
   default:
     return void_ll_type;
   }
@@ -136,10 +144,13 @@ void CodeGen::emit_package(const PackageNode &pkg) {
 }
 
 void CodeGen::emit_source(const SourceNode &src) {
-  // Pass 1: forward-declare all functions so they can call each other.
+  // Pass 1: create LLVM struct types.
+  declare_structs(src);
+
+  // Pass 2: forward-declare all functions so they can call each other.
   declare_functions(src);
 
-  // Pass 2: emit function bodies.
+  // Pass 3: emit function bodies.
   for (auto &decl : src.declarations) {
     std::visit(
         overloaded{
@@ -181,24 +192,78 @@ void CodeGen::declare_functions(const SourceNode &src) {
   }
 }
 
+// ===========================================================================
+// Struct declarations
+// ===========================================================================
+
+void CodeGen::declare_structs(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    if (auto *s = std::get_if<StructDeclNode>(&decl->data))
+      emit_struct_decl(*s);
+  }
+}
+
+void CodeGen::emit_struct_decl(const StructDeclNode &node) {
+  std::string name(node.name.name);
+  if (struct_types.count(name))
+    return; // Already registered.
+
+  // Resolve field types directly from the AST + analyzer.
+  std::vector<llvm::Type *> field_types;
+  std::vector<std::string> field_names;
+
+  for (auto &member : node.members) {
+    if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data)) {
+      auto sem_type = analyzer.resolve_type(*fs->type);
+      auto *ll = llvm_type(sem_type);
+      for (auto &ident : fs->names.identifiers) {
+        field_types.push_back(ll);
+        field_names.push_back(std::string(ident.name));
+      }
+    }
+  }
+
+  auto *st = llvm::StructType::create(context, field_types, "mc." + name);
+  struct_types[name] = st;
+  struct_fields[name] = std::move(field_names);
+}
+
+// ===========================================================================
+// Function type building
+// ===========================================================================
+
 llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   bool is_main = (fn.name.name == "Main");
+
+  // Helper: resolve a type from a type annotation node.
+  // The analyzer's resolve_type needs scope context that's gone after
+  // analysis, so we look up type names against our struct_types registry
+  // and fall back to llvm_type for builtins.
+  auto resolve_type_node = [&](const Node &type_node) -> llvm::Type * {
+    // If it's an identifier, check if it's a registered struct.
+    if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
+      std::string tname(ident->name);
+      if (struct_types.count(tname))
+        return llvm::PointerType::getUnqual(context); // struct as ptr
+    }
+    // Fall back to analyzer resolve (works for builtins).
+    auto sem_type = analyzer.resolve_type(type_node);
+    return llvm_type(sem_type);
+  };
 
   // Return type.
   llvm::Type *ret_type = void_ll_type;
   if (is_main) {
     ret_type = llvm::Type::getInt32Ty(context);
   } else if (!fn.signature.returns.empty()) {
-    auto sem_type = analyzer.resolve_type(*fn.signature.returns[0]);
-    ret_type = llvm_type(sem_type);
+    ret_type = resolve_type_node(*fn.signature.returns[0]);
   }
 
   // Parameter types.
   std::vector<llvm::Type *> param_types;
   if (!is_main) {
     for (auto &param : fn.signature.params) {
-      auto sem_type = analyzer.resolve_type(*param.type);
-      auto *ll_type = llvm_type(sem_type);
+      auto *ll_type = resolve_type_node(*param.type);
       for (size_t i = 0; i < param.names.identifiers.size(); ++i)
         param_types.push_back(ll_type);
     }
@@ -230,8 +295,20 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   // Create allocas for parameters and store the incoming argument values.
   size_t arg_idx = 0;
   for (auto &param : fn.signature.params) {
-    auto sem_type = analyzer.resolve_type(*param.type);
-    auto *ll_type = llvm_type(sem_type);
+    // Resolve param type: check struct registry first, then builtins.
+    llvm::Type *ll_type = i64_type;
+    if (auto *tident = std::get_if<IdentifierNode>(&param.type->data)) {
+      std::string tname(tident->name);
+      if (struct_types.count(tname))
+        ll_type = llvm::PointerType::getUnqual(context);
+      else {
+        auto sem_type = analyzer.resolve_type(*param.type);
+        ll_type = llvm_type(sem_type);
+      }
+    } else {
+      auto sem_type = analyzer.resolve_type(*param.type);
+      ll_type = llvm_type(sem_type);
+    }
     for (auto &ident : param.names.identifiers) {
       std::string pname(ident.name);
       auto *alloca = create_entry_alloca(func, pname, ll_type);
@@ -316,14 +393,25 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       var_type = llvm_type(it->second);
   }
 
-  auto *alloca = create_entry_alloca(func, name, var_type);
-  locals[name] = alloca;
-
   if (node.init) {
     auto *val = emit_expr(**node.init);
+    // If the init is a struct alloca, alias it directly.
+    if (val && llvm::isa<llvm::AllocaInst>(val)) {
+      auto sem = semantic_type(**node.init);
+      if (sem && sem->kind == TypeKind::Struct) {
+        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
+        alloca->setName(name);
+        locals[name] = alloca;
+        return;
+      }
+    }
+    auto *alloca = create_entry_alloca(func, name, var_type);
+    locals[name] = alloca;
     if (val)
       builder.CreateStore(val, alloca);
   } else {
+    auto *alloca = create_entry_alloca(func, name, var_type);
+    locals[name] = alloca;
     // Zero-initialize.
     builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
   }
@@ -335,6 +423,20 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
 
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
+
+    // If the value is a struct alloca (from a struct literal), the variable
+    // should just be an alias to that alloca — no extra indirection.
+    if (val && llvm::isa<llvm::AllocaInst>(val)) {
+      auto *alloca = llvm::cast<llvm::AllocaInst>(val);
+      auto sem = semantic_type(*node.value);
+      if (sem && sem->kind == TypeKind::Struct) {
+        // Rename the alloca and register it as the local.
+        alloca->setName(name);
+        locals[name] = alloca;
+        continue;
+      }
+    }
+
     llvm::Type *var_type = val ? val->getType() : i64_type;
     auto *alloca = create_entry_alloca(func, name, var_type);
     locals[name] = alloca;
@@ -349,7 +451,40 @@ void CodeGen::emit_assign(const AssignNode &node) {
     if (!rhs)
       continue;
 
-    // Target must be an identifier (for now).
+    // Target can be an identifier or a selector (field assignment).
+    if (auto *sel = std::get_if<SelectorNode>(&node.targets[i]->data)) {
+      // Field assignment: obj.field = rhs
+      std::string field_name(sel->field.name);
+      if (auto *ident = std::get_if<IdentifierNode>(&sel->object->data)) {
+        auto local_it = locals.find(std::string(ident->name));
+        if (local_it != locals.end()) {
+          auto sem = semantic_type(*sel->object);
+          if (sem && sem->kind == TypeKind::Struct) {
+            auto [gep, ftype] =
+                struct_field_gep(local_it->second, sem, field_name);
+            if (gep) {
+              if (node.op == Token::Kind::Assignment) {
+                builder.CreateStore(rhs, gep);
+              } else {
+                auto *cur = builder.CreateLoad(ftype, gep);
+                llvm::Value *result = nullptr;
+                using K = Token::Kind;
+                switch (node.op) {
+                case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
+                case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
+                case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
+                case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
+                default: result = rhs; break;
+                }
+                builder.CreateStore(result, gep);
+              }
+            }
+          }
+        }
+      }
+      continue;
+    }
+
     auto *ident = std::get_if<IdentifierNode>(&node.targets[i]->data);
     if (!ident)
       continue;
@@ -477,6 +612,12 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           },
           [&](const ForExprNode &n) -> llvm::Value * {
             return emit_for_expr(n);
+          },
+          [&](const StructLiteralNode &n) -> llvm::Value * {
+            return emit_struct_literal(n);
+          },
+          [&](const SelectorNode &n) -> llvm::Value * {
+            return emit_selector(n, node);
           },
           [&](const BreakNode &) -> llvm::Value * {
             if (!loop_stack.empty())
@@ -1080,6 +1221,138 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
   // Exit block.
   func->insert(func->end(), exit_bb);
   builder.SetInsertPoint(exit_bb);
+
+  return nullptr;
+}
+
+// ===========================================================================
+// Struct literals
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
+  // Resolve the struct's semantic type.
+  auto sem = semantic_type(*node.type_expr);
+  if (!sem || sem->kind != TypeKind::Struct)
+    return nullptr;
+
+  auto &info = std::get<StructTypeInfo>(sem->detail);
+  auto st_it = struct_types.find(info.name);
+  if (st_it == struct_types.end())
+    return nullptr;
+
+  auto *st = st_it->second;
+  auto &fields = struct_fields[info.name];
+
+  // Allocate the struct on the stack.
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *alloca = create_entry_alloca(func, info.name + ".lit", st);
+
+  // Zero-initialize all fields.
+  builder.CreateStore(llvm::Constant::getNullValue(st), alloca);
+
+  // Store each provided field value.
+  for (auto &fa : node.fields) {
+    std::string fname(fa.name.name);
+    // Find the field index.
+    int idx = -1;
+    for (size_t i = 0; i < fields.size(); ++i) {
+      if (fields[i] == fname) {
+        idx = static_cast<int>(i);
+        break;
+      }
+    }
+    if (idx < 0)
+      continue;
+
+    auto *val = emit_expr(*fa.value);
+    if (!val)
+      continue;
+
+    auto *gep = builder.CreateStructGEP(st, alloca, idx, fname);
+    builder.CreateStore(val, gep);
+  }
+
+  // Return a pointer to the struct alloca.
+  return alloca;
+}
+
+// ===========================================================================
+// Selector (field access)
+// ===========================================================================
+
+std::pair<llvm::Value *, llvm::Type *>
+CodeGen::struct_field_gep(llvm::Value *struct_ptr,
+                          const TypePtr &struct_sem_type,
+                          const std::string &field_name) {
+  if (!struct_sem_type || struct_sem_type->kind != TypeKind::Struct)
+    return {nullptr, nullptr};
+
+  auto &info = std::get<StructTypeInfo>(struct_sem_type->detail);
+  auto st_it = struct_types.find(info.name);
+  if (st_it == struct_types.end())
+    return {nullptr, nullptr};
+
+  auto *st = st_it->second;
+  auto &fields = struct_fields[info.name];
+
+  for (size_t i = 0; i < fields.size(); ++i) {
+    if (fields[i] == field_name) {
+      auto *gep = builder.CreateStructGEP(st, struct_ptr, i, field_name);
+      return {gep, st->getElementType(i)};
+    }
+  }
+  return {nullptr, nullptr};
+}
+
+llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
+                                    const Node &parent) {
+  std::string field_name(node.field.name);
+
+  // Emit the object expression.  For a struct variable this will be a load
+  // of a pointer (from the alloca).  But we need the alloca itself to GEP.
+  // Check if the object is an identifier referencing a local struct.
+  if (auto *ident = std::get_if<IdentifierNode>(&node.object->data)) {
+    std::string obj_name(ident->name);
+    auto local_it = locals.find(obj_name);
+    if (local_it != locals.end()) {
+      auto *alloca = local_it->second;
+      // Check if this alloca holds a struct type.
+      auto sem = semantic_type(*node.object);
+      if (sem && sem->kind == TypeKind::Struct) {
+        auto &info = std::get<StructTypeInfo>(sem->detail);
+        auto st_it = struct_types.find(info.name);
+        if (st_it != struct_types.end()) {
+          // The alloca might be a ptr to struct (if stored from a literal)
+          // or the struct type itself.
+          auto *alloca_type = alloca->getAllocatedType();
+          if (alloca_type == st_it->second) {
+            // Direct struct alloca — GEP into it.
+            auto [gep, ftype] = struct_field_gep(alloca, sem, field_name);
+            if (gep)
+              return builder.CreateLoad(ftype, gep, field_name);
+          } else if (alloca_type->isPointerTy()) {
+            // Pointer to struct — load the pointer, then GEP.
+            auto *ptr = builder.CreateLoad(alloca_type, alloca, obj_name);
+            auto [gep, ftype] = struct_field_gep(ptr, sem, field_name);
+            if (gep)
+              return builder.CreateLoad(ftype, gep, field_name);
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: emit the object as a value (pointer), then GEP.
+  auto *obj = emit_expr(*node.object);
+  if (!obj)
+    return nullptr;
+
+  auto sem = semantic_type(*node.object);
+  if (sem && sem->kind == TypeKind::Struct) {
+    auto [gep, ftype] = struct_field_gep(obj, sem, field_name);
+    if (gep)
+      return builder.CreateLoad(ftype, gep, field_name);
+  }
 
   return nullptr;
 }
