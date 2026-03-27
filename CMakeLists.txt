@@ -26,7 +26,8 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DPENDS
 
 add_library(compiler_core STATIC ${CORE_SOURCES})
 
-target_link_libraries(compiler_core PUBLIC ${LLVM_AVAILABLE_LIBS})
+llvm_map_components_to_libnames(llvm_libs support core irreader)
+target_link_libraries(compiler_core PUBLIC ${llvm_libs})
 
 target_include_directories(compiler_core
     PUBLIC
