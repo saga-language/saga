@@ -57,6 +57,7 @@ struct Symbol {
                           bool is_public = false);
   static Symbol type_param(const std::string &name, TypePtr type, Span span);
   static Symbol enum_variant(const std::string &name, TypePtr type, Span span);
+  static Symbol module_sym(const std::string &name, TypePtr type, Span span);
   static Symbol builtin(const std::string &name, SymbolKind kind, TypePtr type);
 };
 

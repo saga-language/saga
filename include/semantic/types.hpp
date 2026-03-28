@@ -39,6 +39,7 @@ enum class TypeKind : uint8_t {
   Interface,
   Union,
   TypeParam,   // unresolved generic parameter, e.g. T
+  Module,      // package/module (from import)
   Error,       // sentinel for error-recovery (propagates silently)
 };
 
@@ -138,6 +139,17 @@ struct TypeParamInfo {
   std::optional<TypePtr> bound;               // upper-bound constraint, if any
 };
 
+struct ModuleExport {
+  std::string name;
+  TypePtr type;
+};
+
+struct ModuleTypeInfo {
+  std::string name;             // package name (last segment of import path)
+  std::string import_path;      // full import path as written
+  std::vector<ModuleExport> exports;
+};
+
 // ---------------------------------------------------------------------------
 // Type — the central type representation.
 //
@@ -163,6 +175,7 @@ struct Type {
     InterfaceTypeInfo,
     UnionTypeInfo,
     TypeParamInfo,
+    ModuleTypeInfo,
     ErrorType
   >;
   // clang-format on
@@ -202,6 +215,9 @@ TypePtr make_interface_type(const std::string &name,
 TypePtr make_union_type(std::vector<TypePtr> alternatives);
 TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound = std::nullopt);
+TypePtr make_module_type(const std::string &name,
+                         const std::string &import_path,
+                         std::vector<ModuleExport> exports = {});
 
 // ---------------------------------------------------------------------------
 // Type queries

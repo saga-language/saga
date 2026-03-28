@@ -15,11 +15,12 @@
 namespace fs = std::filesystem;
 
 static void usage(const char *prog) {
-  std::cerr << std::format("Usage: {} [options] <source.sg>\n", prog);
+  std::cerr << std::format("Usage: {} [options] <source.sg | directory>\n", prog);
   std::cerr << "Options:\n";
   std::cerr << "  --emit-ir    Write LLVM IR to <name>.ll instead of compiling\n";
   std::cerr << "  --dump-ir    Print LLVM IR to stderr\n";
   std::cerr << "  -o <file>    Output file name (default: a.out)\n";
+  std::cerr << "  -I <dir>     Add directory to package search path\n";
 }
 
 int main(int argc, char **argv) {
@@ -29,6 +30,7 @@ int main(int argc, char **argv) {
   std::string output_path = "a.out";
   bool emit_ir = false;
   bool dump_ir = false;
+  std::vector<std::string> search_paths;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -38,6 +40,8 @@ int main(int argc, char **argv) {
       dump_ir = true;
     } else if (arg == "-o" && i + 1 < argc) {
       output_path = argv[++i];
+    } else if (arg == "-I" && i + 1 < argc) {
+      search_paths.push_back(argv[++i]);
     } else if (arg[0] == '-') {
       std::cerr << std::format("Unknown option: {}\n", arg);
       usage(argv[0]);
@@ -55,12 +59,43 @@ int main(int argc, char **argv) {
   // ── Frontend: parse ────────────────────────────────────────────────
 
   mc::FileSet fileset;
-  auto file = mc::File::from_path(source_path);
-  if (!file) {
-    std::cerr << std::format("Error: cannot open '{}'\n", source_path);
-    return 1;
+
+  // Determine if the input is a directory (package) or a single file.
+  fs::path input_path(source_path);
+  std::string package_dir;
+
+  if (fs::is_directory(input_path)) {
+    // Multi-file package: load all .sg files in the directory.
+    package_dir = fs::canonical(input_path).string();
+    std::vector<fs::path> sg_files;
+    for (auto &entry : fs::directory_iterator(input_path)) {
+      if (entry.is_regular_file() && entry.path().extension() == ".sg") {
+        sg_files.push_back(entry.path());
+      }
+    }
+    std::sort(sg_files.begin(), sg_files.end());
+    if (sg_files.empty()) {
+      std::cerr << std::format("Error: no .sg files in '{}'\n", source_path);
+      return 1;
+    }
+    for (auto &sg : sg_files) {
+      auto file = mc::File::from_path(sg.string());
+      if (!file) {
+        std::cerr << std::format("Error: cannot open '{}'\n", sg.string());
+        return 1;
+      }
+      fileset.add_file(std::move(file));
+    }
+  } else {
+    // Single file.
+    package_dir = fs::canonical(input_path).parent_path().string();
+    auto file = mc::File::from_path(source_path);
+    if (!file) {
+      std::cerr << std::format("Error: cannot open '{}'\n", source_path);
+      return 1;
+    }
+    fileset.add_file(std::move(file));
   }
-  fileset.add_file(std::move(file));
 
   mc::Parser parser(fileset);
   auto ast = parser.parse();
@@ -77,6 +112,20 @@ int main(int argc, char **argv) {
   // ── Semantic analysis ──────────────────────────────────────────────
 
   mc::Analyzer analyzer(fileset);
+
+  // Set up package resolver with search paths.
+  // Always include the parent of the current package for sibling imports.
+  if (!package_dir.empty()) {
+    analyzer.current_package_dir = package_dir;
+    fs::path parent = fs::path(package_dir).parent_path();
+    if (!parent.empty()) {
+      analyzer.package_resolver->search_paths.push_back(parent.string());
+    }
+  }
+  for (auto &sp : search_paths) {
+    analyzer.package_resolver->search_paths.push_back(sp);
+  }
+
   analyzer.analyze(*ast);
 
   if (!analyzer.errors.errors.empty()) {
@@ -86,7 +135,12 @@ int main(int argc, char **argv) {
 
   // ── Code generation ────────────────────────────────────────────────
 
-  std::string module_name = fs::path(source_path).stem().string();
+  std::string module_name;
+  if (fs::is_directory(input_path)) {
+    module_name = fs::path(source_path).filename().string();
+  } else {
+    module_name = fs::path(source_path).stem().string();
+  }
   mc::CodeGen codegen(module_name, analyzer);
   codegen.emit(*ast);
 
