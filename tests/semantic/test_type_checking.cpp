@@ -892,4 +892,125 @@ TEST(TypeCheck, MixedReturnAndTailValue) {
       << "early return + tail value should be fine";
 }
 
+// ===========================================================================
+// Union types and or-clause
+// ===========================================================================
+
+TEST(TypeCheck, UnionTypeVarDecl) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | Error = 0\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, DivisionOrExprStripsToInt) {
+  // Division returns Int | Error, or should strip to Int.
+  auto r = TC::from(
+      "fn f() Int {\n"
+      "  10 / 2 or { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprWithPipeVariable) {
+  auto r = TC::from(
+      "fn f() Int {\n"
+      "  10 / 2 or |err| { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprEmptyBlock) {
+  // Empty or block returns zero value of the type.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 10 / 2 or {}\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprOnNonUnionPassesThrough) {
+  // Using or on a non-union type should not error (it's a no-op).
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 42\n"
+      "  x or { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, PureUnionType) {
+  // Bool | Int is a pure union (no Error).
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Bool | Int = 0\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, UnionTypeAssignString) {
+  // Assigning a String to an Int | String union should work.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String = \"hello\"\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprStripsManyToUnion) {
+  // Int | String | Error — or should strip Error, leaving Int | String.
+  // We can't easily construct this without a function that returns it,
+  // but we can verify the general analysis doesn't crash.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 10 / 2\n"
+      "  y := x or { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+// ===========================================================================
+// Type matching on unions
+// ===========================================================================
+
+TEST(TypeCheck, IfTypeMatchNarrows) {
+  // Type matching in if should narrow the variable.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | Error = 0\n"
+      "  if x == Int {\n"
+      "    y := x + 1\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, SwitchTypeMatch) {
+  // Type matching in switch on a union.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String = 0\n"
+      "  switch x {\n"
+      "    case Int: { 0 }\n"
+      "    case String: { 1 }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IfTypeMatchWithElse) {
+  // Type matching with else should narrow the else branch too.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String = 0\n"
+      "  if x == Int {\n"
+      "    y := x + 1\n"
+      "  } else {\n"
+      "    z := x\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
 } // namespace mc

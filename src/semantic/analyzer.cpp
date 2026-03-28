@@ -1414,6 +1414,29 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
   // Comparison: == != > < >= <=
   case K::Equal:
   case K::NotEqual: {
+    // Type matching: if LHS is a union and RHS is a type name, this is a
+    // type assertion (e.g. `value == Int`). Returns Bool.
+    if (lhs->kind == TypeKind::Union) {
+      // Check if RHS is a type symbol.
+      if (auto *rhs_ident = std::get_if<IdentifierNode>(&node.rhs->data)) {
+        auto sym = lookup(std::string(rhs_ident->name));
+        if (sym && sym->kind == SymbolKind::Type) {
+          // Verify the type is one of the union alternatives.
+          auto &union_info = std::get<UnionTypeInfo>(lhs->detail);
+          bool found = false;
+          for (auto &alt : union_info.alternatives) {
+            if (types_equal(alt, rhs) || is_assignable_to(rhs, alt))
+              found = true;
+          }
+          if (!found) {
+            error(node.rhs->span,
+                  std::format("type {} is not an alternative of {}",
+                              type_to_string(rhs), type_to_string(lhs)));
+          }
+          return builtins.bool_type;
+        }
+      }
+    }
     if (!is_equatable(lhs)) {
       error(node.lhs->span,
             std::format("type {} does not support equality",
@@ -1704,13 +1727,58 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
   auto cond_type = check_expr(*node.condition);
   expect_bool(node.condition->span, cond_type);
 
+  // Detect type-matching pattern: `if value == TypeName`
+  // to narrow the variable in the then-block.
+  std::string narrowed_var;
+  TypePtr narrowed_type = nullptr;
+  TypePtr else_narrowed_type = nullptr;
+
+  if (auto *binop = std::get_if<BinaryExprNode>(&node.condition->data)) {
+    if (binop->op == Token::Kind::Equal) {
+      if (auto *lhs_id = std::get_if<IdentifierNode>(&binop->lhs->data)) {
+        if (auto *rhs_id = std::get_if<IdentifierNode>(&binop->rhs->data)) {
+          auto sym = lookup(std::string(rhs_id->name));
+          if (sym && sym->kind == SymbolKind::Type) {
+            auto lhs_sym = lookup(std::string(lhs_id->name));
+            if (lhs_sym && lhs_sym->type &&
+                lhs_sym->type->kind == TypeKind::Union) {
+              narrowed_var = std::string(lhs_id->name);
+              narrowed_type = sym->type;
+              // Compute the else narrowed type (union minus matched type).
+              auto &info = std::get<UnionTypeInfo>(lhs_sym->type->detail);
+              std::vector<TypePtr> remaining;
+              for (auto &alt : info.alternatives) {
+                if (!types_equal(alt, sym->type))
+                  remaining.push_back(alt);
+              }
+              if (remaining.size() == 1)
+                else_narrowed_type = remaining[0];
+              else if (remaining.size() > 1)
+                else_narrowed_type = make_union_type(std::move(remaining));
+            }
+          }
+        }
+      }
+    }
+  }
+
   push_scope(ScopeKind::Block);
+  if (!narrowed_var.empty() && narrowed_type) {
+    // Narrow the variable in the then-scope.
+    current_scope->symbols[narrowed_var] =
+        Symbol::variable(narrowed_var, narrowed_type, node.then_block->span);
+  }
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   auto then_type = check_block(then_block);
   pop_scope();
 
   if (node.else_block) {
     push_scope(ScopeKind::Block);
+    if (!narrowed_var.empty() && else_narrowed_type) {
+      current_scope->symbols[narrowed_var] =
+          Symbol::variable(narrowed_var, else_narrowed_type,
+                           (*node.else_block)->span);
+    }
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     auto else_type = check_block(else_block);
     pop_scope();
@@ -1724,17 +1792,61 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   auto subject_type = check_expr(*node.subject);
   TypePtr result_type = nullptr;
 
+  // Detect if this is a type-matching switch (subject is a union and
+  // patterns are type names).
+  bool is_type_match = false;
+  std::string subject_var;
+  if (subject_type && subject_type->kind == TypeKind::Union) {
+    if (auto *id = std::get_if<IdentifierNode>(&node.subject->data)) {
+      subject_var = std::string(id->name);
+    }
+    // Check if the first arm's pattern is a type name.
+    if (!node.arms.empty()) {
+      if (auto *pid = std::get_if<IdentifierNode>(&node.arms[0].pattern->data)) {
+        auto sym = lookup(std::string(pid->name));
+        if (sym && sym->kind == SymbolKind::Type)
+          is_type_match = true;
+      }
+    }
+  }
+
   for (auto &arm : node.arms) {
     auto pattern_type = check_expr(*arm.pattern);
-    // Value matching: pattern must be same type as subject.
-    if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
-      expect_assignable(arm.pattern->span, subject_type, pattern_type,
-                        "case pattern");
+
+    if (is_type_match) {
+      // Type matching: verify the pattern type is an alternative of the union.
+      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+        auto &info = std::get<UnionTypeInfo>(subject_type->detail);
+        bool found = false;
+        for (auto &alt : info.alternatives) {
+          if (types_equal(alt, pattern_type) ||
+              is_assignable_to(pattern_type, alt))
+            found = true;
+        }
+        if (!found) {
+          error(arm.pattern->span,
+                std::format("type {} is not an alternative of {}",
+                            type_to_string(pattern_type),
+                            type_to_string(subject_type)));
+        }
+      }
+    } else {
+      // Value matching: pattern must be same type as subject.
+      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+        expect_assignable(arm.pattern->span, subject_type, pattern_type,
+                          "case pattern");
+      }
     }
 
     TypePtr arm_type;
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
+      // For type matching, narrow the subject variable in the arm scope.
+      if (is_type_match && !subject_var.empty() &&
+          !is_error_type(pattern_type)) {
+        current_scope->symbols[subject_var] =
+            Symbol::variable(subject_var, pattern_type, arm.pattern->span);
+      }
       arm_type = check_block(*block);
       pop_scope();
     } else {
@@ -1894,9 +2006,43 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node) {
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   auto expr_type = check_expr(*node.expr);
 
-  // The expression should be an impure type (contains Error).
-  // The or-clause strips the Error from the union.
+  if (is_error_type(expr_type)) {
+    // Still check the fallback block for internal errors.
+    push_scope(ScopeKind::Block);
+    if (node.pipe) {
+      current_scope->symbols.emplace(
+          std::string(node.pipe->name),
+          Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
+                           node.pipe->span));
+    }
+    auto &block = std::get<BlockNode>(node.fallback->data);
+    check_block(block);
+    pop_scope();
+    return builtins.error_type;
+  }
 
+  // Check that the expression is an impure type (contains Error).
+  bool has_error = false;
+  if (expr_type->kind == TypeKind::Union) {
+    auto &info = std::get<UnionTypeInfo>(expr_type->detail);
+    for (auto &alt : info.alternatives) {
+      if (alt->kind == TypeKind::Interface &&
+          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
+        has_error = true;
+        break;
+      }
+      // Also check for concrete types that satisfy Error (e.g. Missing).
+      if (satisfies_interface(alt, builtins.error_iface)) {
+        has_error = true;
+        break;
+      }
+    }
+  }
+  if (!has_error && expr_type->kind != TypeKind::Union) {
+    // Non-union, non-error type — or is a no-op. Allow but pass through.
+  }
+
+  // The or-clause strips the Error from the union.
   push_scope(ScopeKind::Block);
 
   if (node.pipe) {
@@ -1911,24 +2057,37 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
 
   pop_scope();
 
-  if (is_error_type(expr_type))
-    return builtins.error_type;
-
   // Strip Error/Missing from the union to get the purified type.
   if (expr_type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(expr_type->detail);
     std::vector<TypePtr> purified;
     for (auto &alt : info.alternatives) {
-      if (alt->kind != TypeKind::Interface ||
-          std::get<InterfaceTypeInfo>(alt->detail).name != "Error") {
-        purified.push_back(alt);
+      // Strip the Error interface.
+      if (alt->kind == TypeKind::Interface &&
+          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
+        continue;
       }
+      // Strip concrete types that satisfy Error (e.g. Missing).
+      if (alt->kind == TypeKind::Struct &&
+          satisfies_interface(alt, builtins.error_iface)) {
+        continue;
+      }
+      purified.push_back(alt);
     }
     if (purified.empty())
-      return fallback_type;
-    if (purified.size() == 1)
+      return fallback_type ? fallback_type : builtins.void_type;
+    if (purified.size() == 1) {
+      // Validate fallback type matches the purified type (if non-empty block).
+      if (fallback_type && !is_error_type(fallback_type) &&
+          !types_equal(fallback_type, builtins.void_type) &&
+          !block.stmts.empty()) {
+        expect_assignable(node.fallback->span, purified[0], fallback_type,
+                          "or fallback");
+      }
       return purified[0];
-    return make_union_type(std::move(purified));
+    }
+    TypePtr result = make_union_type(std::move(purified));
+    return result;
   }
 
   return expr_type;

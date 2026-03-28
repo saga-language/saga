@@ -167,6 +167,14 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   case TypeKind::Interface:
     // Interfaces are represented as a fat pointer struct.
     return llvm::PointerType::getUnqual(context); // ptr to mc_iface
+  case TypeKind::Union: {
+    auto *st = get_union_llvm_type(t);
+    if (st)
+      return st;
+    return void_ll_type;
+  }
+  case TypeKind::Array:
+    return llvm::PointerType::getUnqual(context); // ptr to mc_array
   default:
     return void_ll_type;
   }
@@ -551,6 +559,18 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
           builder.CreateRetVoid();
         } else if (tail_val && tail_val->getType() == ret_type) {
           builder.CreateRet(tail_val);
+        } else if (tail_val && ret_type->isStructTy() &&
+                   tail_val->getType()->isPointerTy()) {
+          if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
+            if (ai->getAllocatedType() == ret_type) {
+              auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
+              builder.CreateRet(loaded);
+            } else {
+              builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+            }
+          } else {
+            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+          }
         } else {
           builder.CreateRet(llvm::Constant::getNullValue(ret_type));
         }
@@ -618,6 +638,18 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
         builder.CreateRetVoid();
       } else if (tail_val && tail_val->getType() == ret_type) {
         builder.CreateRet(tail_val);
+      } else if (tail_val && ret_type->isStructTy() &&
+                 tail_val->getType()->isPointerTy()) {
+        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
+          if (ai->getAllocatedType() == ret_type) {
+            auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
+            builder.CreateRet(loaded);
+          } else {
+            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+          }
+        } else {
+          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+        }
       } else {
         builder.CreateRet(llvm::Constant::getNullValue(ret_type));
       }
@@ -816,10 +848,27 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
     } else if (ret_type->isVoidTy()) {
       builder.CreateRetVoid();
     } else if (tail_val && tail_val->getType() == ret_type) {
-      // Tail expression: the last expression's value is the return value.
-      // Retain the return value since the caller takes ownership, but
-      // the release_locals above would have released it.
       builder.CreateRet(tail_val);
+    } else if (tail_val && ret_type->isStructTy() &&
+               tail_val->getType()->isPointerTy()) {
+      // Union tail: pointer to union struct — load and return.
+      auto *st = llvm::cast<llvm::StructType>(ret_type);
+      if (st->getNumElements() == 2 &&
+          st->getElementType(0)->isIntegerTy(8) &&
+          st->getElementType(1)->isArrayTy()) {
+        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
+          if (ai->getAllocatedType() == ret_type) {
+            auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
+            builder.CreateRet(loaded);
+          } else {
+            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+          }
+        } else {
+          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+        }
+      } else {
+        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+      }
     } else {
       builder.CreateRet(llvm::Constant::getNullValue(ret_type));
     }
@@ -930,6 +979,30 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       }
     }
 
+    // Union boxing: declared type is a union, init is a concrete type.
+    if (val && sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
+      auto init_sem = semantic_type(**node.init);
+      if (init_sem && init_sem->kind != TypeKind::Union) {
+        auto *wrapped = emit_union_wrap(val, init_sem, sem_type_ptr);
+        if (wrapped && llvm::isa<llvm::AllocaInst>(wrapped)) {
+          auto *alloca = llvm::cast<llvm::AllocaInst>(wrapped);
+          alloca->setName(name);
+          locals[name] = alloca;
+          track_managed(name, sem_type_ptr);
+          return;
+        }
+      }
+      // If the init already produces a union (e.g. from a call), alias it.
+      if (init_sem && init_sem->kind == TypeKind::Union &&
+          val && llvm::isa<llvm::AllocaInst>(val)) {
+        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
+        alloca->setName(name);
+        locals[name] = alloca;
+        track_managed(name, sem_type_ptr);
+        return;
+      }
+    }
+
     // If the init is a struct alloca, alias it directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
       auto sem = semantic_type(**node.init);
@@ -940,6 +1013,19 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         return;
       }
     }
+
+    // If the init produces a union alloca, alias it.
+    if (val && llvm::isa<llvm::AllocaInst>(val)) {
+      auto init_sem = semantic_type(**node.init);
+      if (init_sem && init_sem->kind == TypeKind::Union) {
+        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
+        alloca->setName(name);
+        locals[name] = alloca;
+        track_managed(name, sem_type_ptr);
+        return;
+      }
+    }
+
     auto *alloca = create_entry_alloca(func, name, var_type);
     locals[name] = alloca;
     if (val)
@@ -1008,11 +1094,11 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
 
-    // If the value is a struct alloca (from a struct literal), the variable
-    // should just be an alias to that alloca — no extra indirection.
+    // If the value is a struct or union alloca, alias it directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
       auto sem = semantic_type(*node.value);
-      if (sem && sem->kind == TypeKind::Struct) {
+      if (sem && (sem->kind == TypeKind::Struct ||
+                  sem->kind == TypeKind::Union)) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
@@ -1139,6 +1225,53 @@ void CodeGen::emit_return(const ReturnNode &node) {
     builder.CreateRetVoid();
   } else if (node.values.size() == 1) {
     auto *val = emit_expr(*node.values[0]);
+    auto *func = builder.GetInsertBlock()->getParent();
+    auto *ret_type = func->getReturnType();
+
+    // Handle union return types: wrap concrete values or load from alloca.
+    if (val && ret_type->isStructTy() && val->getType()->isPointerTy()) {
+      auto *st = llvm::cast<llvm::StructType>(ret_type);
+      // Check if return type is a union struct: { i8, [N x i8] }
+      if (st->getNumElements() == 2 &&
+          st->getElementType(0)->isIntegerTy(8) &&
+          st->getElementType(1)->isArrayTy()) {
+        // val is a pointer to the union alloca — load the struct value.
+        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(val)) {
+          if (ai->getAllocatedType() == ret_type) {
+            val = builder.CreateLoad(ret_type, val, "ret.union");
+          }
+        }
+      }
+    }
+    // If val is a concrete value but ret_type is a union struct, wrap it.
+    if (val && ret_type->isStructTy() && !val->getType()->isStructTy()) {
+      auto *st = llvm::cast<llvm::StructType>(ret_type);
+      if (st->getNumElements() == 2 &&
+          st->getElementType(0)->isIntegerTy(8) &&
+          st->getElementType(1)->isArrayTy()) {
+        // Need to find the semantic return type and value type.
+        auto val_sem = semantic_type(*node.values[0]);
+        // Look up the function's semantic return type from the scope.
+        TypePtr ret_sem = nullptr;
+        for (auto &[key, union_st] : union_llvm_types) {
+          if (union_st == st) {
+            // Reconstruct semantic type is complex; use the analyzer's
+            // return types from the current scope instead.
+            break;
+          }
+        }
+        // Use the analyzer's scope to get return types.
+        if (!ret_sem && !analyzer.current_scope->return_types.empty()) {
+          ret_sem = analyzer.current_scope->return_types[0];
+        }
+        if (val_sem && ret_sem && ret_sem->kind == TypeKind::Union) {
+          auto *wrapped = emit_union_wrap(val, val_sem, ret_sem);
+          if (wrapped)
+            val = builder.CreateLoad(ret_type, wrapped, "ret.union");
+        }
+      }
+    }
+
     emit_release_locals();
     if (val)
       builder.CreateRet(val);
@@ -1212,7 +1345,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_string_literal(n);
           },
           [&](const BinaryExprNode &n) -> llvm::Value * {
-            return emit_binary_expr(n);
+            return emit_binary_expr(n, node);
           },
           [&](const UnaryExprNode &n) -> llvm::Value * {
             return emit_unary_expr(n);
@@ -1250,6 +1383,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             if (!loop_stack.empty())
               builder.CreateBr(loop_stack.back().next_bb);
             return nullptr;
+          },
+          [&](const OrExprNode &n) -> llvm::Value * {
+            return emit_or_expr(n);
           },
           [&](const CallExprNode &n) -> llvm::Value * {
             return emit_call_expr(n);
@@ -1509,10 +1645,55 @@ TypePtr CodeGen::semantic_type(const Node &node) const {
 // Binary expressions
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
+llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
+                                        const Node &parent) {
   // Check semantic types to detect string operations.
   auto lhs_sem = semantic_type(*node.lhs);
   bool is_string = lhs_sem && lhs_sem->kind == TypeKind::String;
+
+  // ── Type matching on union types ─────────────────────────────────────
+  // Pattern: `union_value == TypeName` → compare the tag byte.
+  using K = Token::Kind;
+  if (lhs_sem && lhs_sem->kind == TypeKind::Union &&
+      (node.op == K::Equal || node.op == K::NotEqual)) {
+    if (auto *rhs_ident = std::get_if<IdentifierNode>(&node.rhs->data)) {
+      // Check if RHS is a type name by looking at the analyzer's symbol.
+      auto rhs_sym_it = analyzer.node_symbols.find(node.rhs.get());
+      bool is_type_sym = false;
+      if (rhs_sym_it != analyzer.node_symbols.end() &&
+          rhs_sym_it->second.kind == SymbolKind::Type) {
+        is_type_sym = true;
+      }
+      // Also check via name lookup for built-in types.
+      if (!is_type_sym) {
+        auto sym = analyzer.lookup(std::string(rhs_ident->name));
+        if (sym && sym->kind == SymbolKind::Type)
+          is_type_sym = true;
+      }
+      if (is_type_sym) {
+        auto rhs_sem = semantic_type(*node.rhs);
+        int tag = union_tag_for_type(rhs_sem, lhs_sem);
+        if (tag >= 0) {
+          auto *lhs_val = emit_expr(*node.lhs);
+          if (!lhs_val) return nullptr;
+
+          // lhs_val is a pointer to the union alloca.
+          auto *union_st = get_union_llvm_type(lhs_sem);
+          auto *tag_gep = builder.CreateStructGEP(union_st, lhs_val, 0,
+                                                   "match.tag.ptr");
+          auto *tag_val = builder.CreateLoad(
+              llvm::Type::getInt8Ty(context), tag_gep, "match.tag");
+          auto *tag_const = llvm::ConstantInt::get(
+              llvm::Type::getInt8Ty(context), tag);
+
+          if (node.op == K::Equal)
+            return builder.CreateICmpEQ(tag_val, tag_const, "type.eq");
+          else
+            return builder.CreateICmpNE(tag_val, tag_const, "type.ne");
+        }
+      }
+    }
+  }
 
   // ── String operations ────────────────────────────────────────────────
   if (is_string) {
@@ -1592,7 +1773,15 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
     case K::Add:      return builder.CreateFAdd(lhs, rhs, "fadd");
     case K::Sub:      return builder.CreateFSub(lhs, rhs, "fsub");
     case K::Multiply: return builder.CreateFMul(lhs, rhs, "fmul");
-    case K::Divide:   return builder.CreateFDiv(lhs, rhs, "fdiv");
+    case K::Divide: {
+      auto *result = builder.CreateFDiv(lhs, rhs, "fdiv");
+      auto node_sem = semantic_type(parent);
+      if (node_sem && node_sem->kind == TypeKind::Union) {
+        auto val_t = analyzer.builtins.float_type;
+        return emit_union_wrap(result, val_t, node_sem);
+      }
+      return result;
+    }
     case K::Modulo:   return builder.CreateFRem(lhs, rhs, "fmod");
     default: break;
     }
@@ -1603,7 +1792,15 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node) {
   case K::Add:      return builder.CreateAdd(lhs, rhs, "add");
   case K::Sub:      return builder.CreateSub(lhs, rhs, "sub");
   case K::Multiply: return builder.CreateMul(lhs, rhs, "mul");
-  case K::Divide:   return builder.CreateSDiv(lhs, rhs, "div");
+  case K::Divide: {
+    auto *result = builder.CreateSDiv(lhs, rhs, "div");
+    auto node_sem = semantic_type(parent);
+    if (node_sem && node_sem->kind == TypeKind::Union) {
+      auto val_t = analyzer.builtins.int_type;
+      return emit_union_wrap(result, val_t, node_sem);
+    }
+    return result;
+  }
   case K::Modulo:   return builder.CreateSRem(lhs, rhs, "mod");
   case K::Pow: {
     // TODO: proper pow intrinsic.
@@ -1708,10 +1905,58 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
     builder.CreateCondBr(cond, then_bb, merge_bb);
   }
 
+  // ── Detect type-matching pattern for narrowing ─────────────────────
+  // If condition is `value == TypeName`, extract the narrowed value.
+  std::string narrowed_var_name;
+  llvm::AllocaInst *saved_alloca = nullptr;
+  if (auto *binop = std::get_if<BinaryExprNode>(&node.condition->data)) {
+    if (binop->op == Token::Kind::Equal) {
+      if (auto *lhs_id = std::get_if<IdentifierNode>(&binop->lhs->data)) {
+        auto lhs_sem = semantic_type(*binop->lhs);
+        if (lhs_sem && lhs_sem->kind == TypeKind::Union) {
+          auto rhs_sem = semantic_type(*binop->rhs);
+          if (rhs_sem) {
+            narrowed_var_name = std::string(lhs_id->name);
+          }
+        }
+      }
+    }
+  }
+
   // ── Then block ─────────────────────────────────────────────────────
   builder.SetInsertPoint(then_bb);
+
+  // If type-matching, narrow the variable by extracting from the union.
+  if (!narrowed_var_name.empty()) {
+    auto local_it = locals.find(narrowed_var_name);
+    if (local_it != locals.end()) {
+      auto lhs_sem = semantic_type(*std::get<BinaryExprNode>(
+          node.condition->data).lhs);
+      auto rhs_sem = semantic_type(*std::get<BinaryExprNode>(
+          node.condition->data).rhs);
+      if (lhs_sem && rhs_sem) {
+        auto *union_ptr = local_it->second;
+        auto *extracted = emit_union_extract(union_ptr, rhs_sem, lhs_sem);
+        if (extracted) {
+          auto *ll_type = llvm_type(rhs_sem);
+          auto *narrowed_alloca = create_entry_alloca(
+              func, narrowed_var_name + ".narrowed", ll_type);
+          builder.CreateStore(extracted, narrowed_alloca);
+          // Temporarily replace the local.
+          saved_alloca = local_it->second;
+          locals[narrowed_var_name] = narrowed_alloca;
+        }
+      }
+    }
+  }
+
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   auto *then_val = emit_block(then_block);
+
+  // Restore the original alloca after the then-block.
+  if (saved_alloca) {
+    locals[narrowed_var_name] = saved_alloca;
+  }
 
   // If the then block didn't terminate, branch to merge.
   bool then_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
@@ -1808,7 +2053,8 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 
   auto subject_sem = semantic_type(*node.subject);
   bool is_string = subject_sem && subject_sem->kind == TypeKind::String;
-  bool is_int_like = !is_string; // Int, Bool, Enum, Float treated as int-like
+  bool is_union = subject_sem && subject_sem->kind == TypeKind::Union;
+  bool is_int_like = !is_string && !is_union;
 
   auto *func = builder.GetInsertBlock()->getParent();
   auto *merge_bb = llvm::BasicBlock::Create(context, "sw.merge");
@@ -1821,7 +2067,95 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
   };
   std::vector<CaseResult> case_results;
 
-  if (is_string) {
+  if (is_union) {
+    // ── Union type matching: switch on the tag byte ─────────────────
+    auto *union_st = get_union_llvm_type(subject_sem);
+    llvm::Value *union_ptr = subject_val;
+
+    auto *tag_gep = builder.CreateStructGEP(union_st, union_ptr, 0,
+                                             "sw.union.tag.ptr");
+    auto *tag_val = builder.CreateLoad(llvm::Type::getInt8Ty(context),
+                                        tag_gep, "sw.union.tag");
+    auto *i8_ty = llvm::Type::getInt8Ty(context);
+
+    auto *default_bb = llvm::BasicBlock::Create(context, "sw.default");
+    auto *sw = builder.CreateSwitch(tag_val, default_bb, node.arms.size());
+
+    // Determine the subject variable name for narrowing.
+    std::string subject_var;
+    if (auto *id = std::get_if<IdentifierNode>(&node.subject->data))
+      subject_var = std::string(id->name);
+
+    for (size_t i = 0; i < node.arms.size(); ++i) {
+      auto &arm = node.arms[i];
+      auto *case_bb = llvm::BasicBlock::Create(context,
+          "sw.case." + std::to_string(i), func);
+
+      // Resolve the pattern's semantic type (should be a type name).
+      auto pattern_sem = semantic_type(*arm.pattern);
+      int tag = -1;
+      if (pattern_sem)
+        tag = union_tag_for_type(pattern_sem, subject_sem);
+      if (tag >= 0)
+        sw->addCase(llvm::ConstantInt::get(i8_ty, tag), case_bb);
+      else
+        sw->addCase(llvm::ConstantInt::get(i8_ty, i), case_bb);
+
+      builder.SetInsertPoint(case_bb);
+
+      // Narrow the subject variable for this arm.
+      llvm::AllocaInst *saved = nullptr;
+      if (!subject_var.empty() && pattern_sem) {
+        auto local_it = locals.find(subject_var);
+        if (local_it != locals.end()) {
+          auto *extracted = emit_union_extract(union_ptr, pattern_sem,
+                                                subject_sem);
+          if (extracted) {
+            auto *narrowed = create_entry_alloca(
+                func, subject_var + ".case", llvm_type(pattern_sem));
+            builder.CreateStore(extracted, narrowed);
+            saved = local_it->second;
+            locals[subject_var] = narrowed;
+          }
+        }
+      }
+
+      llvm::Value *body_val = nullptr;
+      if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
+        body_val = emit_block(*block);
+      } else {
+        body_val = emit_expr(*arm.body);
+      }
+
+      // Restore original local.
+      if (saved)
+        locals[subject_var] = saved;
+
+      bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+      if (!terminated)
+        builder.CreateBr(merge_bb);
+      case_results.push_back({body_val, builder.GetInsertBlock(), terminated});
+    }
+
+    // Default / else block.
+    func->insert(func->end(), default_bb);
+    builder.SetInsertPoint(default_bb);
+    llvm::Value *else_val = nullptr;
+    bool else_terminated = false;
+    if (node.else_body) {
+      if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
+        else_val = emit_block(*block);
+      } else {
+        else_val = emit_expr(**node.else_body);
+      }
+      else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+    }
+    if (!else_terminated)
+      builder.CreateBr(merge_bb);
+    case_results.push_back({else_val, builder.GetInsertBlock(),
+                            else_terminated});
+
+  } else if (is_string) {
     // ── String matching: chained icmp + br ──────────────────────────
     auto *cmp_fn = module->getFunction("mc_string_compare");
 
@@ -2280,6 +2614,254 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
 }
 
 // ===========================================================================
+// Or expression (error stripping)
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
+  // Emit the expression that may produce a union with Error.
+  auto *expr_val = emit_expr(*node.expr);
+  if (!expr_val)
+    return nullptr;
+
+  auto expr_sem = semantic_type(*node.expr);
+  if (!expr_sem)
+    return expr_val;
+
+  // If the expression is not a union, just return the value.
+  if (expr_sem->kind != TypeKind::Union)
+    return expr_val;
+
+  // Check if this is an impure union (contains Error).
+  if (!is_impure_union(expr_sem))
+    return expr_val;
+
+  auto *union_st = get_union_llvm_type(expr_sem);
+  if (!union_st)
+    return expr_val;
+
+  auto *func = builder.GetInsertBlock()->getParent();
+
+  // The expr_val should be an alloca (pointer to the union struct).
+  // If it's not already a pointer to the union, we need to handle that.
+  llvm::Value *union_ptr = expr_val;
+
+  // If union_ptr is a loaded value (struct type, not pointer), store it.
+  if (!union_ptr->getType()->isPointerTy() ||
+      (llvm::isa<llvm::LoadInst>(union_ptr))) {
+    auto *tmp = create_entry_alloca(func, "or.union", union_st);
+    builder.CreateStore(expr_val, tmp);
+    union_ptr = tmp;
+  }
+
+  // Load the tag.
+  auto *tag_gep = builder.CreateStructGEP(union_st, union_ptr, 0, "or.tag");
+  auto *tag = builder.CreateLoad(llvm::Type::getInt8Ty(context), tag_gep,
+                                  "or.tag.val");
+
+  // Find which tag values correspond to Error types.
+  auto &info = std::get<UnionTypeInfo>(expr_sem->detail);
+  std::vector<int> error_tags;
+  std::vector<int> non_error_tags;
+  for (size_t i = 0; i < info.alternatives.size(); ++i) {
+    auto &alt = info.alternatives[i];
+    if (alt->kind == TypeKind::Interface) {
+      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
+      if (iface.name == "Error") {
+        error_tags.push_back(static_cast<int>(i));
+        continue;
+      }
+    }
+    non_error_tags.push_back(static_cast<int>(i));
+  }
+
+  // Create basic blocks.
+  auto *ok_bb = llvm::BasicBlock::Create(context, "or.ok", func);
+  auto *err_bb = llvm::BasicBlock::Create(context, "or.err");
+  auto *merge_bb = llvm::BasicBlock::Create(context, "or.merge");
+
+  // Branch based on whether the tag is an error tag.
+  // If there's only one error tag, simple comparison.
+  // For multiple error tags, we'd need an or-chain, but typically there's
+  // just one Error interface in the union.
+  if (error_tags.size() == 1) {
+    auto *is_err = builder.CreateICmpEQ(
+        tag,
+        llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), error_tags[0]),
+        "or.is_err");
+    builder.CreateCondBr(is_err, err_bb, ok_bb);
+  } else {
+    // Multiple error tags — build an OR chain.
+    llvm::Value *is_err = llvm::ConstantInt::get(
+        llvm::Type::getInt1Ty(context), 0);
+    for (int et : error_tags) {
+      auto *cmp = builder.CreateICmpEQ(
+          tag,
+          llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), et),
+          "or.cmp");
+      is_err = builder.CreateOr(is_err, cmp, "or.any_err");
+    }
+    builder.CreateCondBr(is_err, err_bb, ok_bb);
+  }
+
+  // ── OK block: extract the non-error value ──────────────────────────
+  builder.SetInsertPoint(ok_bb);
+
+  // Determine the purified result type.
+  TypePtr purified = strip_error_from_union(expr_sem);
+  llvm::Value *ok_val = nullptr;
+
+  if (purified && purified->kind == TypeKind::Union) {
+    // Multiple non-error alternatives remain — result is still a union.
+    // Re-wrap into the purified union type.
+    auto *purified_st = get_union_llvm_type(purified);
+    auto *purified_alloca = create_entry_alloca(func, "or.purified",
+                                                 purified_st);
+    builder.CreateStore(llvm::Constant::getNullValue(purified_st),
+                        purified_alloca);
+
+    // We need to remap the tag. The original tag corresponds to the position
+    // in the full union; we need the position in the purified union.
+    auto &pur_info = std::get<UnionTypeInfo>(purified->detail);
+    auto *i8_ty = llvm::Type::getInt8Ty(context);
+
+    // Build a switch to remap tags and copy the payload.
+    auto *remap_default = llvm::BasicBlock::Create(context, "or.remap.def");
+    auto *remap_merge = llvm::BasicBlock::Create(context, "or.remap.merge");
+    auto *sw = builder.CreateSwitch(tag, remap_default, non_error_tags.size());
+
+    std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> phi_entries;
+
+    for (int orig_tag : non_error_tags) {
+      auto *case_bb = llvm::BasicBlock::Create(
+          context, "or.remap." + std::to_string(orig_tag), func);
+      sw->addCase(llvm::ConstantInt::get(i8_ty, orig_tag), case_bb);
+
+      builder.SetInsertPoint(case_bb);
+
+      // Find the new tag index in the purified union.
+      int new_tag = -1;
+      for (size_t pi = 0; pi < pur_info.alternatives.size(); ++pi) {
+        if (types_equal(pur_info.alternatives[pi],
+                        info.alternatives[orig_tag])) {
+          new_tag = static_cast<int>(pi);
+          break;
+        }
+      }
+      if (new_tag < 0) new_tag = 0;
+
+      // Set the new tag.
+      auto *ptag_gep = builder.CreateStructGEP(purified_st, purified_alloca,
+                                                 0, "pur.tag");
+      builder.CreateStore(llvm::ConstantInt::get(i8_ty, new_tag), ptag_gep);
+
+      // Copy the payload bytes.
+      auto *src_payload = builder.CreateStructGEP(union_st, union_ptr, 1,
+                                                   "src.payload");
+      auto *dst_payload = builder.CreateStructGEP(purified_st,
+                                                   purified_alloca, 1,
+                                                   "dst.payload");
+      uint64_t pay_sz = union_payload_size(purified);
+      builder.CreateMemCpy(dst_payload, llvm::Align(1),
+                           src_payload, llvm::Align(1), pay_sz);
+
+      builder.CreateBr(remap_merge);
+      phi_entries.push_back({purified_alloca, builder.GetInsertBlock()});
+    }
+
+    func->insert(func->end(), remap_default);
+    builder.SetInsertPoint(remap_default);
+    builder.CreateBr(remap_merge);
+
+    func->insert(func->end(), remap_merge);
+    builder.SetInsertPoint(remap_merge);
+
+    // Load the purified union struct for the PHI.
+    ok_val = builder.CreateLoad(purified_st, purified_alloca, "or.ok.val");
+  } else if (purified) {
+    // Single non-error alternative — extract it directly.
+    ok_val = emit_union_extract(union_ptr, purified, expr_sem);
+  }
+
+  if (!ok_val)
+    ok_val = llvm::Constant::getNullValue(
+        purified ? llvm_type(purified) : i64_type);
+
+  builder.CreateBr(merge_bb);
+  auto *ok_end_bb = builder.GetInsertBlock();
+
+  // ── Error block: emit fallback ─────────────────────────────────────
+  func->insert(func->end(), err_bb);
+  builder.SetInsertPoint(err_bb);
+
+  // If the or-clause has a pipe variable, bind it.
+  // For now, we pass a null pointer as the error value (full error
+  // extraction would need interface boxing). This is enough for the
+  // fallback block to work.
+  if (node.pipe) {
+    std::string pipe_name(node.pipe->name);
+    auto *err_alloca = create_entry_alloca(
+        func, pipe_name, llvm::PointerType::getUnqual(context));
+    builder.CreateStore(
+        llvm::ConstantPointerNull::get(
+            llvm::PointerType::getUnqual(context)),
+        err_alloca);
+    locals[pipe_name] = err_alloca;
+  }
+
+  auto &fallback_block = std::get<BlockNode>(node.fallback->data);
+  auto *fallback_val = emit_block(fallback_block);
+
+  // The fallback value must match the purified type.
+  if (!fallback_val && ok_val)
+    fallback_val = llvm::Constant::getNullValue(ok_val->getType());
+
+  // Coerce fallback to match ok_val type if needed.
+  if (fallback_val && ok_val &&
+      fallback_val->getType() != ok_val->getType()) {
+    // If the result is a union but fallback is a concrete value, wrap it.
+    if (purified && purified->kind == TypeKind::Union && fallback_val) {
+      // Try to find the semantic type of the fallback.
+      auto fb_sem = semantic_type(*node.fallback);
+      if (fb_sem && fb_sem->kind != TypeKind::Union) {
+        auto *wrapped = emit_union_wrap(fallback_val, fb_sem, purified);
+        if (wrapped) {
+          auto *purified_st = get_union_llvm_type(purified);
+          fallback_val = builder.CreateLoad(purified_st, wrapped,
+                                             "or.fb.union");
+        }
+      }
+    } else {
+      // Type mismatch — use null of ok type.
+      fallback_val = llvm::Constant::getNullValue(ok_val->getType());
+    }
+  }
+
+  bool err_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+  if (!err_terminated)
+    builder.CreateBr(merge_bb);
+  auto *err_end_bb = builder.GetInsertBlock();
+
+  // Clean up pipe variable.
+  if (node.pipe) {
+    locals.erase(std::string(node.pipe->name));
+  }
+
+  // ── Merge block ────────────────────────────────────────────────────
+  func->insert(func->end(), merge_bb);
+  builder.SetInsertPoint(merge_bb);
+
+  if (ok_val && fallback_val &&
+      ok_val->getType() == fallback_val->getType() && !err_terminated) {
+    auto *phi = builder.CreatePHI(ok_val->getType(), 2, "or.result");
+    phi->addIncoming(ok_val, ok_end_bb);
+    phi->addIncoming(fallback_val, err_end_bb);
+    return phi;
+  }
+
+  return ok_val;
+}
+
+// ===========================================================================
 // Struct literals
 // ===========================================================================
 
@@ -2650,8 +3232,20 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   // Check local variables.
   auto it = locals.find(name);
   if (it != locals.end()) {
-    return builder.CreateLoad(it->second->getAllocatedType(), it->second,
-                              name);
+    // Union types are passed as pointers to their tagged struct.
+    // Return the alloca directly rather than loading.
+    auto *alloca = it->second;
+    auto *alloc_ty = alloca->getAllocatedType();
+    if (alloc_ty->isStructTy()) {
+      auto *st = llvm::cast<llvm::StructType>(alloc_ty);
+      // Check if this is a union struct: { i8, [N x i8] }
+      if (st->getNumElements() == 2 &&
+          st->getElementType(0)->isIntegerTy(8) &&
+          st->getElementType(1)->isArrayTy()) {
+        return alloca; // Return pointer to union struct.
+      }
+    }
+    return builder.CreateLoad(alloc_ty, alloca, name);
   }
 
   // Builtin constants.
@@ -2670,6 +3264,156 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
 // ===========================================================================
 // Output
 // ===========================================================================
+
+// ===========================================================================
+// Union helpers
+// ===========================================================================
+
+llvm::StructType *CodeGen::get_union_llvm_type(const TypePtr &union_sem) {
+  if (!union_sem || union_sem->kind != TypeKind::Union)
+    return nullptr;
+
+  std::string key = type_to_string(union_sem);
+  auto it = union_llvm_types.find(key);
+  if (it != union_llvm_types.end())
+    return it->second;
+
+  uint64_t payload = union_payload_size(union_sem);
+  // { i8 tag, [payload x i8] }
+  auto *payload_ty = llvm::ArrayType::get(
+      llvm::Type::getInt8Ty(context), payload);
+  auto *st = llvm::StructType::create(
+      context,
+      {llvm::Type::getInt8Ty(context), payload_ty},
+      "mc.union." + key);
+  union_llvm_types[key] = st;
+  return st;
+}
+
+uint64_t CodeGen::union_payload_size(const TypePtr &union_sem) {
+  if (!union_sem || union_sem->kind != TypeKind::Union)
+    return 8;
+  auto &info = std::get<UnionTypeInfo>(union_sem->detail);
+  uint64_t max_size = 0;
+  auto &dl = module->getDataLayout();
+  for (auto &alt : info.alternatives) {
+    auto *ll = llvm_type(alt);
+    if (ll->isVoidTy())
+      continue;
+    uint64_t sz = dl.getTypeAllocSize(ll);
+    if (sz > max_size)
+      max_size = sz;
+  }
+  return max_size > 0 ? max_size : 8;
+}
+
+int CodeGen::union_tag_for_type(const TypePtr &alt_type,
+                                 const TypePtr &union_type) {
+  if (!union_type || union_type->kind != TypeKind::Union)
+    return -1;
+  auto &info = std::get<UnionTypeInfo>(union_type->detail);
+  for (size_t i = 0; i < info.alternatives.size(); ++i) {
+    if (types_equal(info.alternatives[i], alt_type))
+      return static_cast<int>(i);
+    // Also check interface satisfaction (e.g. Missing satisfies Error).
+    if (info.alternatives[i]->kind == TypeKind::Interface &&
+        is_assignable_to(alt_type, info.alternatives[i]))
+      return static_cast<int>(i);
+  }
+  return -1;
+}
+
+llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
+                                       const TypePtr &val_type,
+                                       const TypePtr &union_type) {
+  if (!val || !union_type || union_type->kind != TypeKind::Union)
+    return val;
+
+  auto *union_st = get_union_llvm_type(union_type);
+  if (!union_st)
+    return val;
+
+  int tag = union_tag_for_type(val_type, union_type);
+  if (tag < 0)
+    return val; // Type not in union — shouldn't happen after analysis.
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *alloca = create_entry_alloca(func, "union.tmp", union_st);
+
+  // Zero-initialize the whole struct so padding bytes are clean.
+  builder.CreateStore(llvm::Constant::getNullValue(union_st), alloca);
+
+  // Store the tag.
+  auto *tag_gep = builder.CreateStructGEP(union_st, alloca, 0, "union.tag");
+  builder.CreateStore(
+      llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), tag), tag_gep);
+
+  // Store the value into the payload.
+  if (!val->getType()->isVoidTy()) {
+    auto *payload_gep = builder.CreateStructGEP(union_st, alloca, 1,
+                                                 "union.payload");
+    auto *cast = builder.CreateBitOrPointerCast(
+        payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
+    builder.CreateStore(val, cast);
+  }
+
+  return alloca;
+}
+
+llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
+                                          const TypePtr &alt_type,
+                                          const TypePtr &union_type) {
+  if (!union_ptr || !union_type || union_type->kind != TypeKind::Union)
+    return nullptr;
+
+  auto *union_st = get_union_llvm_type(union_type);
+  if (!union_st)
+    return nullptr;
+
+  auto *ll_alt = llvm_type(alt_type);
+  if (ll_alt->isVoidTy())
+    return nullptr;
+
+  auto *payload_gep = builder.CreateStructGEP(union_st, union_ptr, 1,
+                                               "union.payload");
+  auto *cast = builder.CreateBitOrPointerCast(
+      payload_gep, llvm::PointerType::getUnqual(context), "union.ecast");
+  return builder.CreateLoad(ll_alt, cast, "union.val");
+}
+
+bool CodeGen::is_impure_union(const TypePtr &t) const {
+  if (!t || t->kind != TypeKind::Union)
+    return false;
+  auto &info = std::get<UnionTypeInfo>(t->detail);
+  for (auto &alt : info.alternatives) {
+    if (alt->kind == TypeKind::Interface) {
+      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
+      if (iface.name == "Error")
+        return true;
+    }
+  }
+  return false;
+}
+
+TypePtr CodeGen::strip_error_from_union(const TypePtr &t) const {
+  if (!t || t->kind != TypeKind::Union)
+    return t;
+  auto &info = std::get<UnionTypeInfo>(t->detail);
+  std::vector<TypePtr> purified;
+  for (auto &alt : info.alternatives) {
+    if (alt->kind == TypeKind::Interface) {
+      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
+      if (iface.name == "Error")
+        continue;
+    }
+    purified.push_back(alt);
+  }
+  if (purified.empty())
+    return nullptr;
+  if (purified.size() == 1)
+    return purified[0];
+  return make_union_type(std::move(purified));
+}
 
 // ===========================================================================
 // Reference counting

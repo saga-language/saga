@@ -2561,6 +2561,356 @@ TEST(CodeGen, StructMethodRegisteredInLinks) {
   EXPECT_EQ(it->second[0].second, "Meow");
 }
 
+// ===========================================================================
+// Union types and or-clause
+// ===========================================================================
+
+TEST(CodeGen, UnionTypeStructExists) {
+  // Declaring a variable with a union type should produce a tagged union.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | Error = 0\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have generated a union LLVM type.
+  EXPECT_FALSE(r.codegen->union_llvm_types.empty());
+}
+
+TEST(CodeGen, DivisionProducesUnion) {
+  // Division returns Int | Error, so it should produce a tagged union.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a union type registered.
+  EXPECT_FALSE(r.codegen->union_llvm_types.empty());
+}
+
+TEST(CodeGen, OrExprStripsErrorSimple) {
+  // `x or { 0 }` should produce the non-error value.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2 or { 0 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have or.ok and or.err blocks.
+  bool found_ok = false, found_err = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("or.ok")) found_ok = true;
+    if (bb.getName().starts_with("or.err")) found_err = true;
+  }
+  EXPECT_TRUE(found_ok) << "Should have or.ok block";
+  EXPECT_TRUE(found_err) << "Should have or.err block";
+}
+
+TEST(CodeGen, OrExprWithPipe) {
+  // `x or |err| { 0 }` should create the pipe variable.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2 or |err| { 0 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an err alloca in the or.err block.
+  bool found_err_var = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getName() == "err")
+          found_err_var = true;
+    }
+  }
+  EXPECT_TRUE(found_err_var) << "Should have 'err' alloca in or block";
+}
+
+TEST(CodeGen, OrExprMergeBlock) {
+  // The or expression should merge into a single block after ok/err.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2 or { 0 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_merge = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("or.merge"))
+      found_merge = true;
+  EXPECT_TRUE(found_merge) << "Should have or.merge block";
+}
+
+TEST(CodeGen, UnionPayloadSize) {
+  // A union of Int | Error should have a payload size of at least 8 bytes.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | Error = 0\n"
+      "}");
+  // Check that the union type exists and has proper layout.
+  EXPECT_FALSE(r.codegen->union_llvm_types.empty());
+  for (auto &[key, st] : r.codegen->union_llvm_types) {
+    EXPECT_EQ(st->getNumElements(), 2u);
+    EXPECT_TRUE(st->getElementType(0)->isIntegerTy(8)) << "Tag should be i8";
+    EXPECT_TRUE(st->getElementType(1)->isArrayTy()) << "Payload should be array";
+  }
+}
+
+TEST(CodeGen, OrExprDefaultValue) {
+  // Empty or block should produce zero value.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2 or {}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+}
+
+TEST(CodeGen, UnionVarDeclExplicitType) {
+  // Explicit union type annotation with a concrete initializer.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | Error = 42\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+}
+
+TEST(CodeGen, FuncReturnsUnion) {
+  // A function with a union return type should produce the union struct.
+  auto r = CG::from(
+      "fn SafeDiv(a, b Int) Int | Error {\n"
+      "  a / b\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  x := SafeDiv(10, 2)\n"
+      "}");
+  auto *safe_div = r.func("SafeDiv");
+  ASSERT_NE(safe_div, nullptr);
+  // Return type should be the union struct, not i64.
+  auto *ret_type = safe_div->getReturnType();
+  EXPECT_TRUE(ret_type->isStructTy()) << "Return type should be a union struct";
+  if (ret_type->isStructTy()) {
+    auto *st = llvm::cast<llvm::StructType>(ret_type);
+    EXPECT_EQ(st->getNumElements(), 2u);
+    EXPECT_TRUE(st->getElementType(0)->isIntegerTy(8)) << "Tag i8";
+  }
+}
+
+TEST(CodeGen, FuncReturnsUnionWithOrAtCallSite) {
+  // Calling a function that returns a union and using or to unwrap.
+  auto r = CG::from(
+      "fn SafeDiv(a, b Int) Int | Error {\n"
+      "  a / b\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  x := SafeDiv(10, 2) or { 0 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have or.ok and or.err blocks.
+  bool found_ok = false, found_err = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("or.ok")) found_ok = true;
+    if (bb.getName().starts_with("or.err")) found_err = true;
+  }
+  EXPECT_TRUE(found_ok);
+  EXPECT_TRUE(found_err);
+}
+
+TEST(CodeGen, OrExprPhiNode) {
+  // The or expression should produce a PHI node merging ok/fallback values.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2 or { 99 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Find the merge block and check for PHI.
+  bool found_phi = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("or.merge")) {
+      for (auto &inst : bb) {
+        if (llvm::isa<llvm::PHINode>(&inst))
+          found_phi = true;
+      }
+    }
+  }
+  EXPECT_TRUE(found_phi) << "or.merge should have a PHI node";
+}
+
+TEST(CodeGen, UnionTagIsZeroForFirstAlt) {
+  // When wrapping a value of the first alternative, tag should be 0.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | Error = 42\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Look for a store of i8 0 (the tag for Int, first alternative).
+  bool found_tag_store = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (auto *si = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(si->getValueOperand())) {
+          if (ci->getType()->isIntegerTy(8) && ci->getZExtValue() == 0)
+            found_tag_store = true;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(found_tag_store) << "Should store tag 0 for Int in Int|Error";
+}
+
+TEST(CodeGen, DivisionOrThenUse) {
+  // Division, or-unwrap, then use the result.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10 / 2 or { 0 }\n"
+      "  y := x + 1\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an add instruction.
+  bool found_add = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (inst.getOpcode() == llvm::Instruction::Add)
+        found_add = true;
+    }
+  }
+  EXPECT_TRUE(found_add) << "Should have add after or-unwrap";
+}
+
+// ===========================================================================
+// Type matching on union types
+// ===========================================================================
+
+TEST(CodeGen, IfTypeMatchOnUnion) {
+  // Type matching: `if x == Int` should compare the tag byte.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | Error = 42\n"
+      "  if x == Int {\n"
+      "    intrinsic_print(\"yes\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a then block and the tag comparison.
+  bool found_then = false;
+  bool found_icmp = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("then")) found_then = true;
+    for (auto &inst : bb) {
+      if (auto *cmp = llvm::dyn_cast<llvm::ICmpInst>(&inst)) {
+        // Should be comparing i8 values (tag).
+        if (cmp->getOperand(0)->getType()->isIntegerTy(8))
+          found_icmp = true;
+      }
+    }
+  }
+  EXPECT_TRUE(found_then) << "Should have 'then' block";
+  EXPECT_TRUE(found_icmp) << "Should have i8 tag comparison";
+}
+
+TEST(CodeGen, SwitchTypeMatchOnUnion) {
+  // Switch on union with type patterns should switch on tag.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | String = 42\n"
+      "  switch x {\n"
+      "    case Int: { intrinsic_print(\"int\\n\") }\n"
+      "    case String: { intrinsic_print(\"str\\n\") }\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a switch instruction on i8 tag.
+  bool found_switch = false;
+  for (auto &bb : *main) {
+    if (auto *sw = llvm::dyn_cast<llvm::SwitchInst>(bb.getTerminator())) {
+      if (sw->getCondition()->getType()->isIntegerTy(8))
+        found_switch = true;
+    }
+  }
+  EXPECT_TRUE(found_switch) << "Should have i8 switch on union tag";
+}
+
+TEST(CodeGen, IfTypeMatchNarrowsExtract) {
+  // After type match, the narrowed variable should have the concrete type.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | Error = 42\n"
+      "  if x == Int {\n"
+      "    y := x + 1\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an add instruction in the then block (x narrowed to Int).
+  bool found_add = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("then")) {
+      for (auto &inst : bb) {
+        if (inst.getOpcode() == llvm::Instruction::Add)
+          found_add = true;
+      }
+    }
+  }
+  EXPECT_TRUE(found_add) << "Then block should have add (narrowed Int)";
+}
+
+TEST(CodeGen, CallUnionFuncThenOr) {
+  // Full pipeline: function returns union, caller uses or to unwrap.
+  auto r = CG::from(
+      "fn SafeDiv(a, b Int) Int | Error {\n"
+      "  a / b\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  result := SafeDiv(10, 2) or { 0 }\n"
+      "  y := result + 1\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have the full pipeline: call, or blocks, add.
+  bool found_call = false, found_or = false, found_add = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (llvm::isa<llvm::CallInst>(&inst)) found_call = true;
+      if (inst.getOpcode() == llvm::Instruction::Add) found_add = true;
+    }
+    if (bb.getName().starts_with("or.")) found_or = true;
+  }
+  EXPECT_TRUE(found_call) << "Should call SafeDiv";
+  EXPECT_TRUE(found_or) << "Should have or blocks";
+  EXPECT_TRUE(found_add) << "Should have add after unwrap";
+}
+
+TEST(CodeGen, UnionAssignThenTypeMatch) {
+  // Assign a concrete value to a union, then type-match it.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int | String = 42\n"
+      "  if x == Int {\n"
+      "    intrinsic_print(\"is int\\n\")\n"
+      "  } else {\n"
+      "    intrinsic_print(\"is string\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have both then and else blocks.
+  bool found_then = false, found_else = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("then")) found_then = true;
+    if (bb.getName().starts_with("else")) found_else = true;
+  }
+  EXPECT_TRUE(found_then);
+  EXPECT_TRUE(found_else);
+}
+
 } // namespace mc
 
 

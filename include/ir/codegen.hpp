@@ -83,6 +83,11 @@ struct CodeGen {
   std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
       struct_method_links;
 
+  // ── Union type registry ──────────────────────────────────────────────
+
+  /// Maps canonical union type string → LLVM struct type { i8 tag, [N x i8] }.
+  std::unordered_map<std::string, llvm::StructType *> union_llvm_types;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -207,7 +212,8 @@ private:
   llvm::Value *emit_string_literal(const StringLiteralNode &node);
   llvm::Value *emit_call_expr(const CallExprNode &node);
   llvm::Value *emit_identifier(const IdentifierNode &node);
-  llvm::Value *emit_binary_expr(const BinaryExprNode &node);
+  llvm::Value *emit_binary_expr(const BinaryExprNode &node,
+                                const Node &parent);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
@@ -217,6 +223,7 @@ private:
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
+  llvm::Value *emit_or_expr(const OrExprNode &node);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   std::pair<llvm::Value *, llvm::Type *>
@@ -227,6 +234,32 @@ private:
 
   /// Look up the semantic type of an AST node (recorded by the analyzer).
   TypePtr semantic_type(const Node &node) const;
+
+  // ── Union helpers ────────────────────────────────────────────────────
+
+  /// Get or create the LLVM struct type for a union: { i8 tag, [N x i8] payload }.
+  llvm::StructType *get_union_llvm_type(const TypePtr &union_sem);
+
+  /// Compute the payload byte size for a union (max of all alternatives).
+  uint64_t union_payload_size(const TypePtr &union_sem);
+
+  /// Wrap a concrete value into a union alloca, returning the alloca ptr.
+  llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
+                                const TypePtr &union_type);
+
+  /// Extract a concrete value from a union alloca given the expected alt type.
+  llvm::Value *emit_union_extract(llvm::Value *union_ptr,
+                                   const TypePtr &alt_type,
+                                   const TypePtr &union_type);
+
+  /// Get the tag index for a type within a union.
+  int union_tag_for_type(const TypePtr &alt_type, const TypePtr &union_type);
+
+  /// Check if a semantic type contains Error (is "impure").
+  bool is_impure_union(const TypePtr &t) const;
+
+  /// Strip Error alternatives from a union, returning the purified type.
+  TypePtr strip_error_from_union(const TypePtr &t) const;
 
   // ── String helpers ───────────────────────────────────────────────────
 
