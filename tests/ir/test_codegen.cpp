@@ -1425,7 +1425,167 @@ TEST(CodeGen, ArrayRuntimeDeclared) {
   EXPECT_NE(r.func("mc_array_size"), nullptr);
 }
 
+// ===========================================================================
+// Slice 10 — String interpolation
+// ===========================================================================
+
+TEST(CodeGen, PlainStringNoInterp) {
+  // A plain string should NOT call mc_string_concat.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  intrinsic_print(\"hello\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  int concat_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_concat")
+          concat_count++;
+  EXPECT_EQ(concat_count, 0);
+}
+
+TEST(CodeGen, InterpStringConcat) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  name := \"world\"\n"
+      "  intrinsic_print(\"hello {name}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have at least one mc_string_concat for the interpolation.
+  int concat_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_concat")
+          concat_count++;
+  EXPECT_GE(concat_count, 1);
+}
+
+TEST(CodeGen, InterpIntConversion) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 42\n"
+      "  intrinsic_print(\"val={x}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should call mc_int_to_string for the int interpolation.
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_int_to_string")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, InterpFloatConversion) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 3.14\n"
+      "  intrinsic_print(\"pi={x}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_float_to_string")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, InterpBoolConversion) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := true\n"
+      "  intrinsic_print(\"flag={x}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_bool_to_string")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, InterpExpressionInBraces) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 5\n"
+      "  intrinsic_print(\"{x + x}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an add and an int_to_string.
+  bool found_add = false, found_conv = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb) {
+      if (inst.getOpcode() == llvm::Instruction::Add) found_add = true;
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_int_to_string")
+          found_conv = true;
+    }
+  EXPECT_TRUE(found_add);
+  EXPECT_TRUE(found_conv);
+}
+
+TEST(CodeGen, InterpMultipleParts) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 1\n"
+      "  b := 2\n"
+      "  intrinsic_print(\"{a} and {b}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have multiple concat calls (at least 3 parts: "1", " and ", "2").
+  int concat_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_concat")
+          concat_count++;
+  EXPECT_GE(concat_count, 2);
+}
+
+TEST(CodeGen, InterpStringVariable) {
+  // Interpolating a string variable should NOT call a conversion function.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"world\"\n"
+      "  intrinsic_print(\"hello {s}\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_conv = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            (call->getCalledFunction()->getName() == "mc_int_to_string" ||
+             call->getCalledFunction()->getName() == "mc_float_to_string" ||
+             call->getCalledFunction()->getName() == "mc_bool_to_string"))
+          found_conv = true;
+  EXPECT_FALSE(found_conv) << "String interp should not convert strings";
+}
+
 } // namespace mc
+
 
 
 

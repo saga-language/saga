@@ -159,6 +159,9 @@ private:
   // ── String helpers ───────────────────────────────────────────────────
 
   llvm::Value *make_string_constant(const std::string &text);
+
+  /// Convert a value to an mc_string* based on its semantic type.
+  llvm::Value *emit_to_string(llvm::Value *val, const TypePtr &sem);
 };
 
 } // namespace mc

@@ -787,13 +787,83 @@ static std::string unescape_fragment(std::string_view raw) {
   return out;
 }
 
-llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
-  std::string text;
-  for (auto &frag : node.fragments) {
-    if (auto *sf = std::get_if<StringFragmentNode>(&frag->data))
-      text += unescape_fragment(sf->text);
+/// Convert an LLVM value to an mc_string* based on its semantic type.
+llvm::Value *CodeGen::emit_to_string(llvm::Value *val, const TypePtr &sem) {
+  if (!val || !sem)
+    return val;
+
+  switch (sem->kind) {
+  case TypeKind::String:
+    return val; // Already a string pointer.
+  case TypeKind::Int: {
+    auto *fn = module->getFunction("mc_int_to_string");
+    return builder.CreateCall(fn, {val}, "istr");
   }
-  return make_string_constant(text);
+  case TypeKind::Float: {
+    auto *fn = module->getFunction("mc_float_to_string");
+    return builder.CreateCall(fn, {val}, "fstr");
+  }
+  case TypeKind::Bool: {
+    auto *ext = builder.CreateZExt(val, i64_type, "bext");
+    auto *fn = module->getFunction("mc_bool_to_string");
+    return builder.CreateCall(fn, {ext}, "bstr");
+  }
+  default:
+    // For types we can't convert, return an empty string placeholder.
+    return make_string_constant("");
+  }
+}
+
+llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
+  // Check if this is a plain string (no interpolation).
+  bool has_interp = false;
+  for (auto &frag : node.fragments) {
+    if (!std::holds_alternative<StringFragmentNode>(frag->data)) {
+      has_interp = true;
+      break;
+    }
+  }
+
+  if (!has_interp) {
+    // Plain string — concatenate all text fragments into one constant.
+    std::string text;
+    for (auto &frag : node.fragments) {
+      if (auto *sf = std::get_if<StringFragmentNode>(&frag->data))
+        text += unescape_fragment(sf->text);
+    }
+    return make_string_constant(text);
+  }
+
+  // Interpolated string — emit each part and concatenate.
+  auto *concat_fn = module->getFunction("mc_string_concat");
+  llvm::Value *result = nullptr;
+
+  for (auto &frag : node.fragments) {
+    llvm::Value *part = nullptr;
+
+    if (auto *sf = std::get_if<StringFragmentNode>(&frag->data)) {
+      std::string text = unescape_fragment(sf->text);
+      if (text.empty())
+        continue;
+      part = make_string_constant(text);
+    } else {
+      // Interpolated expression — emit it and convert to string.
+      auto *val = emit_expr(*frag);
+      auto frag_sem = semantic_type(*frag);
+      part = emit_to_string(val, frag_sem);
+    }
+
+    if (!part)
+      continue;
+
+    if (!result) {
+      result = part;
+    } else {
+      result = builder.CreateCall(concat_fn, {result, part}, "interp");
+    }
+  }
+
+  return result ? result : make_string_constant("");
 }
 
 llvm::Value *CodeGen::make_string_constant(const std::string &text) {
