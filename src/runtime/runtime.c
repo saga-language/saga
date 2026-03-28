@@ -10,6 +10,152 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Arena allocator                                                          */
+/*                                                                          */
+/* Virtual-memory-reservation based bump allocator.  A large virtual region */
+/* is reserved up front with mmap(PROT_NONE).  Physical pages are committed */
+/* on demand via mprotect as the bump pointer advances.  The base address   */
+/* never moves, so all pointers into the arena remain valid for its entire  */
+/* lifetime.  Deallocation is a single munmap of the whole region.          */
+/*                                                                          */
+/* Layout: { char *base, i64 offset, i64 committed, i64 reserved,          */
+/*           i64 max_limit }                                                */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+#ifndef MC_MAX_ARENA_SIZE
+#define MC_MAX_ARENA_SIZE (64 * 1024 * 1024) /* 64 MB default */
+#endif
+
+#ifndef MC_ARENA_INITIAL_COMMIT
+#define MC_ARENA_INITIAL_COMMIT (64 * 1024) /* 64 KB initial commit */
+#endif
+
+#define MC_ARENA_ALIGN 16
+
+typedef struct {
+  char    *base;      /* mmap'd region — never moves                       */
+  int64_t  offset;    /* next free byte (bump pointer)                     */
+  int64_t  committed; /* bytes currently backed by physical pages          */
+  int64_t  reserved;  /* total virtual reservation                         */
+  int64_t  max_limit; /* hard quota — allocation fails if exceeded         */
+} mc_arena;
+
+/* Round `n` up to the nearest multiple of `align` (must be power of 2). */
+static inline int64_t mc_align_up(int64_t n, int64_t align) {
+  return (n + align - 1) & ~(align - 1);
+}
+
+/* Return the system page size, cached after first call. */
+static inline int64_t mc_page_size(void) {
+  static int64_t ps = 0;
+  if (ps == 0) ps = (int64_t)sysconf(_SC_PAGESIZE);
+  return ps;
+}
+
+/*
+ * mc_arena_new  —  reserve virtual address space and commit an initial chunk.
+ *
+ * `max_limit` is the hard memory quota for this arena.  If 0 the compile-time
+ * default MC_MAX_ARENA_SIZE is used.  The virtual reservation is the larger of
+ * max_limit and MC_MAX_ARENA_SIZE (virtual space is free on 64-bit).
+ *
+ * Returns NULL if the mmap or initial commit fails.
+ */
+mc_arena *mc_arena_new(int64_t max_limit) {
+  if (max_limit <= 0) max_limit = MC_MAX_ARENA_SIZE;
+
+  int64_t page = mc_page_size();
+  int64_t reserved = max_limit;
+  if (reserved < MC_MAX_ARENA_SIZE) reserved = MC_MAX_ARENA_SIZE;
+  reserved = mc_align_up(reserved, page);
+
+  /* Reserve the entire virtual region with no access permissions. */
+  void *base = mmap(NULL, (size_t)reserved,
+                    PROT_NONE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                    -1, 0);
+  if (base == MAP_FAILED) return NULL;
+
+  /* Commit the initial chunk so early allocations don't page-fault. */
+  int64_t initial = MC_ARENA_INITIAL_COMMIT;
+  if (initial > reserved) initial = reserved;
+  initial = mc_align_up(initial, page);
+  if (mprotect(base, (size_t)initial, PROT_READ | PROT_WRITE) != 0) {
+    munmap(base, (size_t)reserved);
+    return NULL;
+  }
+
+  mc_arena *a = (mc_arena *)malloc(sizeof(mc_arena));
+  if (!a) {
+    munmap(base, (size_t)reserved);
+    return NULL;
+  }
+  a->base      = (char *)base;
+  a->offset    = 0;
+  a->committed = initial;
+  a->reserved  = reserved;
+  a->max_limit = max_limit;
+  return a;
+}
+
+/*
+ * mc_arena_alloc  —  bump-allocate `size` bytes from the arena.
+ *
+ * Returns a 16-byte-aligned pointer, or NULL if the allocation would exceed
+ * the arena's max_limit (the caller is expected to kill the actor).
+ */
+void *mc_arena_alloc(mc_arena *a, int64_t size) {
+  if (!a || size <= 0) return NULL;
+
+  int64_t aligned = mc_align_up(size, MC_ARENA_ALIGN);
+  int64_t new_offset = a->offset + aligned;
+
+  /* Hard quota check. */
+  if (new_offset > a->max_limit) return NULL;
+
+  /* Commit more pages if needed. */
+  if (new_offset > a->committed) {
+    int64_t page = mc_page_size();
+    /* Commit in chunks: at least double current committed or enough for the
+     * request, whichever is larger, capped at reserved. */
+    int64_t want = a->committed * 2;
+    if (want < new_offset) want = mc_align_up(new_offset, page);
+    if (want > a->reserved) want = a->reserved;
+    want = mc_align_up(want, page);
+
+    if (want > a->committed) {
+      if (mprotect(a->base, (size_t)want, PROT_READ | PROT_WRITE) != 0)
+        return NULL;
+      a->committed = want;
+    }
+
+    /* Even after committing as much as possible, not enough room. */
+    if (new_offset > a->committed) return NULL;
+  }
+
+  void *ptr = a->base + a->offset;
+  a->offset = new_offset;
+  return ptr;
+}
+
+/*
+ * mc_arena_destroy  —  release the entire virtual region in one call.
+ *
+ * After this call every pointer into the arena is invalid.
+ */
+void mc_arena_destroy(mc_arena *a) {
+  if (!a) return;
+  if (a->base) munmap(a->base, (size_t)a->reserved);
+  a->base = NULL;
+  a->offset = 0;
+  a->committed = 0;
+  a->reserved = 0;
+  free(a);
+}
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* String representation                                                    */
@@ -561,4 +707,79 @@ void mc_intrinsic_print(const mc_string *s) {
     fwrite(s->data, 1, (size_t)s->len, stdout);
   }
   fflush(stdout);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Arena-aware allocation helpers                                           */
+/*                                                                          */
+/* These mirror mc_alloc_string / mc_array_new / mc_map_new but allocate    */
+/* from an arena instead of malloc.  The refcount is set to -1 (static /    */
+/* never-freed) because the arena owns the memory — individual objects are  */
+/* not freed; the entire arena is munmap'd at once.                         */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+mc_string *mc_arena_alloc_string(mc_arena *a, const char *buf, int64_t len) {
+  if (!a) return NULL;
+
+  mc_string *s = (mc_string *)mc_arena_alloc(a, (int64_t)sizeof(mc_string));
+  if (!s) return NULL;
+
+  char *data = (char *)mc_arena_alloc(a, len > 0 ? len : 1);
+  if (!data) return NULL;
+  if (len > 0 && buf) memcpy(data, buf, (size_t)len);
+
+  s->data     = data;
+  s->len      = len;
+  s->refcount = -1; /* arena-owned: never individually freed */
+  return s;
+}
+
+mc_array *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
+                               int64_t initial_cap) {
+  if (!a) return NULL;
+  if (initial_cap < 4) initial_cap = 4;
+
+  mc_array *arr = (mc_array *)mc_arena_alloc(a, (int64_t)sizeof(mc_array));
+  if (!arr) return NULL;
+
+  void *data = mc_arena_alloc(a, elem_size * initial_cap);
+  if (!data) return NULL;
+
+  arr->data      = data;
+  arr->len       = 0;
+  arr->cap       = initial_cap;
+  arr->elem_size = elem_size;
+  arr->refcount  = -1; /* arena-owned */
+  return arr;
+}
+
+mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
+  if (!a) return NULL;
+
+  int64_t initial_ecap = 8;
+  int64_t initial_icap = 16;
+
+  mc_map *m = (mc_map *)mc_arena_alloc(a, (int64_t)sizeof(mc_map));
+  if (!m) return NULL;
+
+  mc_map_entry *entries = (mc_map_entry *)mc_arena_alloc(
+      a, initial_ecap * (int64_t)sizeof(mc_map_entry));
+  if (!entries) return NULL;
+
+  int64_t *indices = (int64_t *)mc_arena_alloc(
+      a, initial_icap * (int64_t)sizeof(int64_t));
+  if (!indices) return NULL;
+
+  for (int64_t i = 0; i < initial_icap; i++)
+    indices[i] = MC_MAP_EMPTY;
+
+  m->entries     = entries;
+  m->indices     = indices;
+  m->len         = 0;
+  m->entries_cap = initial_ecap;
+  m->index_cap   = initial_icap;
+  m->key_size    = (key_size < 0) ? (int64_t)sizeof(void *) : key_size;
+  m->val_size    = val_size;
+  m->refcount    = -1; /* arena-owned */
+  return m;
 }
