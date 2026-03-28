@@ -163,6 +163,7 @@ private:
   llvm::Value *emit_for_expr(const ForExprNode &node);
   llvm::Value *emit_struct_literal(const StructLiteralNode &node);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
+  llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
 

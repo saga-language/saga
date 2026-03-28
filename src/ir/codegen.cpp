@@ -734,6 +734,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const ForExprNode &n) -> llvm::Value * {
             return emit_for_expr(n);
           },
+          [&](const SwitchExprNode &n) -> llvm::Value * {
+            return emit_switch_expr(n);
+          },
           [&](const StructLiteralNode &n) -> llvm::Value * {
             return emit_struct_literal(n);
           },
@@ -1300,6 +1303,204 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
   }
 
   return then_val;
+}
+
+// ===========================================================================
+// Switch expression
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
+  auto *subject_val = emit_expr(*node.subject);
+  if (!subject_val)
+    return nullptr;
+
+  auto subject_sem = semantic_type(*node.subject);
+  bool is_string = subject_sem && subject_sem->kind == TypeKind::String;
+  bool is_int_like = !is_string; // Int, Bool, Enum, Float treated as int-like
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *merge_bb = llvm::BasicBlock::Create(context, "sw.merge");
+
+  // Collect case info for building PHI nodes.
+  struct CaseResult {
+    llvm::Value *value;
+    llvm::BasicBlock *block;
+    bool terminated;
+  };
+  std::vector<CaseResult> case_results;
+
+  if (is_string) {
+    // ── String matching: chained icmp + br ──────────────────────────
+    auto *cmp_fn = module->getFunction("mc_string_compare");
+
+    for (size_t i = 0; i < node.arms.size(); ++i) {
+      auto &arm = node.arms[i];
+      auto *case_bb = llvm::BasicBlock::Create(context,
+          "sw.case." + std::to_string(i), func);
+      auto *next_bb = llvm::BasicBlock::Create(context,
+          "sw.next." + std::to_string(i));
+
+      // Emit the pattern comparison.
+      auto *pattern_val = emit_expr(*arm.pattern);
+      auto *cmp = builder.CreateCall(cmp_fn, {subject_val, pattern_val}, "strcmp");
+      auto *is_eq = builder.CreateICmpEQ(cmp,
+          llvm::ConstantInt::get(i64_type, 0), "sw.eq");
+      builder.CreateCondBr(is_eq, case_bb, next_bb);
+
+      // Emit the case body.
+      builder.SetInsertPoint(case_bb);
+      llvm::Value *body_val = nullptr;
+      if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
+        body_val = emit_block(*block);
+      } else {
+        body_val = emit_expr(*arm.body);
+      }
+      bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+      if (!terminated)
+        builder.CreateBr(merge_bb);
+      case_results.push_back({body_val, builder.GetInsertBlock(), terminated});
+
+      // Continue with the next comparison.
+      func->insert(func->end(), next_bb);
+      builder.SetInsertPoint(next_bb);
+    }
+
+    // Else clause or fall through to merge.
+    llvm::Value *else_val = nullptr;
+    bool else_terminated = false;
+    llvm::BasicBlock *else_end_bb = nullptr;
+    if (node.else_body) {
+      if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
+        else_val = emit_block(*block);
+      } else {
+        else_val = emit_expr(**node.else_body);
+      }
+      else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+      else_end_bb = builder.GetInsertBlock();
+      if (!else_terminated)
+        builder.CreateBr(merge_bb);
+    } else {
+      builder.CreateBr(merge_bb);
+    }
+    if (!else_end_bb)
+      else_end_bb = builder.GetInsertBlock();
+    case_results.push_back({else_val, else_end_bb, else_terminated});
+
+  } else {
+    // ── Integer/Enum/Bool matching: LLVM switch instruction ─────────
+    // Create a default block for the else clause.
+    auto *default_bb = llvm::BasicBlock::Create(context, "sw.default");
+
+    // Count the number of case arms for the switch.
+    auto *sw = builder.CreateSwitch(subject_val, default_bb,
+                                    node.arms.size());
+
+    // Emit each case arm.
+    for (size_t i = 0; i < node.arms.size(); ++i) {
+      auto &arm = node.arms[i];
+      auto *case_bb = llvm::BasicBlock::Create(context,
+          "sw.case." + std::to_string(i), func);
+
+      // Resolve the case constant. For enum selectors and integer
+      // literals this happens at codegen time.
+      auto *pattern_val = emit_expr(*arm.pattern);
+      if (auto *ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(pattern_val)) {
+        // If the subject is i1 (bool) but the constant is i64, truncate.
+        if (subject_val->getType()->isIntegerTy(1) &&
+            ci->getType()->isIntegerTy(64)) {
+          sw->addCase(llvm::ConstantInt::get(
+              llvm::Type::getInt1Ty(context),
+              ci->getZExtValue() & 1), case_bb);
+        } else if (ci->getType() == subject_val->getType()) {
+          sw->addCase(ci, case_bb);
+        } else {
+          // Type mismatch — try an intcast.
+          auto *cast = llvm::ConstantInt::get(
+              llvm::cast<llvm::IntegerType>(subject_val->getType()),
+              ci->getSExtValue());
+          sw->addCase(cast, case_bb);
+        }
+      } else {
+        // Non-constant pattern — fall back to chained comparison in default.
+        // This shouldn't happen for well-formed programs, but add the
+        // block anyway so it's not orphaned.
+        sw->addCase(llvm::ConstantInt::get(
+            llvm::cast<llvm::IntegerType>(subject_val->getType()), i),
+            case_bb);
+      }
+
+      // Emit the case body.
+      builder.SetInsertPoint(case_bb);
+      llvm::Value *body_val = nullptr;
+      if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
+        body_val = emit_block(*block);
+      } else {
+        body_val = emit_expr(*arm.body);
+      }
+      bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+      if (!terminated)
+        builder.CreateBr(merge_bb);
+      case_results.push_back({body_val, builder.GetInsertBlock(), terminated});
+    }
+
+    // Default / else block.
+    func->insert(func->end(), default_bb);
+    builder.SetInsertPoint(default_bb);
+    llvm::Value *else_val = nullptr;
+    bool else_terminated = false;
+    if (node.else_body) {
+      if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
+        else_val = emit_block(*block);
+      } else {
+        else_val = emit_expr(**node.else_body);
+      }
+      else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+    }
+    if (!else_terminated)
+      builder.CreateBr(merge_bb);
+    case_results.push_back({else_val, builder.GetInsertBlock(), else_terminated});
+  }
+
+  // ── Merge block with optional PHI ──────────────────────────────────
+  func->insert(func->end(), merge_bb);
+  builder.SetInsertPoint(merge_bb);
+
+  // Check if all results are the same non-void type for PHI.
+  llvm::Type *phi_type = nullptr;
+  bool all_have_value = true;
+  bool any_reaches_merge = false;
+  for (auto &cr : case_results) {
+    if (!cr.terminated)
+      any_reaches_merge = true;
+    if (!cr.value || cr.terminated) {
+      all_have_value = false;
+    } else if (!phi_type) {
+      phi_type = cr.value->getType();
+    } else if (cr.value->getType() != phi_type) {
+      all_have_value = false;
+    }
+  }
+
+  if (!any_reaches_merge) {
+    // All branches terminated (returned) — merge is unreachable.
+    builder.CreateUnreachable();
+    return nullptr;
+  }
+
+  if (all_have_value && phi_type && !phi_type->isVoidTy()) {
+    unsigned incoming = 0;
+    for (auto &cr : case_results)
+      if (!cr.terminated)
+        incoming++;
+    auto *phi = builder.CreatePHI(phi_type, incoming, "sw.val");
+    for (auto &cr : case_results) {
+      if (!cr.terminated && cr.value)
+        phi->addIncoming(cr.value, cr.block);
+    }
+    return phi;
+  }
+
+  return nullptr;
 }
 
 // ===========================================================================

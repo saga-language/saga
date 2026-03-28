@@ -1831,6 +1831,323 @@ TEST(CodeGen, BuiltinComparisonEnum) {
   EXPECT_EQ(r.codegen->enum_variants["Comparison.Greater"], 2);
 }
 
+// ===========================================================================
+// Switch/case — value matching
+// ===========================================================================
+
+TEST(CodeGen, SwitchIntBasicBlocks) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1\n"
+      "  switch x {\n"
+      "    case 0: intrinsic_print(\"zero\\n\")\n"
+      "    case 1: intrinsic_print(\"one\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have case blocks and a merge.
+  bool found_case = false, found_merge = false;
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("sw.case")) found_case = true;
+    if (bb.getName().starts_with("sw.merge")) found_merge = true;
+  }
+  EXPECT_TRUE(found_case) << "Should have sw.case blocks";
+  EXPECT_TRUE(found_merge) << "Should have sw.merge block";
+}
+
+TEST(CodeGen, SwitchIntUsesSwInst) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1\n"
+      "  switch x {\n"
+      "    case 0: intrinsic_print(\"zero\\n\")\n"
+      "    case 1: intrinsic_print(\"one\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_switch = false;
+  for (auto &bb : *main)
+    if (auto *term = bb.getTerminator())
+      if (llvm::isa<llvm::SwitchInst>(term))
+        found_switch = true;
+  EXPECT_TRUE(found_switch) << "Should use LLVM switch instruction for int";
+}
+
+TEST(CodeGen, SwitchIntWithElse) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 5\n"
+      "  switch x {\n"
+      "    case 0: intrinsic_print(\"zero\\n\")\n"
+      "    else: intrinsic_print(\"other\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_default = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("sw.default"))
+      found_default = true;
+  EXPECT_TRUE(found_default) << "Should have sw.default block for else";
+}
+
+TEST(CodeGen, SwitchIntExpression) {
+  // Switch used as an expression should produce a PHI.
+  auto r = CG::from(
+      "fn Describe(n Int) Int {\n"
+      "  switch n {\n"
+      "    case 0: 10\n"
+      "    case 1: 20\n"
+      "    else: 30\n"
+      "  }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Describe");
+  ASSERT_NE(fn, nullptr);
+  bool found_phi = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::PHINode>(&inst))
+        found_phi = true;
+  EXPECT_TRUE(found_phi) << "Switch expression should produce a PHI node";
+}
+
+TEST(CodeGen, SwitchIntExprReturnedAsTail) {
+  auto r = CG::from(
+      "fn Classify(n Int) Int {\n"
+      "  switch n {\n"
+      "    case 0: 100\n"
+      "    else: 200\n"
+      "  }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Classify");
+  ASSERT_NE(fn, nullptr);
+  // The merge block should have a ret with the PHI value.
+  bool found_ret = false;
+  for (auto &bb : *fn)
+    if (auto *term = bb.getTerminator())
+      if (auto *ret = llvm::dyn_cast<llvm::ReturnInst>(term))
+        if (ret->getReturnValue() &&
+            ret->getReturnValue()->getType()->isIntegerTy(64))
+          found_ret = true;
+  EXPECT_TRUE(found_ret);
+}
+
+TEST(CodeGen, SwitchEnumValue) {
+  auto r = CG::from(
+      "enum Colors { Red\n Green\n Blue }\n"
+      "pub fn Main() Void {\n"
+      "  c := Colors.Green\n"
+      "  switch c {\n"
+      "    case Colors.Red: intrinsic_print(\"red\\n\")\n"
+      "    case Colors.Green: intrinsic_print(\"green\\n\")\n"
+      "    case Colors.Blue: intrinsic_print(\"blue\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a switch instruction.
+  bool found_switch = false;
+  for (auto &bb : *main)
+    if (auto *term = bb.getTerminator())
+      if (llvm::isa<llvm::SwitchInst>(term))
+        found_switch = true;
+  EXPECT_TRUE(found_switch);
+}
+
+TEST(CodeGen, SwitchEnumExpression) {
+  auto r = CG::from(
+      "enum Dir { North\n South\n East\n West }\n"
+      "fn ToInt(d Dir) Int {\n"
+      "  switch d {\n"
+      "    case Dir.North: 0\n"
+      "    case Dir.South: 1\n"
+      "    case Dir.East: 2\n"
+      "    else: 3\n"
+      "  }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("ToInt");
+  ASSERT_NE(fn, nullptr);
+  bool found_switch = false;
+  for (auto &bb : *fn)
+    if (auto *term = bb.getTerminator())
+      if (auto *sw = llvm::dyn_cast<llvm::SwitchInst>(term)) {
+        found_switch = true;
+        EXPECT_EQ(sw->getNumCases(), 3u);
+      }
+  EXPECT_TRUE(found_switch);
+}
+
+TEST(CodeGen, SwitchWithBlockBody) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 2\n"
+      "  switch x {\n"
+      "    case 1: {\n"
+      "      intrinsic_print(\"one\\n\")\n"
+      "    }\n"
+      "    case 2: {\n"
+      "      intrinsic_print(\"two\\n\")\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have print calls in the case blocks.
+  int print_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+          print_count++;
+  EXPECT_EQ(print_count, 2);
+}
+
+TEST(CodeGen, SwitchStringUsesChainedCompare) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"hi\"\n"
+      "  switch s {\n"
+      "    case \"hello\": intrinsic_print(\"found hello\\n\")\n"
+      "    case \"hi\": intrinsic_print(\"found hi\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // String switches should NOT use LLVM switch instruction.
+  bool found_switch = false;
+  for (auto &bb : *main)
+    if (auto *term = bb.getTerminator())
+      if (llvm::isa<llvm::SwitchInst>(term))
+        found_switch = true;
+  EXPECT_FALSE(found_switch)
+      << "String switch should use chained compare, not switch inst";
+  // Should have calls to mc_string_compare.
+  int cmp_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_string_compare")
+          cmp_count++;
+  EXPECT_GE(cmp_count, 2) << "Should compare against each case pattern";
+}
+
+TEST(CodeGen, SwitchStringWithElse) {
+  auto r = CG::from(
+      "fn Greet(name String) String {\n"
+      "  switch name {\n"
+      "    case \"Alice\": \"Hi Alice!\"\n"
+      "    else: \"Hello stranger\"\n"
+      "  }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Greet");
+  ASSERT_NE(fn, nullptr);
+  // Should have a PHI for the expression result.
+  bool found_phi = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::PHINode>(&inst))
+        found_phi = true;
+  EXPECT_TRUE(found_phi);
+}
+
+TEST(CodeGen, SwitchCasesNoFallThrough) {
+  // Each case should branch directly to merge, not fall through.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 1\n"
+      "  switch x {\n"
+      "    case 0: intrinsic_print(\"zero\\n\")\n"
+      "    case 1: intrinsic_print(\"one\\n\")\n"
+      "    case 2: intrinsic_print(\"two\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Each case block should end with a branch to sw.merge.
+  for (auto &bb : *main) {
+    if (bb.getName().starts_with("sw.case")) {
+      auto *term = bb.getTerminator();
+      ASSERT_NE(term, nullptr);
+      if (auto *br = llvm::dyn_cast<llvm::BranchInst>(term)) {
+        EXPECT_TRUE(br->isUnconditional());
+        EXPECT_TRUE(br->getSuccessor(0)->getName().starts_with("sw.merge"));
+      }
+    }
+  }
+}
+
+TEST(CodeGen, SwitchMultipleCases) {
+  // Three cases + else, each with side effects.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 2\n"
+      "  switch x {\n"
+      "    case 0: intrinsic_print(\"zero\\n\")\n"
+      "    case 1: intrinsic_print(\"one\\n\")\n"
+      "    case 2: intrinsic_print(\"two\\n\")\n"
+      "    else: intrinsic_print(\"other\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a switch with 3 cases.
+  for (auto &bb : *main)
+    if (auto *term = bb.getTerminator())
+      if (auto *sw = llvm::dyn_cast<llvm::SwitchInst>(term))
+        EXPECT_EQ(sw->getNumCases(), 3u);
+}
+
+TEST(CodeGen, SwitchSingleCase) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 42\n"
+      "  switch x {\n"
+      "    case 42: intrinsic_print(\"found\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_switch = false;
+  for (auto &bb : *main)
+    if (auto *term = bb.getTerminator())
+      if (auto *sw = llvm::dyn_cast<llvm::SwitchInst>(term)) {
+        found_switch = true;
+        EXPECT_EQ(sw->getNumCases(), 1u);
+      }
+  EXPECT_TRUE(found_switch);
+}
+
+TEST(CodeGen, SwitchCallsInCases) {
+  auto r = CG::from(
+      "fn Handle(code Int) Void {\n"
+      "  switch code {\n"
+      "    case 0: intrinsic_print(\"ok\\n\")\n"
+      "    case 1: intrinsic_print(\"warn\\n\")\n"
+      "    else: intrinsic_print(\"err\\n\")\n"
+      "  }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Handle");
+  ASSERT_NE(fn, nullptr);
+  // Should have 3 print calls (one per case/else).
+  int print_count = 0;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+          print_count++;
+  EXPECT_EQ(print_count, 3);
+}
+
 } // namespace mc
 
 
