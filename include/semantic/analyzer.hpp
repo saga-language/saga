@@ -11,8 +11,35 @@
 #include "semantic/types.hpp"
 
 #include <unordered_map>
+#include <unordered_set>
 
 namespace mc {
+
+// ---------------------------------------------------------------------------
+// PackageResolver — resolves import paths to filesystem directories,
+// caches analyzed packages, and detects import cycles.
+// ---------------------------------------------------------------------------
+
+struct PackageResolver {
+  /// Directories to search for packages (e.g. std library, project root).
+  std::vector<std::string> search_paths;
+
+  /// Cache of already-resolved packages: import_path → module type.
+  std::unordered_map<std::string, TypePtr> cache;
+
+  /// Import paths currently being resolved (for cycle detection).
+  std::unordered_set<std::string> in_progress;
+
+  /// For testing: pre-registered mock packages that bypass filesystem.
+  std::unordered_map<std::string, TypePtr> mock_packages;
+
+  /// Find the filesystem directory for the given import path.
+  /// Returns empty string if not found.
+  std::string find_package_dir(const std::string &import_path) const;
+
+  /// List all .sg source files in the given directory.
+  std::vector<std::string> list_source_files(const std::string &dir) const;
+};
 
 // ---------------------------------------------------------------------------
 // Analyzer — semantic analysis over a parsed AST.
@@ -52,6 +79,20 @@ struct Analyzer {
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
 
+  // ── Module/Import system ─────────────────────────────────────────────
+
+  /// Package resolver (shared across sub-package analyzers).
+  std::shared_ptr<PackageResolver> package_resolver;
+
+  /// The directory of the package currently being analyzed (for relative imports).
+  std::string current_package_dir;
+
+  /// The package-level scope (saved after analysis for import extraction).
+  Scope::Ptr package_scope_;
+
+  /// Import paths seen in the current package (duplicate detection).
+  std::unordered_set<std::string> imported_paths_;
+
   // ── Closure capture tracking ─────────────────────────────────────────
 
   /// Information about a single captured variable in a closure.
@@ -75,11 +116,21 @@ struct Analyzer {
   // ── Construction ─────────────────────────────────────────────────────
 
   explicit Analyzer(FileSet &fs);
+  explicit Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver);
 
   // ── Entry point ──────────────────────────────────────────────────────
 
   /// Analyze an entire package (PackageNode at root).
   void analyze(const Node &root);
+
+  // ── Import resolution ────────────────────────────────────────────────
+
+  /// Resolve an import path to a Module type.  Parses and analyzes the
+  /// sub-package, caches the result, and returns the module type.
+  TypePtr resolve_import(const std::string &import_path, Span span);
+
+  /// Process all import declarations in a source after names are collected.
+  void process_imports(const std::vector<NodePtr> &declarations);
 
   // ── Scope helpers ────────────────────────────────────────────────────
 

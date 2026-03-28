@@ -95,6 +95,14 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
       TypeParamInfo{TypeParam{id, name}, std::move(bound)});
 }
 
+TypePtr make_module_type(const std::string &name,
+                         const std::string &import_path,
+                         std::vector<ModuleExport> exports) {
+  return std::make_shared<Type>(
+      TypeKind::Module,
+      ModuleTypeInfo{name, import_path, std::move(exports)});
+}
+
 // ===========================================================================
 // Type queries
 // ===========================================================================
@@ -252,6 +260,11 @@ std::string type_to_string(const TypePtr &t) {
     auto &info = std::get<TypeParamInfo>(t->detail);
     return info.param.name;
   }
+
+  case TypeKind::Module: {
+    auto &info = std::get<ModuleTypeInfo>(t->detail);
+    return "module '" + info.name + "'";
+  }
   }
 
   return "<unknown>";
@@ -372,6 +385,12 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     auto &ai = std::get<TypeParamInfo>(a->detail);
     auto &bi = std::get<TypeParamInfo>(b->detail);
     return ai.param.id == bi.param.id;
+  }
+
+  case TypeKind::Module: {
+    auto &ai = std::get<ModuleTypeInfo>(a->detail);
+    auto &bi = std::get<ModuleTypeInfo>(b->detail);
+    return ai.import_path == bi.import_path;
   }
 
   case TypeKind::Error:

@@ -51,6 +51,12 @@ Symbol Symbol::enum_variant(const std::string &name, TypePtr type, Span span) {
                 false};
 }
 
+Symbol Symbol::module_sym(const std::string &name, TypePtr type, Span span) {
+  return Symbol{name,  SymbolKind::Module, std::move(type),
+                span,  false,              false,
+                false};
+}
+
 Symbol Symbol::builtin(const std::string &name, SymbolKind kind,
                        TypePtr type) {
   return Symbol{name, kind, std::move(type), {0, 0}, true, false, true};

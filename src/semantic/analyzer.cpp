@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 #include "semantic/analyzer.hpp"
+#include "frontend/parser.hpp"
 
+#include <algorithm>
+#include <filesystem>
 #include <format>
 
 namespace mc {
@@ -14,8 +17,47 @@ namespace mc {
 Analyzer::Analyzer(FileSet &fs)
     : fileset(fs),
       global_scope(std::make_shared<Scope>(ScopeKind::Global)),
-      current_scope(global_scope) {
+      current_scope(global_scope),
+      package_resolver(std::make_shared<PackageResolver>()) {
   register_builtins(global_scope, builtins);
+}
+
+Analyzer::Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver)
+    : fileset(fs),
+      global_scope(std::make_shared<Scope>(ScopeKind::Global)),
+      current_scope(global_scope),
+      package_resolver(std::move(resolver)) {
+  register_builtins(global_scope, builtins);
+}
+
+// ===========================================================================
+// PackageResolver
+// ===========================================================================
+
+namespace fs = std::filesystem;
+
+std::string PackageResolver::find_package_dir(
+    const std::string &import_path) const {
+  for (auto &base : search_paths) {
+    std::string candidate = base + "/" + import_path;
+    if (fs::is_directory(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+std::vector<std::string> PackageResolver::list_source_files(
+    const std::string &dir) const {
+  std::vector<std::string> files;
+  if (!fs::is_directory(dir))
+    return files;
+  for (auto &entry : fs::directory_iterator(dir)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".sg") {
+      files.push_back(entry.path().string());
+    }
+  }
+  std::sort(files.begin(), files.end());
+  return files;
 }
 
 // ===========================================================================
@@ -193,19 +235,107 @@ void Analyzer::expect_bool(Span span, const TypePtr &type,
 // ===========================================================================
 
 void Analyzer::visit_package(const PackageNode &pkg) {
+  push_scope(ScopeKind::Module);
+
+  // Save the package scope so import resolution can extract exports later.
+  package_scope_ = current_scope;
+
+  // Phase 1: collect all top-level names from ALL files (forward declarations).
   for (auto &src : pkg.sources) {
     auto &src_node = std::get<SourceNode>(src->data);
-    visit_source(src_node);
+    for (auto &decl : src_node.declarations) {
+      collect_declaration(*decl);
+    }
   }
+
+  // Phase 1.5: process imports from ALL files.
+  for (auto &src : pkg.sources) {
+    auto &src_node = std::get<SourceNode>(src->data);
+    process_imports(src_node.declarations);
+  }
+
+  // Phase 2: resolve declaration types (struct fields, signatures, etc.) from ALL files.
+  for (auto &src : pkg.sources) {
+    auto &src_node = std::get<SourceNode>(src->data);
+    for (auto &decl : src_node.declarations) {
+      resolve_declaration(*decl);
+    }
+  }
+
+  // Phase 3: resolve names inside function/method bodies from ALL files.
+  for (auto &src : pkg.sources) {
+    auto &src_node = std::get<SourceNode>(src->data);
+    for (auto &decl : src_node.declarations) {
+      std::visit(
+          overloaded{
+              [&](const FuncDeclNode &fn) {
+                resolve_func_decl_body(fn);
+              },
+              [&](const StructDeclNode &s) {
+                TypePtr struct_type = nullptr;
+                auto sym = lookup(std::string(s.name.name));
+                if (sym)
+                  struct_type = sym->type;
+
+                for (auto &member : s.members) {
+                  if (auto *fn =
+                          std::get_if<FuncDeclNode>(&member.member->data)) {
+                    resolve_func_decl_body(*fn, struct_type);
+                  }
+                }
+              },
+              [&](const auto &) {},
+          },
+          decl->data);
+    }
+  }
+
+  // Phase 4: type-check top-level declarations and function bodies from ALL files.
+  for (auto &src : pkg.sources) {
+    auto &src_node = std::get<SourceNode>(src->data);
+    for (auto &decl : src_node.declarations) {
+      std::visit(
+          overloaded{
+              [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
+              [&](const StructDeclNode &s) {
+                check_struct_decl(s);
+
+                TypePtr struct_type = nullptr;
+                auto sym = lookup(std::string(s.name.name));
+                if (sym)
+                  struct_type = sym->type;
+
+                for (auto &member : s.members) {
+                  if (auto *fn =
+                          std::get_if<FuncDeclNode>(&member.member->data)) {
+                    check_func_decl_body(*fn, struct_type);
+                  }
+                }
+              },
+              [&](const EnumDeclNode &e) { check_enum_decl(e); },
+              [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
+              [&](const ConstDeclNode &c) { check_const_decl(c); },
+              [&](const ImportDeclNode &imp) { check_import_decl(imp); },
+              [&](const auto &) {},
+          },
+          decl->data);
+    }
+  }
+
+  pop_scope();
 }
 
 void Analyzer::visit_source(const SourceNode &src) {
   push_scope(ScopeKind::Module);
+  package_scope_ = current_scope;
 
   // Pass 1: collect all top-level names (forward declarations).
   for (auto &decl : src.declarations) {
     collect_declaration(*decl);
   }
+
+  // Pass 1.5: process imports.
+  process_imports(src.declarations);
 
   // Pass 2: resolve declaration types (struct fields, signatures, etc.).
   for (auto &decl : src.declarations) {
@@ -220,7 +350,6 @@ void Analyzer::visit_source(const SourceNode &src) {
               resolve_func_decl_body(fn);
             },
             [&](const StructDeclNode &s) {
-              // Look up the struct's resolved type for field injection.
               TypePtr struct_type = nullptr;
               auto sym = lookup(std::string(s.name.name));
               if (sym)
@@ -246,7 +375,6 @@ void Analyzer::visit_source(const SourceNode &src) {
             [&](const StructDeclNode &s) {
               check_struct_decl(s);
 
-              // Look up the struct's resolved type for field injection.
               TypePtr struct_type = nullptr;
               auto sym = lookup(std::string(s.name.name));
               if (sym)
@@ -262,7 +390,7 @@ void Analyzer::visit_source(const SourceNode &src) {
             [&](const EnumDeclNode &e) { check_enum_decl(e); },
             [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
             [&](const ConstDeclNode &c) { check_const_decl(c); },
-            [&](const ImportDeclNode &) { /* deferred */ },
+            [&](const ImportDeclNode &imp) { check_import_decl(imp); },
             [&](const auto &) {},
         },
         decl->data);
@@ -294,14 +422,221 @@ void Analyzer::collect_declaration(const Node &node) {
             declare(Symbol::constant(std::string(c.name.name), nullptr,
                                      c.name.span, c.is_public));
           },
-          [&](const ImportDeclNode &) {
-            // Import handling deferred to module support.
+          [&](const ImportDeclNode &imp) {
+            // Derive the local name from the last path segment.
+            std::string path(imp.path);
+            auto last_slash = path.rfind('/');
+            std::string name = (last_slash != std::string::npos)
+                                   ? path.substr(last_slash + 1)
+                                   : path;
+            // Forward-declare the module symbol (type filled in during
+            // import processing).
+            declare(Symbol::module_sym(name, nullptr, imp.span));
           },
           [&](const auto &) {
             error(node.span, "unexpected node at top level");
           },
       },
       node.data);
+}
+
+// ===========================================================================
+// Phase 1.5 — Import processing
+// ===========================================================================
+
+void Analyzer::process_imports(const std::vector<NodePtr> &declarations) {
+  for (auto &decl : declarations) {
+    std::visit(
+        overloaded{
+            [&](const ImportDeclNode &imp) {
+              std::string path(imp.path);
+
+              // Check for duplicate imports.
+              if (imported_paths_.count(path)) {
+                error(imp.span,
+                      std::format("duplicate import of '{}'", path));
+                return;
+              }
+              imported_paths_.insert(path);
+
+              // Derive the local name from the last path segment.
+              auto last_slash = path.rfind('/');
+              std::string name = (last_slash != std::string::npos)
+                                     ? path.substr(last_slash + 1)
+                                     : path;
+
+              // Resolve the import to a module type.
+              auto module_type = resolve_import(path, imp.span);
+
+              // Update the forward-declared module symbol with the resolved type.
+              auto sym_it = current_scope->symbols.find(name);
+              if (sym_it != current_scope->symbols.end()) {
+                sym_it->second.type = module_type;
+              }
+            },
+            [&](const ConstDeclNode &c) {
+              // Handle `const Name = import "path"` — import expression
+              // bound to a named constant.
+              if (!c.value)
+                return;
+              auto *import_expr =
+                  std::get_if<ImportExprNode>(&c.value->data);
+              if (!import_expr)
+                return;
+
+              std::string path(import_expr->path);
+
+              // Check for duplicate imports.
+              if (imported_paths_.count(path)) {
+                error(c.value->span,
+                      std::format("duplicate import of '{}'", path));
+                return;
+              }
+              imported_paths_.insert(path);
+
+              // Resolve the import.
+              auto module_type = resolve_import(path, c.value->span);
+
+              // Update the constant symbol to be a module symbol.
+              auto sym_it =
+                  current_scope->symbols.find(std::string(c.name.name));
+              if (sym_it != current_scope->symbols.end()) {
+                sym_it->second.type = module_type;
+                sym_it->second.kind = SymbolKind::Module;
+              }
+            },
+            [&](const auto &) { /* not an import */ },
+        },
+        decl->data);
+  }
+}
+
+TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
+  // Check mock packages first (for testing).
+  if (package_resolver) {
+    auto mock_it = package_resolver->mock_packages.find(import_path);
+    if (mock_it != package_resolver->mock_packages.end()) {
+      return mock_it->second;
+    }
+  }
+
+  // Check cache.
+  if (package_resolver) {
+    auto cache_it = package_resolver->cache.find(import_path);
+    if (cache_it != package_resolver->cache.end()) {
+      return cache_it->second;
+    }
+  }
+
+  // Cycle detection.
+  if (package_resolver && package_resolver->in_progress.count(import_path)) {
+    error(span, std::format("circular import detected: '{}'", import_path));
+    return builtins.error_type;
+  }
+
+  // Resolve the filesystem path.
+  if (!package_resolver) {
+    error(span, std::format("cannot resolve import '{}': no package resolver",
+                            import_path));
+    return builtins.error_type;
+  }
+
+  // For relative imports, resolve against the current package directory.
+  std::string pkg_dir;
+  if (import_path.starts_with("./") || import_path.starts_with("../")) {
+    if (!current_package_dir.empty()) {
+      pkg_dir = current_package_dir + "/" + import_path;
+      // Normalize the path.
+      if (std::filesystem::exists(pkg_dir)) {
+        pkg_dir = std::filesystem::canonical(pkg_dir).string();
+      } else {
+        pkg_dir.clear();
+      }
+    }
+  } else {
+    pkg_dir = package_resolver->find_package_dir(import_path);
+  }
+
+  if (pkg_dir.empty()) {
+    error(span, std::format("cannot find package '{}'", import_path));
+    return builtins.error_type;
+  }
+
+  // List source files.
+  auto source_files = package_resolver->list_source_files(pkg_dir);
+  if (source_files.empty()) {
+    error(span,
+          std::format("package '{}' contains no source files", import_path));
+    return builtins.error_type;
+  }
+
+  // Mark as in-progress for cycle detection.
+  package_resolver->in_progress.insert(import_path);
+
+  // Parse the sub-package.
+  FileSet sub_fileset;
+  for (auto &f : source_files) {
+    auto file = File::from_path(f);
+    if (file)
+      sub_fileset.add_file(std::move(file));
+  }
+
+  if (sub_fileset.files.empty()) {
+    error(span,
+          std::format("failed to read source files for package '{}'",
+                      import_path));
+    package_resolver->in_progress.erase(import_path);
+    return builtins.error_type;
+  }
+
+  Parser sub_parser(sub_fileset);
+  auto sub_ast = sub_parser.parse();
+
+  if (!sub_ast || !sub_parser.errors.errors.empty()) {
+    error(span, std::format("parse errors in imported package '{}'",
+                            import_path));
+    package_resolver->in_progress.erase(import_path);
+    return builtins.error_type;
+  }
+
+  // Analyze the sub-package with a shared resolver.
+  Analyzer sub_analyzer(sub_fileset, package_resolver);
+  sub_analyzer.current_package_dir = pkg_dir;
+  sub_analyzer.analyze(*sub_ast);
+
+  if (!sub_analyzer.errors.errors.empty()) {
+    error(span, std::format("errors in imported package '{}'", import_path));
+    // Forward sub-errors as additional context.
+    for (auto &e : sub_analyzer.errors.errors) {
+      errors.errors.push_back(e);
+    }
+    package_resolver->in_progress.erase(import_path);
+    return builtins.error_type;
+  }
+
+  // Extract public symbols from the sub-package's module scope.
+  auto last_slash = import_path.rfind('/');
+  std::string pkg_name = (last_slash != std::string::npos)
+                              ? import_path.substr(last_slash + 1)
+                              : import_path;
+
+  std::vector<ModuleExport> exports;
+  if (sub_analyzer.package_scope_) {
+    for (auto &[sym_name, sym] : sub_analyzer.package_scope_->symbols) {
+      if (sym.is_public && !sym.is_builtin && sym.type) {
+        exports.push_back({sym_name, sym.type});
+      }
+    }
+  }
+
+  auto module_type =
+      make_module_type(pkg_name, import_path, std::move(exports));
+
+  // Cache and unmark.
+  package_resolver->cache[import_path] = module_type;
+  package_resolver->in_progress.erase(import_path);
+
+  return module_type;
 }
 
 // ===========================================================================
@@ -441,7 +776,7 @@ void Analyzer::resolve_declaration(const Node &node) {
           [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
           [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
           [&](const ConstDeclNode &c) { resolve_const_decl(c); },
-          [&](const ImportDeclNode &) { /* deferred */ },
+          [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
           [&](const auto &) { /* already reported in collect */ },
       },
       node.data);
@@ -710,7 +1045,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const SpawnExprNode &n) { resolve_spawn_expr(n); },
           [&](const OrExprNode &n) { resolve_or_expr(n); },
           [&](const FuncExprNode &n) { resolve_func_expr(n, node); },
-          [&](const ImportExprNode &) { /* deferred to module support */ },
+          [&](const ImportExprNode &) { /* processed during import phase */ },
           [&](const BlockNode &n) {
             push_scope(ScopeKind::Block);
             resolve_block(n);
@@ -824,6 +1159,29 @@ void Analyzer::resolve_selector(const SelectorNode &node) {
   // Resolve the left-hand side; the field name (.field) is resolved later
   // during type-checking against the object's type.
   resolve_expr(*node.object);
+
+  // For module selectors, resolve the member in the module's scope
+  // to provide early name-resolution feedback.
+  if (auto *ident = std::get_if<IdentifierNode>(&node.object->data)) {
+    auto sym = lookup(std::string(ident->name));
+    if (sym && sym->kind == SymbolKind::Module && sym->type &&
+        sym->type->kind == TypeKind::Module) {
+      auto &mod = std::get<ModuleTypeInfo>(sym->type->detail);
+      std::string field_name(node.field.name);
+      bool found = false;
+      for (auto &exp : mod.exports) {
+        if (exp.name == field_name) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        error(node.field.span,
+              std::format("package '{}' has no exported member '{}'",
+                          mod.name, field_name));
+      }
+    }
+  }
 }
 
 void Analyzer::resolve_binary_expr(const BinaryExprNode &node) {
@@ -1283,6 +1641,11 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
     return builtins.error_type;
   }
   record_symbol(parent, *sym);
+
+  // For module symbols, return the module type directly.
+  if (sym->kind == SymbolKind::Module && sym->type)
+    return sym->type;
+
   return sym->type ? sym->type : builtins.error_type;
 }
 
@@ -1708,6 +2071,20 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     return builtins.error_type;
 
   std::string field_name(node.field.name);
+
+  // Module selector: look up exported symbols.
+  if (obj_type->kind == TypeKind::Module) {
+    auto &mod = std::get<ModuleTypeInfo>(obj_type->detail);
+    for (auto &exp : mod.exports) {
+      if (exp.name == field_name) {
+        return exp.type ? exp.type : builtins.error_type;
+      }
+    }
+    error(node.field.span,
+          std::format("package '{}' has no exported member '{}'",
+                      mod.name, field_name));
+    return builtins.error_type;
+  }
 
   // Look up fields and methods on the type.
   if (obj_type->kind == TypeKind::Struct) {
@@ -2209,8 +2586,22 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
   return fn_type;
 }
 
-TypePtr Analyzer::check_import_expr(const ImportExprNode &) {
-  // Module support deferred.
+TypePtr Analyzer::check_import_expr(const ImportExprNode &node) {
+  // Import expressions used as `const X = import "path"` are already
+  // processed during the import phase.  If we reach here, look up the
+  // resolved module type from the cache.
+  std::string path(node.path);
+  if (package_resolver) {
+    auto cache_it = package_resolver->cache.find(path);
+    if (cache_it != package_resolver->cache.end()) {
+      return cache_it->second;
+    }
+    auto mock_it = package_resolver->mock_packages.find(path);
+    if (mock_it != package_resolver->mock_packages.end()) {
+      return mock_it->second;
+    }
+  }
+  // If not found, the import was already reported as an error.
   return builtins.error_type;
 }
 
@@ -2571,8 +2962,18 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
   }
 }
 
-void Analyzer::check_import_decl(const ImportDeclNode &) {
-  // Deferred to module support.
+void Analyzer::check_import_decl(const ImportDeclNode &node) {
+  // Import declarations are fully processed during the import phase (1.5).
+  // Here we just verify the module symbol was successfully resolved.
+  std::string path(node.path);
+  auto last_slash = path.rfind('/');
+  std::string name = (last_slash != std::string::npos)
+                         ? path.substr(last_slash + 1)
+                         : path;
+  auto sym = lookup(name);
+  if (sym && sym->type && is_error_type(sym->type)) {
+    // Error was already reported during resolve_import.
+  }
 }
 
 // ===========================================================================
