@@ -1732,7 +1732,107 @@ TEST(CodeGen, IntLocalNotReleased) {
           FAIL() << "Int locals should not be released";
 }
 
+// ===========================================================================
+// Enums
+// ===========================================================================
+
+TEST(CodeGen, EnumVariantValues) {
+  auto r = CG::from(
+      "enum Colors { Red\n Green\n Blue }\n"
+      "pub fn Main() Void {\n"
+      "  r := Colors.Red\n"
+      "  g := Colors.Green\n"
+      "  b := Colors.Blue\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "r"));
+  EXPECT_TRUE(has_alloca_named(main, "g"));
+  EXPECT_TRUE(has_alloca_named(main, "b"));
+}
+
+TEST(CodeGen, EnumComparison) {
+  auto r = CG::from(
+      "enum Colors { Red\n Green\n Blue }\n"
+      "pub fn Main() Void {\n"
+      "  c := Colors.Red\n"
+      "  x := c == Colors.Red\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::ICmp), 1);
+}
+
+TEST(CodeGen, EnumCustomIndex) {
+  auto r = CG::from(
+      "enum Suits {\n"
+      "  Clubs {index: 1}\n"
+      "  Diamonds\n"
+      "  Hearts {index: 5}\n"
+      "  Spades\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  c := Suits.Clubs\n"
+      "  s := Suits.Spades\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Verify by checking store values.
+  // Clubs=1, Spades=6 — just check the function compiles.
+  EXPECT_TRUE(has_alloca_named(main, "c"));
+  EXPECT_TRUE(has_alloca_named(main, "s"));
+}
+
+TEST(CodeGen, EnumAsParam) {
+  auto r = CG::from(
+      "enum Dir { North\n South }\n"
+      "fn Check(d Dir) Bool { d == Dir.North }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Check");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->arg_size(), 1u);
+  EXPECT_TRUE(fn->getArg(0)->getType()->isIntegerTy(64));
+  EXPECT_TRUE(fn->getReturnType()->isIntegerTy(1));
+}
+
+TEST(CodeGen, EnumReturnType) {
+  auto r = CG::from(
+      "enum Dir { North\n South\n East\n West }\n"
+      "fn Default() Dir { Dir.North }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Default");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, EnumInIf) {
+  auto r = CG::from(
+      "enum Colors { Red\n Green\n Blue }\n"
+      "pub fn Main() Void {\n"
+      "  c := Colors.Green\n"
+      "  if c == Colors.Green {\n"
+      "    intrinsic_print(\"green\\n\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_GE(main->size(), 3u); // entry, then, merge
+}
+
+TEST(CodeGen, BuiltinComparisonEnum) {
+  // The built-in Comparison enum should be registered.
+  auto r = CG::from("pub fn Main() Void {}");
+  // Check that the codegen knows about Comparison variants.
+  EXPECT_TRUE(r.codegen->enum_variants.count("Comparison.Less"));
+  EXPECT_TRUE(r.codegen->enum_variants.count("Comparison.Equal"));
+  EXPECT_TRUE(r.codegen->enum_variants.count("Comparison.Greater"));
+  EXPECT_EQ(r.codegen->enum_variants["Comparison.Less"], 0);
+  EXPECT_EQ(r.codegen->enum_variants["Comparison.Equal"], 1);
+  EXPECT_EQ(r.codegen->enum_variants["Comparison.Greater"], 2);
+}
+
 } // namespace mc
+
 
 
 

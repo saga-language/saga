@@ -48,6 +48,12 @@ void CodeGen::init_types() {
       context,
       {llvm::PointerType::getUnqual(context), i64_type, i64_type},
       "mc_string");
+
+  // Register built-in enums.
+  enum_types["Comparison"] = true;
+  enum_variants["Comparison.Less"] = 0;
+  enum_variants["Comparison.Equal"] = 1;
+  enum_variants["Comparison.Greater"] = 2;
 }
 
 void CodeGen::declare_runtime() {
@@ -139,6 +145,8 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to mc_string
   case TypeKind::Void:
     return void_ll_type;
+  case TypeKind::Enum:
+    return i64_type; // Enums are represented as i64 tags.
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
     auto it = struct_types.find(info.name);
@@ -184,8 +192,9 @@ void CodeGen::emit_package(const PackageNode &pkg) {
 }
 
 void CodeGen::emit_source(const SourceNode &src) {
-  // Pass 1: create LLVM struct types.
+  // Pass 1: create LLVM struct types and register enums.
   declare_structs(src);
+  declare_enums(src);
 
   // Pass 2: forward-declare all functions so they can call each other.
   declare_functions(src);
@@ -269,6 +278,46 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
 }
 
 // ===========================================================================
+// Enum declarations
+// ===========================================================================
+
+void CodeGen::declare_enums(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    if (auto *e = std::get_if<EnumDeclNode>(&decl->data))
+      emit_enum_decl(*e);
+  }
+}
+
+void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
+  std::string name(node.name.name);
+  if (enum_types.count(name))
+    return;
+  enum_types[name] = true;
+
+  int64_t next_index = 0;
+  for (auto &field : node.fields) {
+    std::string variant_name(field.name.name);
+
+    // Check for explicit {index: N} override.
+    for (auto &init : field.initializer) {
+      std::string key(init.name.name);
+      if (key == "index") {
+        if (auto *lit =
+                std::get_if<IntegerLiteralNode>(&init.value->data)) {
+          std::string clean;
+          for (char c : lit->literal)
+            if (c != '_') clean += c;
+          next_index = std::stoll(clean);
+        }
+      }
+    }
+
+    enum_variants[name + "." + variant_name] = next_index;
+    next_index++;
+  }
+}
+
+// ===========================================================================
 // Function type building
 // ===========================================================================
 
@@ -280,11 +329,12 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   // analysis, so we look up type names against our struct_types registry
   // and fall back to llvm_type for builtins.
   auto resolve_type_node = [&](const Node &type_node) -> llvm::Type * {
-    // If it's an identifier, check if it's a registered struct.
     if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
       std::string tname(ident->name);
       if (struct_types.count(tname))
         return llvm::PointerType::getUnqual(context); // struct as ptr
+      if (enum_types.count(tname))
+        return i64_type; // enum as i64 tag
     }
     // Fall back to analyzer resolve (works for builtins).
     auto sem_type = analyzer.resolve_type(type_node);
@@ -342,6 +392,8 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
       std::string tname(tident->name);
       if (struct_types.count(tname))
         ll_type = llvm::PointerType::getUnqual(context);
+      else if (enum_types.count(tname))
+        ll_type = i64_type;
       else {
         auto sem_type = analyzer.resolve_type(*param.type);
         ll_type = llvm_type(sem_type);
@@ -1663,7 +1715,16 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
       return builder.CreateLoad(ftype, gep, field_name);
   }
 
-  // Array built-in methods accessed via selector (handled in call).
+  // Enum variant access: EnumName.Variant → integer constant.
+  if (sem && sem->kind == TypeKind::Enum) {
+    auto &info = std::get<EnumTypeInfo>(sem->detail);
+    std::string key = info.name + "." + field_name;
+    auto ev_it = enum_variants.find(key);
+    if (ev_it != enum_variants.end())
+      return llvm::ConstantInt::get(i64_type, ev_it->second);
+  }
+
+  // Array/other built-in methods accessed via selector (handled in call).
   return nullptr;
 }
 
@@ -1773,6 +1834,10 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
     return llvm::ConstantInt::get(i1_type, 1);
   if (name == "false")
     return llvm::ConstantInt::get(i1_type, 0);
+
+  // Enum type names — return a sentinel so selectors can access variants.
+  if (enum_types.count(name))
+    return llvm::ConstantInt::get(i64_type, 0);
 
   return nullptr;
 }

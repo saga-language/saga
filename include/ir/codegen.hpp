@@ -46,6 +46,14 @@ struct CodeGen {
   /// Maps struct name → ordered list of field names (matches LLVM layout).
   std::unordered_map<std::string, std::vector<std::string>> struct_fields;
 
+  // ── Enum registry ────────────────────────────────────────────────────
+
+  /// Maps "EnumName.VariantName" → integer tag value.
+  std::unordered_map<std::string, int64_t> enum_variants;
+
+  /// Maps enum name → true (tracks which enums have been declared).
+  std::unordered_map<std::string, bool> enum_types;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -113,6 +121,10 @@ private:
   /// Create LLVM struct types for all struct declarations.
   void declare_structs(const SourceNode &src);
   void emit_struct_decl(const StructDeclNode &node);
+
+  /// Register enum variant tags.
+  void declare_enums(const SourceNode &src);
+  void emit_enum_decl(const EnumDeclNode &node);
 
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
