@@ -641,4 +641,69 @@ TEST(TypeCheck, IntCharConversion) {
   EXPECT_TRUE(r.ok()) << "Int should have a .Char() method";
 }
 
+// ===========================================================================
+// In-bound struct methods — field access by name
+// ===========================================================================
+
+TEST(TypeCheck, InBoundMethodAccessesField) {
+  auto r = TC::from(
+      "struct Dog {\n"
+      "  name String\n"
+      "  pub fn Speak() String { name }\n"
+      "}");
+  EXPECT_TRUE(r.ok()) << "In-bound method should access struct fields by name";
+}
+
+TEST(TypeCheck, InBoundMethodAccessesMultipleFields) {
+  auto r = TC::from(
+      "struct Point {\n"
+      "  x, y Int\n"
+      "  pub fn Sum() Int { x + y }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InBoundMethodWithParams) {
+  auto r = TC::from(
+      "struct Counter {\n"
+      "  n Int\n"
+      "  pub fn Add(x Int) Int { n + x }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InBoundMethodFieldTypeChecked) {
+  // Using a field in an incompatible way should still produce a type error.
+  auto r = TC::from(
+      "struct Foo {\n"
+      "  name String\n"
+      "  pub fn Bad() Int { name }\n"
+      "}");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("return type"));
+}
+
+TEST(TypeCheck, InBoundMethodUndefinedFieldStillErrors) {
+  // Accessing a name that isn't a field should still error.
+  auto r = TC::from(
+      "struct Foo {\n"
+      "  x Int\n"
+      "  pub fn Bad() Int { unknown }\n"
+      "}");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("undefined"));
+}
+
+TEST(TypeCheck, InBoundMethodDoesNotLeakFields) {
+  // Fields should not be visible outside the struct's methods.
+  auto r = TC::from(
+      "struct Foo {\n"
+      "  x Int\n"
+      "  pub fn Get() Int { x }\n"
+      "}\n"
+      "fn f() Int { x }");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("undefined"));
+}
+
 } // namespace mc

@@ -220,10 +220,16 @@ void Analyzer::visit_source(const SourceNode &src) {
               resolve_func_decl_body(fn);
             },
             [&](const StructDeclNode &s) {
+              // Look up the struct's resolved type for field injection.
+              TypePtr struct_type = nullptr;
+              auto sym = lookup(std::string(s.name.name));
+              if (sym)
+                struct_type = sym->type;
+
               for (auto &member : s.members) {
                 if (auto *fn =
                         std::get_if<FuncDeclNode>(&member.member->data)) {
-                  resolve_func_decl_body(*fn);
+                  resolve_func_decl_body(*fn, struct_type);
                 }
               }
             },
@@ -239,10 +245,17 @@ void Analyzer::visit_source(const SourceNode &src) {
             [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
             [&](const StructDeclNode &s) {
               check_struct_decl(s);
+
+              // Look up the struct's resolved type for field injection.
+              TypePtr struct_type = nullptr;
+              auto sym = lookup(std::string(s.name.name));
+              if (sym)
+                struct_type = sym->type;
+
               for (auto &member : s.members) {
                 if (auto *fn =
                         std::get_if<FuncDeclNode>(&member.member->data)) {
-                  check_func_decl_body(*fn);
+                  check_func_decl_body(*fn, struct_type);
                 }
               }
             },
@@ -616,12 +629,32 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
 
 // Helper: resolve names inside a function declaration body.  Called from
 // visit_source after all declarations have been resolved.
-void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
+void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
+  if (!struct_type || struct_type->kind != TypeKind::Struct)
+    return;
+  auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  for (auto &field : info.fields) {
+    // Inject as a variable so the field name resolves in scope.
+    // Use declare() (not declare_local) to avoid shadowing errors
+    // against the outer struct scope.
+    current_scope->symbols.emplace(
+        field.name,
+        Symbol::variable(field.name, field.type, Span{}));
+  }
+}
+
+void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
+                                       const TypePtr &enclosing_struct) {
   push_scope(ScopeKind::Function);
 
   // Enter generics if present.
   if (fn.generic) {
     enter_generics(*fn.generic);
+  }
+
+  // For in-bound methods, inject the enclosing struct's fields into scope.
+  if (enclosing_struct) {
+    inject_struct_fields(enclosing_struct);
   }
 
   // Declare the receiver if present.
@@ -1026,11 +1059,17 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 // Phase 4 — Type-check function/method bodies
 // ===========================================================================
 
-void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
+void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
+                                     const TypePtr &enclosing_struct) {
   push_scope(ScopeKind::Function);
 
   if (fn.generic)
     enter_generics(*fn.generic);
+
+  // For in-bound methods, inject the enclosing struct's fields into scope.
+  if (enclosing_struct) {
+    inject_struct_fields(enclosing_struct);
+  }
 
   if (fn.receiver) {
     auto recv_type = resolve_type(*fn.receiver->type);
