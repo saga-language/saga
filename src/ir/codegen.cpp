@@ -22,6 +22,15 @@
 namespace mc {
 
 // ===========================================================================
+// Forward-declared helpers
+// ===========================================================================
+
+/// Helper: determine if a semantic type represents string keys (for mc_map).
+static bool is_string_key_type(const TypePtr &t) {
+  return t && t->kind == TypeKind::String;
+}
+
+// ===========================================================================
 // Construction
 // ===========================================================================
 
@@ -137,6 +146,56 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "mc_release_array", module.get());
+
+  // mc_map* mc_map_new(i64 key_size, i64 val_size)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_new", module.get());
+
+  // void mc_map_set(mc_map* m, void* key, void* value, i64 is_string_key)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_set", module.get());
+
+  // void* mc_map_get(mc_map* m, void* key, i64 is_string_key)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_get", module.get());
+
+  // i64 mc_map_has(mc_map* m, void* key, i64 is_string_key)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_has", module.get());
+
+  // void mc_map_remove(mc_map* m, void* key, i64 is_string_key)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_remove", module.get());
+
+  // i64 mc_map_size(mc_map* m)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_size", module.get());
+
+  // void* mc_map_key_at(mc_map* m, i64 index)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_key_at", module.get());
+
+  // void* mc_map_value_at(mc_map* m, i64 index)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_map_value_at", module.get());
+
+  // void mc_retain_map(mc_map* m)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_retain_map", module.get());
+
+  // void mc_release_map(mc_map* m)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_release_map", module.get());
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -175,6 +234,8 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   }
   case TypeKind::Array:
     return llvm::PointerType::getUnqual(context); // ptr to mc_array
+  case TypeKind::Map:
+    return llvm::PointerType::getUnqual(context); // ptr to mc_map
   default:
     return void_ll_type;
   }
@@ -1123,7 +1184,35 @@ void CodeGen::emit_assign(const AssignNode &node) {
     if (!rhs)
       continue;
 
-    // Target can be an identifier or a selector (field assignment).
+    // Target can be an identifier, selector, or index expression.
+    if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data)) {
+      // Index assignment: obj[key] = rhs
+      auto *obj = emit_expr(*idx_expr->object);
+      auto *key = emit_expr(*idx_expr->index);
+      if (!obj || !key)
+        continue;
+
+      auto obj_sem = semantic_type(*idx_expr->object);
+      if (obj_sem && obj_sem->kind == TypeKind::Map) {
+        auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
+        bool string_keys = is_string_key_type(map_info.key);
+        auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
+
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *key_tmp = create_entry_alloca(func, "map.asgn.key", key->getType());
+        builder.CreateStore(key, key_tmp);
+        auto *val_tmp = create_entry_alloca(func, "map.asgn.val", rhs->getType());
+        builder.CreateStore(rhs, val_tmp);
+
+        auto *set_fn = module->getFunction("mc_map_set");
+        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp, is_str_key});
+      } else if (obj_sem && obj_sem->kind == TypeKind::Array) {
+        // Array index assignment: arr[idx] = rhs
+        // TODO: implement mc_array_set when available
+      }
+      continue;
+    }
+
     if (auto *sel = std::get_if<SelectorNode>(&node.targets[i]->data)) {
       // Field assignment: obj.field = rhs
       std::string field_name(sel->field.name);
@@ -1173,7 +1262,8 @@ void CodeGen::emit_assign(const AssignNode &node) {
     if (node.op == K::Assignment) {
       // Release old value before overwriting if managed.
       if (target_sem && (target_sem->kind == TypeKind::String ||
-                         target_sem->kind == TypeKind::Array)) {
+                         target_sem->kind == TypeKind::Array ||
+                         target_sem->kind == TypeKind::Map)) {
         auto *old = builder.CreateLoad(alloca->getAllocatedType(), alloca);
         emit_release(old, target_sem);
       }
@@ -1370,6 +1460,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           },
           [&](const ArrayLiteralNode &n) -> llvm::Value * {
             return emit_array_literal(n);
+          },
+          [&](const MapLiteralNode &n) -> llvm::Value * {
+            return emit_map_literal(n);
           },
           [&](const IndexExprNode &n) -> llvm::Value * {
             return emit_index_expr(n);
@@ -2482,8 +2575,85 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
                                 "idx.next");
           builder.CreateStore(next_idx, idx_alloca);
           builder.CreateBr(cond_bb);
+        } else if (iter_sem && iter_sem->kind == TypeKind::Map) {
+          // ── Map iteration: for [k,] v : map { ... } ───────────────
+          auto &map_info = std::get<MapTypeInfo>(iter_sem->detail);
+          bool string_keys = is_string_key_type(map_info.key);
+
+          // Get map size.
+          auto *size_fn = module->getFunction("mc_map_size");
+          auto *map_len = builder.CreateCall(size_fn, {iterable}, "map.len");
+
+          // Create index variable for iterating occupied slots.
+          auto *idx_alloca = create_entry_alloca(func, ".map.idx", i64_type);
+          builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx_alloca);
+
+          // Create allocas for loop variables.
+          auto *key_ll = llvm_type(map_info.key);
+          auto *val_ll = llvm_type(map_info.value);
+          llvm::AllocaInst *key_alloca = nullptr;
+          llvm::AllocaInst *val_alloca = nullptr;
+
+          if (range->vars.size() == 1) {
+            // Single variable gets the value.
+            val_alloca = create_entry_alloca(
+                func, std::string(range->vars[0].name), val_ll);
+            locals[std::string(range->vars[0].name)] = val_alloca;
+          } else if (range->vars.size() == 2) {
+            key_alloca = create_entry_alloca(
+                func, std::string(range->vars[0].name), key_ll);
+            locals[std::string(range->vars[0].name)] = key_alloca;
+            val_alloca = create_entry_alloca(
+                func, std::string(range->vars[1].name), val_ll);
+            locals[std::string(range->vars[1].name)] = val_alloca;
+          }
+
+          // Branch to condition.
+          builder.CreateBr(cond_bb);
+
+          // Condition: idx < size.
+          builder.SetInsertPoint(cond_bb);
+          auto *cur_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
+          auto *cmp = builder.CreateICmpSLT(cur_idx, map_len, "map.cmp");
+          builder.CreateCondBr(cmp, body_bb, exit_bb);
+
+          // Body: load key and value at current index.
+          func->insert(func->end(), body_bb);
+          builder.SetInsertPoint(body_bb);
+
+          auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
+
+          if (key_alloca) {
+            auto *key_at_fn = module->getFunction("mc_map_key_at");
+            auto *key_ptr = builder.CreateCall(
+                key_at_fn, {iterable, body_idx}, "map.key.ptr");
+            auto *key_val = builder.CreateLoad(key_ll, key_ptr, "map.key");
+            builder.CreateStore(key_val, key_alloca);
+          }
+
+          if (val_alloca) {
+            auto *val_at_fn = module->getFunction("mc_map_value_at");
+            auto *val_ptr = builder.CreateCall(
+                val_at_fn, {iterable, body_idx}, "map.val.ptr");
+            auto *val_val = builder.CreateLoad(val_ll, val_ptr, "map.val");
+            builder.CreateStore(val_val, val_alloca);
+          }
+
+          auto &body_block = std::get<BlockNode>(node.body->data);
+          emit_block(body_block);
+          if (!builder.GetInsertBlock()->getTerminator())
+            builder.CreateBr(update_bb);
+
+          // Update: idx++.
+          func->insert(func->end(), update_bb);
+          builder.SetInsertPoint(update_bb);
+          auto *upd_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
+          auto *next_idx = builder.CreateAdd(
+              upd_idx, llvm::ConstantInt::get(i64_type, 1), "map.idx.next");
+          builder.CreateStore(next_idx, idx_alloca);
+          builder.CreateBr(cond_bb);
         } else {
-          // Non-array iterable — not yet supported.
+          // Non-array/map iterable — not yet supported.
           builder.CreateBr(exit_bb);
         }
       }
@@ -2585,6 +2755,81 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
 }
 
 // ===========================================================================
+// Map literals
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
+  // Determine key/value sizes from semantic types.
+  int64_t key_size = 8;  // default to i64 size
+  int64_t val_size = 8;
+  llvm::Type *key_ll_type = i64_type;
+  llvm::Type *val_ll_type = i64_type;
+  bool string_keys = false;
+
+  // Get semantic type of the map literal node itself.
+  // We look through the entries to determine types.
+  if (!node.entries.empty()) {
+    auto key_sem = semantic_type(*node.entries[0].key);
+    auto val_sem = semantic_type(*node.entries[0].value);
+    if (key_sem) {
+      key_ll_type = llvm_type(key_sem);
+      string_keys = is_string_key_type(key_sem);
+      if (key_ll_type->isDoubleTy())
+        key_size = 8;
+      else if (key_ll_type->isIntegerTy(1))
+        key_size = 1;
+      else if (key_ll_type->isIntegerTy(64))
+        key_size = 8;
+      else if (key_ll_type->isPointerTy())
+        key_size = 8;
+    }
+    if (val_sem) {
+      val_ll_type = llvm_type(val_sem);
+      if (val_ll_type->isDoubleTy())
+        val_size = 8;
+      else if (val_ll_type->isIntegerTy(1))
+        val_size = 1;
+      else if (val_ll_type->isIntegerTy(64))
+        val_size = 8;
+      else if (val_ll_type->isPointerTy())
+        val_size = 8;
+    }
+  }
+
+  // Create the map: mc_map_new(key_size, val_size)
+  // For string keys, pass -1 as key_size sentinel.
+  auto *new_fn = module->getFunction("mc_map_new");
+  int64_t key_size_arg = string_keys ? -1 : key_size;
+  auto *map = builder.CreateCall(
+      new_fn,
+      {llvm::ConstantInt::get(i64_type, key_size_arg),
+       llvm::ConstantInt::get(i64_type, val_size)},
+      "map");
+
+  // Insert each entry.
+  auto *set_fn = module->getFunction("mc_map_set");
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
+
+  for (auto &entry : node.entries) {
+    auto *key_val = emit_expr(*entry.key);
+    auto *val_val = emit_expr(*entry.value);
+    if (!key_val || !val_val)
+      continue;
+
+    // Store key and value to temporaries for passing by pointer.
+    auto *key_tmp = create_entry_alloca(func, "map.key.tmp", key_val->getType());
+    builder.CreateStore(key_val, key_tmp);
+    auto *val_tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
+    builder.CreateStore(val_val, val_tmp);
+
+    builder.CreateCall(set_fn, {map, key_tmp, val_tmp, is_str_key});
+  }
+
+  return map;
+}
+
+// ===========================================================================
 // Index expressions
 // ===========================================================================
 
@@ -2607,6 +2852,30 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
     auto *elem_ll = llvm_type(arr_info.element);
     return builder.CreateLoad(elem_ll, elem_ptr, "elem");
+  }
+
+  // Map indexing: map[key] → loads value from mc_map_get.
+  if (obj_sem && obj_sem->kind == TypeKind::Map) {
+    auto *idx = emit_expr(*node.index);
+    if (!idx)
+      return nullptr;
+
+    auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
+    bool string_keys = is_string_key_type(map_info.key);
+    auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
+
+    auto *func = builder.GetInsertBlock()->getParent();
+
+    // Store key to a temporary for passing by pointer.
+    auto *key_tmp = create_entry_alloca(func, "map.idx.key", idx->getType());
+    builder.CreateStore(idx, key_tmp);
+
+    auto *get_fn = module->getFunction("mc_map_get");
+    auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp, is_str_key}, "map.get");
+
+    // Load the value from the returned pointer.
+    auto *val_ll = llvm_type(map_info.value);
+    return builder.CreateLoad(val_ll, val_ptr, "map.val");
   }
 
   // String indexing — deferred for now.
@@ -3035,6 +3304,62 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       }
     }
 
+    // Map methods.
+    if (obj_sem && obj_sem->kind == TypeKind::Map) {
+      auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
+      bool string_keys = is_string_key_type(map_info.key);
+      auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
+
+      if (method == "Size") {
+        auto *size_fn = module->getFunction("mc_map_size");
+        return builder.CreateCall(size_fn, {obj}, "map.size");
+      }
+      if (method == "Set" && node.args.size() >= 2) {
+        auto *key_val = emit_expr(*node.args[0]);
+        auto *val_val = emit_expr(*node.args[1]);
+        if (!key_val || !val_val) return nullptr;
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *key_tmp = create_entry_alloca(func, "map.set.key", key_val->getType());
+        builder.CreateStore(key_val, key_tmp);
+        auto *val_tmp = create_entry_alloca(func, "map.set.val", val_val->getType());
+        builder.CreateStore(val_val, val_tmp);
+        auto *set_fn = module->getFunction("mc_map_set");
+        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp, is_str_key});
+        return nullptr;
+      }
+      if (method == "At" && node.args.size() >= 1) {
+        auto *key_val = emit_expr(*node.args[0]);
+        if (!key_val) return nullptr;
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *key_tmp = create_entry_alloca(func, "map.at.key", key_val->getType());
+        builder.CreateStore(key_val, key_tmp);
+        auto *get_fn = module->getFunction("mc_map_get");
+        auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp, is_str_key}, "map.at");
+        auto *val_ll = llvm_type(map_info.value);
+        return builder.CreateLoad(val_ll, val_ptr, "map.at.val");
+      }
+      if ((method == "Key?" || method == "Has") && node.args.size() >= 1) {
+        auto *key_val = emit_expr(*node.args[0]);
+        if (!key_val) return nullptr;
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *key_tmp = create_entry_alloca(func, "map.has.key", key_val->getType());
+        builder.CreateStore(key_val, key_tmp);
+        auto *has_fn = module->getFunction("mc_map_has");
+        auto *result = builder.CreateCall(has_fn, {obj, key_tmp, is_str_key}, "map.has");
+        return builder.CreateICmpNE(result, llvm::ConstantInt::get(i64_type, 0), "map.has.bool");
+      }
+      if (method == "Remove" && node.args.size() >= 1) {
+        auto *key_val = emit_expr(*node.args[0]);
+        if (!key_val) return nullptr;
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *key_tmp = create_entry_alloca(func, "map.rm.key", key_val->getType());
+        builder.CreateStore(key_val, key_tmp);
+        auto *rm_fn = module->getFunction("mc_map_remove");
+        builder.CreateCall(rm_fn, {obj, key_tmp, is_str_key});
+        return nullptr;
+      }
+    }
+
     // String methods.
     if (obj_sem && obj_sem->kind == TypeKind::String) {
       if (method == "Size") {
@@ -3425,6 +3750,8 @@ void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
     managed_locals.push_back({name, ManagedKind::String});
   else if (sem->kind == TypeKind::Array)
     managed_locals.push_back({name, ManagedKind::Array});
+  else if (sem->kind == TypeKind::Map)
+    managed_locals.push_back({name, ManagedKind::Map});
 }
 
 void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
@@ -3433,6 +3760,8 @@ void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("mc_retain_string"), {val});
   } else if (sem->kind == TypeKind::Array) {
     builder.CreateCall(module->getFunction("mc_retain_array"), {val});
+  } else if (sem->kind == TypeKind::Map) {
+    builder.CreateCall(module->getFunction("mc_retain_map"), {val});
   }
 }
 
@@ -3442,6 +3771,8 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("mc_release_string"), {val});
   } else if (sem->kind == TypeKind::Array) {
     builder.CreateCall(module->getFunction("mc_release_array"), {val});
+  } else if (sem->kind == TypeKind::Map) {
+    builder.CreateCall(module->getFunction("mc_release_map"), {val});
   }
 }
 
@@ -3455,6 +3786,8 @@ void CodeGen::emit_release_locals() {
       builder.CreateCall(module->getFunction("mc_release_string"), {val});
     else if (ml.kind == ManagedKind::Array)
       builder.CreateCall(module->getFunction("mc_release_array"), {val});
+    else if (ml.kind == ManagedKind::Map)
+      builder.CreateCall(module->getFunction("mc_release_map"), {val});
   }
 }
 

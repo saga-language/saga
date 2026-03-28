@@ -1713,8 +1713,24 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
   // Check built-in methods for the type kind.
   auto methods = builtin_methods(obj_type->kind, builtins);
   for (auto &m : methods) {
-    if (m.name == field_name)
-      return m.signature ? m.signature : builtins.error_type;
+    if (m.name == field_name) {
+      if (!m.signature) return builtins.error_type;
+      // For Map and Array methods, substitute concrete type params.
+      if (obj_type->kind == TypeKind::Map && has_type_params(m.signature)) {
+        auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
+        std::unordered_map<uint32_t, TypePtr> bindings;
+        bindings[9991] = map_info.key;   // K
+        bindings[9992] = map_info.value; // V
+        return substitute(m.signature, bindings);
+      }
+      if (obj_type->kind == TypeKind::Array && has_type_params(m.signature)) {
+        auto &arr_info = std::get<ArrayTypeInfo>(obj_type->detail);
+        std::unordered_map<uint32_t, TypePtr> bindings;
+        bindings[9990] = arr_info.element; // T
+        return substitute(m.signature, bindings);
+      }
+      return m.signature;
+    }
   }
 
   error(node.field.span,

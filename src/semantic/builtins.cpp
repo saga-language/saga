@@ -169,23 +169,28 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
     break;
   }
 
-  case TypeKind::Map:
+  case TypeKind::Map: {
+    // Map methods use type-param placeholders for key (K) and value (V).
+    // The analyzer's type-checker resolves concrete types at call sites.
+    auto kp = make_type_param(9991, "K");
+    auto vp = make_type_param(9992, "V");
     methods.push_back(
-        {"At", make_func_type({}, {}), true});       // generic
+        {"At", make_func_type({kp}, {vp}), true});
     methods.push_back(
-        {"Key?", make_func_type({}, {t.bool_type}), true});
+        {"Key?", make_func_type({kp}, {t.bool_type}), true});
     methods.push_back(
-        {"Keys", make_func_type({}, {}), true});     // generic
+        {"Keys", make_func_type({}, {make_array_type(kp)}), true});
     methods.push_back(
-        {"Remove", make_func_type({}, {t.void_type}), true});
+        {"Remove", make_func_type({kp}, {t.void_type}), true});
     methods.push_back(
-        {"Set", make_func_type({}, {t.void_type}), true});
+        {"Set", make_func_type({kp, vp}, {t.void_type}), true});
     methods.push_back(
         {"Size", make_func_type({}, {t.int_type}), true});
     // Universal methods
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
+  }
 
   case TypeKind::Int:
     // Universal methods

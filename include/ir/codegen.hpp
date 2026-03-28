@@ -98,7 +98,7 @@ struct CodeGen {
   std::unordered_map<std::string, llvm::AllocaInst *> locals;
 
   /// Tracks which locals need release at scope exit and their kind.
-  enum class ManagedKind { String, Array };
+  enum class ManagedKind { String, Array, Map };
   struct ManagedLocal {
     std::string name;
     ManagedKind kind;
@@ -222,6 +222,7 @@ private:
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
+  llvm::Value *emit_map_literal(const MapLiteralNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *emit_or_expr(const OrExprNode &node);
 

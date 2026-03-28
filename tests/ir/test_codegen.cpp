@@ -2911,6 +2911,313 @@ TEST(CodeGen, UnionAssignThenTypeMatch) {
   EXPECT_TRUE(found_else);
 }
 
+// ===========================================================================
+// Slice — Maps: literal, indexing, methods, iteration, refcounting
+// ===========================================================================
+
+TEST(CodeGen, MapRuntimeDeclared) {
+  auto r = CG::from("pub fn Main() Void {}");
+  EXPECT_NE(r.func("mc_map_new"), nullptr);
+  EXPECT_NE(r.func("mc_map_set"), nullptr);
+  EXPECT_NE(r.func("mc_map_get"), nullptr);
+  EXPECT_NE(r.func("mc_map_has"), nullptr);
+  EXPECT_NE(r.func("mc_map_remove"), nullptr);
+  EXPECT_NE(r.func("mc_map_size"), nullptr);
+  EXPECT_NE(r.func("mc_map_key_at"), nullptr);
+  EXPECT_NE(r.func("mc_map_value_at"), nullptr);
+  EXPECT_NE(r.func("mc_retain_map"), nullptr);
+  EXPECT_NE(r.func("mc_release_map"), nullptr);
+}
+
+TEST(CodeGen, MapLiteralCreated) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should call mc_map_new.
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_new")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, MapLiteralSetCalled) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  int set_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_set")
+          set_count++;
+  EXPECT_EQ(set_count, 2);
+}
+
+TEST(CodeGen, MapIntKeys) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {1: \"one\", 2: \"two\"}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_new = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_new")
+          found_new = true;
+  EXPECT_TRUE(found_new);
+}
+
+TEST(CodeGen, MapIndexAccess) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"x\": 42}\n"
+      "  v := m[\"x\"]\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_get = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_get")
+          found_get = true;
+  EXPECT_TRUE(found_get);
+}
+
+TEST(CodeGen, MapIndexAssignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1}\n"
+      "  m[\"b\"] = 2\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have 2 mc_map_set calls: one from literal, one from assignment.
+  int set_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_set")
+          set_count++;
+  EXPECT_EQ(set_count, 2);
+}
+
+TEST(CodeGen, MapSizeMethod) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2}\n"
+      "  n := m.Size()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_size")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, MapRemoveMethod) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2}\n"
+      "  m.Remove(\"a\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_remove")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, MapKeyCheckMethod) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1}\n"
+      "  exists? := m.Key?(\"a\")\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_has")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, MapSetMethod) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1}\n"
+      "  m.Set(\"b\", 2)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have 2 mc_map_set calls: one from literal, one from .Set().
+  int set_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_set")
+          set_count++;
+  EXPECT_EQ(set_count, 2);
+}
+
+TEST(CodeGen, MapReleaseAtFuncExit) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_map")
+          found = true;
+  EXPECT_TRUE(found) << "Map locals should be released at function exit";
+}
+
+TEST(CodeGen, MapForRangeValue) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2}\n"
+      "  for v : m {\n"
+      "    intrinsic_print(\".\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have for.cond block.
+  bool found_cond = false;
+  for (auto &bb : *main)
+    if (bb.getName().starts_with("for.cond"))
+      found_cond = true;
+  EXPECT_TRUE(found_cond);
+  // Should call mc_map_value_at in the body.
+  bool found_val_at = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_value_at")
+          found_val_at = true;
+  EXPECT_TRUE(found_val_at);
+}
+
+TEST(CodeGen, MapForRangeKeyValue) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2}\n"
+      "  for k, v : m {\n"
+      "    intrinsic_print(\".\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should call both mc_map_key_at and mc_map_value_at.
+  bool found_key = false, found_val = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_key_at")
+          found_key = true;
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_value_at")
+          found_val = true;
+      }
+  EXPECT_TRUE(found_key);
+  EXPECT_TRUE(found_val);
+}
+
+TEST(CodeGen, MapMultipleEntries) {
+  // A map with multiple entries should call mc_map_set for each.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"a\": 1, \"b\": 2, \"c\": 3}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  int set_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_set")
+          set_count++;
+  EXPECT_EQ(set_count, 3);
+}
+
+TEST(CodeGen, MapStringKeySentinel) {
+  // String-keyed maps should pass -1 (sentinel) to mc_map_new.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {\"key\": 42}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Find mc_map_new call and check key_size argument.
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_new") {
+          auto *arg0 = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+          ASSERT_NE(arg0, nullptr);
+          EXPECT_EQ(arg0->getSExtValue(), -1) << "String key map should pass -1";
+        }
+}
+
+TEST(CodeGen, MapIntKeySizeEight) {
+  // Int-keyed maps should pass 8 as key_size.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {1: \"one\"}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_map_new") {
+          auto *arg0 = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+          ASSERT_NE(arg0, nullptr);
+          EXPECT_EQ(arg0->getSExtValue(), 8) << "Int key map should pass 8";
+        }
+}
+
 } // namespace mc
 
 
