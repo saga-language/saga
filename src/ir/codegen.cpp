@@ -1108,10 +1108,82 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     if (val)
       builder.CreateStore(val, alloca);
   } else {
-    auto *alloca = create_entry_alloca(func, name, var_type);
-    locals[name] = alloca;
-    // Zero-initialize.
-    builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
+    // Zero-initialize with proper language zero values.
+    // The language specifies: Int=0, Float=0.0, Bool=false, String="",
+    // [T]=[], {K:V}={}, Struct=all-fields-zero.
+    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::String) {
+      // String zero value: empty string ""
+      auto *empty_str = make_string_constant("");
+      auto *alloca = create_entry_alloca(func, name, var_type);
+      locals[name] = alloca;
+      builder.CreateStore(empty_str, alloca);
+    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Array) {
+      // Array zero value: empty array []
+      auto &arr_info = std::get<ArrayTypeInfo>(sem_type_ptr->detail);
+      int64_t elem_size = 8; // default
+      if (arr_info.element) {
+        auto *elem_ll = llvm_type(arr_info.element);
+        if (elem_ll->isIntegerTy(1))
+          elem_size = 1;
+        else if (elem_ll->isDoubleTy() || elem_ll->isIntegerTy(64) ||
+                 elem_ll->isPointerTy())
+          elem_size = 8;
+      }
+      auto *new_fn = module->getFunction("mc_array_new");
+      auto *arr = builder.CreateCall(
+          new_fn,
+          {llvm::ConstantInt::get(i64_type, elem_size),
+           llvm::ConstantInt::get(i64_type, 4)},
+          "arr");
+      auto *alloca = create_entry_alloca(func, name, var_type);
+      locals[name] = alloca;
+      builder.CreateStore(arr, alloca);
+    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Map) {
+      // Map zero value: empty map {}
+      auto &map_info = std::get<MapTypeInfo>(sem_type_ptr->detail);
+      int64_t key_size = 8;
+      int64_t val_size = 8;
+      bool string_keys = is_string_key_type(map_info.key);
+      if (map_info.key) {
+        auto *key_ll = llvm_type(map_info.key);
+        if (key_ll->isIntegerTy(1))
+          key_size = 1;
+      }
+      if (map_info.value) {
+        auto *val_ll = llvm_type(map_info.value);
+        if (val_ll->isIntegerTy(1))
+          val_size = 1;
+      }
+      auto *new_fn = module->getFunction("mc_map_new");
+      int64_t key_size_arg = string_keys ? -1 : key_size;
+      auto *map = builder.CreateCall(
+          new_fn,
+          {llvm::ConstantInt::get(i64_type, key_size_arg),
+           llvm::ConstantInt::get(i64_type, val_size)},
+          "map");
+      auto *alloca = create_entry_alloca(func, name, var_type);
+      locals[name] = alloca;
+      builder.CreateStore(map, alloca);
+    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct) {
+      // Struct zero value: allocate struct, zero-initialize all fields.
+      auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
+      auto st_it = struct_types.find(info.name);
+      if (st_it != struct_types.end()) {
+        auto *st_type = st_it->second;
+        auto *alloca = create_entry_alloca(func, name, st_type);
+        locals[name] = alloca;
+        builder.CreateStore(llvm::Constant::getNullValue(st_type), alloca);
+      } else {
+        auto *alloca = create_entry_alloca(func, name, var_type);
+        locals[name] = alloca;
+        builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
+      }
+    } else {
+      // Scalar types (Int, Float, Bool, Enum, etc.): getNullValue is correct.
+      auto *alloca = create_entry_alloca(func, name, var_type);
+      locals[name] = alloca;
+      builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
+    }
   }
 
   // Track for release at scope exit.

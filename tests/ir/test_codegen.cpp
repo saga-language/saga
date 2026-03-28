@@ -3455,6 +3455,172 @@ TEST(CodeGen, PassClosureToFunction) {
       << "Apply should perform an indirect call through fn parameter";
 }
 
+// ===========================================================================
+// Zero-value initialization for VarDecl without initializer
+// ===========================================================================
+
+TEST(CodeGen, VarDeclZeroInitInt) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  // Should store a zero value (i64 0).
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Store), 1);
+}
+
+TEST(CodeGen, VarDeclZeroInitFloat) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Float\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Store), 1);
+}
+
+TEST(CodeGen, VarDeclZeroInitBool) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Bool\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Store), 1);
+}
+
+TEST(CodeGen, VarDeclZeroInitString) {
+  // String zero value should be an empty string "", not a null pointer.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s String\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "s"));
+  // Should NOT store a null pointer. Instead, should reference a string
+  // constant for the empty string "".
+  bool found_null_store = false;
+  bool found_store = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *si = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+        if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(si->getPointerOperand())) {
+          if (alloca->getName() == "s") {
+            found_store = true;
+            if (llvm::isa<llvm::ConstantPointerNull>(si->getValueOperand()))
+              found_null_store = true;
+          }
+        }
+      }
+  EXPECT_TRUE(found_store) << "Should store a value into s";
+  EXPECT_FALSE(found_null_store) << "String zero value must not be null";
+}
+
+TEST(CodeGen, VarDeclZeroInitStringUsable) {
+  // A zero-initialized string should be usable (e.g. passed to print).
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s String\n"
+      "  intrinsic_print(s)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_print = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+          found_print = true;
+  EXPECT_TRUE(found_print);
+}
+
+TEST(CodeGen, VarDeclZeroInitStringReleased) {
+  // A zero-initialized string should be released at function exit.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s String\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found_release = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_string")
+          found_release = true;
+  EXPECT_TRUE(found_release)
+      << "Zero-initialized string should be released at scope exit";
+}
+
+TEST(CodeGen, VarDeclZeroInitStruct) {
+  // Struct zero value: all fields should be zeroed.
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "pub fn Main() Void {\n"
+      "  p Point\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an alloca for the struct.
+  bool found_struct_alloca = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getAllocatedType()->isStructTy())
+          found_struct_alloca = true;
+  EXPECT_TRUE(found_struct_alloca)
+      << "Struct VarDecl should allocate the struct type";
+}
+
+TEST(CodeGen, VarDeclZeroInitStructFieldAccess) {
+  // After zero init, struct fields should be accessible and have zero values.
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "pub fn Main() Void {\n"
+      "  p Point\n"
+      "  a := p.x\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "a"));
+  // Should have a GEP to access p.x.
+  int gep_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::GetElementPtrInst>(&inst))
+        gep_count++;
+  EXPECT_GE(gep_count, 1) << "Should GEP into zero-initialized struct";
+}
+
+TEST(CodeGen, VarDeclZeroInitIntWithExplicit) {
+  // VarDecl with explicit type AND initializer should still work.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x Int = 42\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+}
+
+TEST(CodeGen, VarDeclZeroInitStringWithExplicit) {
+  // VarDecl with explicit String type and initializer.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s String = \"hello\"\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "s"));
+}
+
 } // namespace mc
 
 
