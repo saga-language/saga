@@ -872,8 +872,14 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   // the initializer's type.
   llvm::Type *var_type = i64_type; // default to Int
   if (node.type) {
-    auto sem_type = analyzer.resolve_type(**node.type);
-    var_type = llvm_type(sem_type);
+    // Check node_types first (recorded during analysis), then fallback.
+    auto nt_it = analyzer.node_types.find(&**node.type);
+    if (nt_it != analyzer.node_types.end()) {
+      var_type = llvm_type(nt_it->second);
+    } else {
+      auto sem_type = analyzer.resolve_type(**node.type);
+      var_type = llvm_type(sem_type);
+    }
   } else if (node.init) {
     // Infer from the init expression's semantic type.
     auto it = analyzer.node_types.find(&**node.init);
@@ -881,26 +887,16 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       var_type = llvm_type(it->second);
   }
 
-  // Determine semantic type for refcount tracking.
+  // Determine semantic type for refcount tracking and interface boxing.
   TypePtr sem_type_ptr = nullptr;
   if (node.type) {
-    // Try the node_types map first (set during analysis), falling back
-    // to resolve_type for builtins.  For user-defined types like interfaces,
-    // resolve_type may fail outside analyzer scope, so also check global
-    // scope symbols.
+    // Look up from the node_types map first (recorded during analysis).
     auto it = analyzer.node_types.find(&**node.type);
     if (it != analyzer.node_types.end()) {
       sem_type_ptr = it->second;
     } else {
+      // Fall back to resolve_type (works for builtins).
       sem_type_ptr = analyzer.resolve_type(**node.type);
-    }
-    // If resolve returned an error/null, try our named_sem_types registry.
-    if ((!sem_type_ptr || sem_type_ptr->kind == TypeKind::Error) && node.type) {
-      if (auto *ident = std::get_if<IdentifierNode>(&(*node.type)->data)) {
-        auto nst_it = named_sem_types.find(std::string(ident->name));
-        if (nst_it != named_sem_types.end())
-          sem_type_ptr = nst_it->second;
-      }
     }
   } else if (node.init) {
     sem_type_ptr = semantic_type(**node.init);

@@ -2495,9 +2495,6 @@ TEST(CodeGen, InterfaceBoxCreatesAllocas) {
 }
 
 TEST(CodeGen, InterfaceDynamicDispatch) {
-  // Dynamic dispatch is tested at the IR level via vtable structure.
-  // Full e2e dispatch requires analyzer support for method calls on
-  // interface-typed variables (check_selector for interfaces).
   auto r = CG::from(
       "interface Speaker { Speak() String }\n"
       "struct Dog { name String }\n"
@@ -2505,19 +2502,18 @@ TEST(CodeGen, InterfaceDynamicDispatch) {
       "pub fn Main() Void {\n"
       "  d := Dog{name: \"Rex\"}\n"
       "  s Speaker = d\n"
+      "  msg := s.Speak()\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // The vtable should be created and referenced.
-  auto *vtable = r.mod().getNamedGlobal("mc.vtable.Dog.Speaker");
-  ASSERT_NE(vtable, nullptr);
-  // The fat pointer should have stores for data and vtable.
-  int store_count = 0;
+  // Should have an indirect call (call through function pointer).
+  bool found_indirect = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
-      if (llvm::isa<llvm::StoreInst>(&inst))
-        store_count++;
-  EXPECT_GE(store_count, 4) << "Stores for struct fields + fat ptr data/vtable";
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (!call->getCalledFunction()) // indirect call has no static callee
+          found_indirect = true;
+  EXPECT_TRUE(found_indirect) << "Interface dispatch should use indirect call";
 }
 
 TEST(CodeGen, InterfaceParamType) {
@@ -2525,7 +2521,7 @@ TEST(CodeGen, InterfaceParamType) {
       "interface Speaker { Speak() String }\n"
       "struct Dog { name String }\n"
       "fn (d Dog) Speak() String { d.name }\n"
-      "fn UseSpeaker(s Speaker) Void { }\n"
+      "fn UseSpeaker(s Speaker) String { s.Speak() }\n"
       "pub fn Main() Void {}");
   auto *fn = r.func("UseSpeaker");
   ASSERT_NE(fn, nullptr);

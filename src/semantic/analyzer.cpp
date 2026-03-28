@@ -1670,6 +1670,15 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     }
   }
 
+  // Interface methods.
+  if (obj_type->kind == TypeKind::Interface) {
+    auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
+    for (auto &m : info.methods) {
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+    }
+  }
+
   if (obj_type->kind == TypeKind::Enum) {
     auto &info = std::get<EnumTypeInfo>(obj_type->detail);
     for (auto &v : info.variants) {
@@ -1995,8 +2004,13 @@ void Analyzer::check_stmt(const Node &node) {
 
 void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
   TypePtr declared_type = nullptr;
-  if (var.type)
+  if (var.type) {
     declared_type = resolve_type(**var.type);
+    // Record the resolved type for the type annotation node so codegen
+    // can look it up after analysis (when scopes are no longer available).
+    if (declared_type)
+      record_type(**var.type, declared_type);
+  }
 
   TypePtr final_type = declared_type;
 

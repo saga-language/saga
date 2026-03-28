@@ -706,4 +706,76 @@ TEST(TypeCheck, InBoundMethodDoesNotLeakFields) {
   EXPECT_TRUE(r.has_err("undefined"));
 }
 
+// ===========================================================================
+// Interface method resolution
+// ===========================================================================
+
+TEST(TypeCheck, InterfaceMethodCall) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "fn f(s Speaker) String { s.Speak() }");
+  EXPECT_TRUE(r.ok()) << "Should resolve method Speak() on interface Speaker";
+}
+
+TEST(TypeCheck, InterfaceMethodCallReturnType) {
+  // The return type of the interface method should be used for the expression.
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "fn f(s Speaker) String { s.Speak() }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InterfaceMethodUnknown) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "fn f(s Speaker) Void { s.Bark() }");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("no member"));
+}
+
+TEST(TypeCheck, InterfaceAssignConcreteType) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "fn f() Void {\n"
+      "  d := Dog{name: \"Rex\"}\n"
+      "  s Speaker = d\n"
+      "}");
+  EXPECT_TRUE(r.ok()) << "Concrete struct satisfying interface should be assignable";
+}
+
+TEST(TypeCheck, InterfaceAssignNonConforming) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Cat { name String }\n"
+      "fn f() Void {\n"
+      "  c := Cat{name: \"Mittens\"}\n"
+      "  s Speaker = c\n"
+      "}");
+  EXPECT_FALSE(r.ok()) << "Cat does not implement Speak(), should error";
+}
+
+TEST(TypeCheck, InterfaceMultipleMethods) {
+  auto r = TC::from(
+      "interface ReadWriter {\n"
+      "  Read() String\n"
+      "  Write(s String) Void\n"
+      "}\n"
+      "fn f(rw ReadWriter) Void {\n"
+      "  x := rw.Read()\n"
+      "  rw.Write(x)\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InterfaceMethodCallInExpression) {
+  auto r = TC::from(
+      "interface Sizer { Size() Int }\n"
+      "fn f(s Sizer) Int { s.Size() + 1 }");
+  EXPECT_TRUE(r.ok());
+}
+
 } // namespace mc
