@@ -108,6 +108,14 @@ struct CodeGen {
   /// True when the current function is Main (return type is i32).
   bool current_func_is_main = false;
 
+  // ── Closure support ──────────────────────────────────────────────────
+
+  /// The fat pointer type for closures: { ptr fn, ptr env }.
+  llvm::StructType *closure_fat_ptr_type = nullptr;
+
+  /// Counter for generating unique closure names.
+  int next_closure_id = 0;
+
   // ── Loop context (for break/next) ────────────────────────────────────
 
   struct LoopContext {
@@ -225,6 +233,7 @@ private:
   llvm::Value *emit_map_literal(const MapLiteralNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *emit_or_expr(const OrExprNode &node);
+  llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   std::pair<llvm::Value *, llvm::Type *>

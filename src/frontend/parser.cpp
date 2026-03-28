@@ -275,6 +275,28 @@ Token Parser::advance() {
   return previous;
 }
 
+// Look at the next token without consuming it.
+Token Parser::peek() const {
+  // Save lexer state.
+  auto saved_offset = lexer.offset;
+  auto saved_reading_offset = lexer.reading_offset;
+  auto saved_state = lexer.state;
+  auto saved_current = current;
+
+  // Scan the next token (const_cast needed because scan mutates the lexer).
+  auto &mutable_lexer = const_cast<Lexer &>(lexer);
+  Token next = mutable_lexer.scan();
+  while (next.kind == Token::Kind::Comment)
+    next = mutable_lexer.scan();
+
+  // Restore lexer state.
+  mutable_lexer.offset = saved_offset;
+  mutable_lexer.reading_offset = saved_reading_offset;
+  mutable_lexer.state = saved_state;
+
+  return next;
+}
+
 // Non-consuming test — is the current token of the given kind?
 bool Parser::check(Token::Kind kind) const { return current.kind == kind; }
 
@@ -857,26 +879,95 @@ NodePtr Parser::parse_struct_type() {
   return make_node<StructTypeNode>(span_from(start), std::move(fields));
 }
 
-// parse_func_type — FuncType = "fn" Signature
+// parse_func_type — FuncType = "fn" "(" [ TypeList ] ")" Type
 //
-// FuncTypeNode stores type nodes only (no parameter names).  The signature
-// is parsed in full (names are required by the grammar), then the names are
-// discarded.  Each parameter GROUP contributes one type entry to
-// FuncTypeNode.params — a group "x, y Int" contributes a single Int node.
-// Expanding to one-per-name would require cloning NodePtrs; the semantic
-// pass can perform that expansion if needed.
+// FuncTypeNode stores type nodes only (no parameter names).
+// Supports both bare types (e.g. `fn(Int, String) Bool`) and named
+// parameters (e.g. `fn(x Int, y String) Bool`).  Named parameters are
+// detected by looking ahead: if the current token is a lowercase identifier
+// and the next starts a type (and isn't "," or ")"), the identifier is a
+// parameter name that gets discarded.
 NodePtr Parser::parse_func_type() {
   auto start = mark();
   expect(Token::Kind::Fn); // "fn"
-  SignatureNode sig = parse_signature();
+  expect(Token::Kind::LeftParenthesis); // "("
+  skip_terminators();
 
-  // Discard names; keep one type node per parameter group.
+  // ── Parameter types ───────────────────────────────────────────────────
   std::vector<NodePtr> params;
-  for (auto &p : sig.params)
-    params.push_back(std::move(p.type));
+  if (!check(Token::Kind::RightParenthesis)) {
+    auto skip_param_names = [&]() {
+      // Detect named parameters: if current is an identifier and the next
+      // is a type-start (not "," or ")"), the identifier is a name.
+      // Skip all names in a group: "x, y Int" → skip "x, y".
+      while (check(Token::Kind::Identifier)) {
+        auto next = peek();
+        if (next.kind == Token::Kind::Comma || next.kind == Token::Kind::RightParenthesis) {
+          // The identifier IS the type (e.g. `Int`), don't skip.
+          break;
+        }
+        if (next.kind == Token::Kind::Ellipsis || is_type_start(next.kind)) {
+          // Next token starts a type — current identifier is a name.
+          advance(); // skip name
+          // Skip more names in the same group: "x, y Int"
+          while (check(Token::Kind::Comma)) {
+            auto after_comma = peek();
+            if (after_comma.kind != Token::Kind::Identifier)
+              break;
+            // Consume comma, then check if the following identifier is
+            // also a name (has a type-start after it) or is the type itself.
+            advance(); // consume ","
+            auto after_ident = peek();
+            if (after_ident.kind == Token::Kind::Comma ||
+                after_ident.kind == Token::Kind::RightParenthesis) {
+              // This identifier is the type. But we already consumed the comma.
+              // That means the comma was a parameter separator.
+              // The type is the current identifier — don't skip it.
+              break;
+            }
+            // It's another name in the same group.
+            advance(); // skip name
+          }
+          break;
+        }
+        break;
+      }
+      // Skip variadic marker.
+      if (check(Token::Kind::Ellipsis))
+        advance();
+    };
+
+    skip_param_names();
+    params.push_back(parse_type());
+    while (check(Token::Kind::Comma)) {
+      advance(); // consume ","
+      skip_terminators();
+      if (check(Token::Kind::RightParenthesis))
+        break;
+      skip_param_names();
+      params.push_back(parse_type());
+    }
+    skip_terminators_before(Token::Kind::RightParenthesis);
+  }
+
+  expect(Token::Kind::RightParenthesis); // ")"
+
+  // ── Return type ───────────────────────────────────────────────────────
+  // Parse a single return type only.  Multi-return in function types would
+  // be ambiguous with commas separating outer parameters (e.g.
+  // `fn(f fn(Int) Int, x Int)` — the `,` after `Int` belongs to the outer
+  // parameter list, not to the inner return type list).
+  auto is_return_type_start = [](Token::Kind k) {
+    return k != Token::Kind::LeftBrace && is_type_start(k);
+  };
+
+  std::vector<NodePtr> returns;
+  if (is_return_type_start(current.kind)) {
+    returns.push_back(parse_type());
+  }
 
   return make_node<FuncTypeNode>(span_from(start), std::move(params),
-                                 std::move(sig.returns));
+                                 std::move(returns));
 }
 
 // ============================================================================

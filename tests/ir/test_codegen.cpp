@@ -3218,6 +3218,243 @@ TEST(CodeGen, MapIntKeySizeEight) {
         }
 }
 
+// ===========================================================================
+// Closures / Function Expressions
+// ===========================================================================
+
+TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  f := fn () Int { 42 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an alloca for the closure fat pointer.
+  bool found_closure_alloca = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getAllocatedType() == r.codegen->closure_fat_ptr_type)
+          found_closure_alloca = true;
+  EXPECT_TRUE(found_closure_alloca)
+      << "FuncExpr should create a closure fat pointer alloca";
+}
+
+TEST(CodeGen, FuncExprGeneratesTrampolineFunction) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  f := fn () Int { 42 }\n"
+      "}");
+  // Should have a trampoline function (internal linkage).
+  bool found = false;
+  for (auto &fn : r.mod()) {
+    if (fn.getName().starts_with("mc.closure."))
+      found = true;
+  }
+  EXPECT_TRUE(found) << "Should generate a trampoline function for the closure";
+}
+
+TEST(CodeGen, FuncExprCallProducesIndirectCall) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  f := fn () Int { 42 }\n"
+      "  x := f()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have an indirect call (CallInst with no getCalledFunction).
+  bool found_indirect = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (!call->getCalledFunction())
+          found_indirect = true;
+  EXPECT_TRUE(found_indirect)
+      << "Calling a closure variable should produce an indirect call";
+}
+
+TEST(CodeGen, FuncExprWithParams) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  add := fn (a, b Int) Int { a + b }\n"
+      "  x := add(10, 32)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // The trampoline should have 3 params: env + a + b.
+  llvm::Function *tramp = nullptr;
+  for (auto &fn : r.mod())
+    if (fn.getName().starts_with("mc.closure."))
+      tramp = &fn;
+  ASSERT_NE(tramp, nullptr);
+  EXPECT_EQ(tramp->arg_size(), 3u)
+      << "Trampoline should have env + 2 params";
+}
+
+TEST(CodeGen, ClosureCapturesVariable) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 10\n"
+      "  f := fn () Int { x }\n"
+      "  y := f()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have a GEP to store captured x into the env struct.
+  bool found_env_gep = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&inst))
+        if (gep->getName().str().find("env") != std::string::npos)
+          found_env_gep = true;
+  EXPECT_TRUE(found_env_gep) << "Closure should GEP into the env struct";
+}
+
+TEST(CodeGen, ClosureCapturesMultipleVars) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  a := 10\n"
+      "  b := 20\n"
+      "  f := fn () Int { a + b }\n"
+      "  x := f()\n"
+      "}");
+  // The env struct should have 2 fields.
+  llvm::StructType *env_st = nullptr;
+  for (auto &fn : r.mod()) {
+    if (fn.getName().starts_with("mc.closure.")) {
+      // First param is env ptr.
+      // Find the env struct type from GEP instructions in the body.
+      for (auto &bb : fn)
+        for (auto &inst : bb)
+          if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&inst))
+            if (auto *st = llvm::dyn_cast<llvm::StructType>(
+                    gep->getSourceElementType()))
+              env_st = st;
+    }
+  }
+  ASSERT_NE(env_st, nullptr);
+  EXPECT_EQ(env_st->getNumElements(), 2u)
+      << "Env struct should have 2 fields for 2 captures";
+}
+
+TEST(CodeGen, ClosureWithParamsAndCaptures) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  offset := 100\n"
+      "  f := fn (x Int) Int { x + offset }\n"
+      "  y := f(42)\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Trampoline should have 2 params: env + x.
+  llvm::Function *tramp = nullptr;
+  for (auto &fn : r.mod())
+    if (fn.getName().starts_with("mc.closure."))
+      tramp = &fn;
+  ASSERT_NE(tramp, nullptr);
+  EXPECT_EQ(tramp->arg_size(), 2u);
+}
+
+TEST(CodeGen, NoCaptureNoEnvStruct) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  f := fn (x Int) Int { x + 1 }\n"
+      "  y := f(5)\n"
+      "}");
+  // No env struct should be created when there are no captures.
+  bool found_env_struct = false;
+  for (auto &st : r.mod().getIdentifiedStructTypes())
+    if (st->getName().str().find(".env") != std::string::npos)
+      found_env_struct = true;
+  EXPECT_FALSE(found_env_struct)
+      << "No env struct needed when nothing is captured";
+}
+
+TEST(CodeGen, ClosureReturnVoid) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  f := fn () Void {}\n"
+      "  f()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  llvm::Function *tramp = nullptr;
+  for (auto &fn : r.mod())
+    if (fn.getName().starts_with("mc.closure."))
+      tramp = &fn;
+  ASSERT_NE(tramp, nullptr);
+  EXPECT_TRUE(tramp->getReturnType()->isVoidTy());
+}
+
+TEST(CodeGen, ClosureFatPtrTypeExists) {
+  auto r = CG::from("pub fn Main() Void {}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc_closure");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
+  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+}
+
+TEST(CodeGen, ClosureTrampolineHasInternalLinkage) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  f := fn () Int { 1 }\n"
+      "}");
+  for (auto &fn : r.mod()) {
+    if (fn.getName().starts_with("mc.closure.")) {
+      EXPECT_EQ(fn.getLinkage(), llvm::Function::InternalLinkage)
+          << "Closure trampolines should have internal linkage";
+    }
+  }
+}
+
+TEST(CodeGen, ClosureStringCapture) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  msg := \"hello\"\n"
+      "  f := fn () Void { intrinsic_print(msg) }\n"
+      "  f()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // The trampoline should call mc_intrinsic_print.
+  llvm::Function *tramp = nullptr;
+  for (auto &fn : r.mod())
+    if (fn.getName().starts_with("mc.closure."))
+      tramp = &fn;
+  ASSERT_NE(tramp, nullptr);
+  bool found_print = false;
+  for (auto &bb : *tramp)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+          found_print = true;
+  EXPECT_TRUE(found_print)
+      << "Closure trampoline should call intrinsic_print with captured string";
+}
+
+TEST(CodeGen, PassClosureToFunction) {
+  auto r = CG::from(
+      "fn Apply(f fn(Int) Int, x Int) Int { f(x) }\n"
+      "pub fn Main() Void {\n"
+      "  double := fn (n Int) Int { n + n }\n"
+      "  y := Apply(double, 21)\n"
+      "}");
+  auto *apply = r.func("Apply");
+  ASSERT_NE(apply, nullptr);
+  // Apply should have an indirect call (calling through the fn parameter).
+  bool found_indirect = false;
+  for (auto &bb : *apply)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (!call->getCalledFunction())
+          found_indirect = true;
+  EXPECT_TRUE(found_indirect)
+      << "Apply should perform an indirect call through fn parameter";
+}
+
 } // namespace mc
 
 

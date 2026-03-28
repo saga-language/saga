@@ -67,6 +67,10 @@ void CodeGen::init_types() {
   iface_fat_ptr_type = llvm::StructType::create(
       context, {ptr_ty, ptr_ty}, "mc_iface");
 
+  // Closure fat pointer: { ptr fn, ptr env }
+  closure_fat_ptr_type = llvm::StructType::create(
+      context, {ptr_ty, ptr_ty}, "mc_closure");
+
   // Register built-in enums.
   enum_types["Comparison"] = true;
   enum_variants["Comparison.Less"] = 0;
@@ -236,6 +240,8 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to mc_array
   case TypeKind::Map:
     return llvm::PointerType::getUnqual(context); // ptr to mc_map
+  case TypeKind::Func:
+    return llvm::PointerType::getUnqual(context); // ptr to mc_closure
   default:
     return void_ll_type;
   }
@@ -1087,6 +1093,16 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       }
     }
 
+    // If the init is a closure alloca, alias it directly.
+    if (val && llvm::isa<llvm::AllocaInst>(val)) {
+      auto *alloca = llvm::cast<llvm::AllocaInst>(val);
+      if (alloca->getAllocatedType() == closure_fat_ptr_type) {
+        alloca->setName(name);
+        locals[name] = alloca;
+        return;
+      }
+    }
+
     auto *alloca = create_entry_alloca(func, name, var_type);
     locals[name] = alloca;
     if (val)
@@ -1155,12 +1171,18 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
 
-    // If the value is a struct or union alloca, alias it directly.
+    // If the value is a struct, union, or closure alloca, alias it directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
+      auto *alloca = llvm::cast<llvm::AllocaInst>(val);
       auto sem = semantic_type(*node.value);
       if (sem && (sem->kind == TypeKind::Struct ||
                   sem->kind == TypeKind::Union)) {
-        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
+        alloca->setName(name);
+        locals[name] = alloca;
+        continue;
+      }
+      // Closure fat pointer — alias directly.
+      if (alloca->getAllocatedType() == closure_fat_ptr_type) {
         alloca->setName(name);
         locals[name] = alloca;
         continue;
@@ -1482,6 +1504,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           },
           [&](const CallExprNode &n) -> llvm::Value * {
             return emit_call_expr(n);
+          },
+          [&](const FuncExprNode &n) -> llvm::Value * {
+            return emit_func_expr(n, node);
           },
           [&](const IdentifierNode &n) -> llvm::Value * {
             return emit_identifier(n);
@@ -3534,8 +3559,72 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     link_name = name;
 
   auto *callee = module->getFunction(link_name);
-  if (!callee)
+
+  // If not a known module function, check if it's a closure variable.
+  if (!callee) {
+    auto local_it = locals.find(name);
+    if (local_it != locals.end()) {
+      auto *alloca = local_it->second;
+      // Check if this local holds a closure fat pointer (either directly
+      // as closure_fat_ptr_type, or as a ptr to one for function parameters).
+      auto callee_sem = semantic_type(*node.callee);
+      bool is_func_typed = callee_sem && callee_sem->kind == TypeKind::Func;
+      if (alloca->getAllocatedType() == closure_fat_ptr_type || is_func_typed) {
+        // Determine the closure struct pointer.
+        // If the alloca directly holds a closure struct, use it.
+        // If the alloca holds a ptr (function parameter), load first.
+        auto *ptr_type = llvm::PointerType::getUnqual(context);
+        llvm::Value *closure_ptr = alloca;
+        if (alloca->getAllocatedType() != closure_fat_ptr_type) {
+          // Load the pointer to the closure struct.
+          closure_ptr = builder.CreateLoad(ptr_type, alloca, "cl.load");
+        }
+
+        // Load fn_ptr and env_ptr from the closure.
+        auto *fn_gep = builder.CreateStructGEP(closure_fat_ptr_type,
+                                                closure_ptr, 0, "cl.fn.ptr");
+        auto *fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "cl.fn");
+        auto *env_gep = builder.CreateStructGEP(closure_fat_ptr_type,
+                                                  closure_ptr, 1, "cl.env.ptr");
+        auto *env_ptr = builder.CreateLoad(ptr_type, env_gep, "cl.env");
+
+        // Build the indirect call: fn(env, args...)
+        std::vector<llvm::Value *> args;
+        args.push_back(env_ptr);
+        for (auto &arg_node : node.args) {
+          auto *val = emit_expr(*arg_node);
+          if (val)
+            args.push_back(val);
+        }
+
+        // Build the function type from the semantic type.
+        auto callee_sem = semantic_type(*node.callee);
+        std::vector<llvm::Type *> param_types;
+        param_types.push_back(ptr_type); // env
+        llvm::Type *ret_ll = void_ll_type;
+
+        if (callee_sem && callee_sem->kind == TypeKind::Func) {
+          auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
+          for (auto &pt : fi.params)
+            param_types.push_back(llvm_type(pt));
+          if (!fi.returns.empty())
+            ret_ll = llvm_type(fi.returns[0]);
+        } else {
+          // Fallback: infer from args.
+          for (size_t i = 1; i < args.size(); ++i)
+            param_types.push_back(args[i]->getType());
+        }
+
+        auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
+        if (ret_ll->isVoidTy()) {
+          builder.CreateCall(fn_type, fn_ptr, args);
+          return nullptr;
+        }
+        return builder.CreateCall(fn_type, fn_ptr, args, "cl.call");
+      }
+    }
     return nullptr;
+  }
 
   std::vector<llvm::Value *> args;
   for (auto &arg_node : node.args) {
@@ -3550,6 +3639,176 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
 // ===========================================================================
 // Identifier expressions
 // ===========================================================================
+
+// ===========================================================================
+// Function expressions (closures)
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
+                                      const Node &parent) {
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  auto *enclosing_func = builder.GetInsertBlock()->getParent();
+
+  // Generate a unique name for this closure.
+  std::string closure_name = "mc.closure." + std::to_string(next_closure_id++);
+
+  // ── Look up captured variables ─────────────────────────────────────
+  std::vector<Analyzer::CaptureInfo> captures;
+  auto cap_it = analyzer.node_captures.find(&parent);
+  if (cap_it != analyzer.node_captures.end())
+    captures = cap_it->second;
+
+  // ── Build the environment struct type ──────────────────────────────
+  // The env struct holds one field per captured variable.
+  std::vector<llvm::Type *> env_field_types;
+  std::vector<std::string> env_field_names;
+  for (auto &cap : captures) {
+    auto *ll = llvm_type(cap.type);
+    env_field_types.push_back(ll);
+    env_field_names.push_back(cap.name);
+  }
+
+  llvm::StructType *env_type = nullptr;
+  if (!env_field_types.empty()) {
+    env_type = llvm::StructType::create(context, env_field_types,
+                                         closure_name + ".env");
+  }
+
+  // ── Build the trampoline function ──────────────────────────────────
+  // Signature: ret_type trampoline(ptr env, param1, param2, ...)
+  std::vector<llvm::Type *> tramp_param_types;
+  tramp_param_types.push_back(ptr_type); // env pointer (always first)
+
+  for (auto &param : node.signature.params) {
+    auto *ll = resolve_type_node(*param.type);
+    for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+      tramp_param_types.push_back(ll);
+  }
+
+  llvm::Type *ret_type = void_ll_type;
+  if (!node.signature.returns.empty())
+    ret_type = resolve_type_node(*node.signature.returns[0]);
+
+  auto *tramp_fn_type = llvm::FunctionType::get(ret_type, tramp_param_types,
+                                                  false);
+  auto *tramp_fn = llvm::Function::Create(
+      tramp_fn_type, llvm::Function::InternalLinkage, closure_name,
+      module.get());
+
+  // Name the arguments.
+  tramp_fn->getArg(0)->setName("env");
+  size_t arg_idx = 1;
+  for (auto &param : node.signature.params)
+    for (auto &ident : param.names.identifiers)
+      if (arg_idx < tramp_fn->arg_size())
+        tramp_fn->getArg(arg_idx++)->setName(std::string(ident.name));
+
+  // ── Emit the trampoline body ───────────────────────────────────────
+  // Save current insertion state.
+  auto saved_block = builder.GetInsertBlock();
+  auto saved_point = builder.GetInsertPoint();
+  auto saved_locals = locals;
+  auto saved_managed = managed_locals;
+  auto saved_is_main = current_func_is_main;
+
+  auto *entry = llvm::BasicBlock::Create(context, "entry", tramp_fn);
+  builder.SetInsertPoint(entry);
+
+  locals.clear();
+  managed_locals.clear();
+  current_func_is_main = false;
+
+  // Unpack environment struct into local variables.
+  if (env_type) {
+    auto *env_ptr = tramp_fn->getArg(0);
+    for (size_t i = 0; i < captures.size(); ++i) {
+      auto *field_gep = builder.CreateStructGEP(env_type, env_ptr, i,
+                                                  captures[i].name + ".cap");
+      auto *field_type = env_field_types[i];
+      auto *val = builder.CreateLoad(field_type, field_gep,
+                                      captures[i].name);
+      auto *alloca = create_entry_alloca(tramp_fn, captures[i].name,
+                                          field_type);
+      builder.CreateStore(val, alloca);
+      locals[captures[i].name] = alloca;
+    }
+  }
+
+  // Create allocas for parameters.
+  arg_idx = 1;
+  for (auto &param : node.signature.params) {
+    auto *ll = resolve_type_node(*param.type);
+    for (auto &ident : param.names.identifiers) {
+      std::string pname(ident.name);
+      auto *alloca = create_entry_alloca(tramp_fn, pname, ll);
+      builder.CreateStore(tramp_fn->getArg(arg_idx++), alloca);
+      locals[pname] = alloca;
+    }
+  }
+
+  // Emit the closure body.
+  auto &block = std::get<BlockNode>(node.body->data);
+  auto *tail_val = emit_block(block);
+
+  // Add terminator if needed.
+  if (!builder.GetInsertBlock()->getTerminator()) {
+    emit_release_locals();
+    if (ret_type->isVoidTy()) {
+      builder.CreateRetVoid();
+    } else if (tail_val && tail_val->getType() == ret_type) {
+      builder.CreateRet(tail_val);
+    } else {
+      builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+    }
+  }
+
+  llvm::verifyFunction(*tramp_fn);
+
+  // ── Restore the enclosing function's state ─────────────────────────
+  builder.SetInsertPoint(saved_block, saved_point);
+  locals = saved_locals;
+  managed_locals = saved_managed;
+  current_func_is_main = saved_is_main;
+
+  // ── Allocate and populate the environment struct ───────────────────
+  llvm::Value *env_ptr = llvm::ConstantPointerNull::get(ptr_type);
+  if (env_type) {
+    auto *env_alloca = create_entry_alloca(enclosing_func,
+                                            closure_name + ".env",
+                                            env_type);
+    // Store each captured variable's current value into the env.
+    for (size_t i = 0; i < captures.size(); ++i) {
+      auto *field_gep = builder.CreateStructGEP(env_type, env_alloca, i,
+                                                  captures[i].name + ".env.f");
+      // Load the current value of the captured variable.
+      auto local_it = locals.find(captures[i].name);
+      if (local_it != locals.end()) {
+        auto *alloca = local_it->second;
+        auto *val = builder.CreateLoad(env_field_types[i], alloca,
+                                        captures[i].name + ".cap.val");
+        builder.CreateStore(val, field_gep);
+      } else {
+        // Zero-initialize if not found (shouldn't happen after analysis).
+        builder.CreateStore(
+            llvm::Constant::getNullValue(env_field_types[i]), field_gep);
+      }
+    }
+    env_ptr = env_alloca;
+  }
+
+  // ── Build the closure fat pointer { fn_ptr, env_ptr } ─────────────
+  auto *closure_alloca = create_entry_alloca(enclosing_func,
+                                              closure_name + ".val",
+                                              closure_fat_ptr_type);
+  auto *fn_gep = builder.CreateStructGEP(closure_fat_ptr_type,
+                                          closure_alloca, 0, "closure.fn");
+  builder.CreateStore(tramp_fn, fn_gep);
+  auto *env_gep = builder.CreateStructGEP(closure_fat_ptr_type,
+                                            closure_alloca, 1, "closure.env");
+  builder.CreateStore(env_ptr, env_gep);
+
+  return closure_alloca;
+}
 
 llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   std::string name(node.name);
@@ -3568,6 +3827,10 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
           st->getElementType(0)->isIntegerTy(8) &&
           st->getElementType(1)->isArrayTy()) {
         return alloca; // Return pointer to union struct.
+      }
+      // Closure fat pointer — return the alloca pointer.
+      if (st == closure_fat_ptr_type) {
+        return alloca;
       }
     }
     return builder.CreateLoad(alloc_ty, alloca, name);

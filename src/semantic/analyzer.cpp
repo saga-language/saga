@@ -709,7 +709,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const RangeExprNode &n) { resolve_range_expr(n); },
           [&](const SpawnExprNode &n) { resolve_spawn_expr(n); },
           [&](const OrExprNode &n) { resolve_or_expr(n); },
-          [&](const FuncExprNode &n) { resolve_func_expr(n); },
+          [&](const FuncExprNode &n) { resolve_func_expr(n, node); },
           [&](const ImportExprNode &) { /* deferred to module support */ },
           [&](const BlockNode &n) {
             push_scope(ScopeKind::Block);
@@ -746,6 +746,37 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
     return;
   }
   record_symbol(parent, *sym);
+
+  // ── Capture detection for closures ─────────────────────────────────
+  // If this symbol is a local variable/parameter and we're inside a closure,
+  // check if it was declared outside the closure boundary.
+  if (sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Parameter) {
+    // Walk from current_scope outward looking for a closure boundary.
+    // If we find one before we find the symbol's declaration scope,
+    // the symbol is captured by that closure.
+    auto scope = current_scope;
+    while (scope) {
+      // If the symbol is declared in this scope, it's local — not captured.
+      if (scope->lookup_local(name))
+        break;
+      // If we cross a closure boundary, this variable is captured.
+      if (scope->is_closure) {
+        // Record the capture on the closure's pending list.
+        // (pending_closure_captures is set when resolving a FuncExprNode)
+        if (pending_closure_node_) {
+          auto &caps = node_captures[pending_closure_node_];
+          // Avoid duplicate captures.
+          bool already = false;
+          for (auto &c : caps)
+            if (c.name == name) { already = true; break; }
+          if (!already)
+            caps.push_back({name, sym->type});
+        }
+        break;
+      }
+      scope = scope->parent;
+    }
+  }
 }
 
 void Analyzer::resolve_block(const BlockNode &block) {
@@ -965,8 +996,14 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   pop_scope();
 }
 
-void Analyzer::resolve_func_expr(const FuncExprNode &node) {
+void Analyzer::resolve_func_expr(const FuncExprNode &node,
+                                  const Node &parent) {
   push_scope(ScopeKind::Function);
+  current_scope->is_closure = true;
+
+  // Push this closure onto the stack for capture tracking.
+  closure_node_stack_.push_back(&parent);
+  pending_closure_node_ = &parent;
 
   if (node.generic) {
     enter_generics(*node.generic);
@@ -981,6 +1018,12 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node) {
 
   auto &block = std::get<BlockNode>(node.body->data);
   resolve_block(block);
+
+  // Pop closure tracking state.
+  closure_node_stack_.pop_back();
+  pending_closure_node_ = closure_node_stack_.empty()
+                              ? nullptr
+                              : closure_node_stack_.back();
 
   pop_scope();
 }
@@ -1175,7 +1218,7 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_or_expr(n);
           },
           [&](const FuncExprNode &n) -> TypePtr {
-            return check_func_expr(n);
+            return check_func_expr(n, node);
           },
           [&](const ImportExprNode &n) -> TypePtr {
             return check_import_expr(n);
@@ -2109,7 +2152,8 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   return expr_type;
 }
 
-TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
+TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
+                                  const Node &parent) {
   push_scope(ScopeKind::Function);
 
   if (node.generic)
@@ -2148,6 +2192,20 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
   }
 
   pop_scope();
+
+  // Update capture types now that type checking is complete.
+  // During resolve phase, capture types may have been nullptr.
+  auto cap_it = node_captures.find(&parent);
+  if (cap_it != node_captures.end()) {
+    for (auto &cap : cap_it->second) {
+      if (!cap.type) {
+        auto sym = lookup(cap.name);
+        if (sym)
+          cap.type = sym->type;
+      }
+    }
+  }
+
   return fn_type;
 }
 

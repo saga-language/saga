@@ -52,8 +52,25 @@ struct Analyzer {
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
 
+  // ── Closure capture tracking ─────────────────────────────────────────
+
+  /// Information about a single captured variable in a closure.
+  struct CaptureInfo {
+    std::string name;       // variable name
+    TypePtr type;           // resolved type of the captured variable
+  };
+
+  /// Maps each FuncExprNode (by Node*) to its list of captured variables.
+  std::unordered_map<const Node *, std::vector<CaptureInfo>> node_captures;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
+
+  // ── Closure resolution state ─────────────────────────────────────────
+  /// Stack of closure nodes currently being resolved (for nested closures).
+  std::vector<const Node *> closure_node_stack_;
+  /// Pointer to the current closure node being resolved (top of stack).
+  const Node *pending_closure_node_ = nullptr;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -191,7 +208,7 @@ private:
   void resolve_range_expr(const RangeExprNode &node);
   void resolve_spawn_expr(const SpawnExprNode &node);
   void resolve_or_expr(const OrExprNode &node);
-  void resolve_func_expr(const FuncExprNode &node);
+  void resolve_func_expr(const FuncExprNode &node, const Node &parent);
   void resolve_group_expr(const GroupExprNode &node);
   void resolve_string_literal(const StringLiteralNode &node);
   void resolve_array_literal(const ArrayLiteralNode &node);
@@ -234,7 +251,7 @@ private:
   TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node);
   TypePtr check_or_expr(const OrExprNode &node);
-  TypePtr check_func_expr(const FuncExprNode &node);
+  TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
 
