@@ -54,6 +54,14 @@ struct CodeGen {
   /// Maps enum name → true (tracks which enums have been declared).
   std::unordered_map<std::string, bool> enum_types;
 
+  // ── Multi-return registry ────────────────────────────────────────────
+
+  /// Maps function link-name → LLVM struct type used for multi-return.
+  std::unordered_map<std::string, llvm::StructType *> multi_return_types;
+
+  /// Maps function link-name → number of return values (only for multi).
+  std::unordered_map<std::string, size_t> multi_return_counts;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -128,6 +136,9 @@ private:
 
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
+
+  /// Resolve a type annotation node to an LLVM type.
+  llvm::Type *resolve_type_node(const Node &type_node);
 
   /// Emit a full function definition (entry block + body).
   void emit_func_decl(const FuncDeclNode &node);

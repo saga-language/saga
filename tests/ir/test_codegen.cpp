@@ -2148,6 +2148,224 @@ TEST(CodeGen, SwitchCallsInCases) {
   EXPECT_EQ(print_count, 3);
 }
 
+// ===========================================================================
+// Multiple return values
+// ===========================================================================
+
+TEST(CodeGen, MultiReturnFuncType) {
+  auto r = CG::from(
+      "fn Pair() Int, Int {\n"
+      "  return 1, 2\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Pair");
+  ASSERT_NE(fn, nullptr);
+  // Return type should be a struct { i64, i64 }.
+  auto *ret = fn->getReturnType();
+  ASSERT_TRUE(ret->isStructTy()) << "Multi-return should use struct type";
+  auto *st = llvm::cast<llvm::StructType>(ret);
+  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(1)->isIntegerTy(64));
+}
+
+TEST(CodeGen, MultiReturnStructName) {
+  auto r = CG::from(
+      "fn Pair() Int, Int {\n"
+      "  return 1, 2\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  // Should have a named struct type for multi-return.
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc.ret.Pair");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 2u);
+}
+
+TEST(CodeGen, MultiReturnPacksValues) {
+  // Use non-constant values so LLVM can't constant-fold.
+  auto r = CG::from(
+      "fn Pair(a, b Int) Int, Int {\n"
+      "  return a, b\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Pair");
+  ASSERT_NE(fn, nullptr);
+  // Should have insertvalue instructions to pack the struct.
+  int insert_count = 0;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::InsertValueInst>(&inst))
+        insert_count++;
+  EXPECT_GE(insert_count, 2) << "Should pack 2 values with insertvalue";
+}
+
+TEST(CodeGen, MultiReturnMixedTypes) {
+  auto r = CG::from(
+      "fn IntAndString() Int, String {\n"
+      "  return 42, \"hello\"\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("IntAndString");
+  ASSERT_NE(fn, nullptr);
+  auto *ret = fn->getReturnType();
+  ASSERT_TRUE(ret->isStructTy());
+  auto *st = llvm::cast<llvm::StructType>(ret);
+  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(1)->isPointerTy()); // String is ptr
+}
+
+TEST(CodeGen, MultiReturnThreeValues) {
+  auto r = CG::from(
+      "fn Triple() Int, Int, Int {\n"
+      "  return 1, 2, 3\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Triple");
+  ASSERT_NE(fn, nullptr);
+  auto *ret = fn->getReturnType();
+  ASSERT_TRUE(ret->isStructTy());
+  EXPECT_EQ(llvm::cast<llvm::StructType>(ret)->getNumElements(), 3u);
+}
+
+TEST(CodeGen, MultiReturnUnpack) {
+  auto r = CG::from(
+      "fn Pair() Int, Int {\n"
+      "  return 10, 20\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  x, y := Pair()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  EXPECT_TRUE(has_alloca_named(main, "y"));
+  // Should have extractvalue instructions to unpack.
+  int extract_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::ExtractValueInst>(&inst))
+        extract_count++;
+  EXPECT_GE(extract_count, 2) << "Should unpack 2 values with extractvalue";
+}
+
+TEST(CodeGen, MultiReturnUnpackMixedTypes) {
+  auto r = CG::from(
+      "fn GetData() Int, String {\n"
+      "  return 42, \"hello\"\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  n, s := GetData()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "n"));
+  EXPECT_TRUE(has_alloca_named(main, "s"));
+}
+
+TEST(CodeGen, MultiReturnCallAndUse) {
+  // Verify extracted values can be used after unpacking.
+  auto r = CG::from(
+      "fn Pair() Int, Int {\n"
+      "  return 10, 20\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  x, y := Pair()\n"
+      "  z := x + y\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "z"));
+  // Should have a call to Pair.
+  bool found_pair = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "Pair")
+          found_pair = true;
+  EXPECT_TRUE(found_pair);
+  // Should have an add for z := x + y.
+  EXPECT_GE(count_opcodes(main, llvm::Instruction::Add), 1);
+}
+
+TEST(CodeGen, MultiReturnRegistered) {
+  auto r = CG::from(
+      "fn Pair() Int, Int {\n"
+      "  return 1, 2\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  EXPECT_TRUE(r.codegen->multi_return_types.count("Pair"));
+  EXPECT_EQ(r.codegen->multi_return_counts["Pair"], 2u);
+}
+
+TEST(CodeGen, MultiReturnDoesNotAffectSingleReturn) {
+  // Single-return functions should remain unchanged.
+  auto r = CG::from(
+      "fn Single() Int { 42 }\n"
+      "fn Pair() Int, Int {\n"
+      "  return 1, 2\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *single = r.func("Single");
+  ASSERT_NE(single, nullptr);
+  EXPECT_TRUE(single->getReturnType()->isIntegerTy(64))
+      << "Single-return should still return i64";
+  EXPECT_FALSE(r.codegen->multi_return_types.count("Single"));
+}
+
+TEST(CodeGen, MultiReturnRetInstEmitted) {
+  auto r = CG::from(
+      "fn Pair() Int, Int {\n"
+      "  return 10, 20\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Pair");
+  ASSERT_NE(fn, nullptr);
+  // Should have exactly one ret instruction returning the struct.
+  int ret_count = 0;
+  for (auto &bb : *fn)
+    if (auto *term = bb.getTerminator())
+      if (auto *ret = llvm::dyn_cast<llvm::ReturnInst>(term)) {
+        ret_count++;
+        ASSERT_NE(ret->getReturnValue(), nullptr);
+        EXPECT_TRUE(ret->getReturnValue()->getType()->isStructTy());
+      }
+  EXPECT_EQ(ret_count, 1);
+}
+
+TEST(CodeGen, MultiReturnIntAndBool) {
+  auto r = CG::from(
+      "fn Check() Int, Bool {\n"
+      "  return 42, true\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  n, ok := Check()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "n"));
+  EXPECT_TRUE(has_alloca_named(main, "ok"));
+}
+
+TEST(CodeGen, MultiReturnIntAndFloat) {
+  auto r = CG::from(
+      "fn Compute() Int, Float {\n"
+      "  return 1, 3.14\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  i, f := Compute()\n"
+      "}");
+  auto *fn = r.func("Compute");
+  ASSERT_NE(fn, nullptr);
+  auto *ret = fn->getReturnType();
+  ASSERT_TRUE(ret->isStructTy());
+  auto *st = llvm::cast<llvm::StructType>(ret);
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(1)->isDoubleTy());
+}
+
 } // namespace mc
 
 

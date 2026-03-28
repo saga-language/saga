@@ -1985,6 +1985,42 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   auto rhs_type = check_expr(*decl.value);
 
+  // ── Multi-return unpacking ───────────────────────────────────────────
+  // If there are multiple targets and the RHS is a call to a function with
+  // multiple returns, assign each target the corresponding return type.
+  if (decl.targets.identifiers.size() > 1) {
+    if (auto *call = std::get_if<CallExprNode>(&decl.value->data)) {
+      auto callee_type = check_expr(*call->callee);
+      if (!is_error_type(callee_type) &&
+          callee_type->kind == TypeKind::Func) {
+        auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
+        if (fn_info.returns.size() > 1) {
+          if (decl.targets.identifiers.size() != fn_info.returns.size()) {
+            error(decl.span,
+                  std::format("expected {} receiver(s), got {}",
+                              fn_info.returns.size(),
+                              decl.targets.identifiers.size()));
+          }
+          size_t count = std::min(decl.targets.identifiers.size(),
+                                  fn_info.returns.size());
+          for (size_t i = 0; i < count; ++i) {
+            std::string name(decl.targets.identifiers[i].name);
+            auto sym_it = current_scope->symbols.find(name);
+            if (sym_it != current_scope->symbols.end()) {
+              sym_it->second.type = fn_info.returns[i];
+            } else {
+              current_scope->symbols.emplace(
+                  name, Symbol::variable(name, fn_info.returns[i],
+                                         decl.targets.identifiers[i].span));
+            }
+
+          }
+          return;
+        }
+      }
+    }
+  }
+
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
     auto sym_it = current_scope->symbols.find(name);

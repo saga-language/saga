@@ -321,32 +321,39 @@ void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
 // Function type building
 // ===========================================================================
 
+llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
+  if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
+    std::string tname(ident->name);
+    if (struct_types.count(tname))
+      return llvm::PointerType::getUnqual(context); // struct as ptr
+    if (enum_types.count(tname))
+      return i64_type; // enum as i64 tag
+  }
+  // Fall back to analyzer resolve (works for builtins).
+  auto sem_type = analyzer.resolve_type(type_node);
+  return llvm_type(sem_type);
+}
+
 llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   bool is_main = (fn.name.name == "Main");
-
-  // Helper: resolve a type from a type annotation node.
-  // The analyzer's resolve_type needs scope context that's gone after
-  // analysis, so we look up type names against our struct_types registry
-  // and fall back to llvm_type for builtins.
-  auto resolve_type_node = [&](const Node &type_node) -> llvm::Type * {
-    if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
-      std::string tname(ident->name);
-      if (struct_types.count(tname))
-        return llvm::PointerType::getUnqual(context); // struct as ptr
-      if (enum_types.count(tname))
-        return i64_type; // enum as i64 tag
-    }
-    // Fall back to analyzer resolve (works for builtins).
-    auto sem_type = analyzer.resolve_type(type_node);
-    return llvm_type(sem_type);
-  };
+  std::string link_name = is_main ? "main" : std::string(fn.name.name);
 
   // Return type.
   llvm::Type *ret_type = void_ll_type;
   if (is_main) {
     ret_type = llvm::Type::getInt32Ty(context);
-  } else if (!fn.signature.returns.empty()) {
+  } else if (fn.signature.returns.size() == 1) {
     ret_type = resolve_type_node(*fn.signature.returns[0]);
+  } else if (fn.signature.returns.size() > 1) {
+    // Multiple return values → pack into an LLVM struct.
+    std::vector<llvm::Type *> ret_fields;
+    for (auto &r : fn.signature.returns)
+      ret_fields.push_back(resolve_type_node(*r));
+    auto *st = llvm::StructType::create(context, ret_fields,
+                                        "mc.ret." + link_name);
+    multi_return_types[link_name] = st;
+    multi_return_counts[link_name] = fn.signature.returns.size();
+    ret_type = st;
   }
 
   // Parameter types.
@@ -386,22 +393,7 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   // Create allocas for parameters and store the incoming argument values.
   size_t arg_idx = 0;
   for (auto &param : fn.signature.params) {
-    // Resolve param type: check struct registry first, then builtins.
-    llvm::Type *ll_type = i64_type;
-    if (auto *tident = std::get_if<IdentifierNode>(&param.type->data)) {
-      std::string tname(tident->name);
-      if (struct_types.count(tname))
-        ll_type = llvm::PointerType::getUnqual(context);
-      else if (enum_types.count(tname))
-        ll_type = i64_type;
-      else {
-        auto sem_type = analyzer.resolve_type(*param.type);
-        ll_type = llvm_type(sem_type);
-      }
-    } else {
-      auto sem_type = analyzer.resolve_type(*param.type);
-      ll_type = llvm_type(sem_type);
-    }
+    auto *ll_type = resolve_type_node(*param.type);
     for (auto &ident : param.names.identifiers) {
       std::string pname(ident.name);
       auto *alloca = create_entry_alloca(func, pname, ll_type);
@@ -529,6 +521,51 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   auto *func = builder.GetInsertBlock()->getParent();
   auto val_sem = semantic_type(*node.value);
 
+  // ── Multi-return unpacking ───────────────────────────────────────────
+  // If there are multiple targets and the RHS is a multi-return struct,
+  // extract each field into its own local variable.
+  if (node.targets.identifiers.size() > 1 && val &&
+      val->getType()->isStructTy()) {
+    // Check if this is a known multi-return struct.
+    std::string callee_name;
+    if (auto *call = std::get_if<CallExprNode>(&node.value->data)) {
+      if (auto *ident = std::get_if<IdentifierNode>(&call->callee->data))
+        callee_name = std::string(ident->name);
+    }
+    std::string link_name = (callee_name == "Main") ? "main" : callee_name;
+    auto mr_it = multi_return_types.find(link_name);
+
+    if (!callee_name.empty() && mr_it != multi_return_types.end()) {
+      auto *ret_st = mr_it->second;
+      size_t count = std::min(node.targets.identifiers.size(),
+                              (size_t)ret_st->getNumElements());
+
+      // Resolve per-element semantic types from the callee's signature.
+      // Look up the FuncDeclNode via the analyzer to get return types.
+      std::vector<TypePtr> elem_sem_types;
+      auto fn_sem = val_sem;
+      if (fn_sem && fn_sem->kind == TypeKind::Func) {
+        auto &fi = std::get<FuncTypeInfo>(fn_sem->detail);
+        elem_sem_types = fi.returns;
+      }
+
+      for (size_t i = 0; i < count; ++i) {
+        std::string name(node.targets.identifiers[i].name);
+        auto *elem_val = builder.CreateExtractValue(val, i,
+            name + ".unpack");
+        auto *alloca = create_entry_alloca(func, name, elem_val->getType());
+        locals[name] = alloca;
+        builder.CreateStore(elem_val, alloca);
+
+        // Track managed types.
+        if (i < elem_sem_types.size())
+          track_managed(name, elem_sem_types[i]);
+      }
+      return;
+    }
+  }
+
+  // ── Single value assignment ──────────────────────────────────────────
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
 
@@ -669,8 +706,24 @@ void CodeGen::emit_return(const ReturnNode &node) {
     else
       builder.CreateRetVoid();
   } else {
-    emit_release_locals();
-    builder.CreateRetVoid();
+    // Multiple return values — pack into a struct.
+    auto *func = builder.GetInsertBlock()->getParent();
+    std::string link_name(func->getName());
+    auto it = multi_return_types.find(link_name);
+    if (it != multi_return_types.end()) {
+      auto *ret_st = it->second;
+      llvm::Value *agg = llvm::UndefValue::get(ret_st);
+      for (size_t i = 0; i < node.values.size(); ++i) {
+        auto *val = emit_expr(*node.values[i]);
+        if (val)
+          agg = builder.CreateInsertValue(agg, val, i, "pack." + std::to_string(i));
+      }
+      emit_release_locals();
+      builder.CreateRet(agg);
+    } else {
+      emit_release_locals();
+      builder.CreateRetVoid();
+    }
   }
 }
 
