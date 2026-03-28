@@ -103,7 +103,8 @@ TEST(CodeGen, StringTypeExists) {
   auto r = CG::from("pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(r.mod().getContext(), "mc_string");
   ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u);
+  // { ptr data, i64 len, i64 refcount }
+  EXPECT_EQ(st->getNumElements(), 3u);
 }
 
 TEST(CodeGen, RuntimePrintDeclared) {
@@ -1584,7 +1585,155 @@ TEST(CodeGen, InterpStringVariable) {
   EXPECT_FALSE(found_conv) << "String interp should not convert strings";
 }
 
+// ===========================================================================
+// Memory management — refcounting
+// ===========================================================================
+
+TEST(CodeGen, StringRefcountField) {
+  auto r = CG::from("pub fn Main() Void {}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc_string");
+  ASSERT_NE(st, nullptr);
+  // { ptr data, i64 len, i64 refcount }
+  EXPECT_EQ(st->getNumElements(), 3u);
+  EXPECT_TRUE(st->getElementType(2)->isIntegerTy(64));
+}
+
+TEST(CodeGen, StaticStringRefcountMinusOne) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  intrinsic_print(\"hello\")\n"
+      "}");
+  auto *g = r.mod().getNamedGlobal(".mc_str");
+  ASSERT_NE(g, nullptr);
+  auto *init = g->getInitializer();
+  ASSERT_NE(init, nullptr);
+  auto *cs = llvm::dyn_cast<llvm::ConstantStruct>(init);
+  ASSERT_NE(cs, nullptr);
+  // Third field (index 2) should be -1.
+  auto *rc = llvm::dyn_cast<llvm::ConstantInt>(cs->getOperand(2));
+  ASSERT_NE(rc, nullptr);
+  EXPECT_EQ(rc->getSExtValue(), -1);
+}
+
+TEST(CodeGen, ReleaseStringAtFuncExit) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"hello\"\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_string")
+          found = true;
+  EXPECT_TRUE(found) << "String locals should be released at function exit";
+}
+
+TEST(CodeGen, ReleaseArrayAtFuncExit) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  arr := [1, 2, 3]\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_array")
+          found = true;
+  EXPECT_TRUE(found) << "Array locals should be released at function exit";
+}
+
+TEST(CodeGen, ReleaseOnReassignment) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"first\"\n"
+      "  s = \"second\"\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have at least 2 release calls: one for reassignment, one at exit.
+  int release_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_string")
+          release_count++;
+  EXPECT_GE(release_count, 2);
+}
+
+TEST(CodeGen, ReleaseOnStringConcat) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  s := \"a\"\n"
+      "  s += \"b\"\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // The old value of s should be released after +=.
+  int release_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_string")
+          release_count++;
+  EXPECT_GE(release_count, 2) << "Old string released on +=, final at exit";
+}
+
+TEST(CodeGen, RetainReleaseDeclared) {
+  auto r = CG::from("pub fn Main() Void {}");
+  EXPECT_NE(r.func("mc_retain_string"), nullptr);
+  EXPECT_NE(r.func("mc_release_string"), nullptr);
+  EXPECT_NE(r.func("mc_retain_array"), nullptr);
+  EXPECT_NE(r.func("mc_release_array"), nullptr);
+}
+
+TEST(CodeGen, ReleaseBeforeReturn) {
+  auto r = CG::from(
+      "fn Greet() Void {\n"
+      "  s := \"hello\"\n"
+      "  intrinsic_print(s)\n"
+      "}\n"
+      "pub fn Main() Void { Greet() }");
+  auto *fn = r.func("Greet");
+  ASSERT_NE(fn, nullptr);
+  bool found = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mc_release_string")
+          found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST(CodeGen, IntLocalNotReleased) {
+  // Int locals should NOT get release calls.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 42\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            (call->getCalledFunction()->getName() == "mc_release_string" ||
+             call->getCalledFunction()->getName() == "mc_release_array"))
+          FAIL() << "Int locals should not be released";
+}
+
 } // namespace mc
+
 
 
 

@@ -55,6 +55,14 @@ struct CodeGen {
   /// Maps local variable names to their alloca instructions.
   std::unordered_map<std::string, llvm::AllocaInst *> locals;
 
+  /// Tracks which locals need release at scope exit and their kind.
+  enum class ManagedKind { String, Array };
+  struct ManagedLocal {
+    std::string name;
+    ManagedKind kind;
+  };
+  std::vector<ManagedLocal> managed_locals;
+
   /// True when the current function is Main (return type is i32).
   bool current_func_is_main = false;
 
@@ -162,6 +170,20 @@ private:
 
   /// Convert a value to an mc_string* based on its semantic type.
   llvm::Value *emit_to_string(llvm::Value *val, const TypePtr &sem);
+
+  // ── Reference counting helpers ───────────────────────────────────────
+
+  /// Register a local variable as managed (needs release at scope exit).
+  void track_managed(const std::string &name, const TypePtr &sem);
+
+  /// Emit retain call for a value based on its semantic type.
+  void emit_retain(llvm::Value *val, const TypePtr &sem);
+
+  /// Emit release call for a value based on its semantic type.
+  void emit_release(llvm::Value *val, const TypePtr &sem);
+
+  /// Emit release calls for all managed locals in the current function.
+  void emit_release_locals();
 };
 
 } // namespace mc

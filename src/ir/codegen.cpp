@@ -43,10 +43,10 @@ void CodeGen::init_types() {
   i1_type = llvm::Type::getInt1Ty(context);
   void_ll_type = llvm::Type::getVoidTy(context);
 
-  // mc_string = { i8*, i64 }
+  // mc_string = { i8*, i64, i64 }  — data, len, refcount
   string_type = llvm::StructType::create(
       context,
-      {llvm::PointerType::getUnqual(context), i64_type},
+      {llvm::PointerType::getUnqual(context), i64_type, i64_type},
       "mc_string");
 }
 
@@ -102,6 +102,26 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "mc_array_size", module.get());
+
+  // void mc_retain_string(mc_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_retain_string", module.get());
+
+  // void mc_release_string(mc_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_release_string", module.get());
+
+  // void mc_retain_array(mc_array* arr)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_retain_array", module.get());
+
+  // void mc_release_array(mc_array* arr)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_release_array", module.get());
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -310,6 +330,7 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
 
   // Reset per-function state.
   locals.clear();
+  managed_locals.clear();
   current_func_is_main = is_main;
 
   // Create allocas for parameters and store the incoming argument values.
@@ -341,8 +362,9 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   auto &block = std::get<BlockNode>(fn.body->data);
   auto *tail_val = emit_block(block);
 
-  // If the block didn't already terminate, add the implicit return.
+  // If the block didn't already terminate, release locals and return.
   if (!builder.GetInsertBlock()->getTerminator()) {
+    emit_release_locals();
     auto *ret_type = func->getReturnType();
     if (is_main) {
       builder.CreateRet(
@@ -351,6 +373,8 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
       builder.CreateRetVoid();
     } else if (tail_val && tail_val->getType() == ret_type) {
       // Tail expression: the last expression's value is the return value.
+      // Retain the return value since the caller takes ownership, but
+      // the release_locals above would have released it.
       builder.CreateRet(tail_val);
     } else {
       builder.CreateRet(llvm::Constant::getNullValue(ret_type));
@@ -413,6 +437,14 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       var_type = llvm_type(it->second);
   }
 
+  // Determine semantic type for refcount tracking.
+  TypePtr sem_type_ptr = nullptr;
+  if (node.type) {
+    sem_type_ptr = analyzer.resolve_type(**node.type);
+  } else if (node.init) {
+    sem_type_ptr = semantic_type(**node.init);
+  }
+
   if (node.init) {
     auto *val = emit_expr(**node.init);
     // If the init is a struct alloca, alias it directly.
@@ -435,11 +467,15 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     // Zero-initialize.
     builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
   }
+
+  // Track for release at scope exit.
+  track_managed(name, sem_type_ptr);
 }
 
 void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   auto *val = emit_expr(*node.value);
   auto *func = builder.GetInsertBlock()->getParent();
+  auto val_sem = semantic_type(*node.value);
 
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
@@ -447,10 +483,9 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     // If the value is a struct alloca (from a struct literal), the variable
     // should just be an alias to that alloca — no extra indirection.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
-      auto *alloca = llvm::cast<llvm::AllocaInst>(val);
       auto sem = semantic_type(*node.value);
       if (sem && sem->kind == TypeKind::Struct) {
-        // Rename the alloca and register it as the local.
+        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
         continue;
@@ -462,6 +497,9 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     locals[name] = alloca;
     if (val)
       builder.CreateStore(val, alloca);
+
+    // Track managed types for release at scope exit.
+    track_managed(name, val_sem);
   }
 }
 
@@ -515,8 +553,16 @@ void CodeGen::emit_assign(const AssignNode &node) {
 
     auto *alloca = it->second;
 
+    auto target_sem = semantic_type(*node.targets[i]);
+
     using K = Token::Kind;
     if (node.op == K::Assignment) {
+      // Release old value before overwriting if managed.
+      if (target_sem && (target_sem->kind == TypeKind::String ||
+                         target_sem->kind == TypeKind::Array)) {
+        auto *old = builder.CreateLoad(alloca->getAllocatedType(), alloca);
+        emit_release(old, target_sem);
+      }
       builder.CreateStore(rhs, alloca);
     } else {
       // Compound assignment: load current, apply op, store.
@@ -524,12 +570,13 @@ void CodeGen::emit_assign(const AssignNode &node) {
       llvm::Value *result = nullptr;
 
       // Check if this is a string compound assignment.
-      auto target_sem = semantic_type(*node.targets[i]);
       bool is_str = target_sem && target_sem->kind == TypeKind::String;
 
       if (is_str && node.op == K::AddAssignment) {
         auto *concat_fn = module->getFunction("mc_string_concat");
         result = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
+        // Release the old string since concat created a new one.
+        emit_release(cur, target_sem);
       } else {
         switch (node.op) {
         case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
@@ -546,12 +593,12 @@ void CodeGen::emit_assign(const AssignNode &node) {
 
 void CodeGen::emit_return(const ReturnNode &node) {
   if (current_func_is_main) {
+    emit_release_locals();
     if (node.values.empty()) {
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
     } else {
       auto *val = emit_expr(*node.values[0]);
-      // Truncate i64 to i32 for the C main return.
       auto *i32_val = builder.CreateTrunc(val, llvm::Type::getInt32Ty(context),
                                           "main_ret");
       builder.CreateRet(i32_val);
@@ -560,15 +607,17 @@ void CodeGen::emit_return(const ReturnNode &node) {
   }
 
   if (node.values.empty()) {
+    emit_release_locals();
     builder.CreateRetVoid();
   } else if (node.values.size() == 1) {
     auto *val = emit_expr(*node.values[0]);
+    emit_release_locals();
     if (val)
       builder.CreateRet(val);
     else
       builder.CreateRetVoid();
   } else {
-    // Multiple return values — deferred.
+    emit_release_locals();
     builder.CreateRetVoid();
   }
 }
@@ -885,8 +934,9 @@ llvm::Value *CodeGen::make_string_constant(const std::string &text) {
           llvm::ConstantInt::get(i64_type, 0),
           llvm::ConstantInt::get(i64_type, 0)});
   auto *length = llvm::ConstantInt::get(i64_type, text.size());
+  auto *refcount = llvm::ConstantInt::getSigned(i64_type, -1); // static
   auto *str_const =
-      llvm::ConstantStruct::get(string_type, {data_ptr, length});
+      llvm::ConstantStruct::get(string_type, {data_ptr, length, refcount});
 
   auto *str_global = new llvm::GlobalVariable(
       *module, string_type, true,
@@ -1725,6 +1775,53 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
     return llvm::ConstantInt::get(i1_type, 0);
 
   return nullptr;
+}
+
+// ===========================================================================
+// Output
+// ===========================================================================
+
+// ===========================================================================
+// Reference counting
+// ===========================================================================
+
+void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
+  if (!sem) return;
+  if (sem->kind == TypeKind::String)
+    managed_locals.push_back({name, ManagedKind::String});
+  else if (sem->kind == TypeKind::Array)
+    managed_locals.push_back({name, ManagedKind::Array});
+}
+
+void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
+  if (!val || !sem) return;
+  if (sem->kind == TypeKind::String) {
+    builder.CreateCall(module->getFunction("mc_retain_string"), {val});
+  } else if (sem->kind == TypeKind::Array) {
+    builder.CreateCall(module->getFunction("mc_retain_array"), {val});
+  }
+}
+
+void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
+  if (!val || !sem) return;
+  if (sem->kind == TypeKind::String) {
+    builder.CreateCall(module->getFunction("mc_release_string"), {val});
+  } else if (sem->kind == TypeKind::Array) {
+    builder.CreateCall(module->getFunction("mc_release_array"), {val});
+  }
+}
+
+void CodeGen::emit_release_locals() {
+  for (auto &ml : managed_locals) {
+    auto it = locals.find(ml.name);
+    if (it == locals.end()) continue;
+    auto *alloca = it->second;
+    auto *val = builder.CreateLoad(alloca->getAllocatedType(), alloca);
+    if (ml.kind == ManagedKind::String)
+      builder.CreateCall(module->getFunction("mc_release_string"), {val});
+    else if (ml.kind == ManagedKind::Array)
+      builder.CreateCall(module->getFunction("mc_release_array"), {val});
+  }
 }
 
 // ===========================================================================
