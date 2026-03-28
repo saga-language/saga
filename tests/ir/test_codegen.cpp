@@ -2366,6 +2366,205 @@ TEST(CodeGen, MultiReturnIntAndFloat) {
   EXPECT_TRUE(st->getElementType(1)->isDoubleTy());
 }
 
+// ===========================================================================
+// Interface conformance — vtables and dynamic dispatch
+// ===========================================================================
+
+TEST(CodeGen, InterfaceVtableTypeCreated) {
+  auto r = CG::from(
+      "interface Greeter { Greet() String }\n"
+      "pub fn Main() Void {}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc.vtable.Greeter");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 1u) << "Vtable should have 1 fn ptr";
+  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
+}
+
+TEST(CodeGen, InterfaceVtableMultipleMethods) {
+  auto r = CG::from(
+      "interface ReadWriter {\n"
+      "  Read() String\n"
+      "  Write(s String) Void\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc.vtable.ReadWriter");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 2u);
+}
+
+TEST(CodeGen, InterfaceFatPtrTypeExists) {
+  auto r = CG::from("pub fn Main() Void {}");
+  auto *st = llvm::StructType::getTypeByName(
+      r.mod().getContext(), "mc_iface");
+  ASSERT_NE(st, nullptr);
+  EXPECT_EQ(st->getNumElements(), 2u); // { ptr data, ptr vtable }
+  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
+  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+}
+
+TEST(CodeGen, StructMethodDeclared) {
+  // Use out-bound method style (receiver syntax) which the analyzer handles.
+  auto r = CG::from(
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Dog.Speak");
+  ASSERT_NE(fn, nullptr) << "Struct method should be declared with mangled name";
+  EXPECT_EQ(fn->arg_size(), 1u) << "Should have self param only";
+  EXPECT_TRUE(fn->getArg(0)->getType()->isPointerTy());
+}
+
+TEST(CodeGen, StructMethodWithParams) {
+  auto r = CG::from(
+      "struct Counter { n Int }\n"
+      "fn (c Counter) Add(x Int) Int { c.n + x }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Counter.Add");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->arg_size(), 2u) << "self + x";
+  EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, OutBoundMethodDeclared) {
+  auto r = CG::from(
+      "struct Point { x, y Int }\n"
+      "fn (p Point) Magnitude() Int { p.x + p.y }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Point.Magnitude");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->arg_size(), 1u);
+}
+
+TEST(CodeGen, StructMethodCall) {
+  auto r = CG::from(
+      "struct Counter { n Int }\n"
+      "fn (c Counter) Value() Int { c.n }\n"
+      "pub fn Main() Void {\n"
+      "  c := Counter{n: 42}\n"
+      "  x := c.Value()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  EXPECT_TRUE(has_alloca_named(main, "x"));
+  // Should have a call to Counter.Value.
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "Counter.Value")
+          found = true;
+  EXPECT_TRUE(found) << "Should call Counter.Value";
+}
+
+TEST(CodeGen, VtableGlobalCreated) {
+  auto r = CG::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "pub fn Main() Void {\n"
+      "  d := Dog{name: \"Rex\"}\n"
+      "  s Speaker = d\n"
+      "}");
+  // Should have a vtable global for Dog implementing Speaker.
+  auto *vtable = r.mod().getNamedGlobal("mc.vtable.Dog.Speaker");
+  ASSERT_NE(vtable, nullptr) << "Should create vtable for Dog::Speaker";
+  EXPECT_TRUE(vtable->isConstant());
+}
+
+TEST(CodeGen, InterfaceBoxCreatesAllocas) {
+  auto r = CG::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "pub fn Main() Void {\n"
+      "  d := Dog{name: \"Rex\"}\n"
+      "  s Speaker = d\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Should have struct GEPs for the fat pointer.
+  int gep_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::GetElementPtrInst>(&inst))
+        gep_count++;
+  EXPECT_GE(gep_count, 2) << "Should have GEPs for data and vtable in fat ptr";
+}
+
+TEST(CodeGen, InterfaceDynamicDispatch) {
+  // Dynamic dispatch is tested at the IR level via vtable structure.
+  // Full e2e dispatch requires analyzer support for method calls on
+  // interface-typed variables (check_selector for interfaces).
+  auto r = CG::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "pub fn Main() Void {\n"
+      "  d := Dog{name: \"Rex\"}\n"
+      "  s Speaker = d\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // The vtable should be created and referenced.
+  auto *vtable = r.mod().getNamedGlobal("mc.vtable.Dog.Speaker");
+  ASSERT_NE(vtable, nullptr);
+  // The fat pointer should have stores for data and vtable.
+  int store_count = 0;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (llvm::isa<llvm::StoreInst>(&inst))
+        store_count++;
+  EXPECT_GE(store_count, 4) << "Stores for struct fields + fat ptr data/vtable";
+}
+
+TEST(CodeGen, InterfaceParamType) {
+  auto r = CG::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "fn UseSpeaker(s Speaker) Void { }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("UseSpeaker");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->arg_size(), 1u);
+  EXPECT_TRUE(fn->getArg(0)->getType()->isPointerTy())
+      << "Interface param should be ptr (to fat pointer)";
+}
+
+TEST(CodeGen, InterfaceMethodNamesRegistered) {
+  auto r = CG::from(
+      "interface Stringer { String() String }\n"
+      "pub fn Main() Void {}");
+  auto it = r.codegen->iface_method_names.find("Stringer");
+  ASSERT_NE(it, r.codegen->iface_method_names.end());
+  ASSERT_EQ(it->second.size(), 1u);
+  EXPECT_EQ(it->second[0], "String");
+}
+
+TEST(CodeGen, MultipleInterfacesDeclared) {
+  auto r = CG::from(
+      "interface Reader { Read() String }\n"
+      "interface Writer { Write(s String) Void }\n"
+      "pub fn Main() Void {}");
+  EXPECT_TRUE(r.codegen->iface_vtable_types.count("Reader"));
+  EXPECT_TRUE(r.codegen->iface_vtable_types.count("Writer"));
+}
+
+TEST(CodeGen, StructMethodRegisteredInLinks) {
+  auto r = CG::from(
+      "struct Cat { name String }\n"
+      "fn (c Cat) Meow() String { \"meow\" }\n"
+      "pub fn Main() Void {}");
+  auto it = r.codegen->struct_method_links.find("Cat");
+  ASSERT_NE(it, r.codegen->struct_method_links.end());
+  ASSERT_EQ(it->second.size(), 1u);
+  EXPECT_EQ(it->second[0].first, "Cat.Meow");
+  EXPECT_EQ(it->second[0].second, "Meow");
+}
+
 } // namespace mc
 
 

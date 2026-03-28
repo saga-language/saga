@@ -62,6 +62,27 @@ struct CodeGen {
   /// Maps function link-name → number of return values (only for multi).
   std::unordered_map<std::string, size_t> multi_return_counts;
 
+  // ── Interface registry ──────────────────────────────────────────────
+
+  /// The fat pointer type for interface values: { ptr data, ptr vtable }.
+  llvm::StructType *iface_fat_ptr_type = nullptr;
+
+  /// Maps interface name → vtable struct type (struct of fn ptrs).
+  std::unordered_map<std::string, llvm::StructType *> iface_vtable_types;
+
+  /// Maps interface name → ordered list of method names.
+  std::unordered_map<std::string, std::vector<std::string>> iface_method_names;
+
+  /// Maps "StructName::InterfaceName" → vtable global constant.
+  std::unordered_map<std::string, llvm::GlobalVariable *> vtable_globals;
+
+  /// Maps interface/struct name → semantic TypePtr (for codegen type lookup).
+  std::unordered_map<std::string, TypePtr> named_sem_types;
+
+  /// Maps struct name → list of {mangled_link_name, method_name} pairs.
+  std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
+      struct_method_links;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -133,6 +154,25 @@ private:
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
   void emit_enum_decl(const EnumDeclNode &node);
+
+  /// Register interface vtable types.
+  void declare_interfaces(const SourceNode &src);
+  void emit_interface_decl(const InterfaceDeclNode &node);
+
+  /// Declare struct methods as regular functions with mangled names.
+  void declare_struct_methods(const SourceNode &src);
+
+  /// Emit struct method bodies.
+  void emit_struct_methods(const SourceNode &src);
+
+  /// Get or create a vtable for a concrete struct implementing an interface.
+  llvm::GlobalVariable *get_or_create_vtable(const std::string &struct_name,
+                                              const std::string &iface_name);
+
+  /// Box a concrete value into an interface fat pointer.
+  llvm::Value *emit_interface_box(llvm::Value *concrete_val,
+                                   const TypePtr &concrete_type,
+                                   const TypePtr &iface_type);
 
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);

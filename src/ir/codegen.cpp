@@ -29,6 +29,10 @@ CodeGen::CodeGen(const std::string &module_name, Analyzer &analyzer)
     : module(std::make_unique<llvm::Module>(module_name, context)),
       builder(context),
       analyzer(analyzer) {
+  // Set a default data layout so LLVM can compute type alignments.
+  // This is overridden by write_object() with the actual target layout.
+  module->setDataLayout("e-m:e-p270:32:32-p271:32:32-p272:64:64-"
+                        "i64:64-i128:128-f80:128-n8:16:32:64-S128");
   init_types();
   declare_runtime();
 }
@@ -48,6 +52,11 @@ void CodeGen::init_types() {
       context,
       {llvm::PointerType::getUnqual(context), i64_type, i64_type},
       "mc_string");
+
+  // Interface fat pointer: { ptr data, ptr vtable }
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  iface_fat_ptr_type = llvm::StructType::create(
+      context, {ptr_ty, ptr_ty}, "mc_iface");
 
   // Register built-in enums.
   enum_types["Comparison"] = true;
@@ -155,6 +164,9 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     // Struct not yet registered — return opaque ptr as fallback.
     return llvm::PointerType::getUnqual(context);
   }
+  case TypeKind::Interface:
+    // Interfaces are represented as a fat pointer struct.
+    return llvm::PointerType::getUnqual(context); // ptr to mc_iface
   default:
     return void_ll_type;
   }
@@ -192,14 +204,16 @@ void CodeGen::emit_package(const PackageNode &pkg) {
 }
 
 void CodeGen::emit_source(const SourceNode &src) {
-  // Pass 1: create LLVM struct types and register enums.
+  // Pass 1: create LLVM struct types, register enums and interfaces.
   declare_structs(src);
   declare_enums(src);
+  declare_interfaces(src);
 
-  // Pass 2: forward-declare all functions so they can call each other.
+  // Pass 2: forward-declare all functions and struct methods.
   declare_functions(src);
+  declare_struct_methods(src);
 
-  // Pass 3: emit function bodies.
+  // Pass 3: emit function bodies and struct method bodies.
   for (auto &decl : src.declarations) {
     std::visit(
         overloaded{
@@ -208,6 +222,7 @@ void CodeGen::emit_source(const SourceNode &src) {
         },
         decl->data);
   }
+  emit_struct_methods(src);
 }
 
 // ===========================================================================
@@ -318,6 +333,389 @@ void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
 }
 
 // ===========================================================================
+// Interface declarations
+// ===========================================================================
+
+void CodeGen::declare_interfaces(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    if (auto *i = std::get_if<InterfaceDeclNode>(&decl->data))
+      emit_interface_decl(*i);
+  }
+}
+
+void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
+  std::string name(node.name.name);
+  if (iface_vtable_types.count(name))
+    return;
+
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+  // Build a vtable struct: one function pointer per method.
+  std::vector<llvm::Type *> vtable_fields;
+  std::vector<std::string> method_names;
+
+  for (auto &method : node.methods) {
+    vtable_fields.push_back(ptr_type); // fn ptr (opaque)
+    method_names.push_back(std::string(method.name.name));
+  }
+
+  auto *vtable_st = llvm::StructType::create(
+      context, vtable_fields, "mc.vtable." + name);
+  iface_vtable_types[name] = vtable_st;
+  iface_method_names[name] = std::move(method_names);
+
+  // Build a minimal InterfaceTypeInfo for codegen type lookup.
+  // We just need the name and method names for vtable matching.
+  std::vector<MethodInfo> sem_methods;
+  for (auto &m : node.methods) {
+    // Build a simple FuncTypeInfo from the signature.
+    std::vector<TypePtr> params;
+    for (auto &p : m.signature.params) {
+      auto pt = analyzer.resolve_type(*p.type);
+      for (size_t i = 0; i < p.names.identifiers.size(); ++i)
+        params.push_back(pt);
+    }
+    std::vector<TypePtr> returns;
+    for (auto &r : m.signature.returns)
+      returns.push_back(analyzer.resolve_type(*r));
+    auto fn_type = make_func_type(std::move(params), std::move(returns));
+    sem_methods.push_back({std::string(m.name.name), fn_type, m.is_public});
+  }
+  named_sem_types[name] = make_interface_type(name, std::move(sem_methods), {});
+}
+
+// ===========================================================================
+// Struct method declarations
+// ===========================================================================
+
+void CodeGen::declare_struct_methods(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    auto *s = std::get_if<StructDeclNode>(&decl->data);
+    if (!s)
+      continue;
+
+    std::string struct_name(s->name.name);
+    auto st_it = struct_types.find(struct_name);
+    if (st_it == struct_types.end())
+      continue;
+
+    // In-bound methods (defined inside the struct body).
+    for (auto &member : s->members) {
+      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
+      if (!fn)
+        continue;
+
+      std::string method_name(fn->name.name);
+      std::string link_name = struct_name + "." + method_name;
+
+      if (module->getFunction(link_name))
+        continue;
+
+      // Build function type: first param is ptr to self struct.
+      auto *ptr_type = llvm::PointerType::getUnqual(context);
+      std::vector<llvm::Type *> param_types;
+      param_types.push_back(ptr_type); // self pointer
+
+      for (auto &param : fn->signature.params) {
+        auto *ll = resolve_type_node(*param.type);
+        for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+          param_types.push_back(ll);
+      }
+
+      llvm::Type *ret_type = void_ll_type;
+      if (!fn->signature.returns.empty())
+        ret_type = resolve_type_node(*fn->signature.returns[0]);
+
+      auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
+      auto *func = llvm::Function::Create(
+          fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+
+      // Name arguments.
+      func->getArg(0)->setName("self");
+      size_t arg_idx = 1;
+      for (auto &param : fn->signature.params)
+        for (auto &ident : param.names.identifiers)
+          if (arg_idx < func->arg_size())
+            func->getArg(arg_idx++)->setName(std::string(ident.name));
+
+      struct_method_links[struct_name].push_back({link_name, method_name});
+    }
+  }
+
+  // Out-bound methods (top-level functions with a receiver).
+  for (auto &decl : src.declarations) {
+    auto *fn = std::get_if<FuncDeclNode>(&decl->data);
+    if (!fn || !fn->receiver)
+      continue;
+
+    auto *recv_ident = std::get_if<IdentifierNode>(&fn->receiver->type->data);
+    if (!recv_ident)
+      continue;
+
+    std::string struct_name(recv_ident->name);
+    if (!struct_types.count(struct_name))
+      continue;
+
+    std::string method_name(fn->name.name);
+    std::string link_name = struct_name + "." + method_name;
+
+    if (module->getFunction(link_name))
+      continue;
+
+    auto *ptr_type = llvm::PointerType::getUnqual(context);
+    std::vector<llvm::Type *> param_types;
+    param_types.push_back(ptr_type); // self pointer
+
+    for (auto &param : fn->signature.params) {
+      auto *ll = resolve_type_node(*param.type);
+      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+        param_types.push_back(ll);
+    }
+
+    llvm::Type *ret_type = void_ll_type;
+    if (!fn->signature.returns.empty())
+      ret_type = resolve_type_node(*fn->signature.returns[0]);
+
+    auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
+    auto *func = llvm::Function::Create(
+        fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+
+    func->getArg(0)->setName(std::string(fn->receiver->name.name));
+    size_t arg_idx = 1;
+    for (auto &param : fn->signature.params)
+      for (auto &ident : param.names.identifiers)
+        if (arg_idx < func->arg_size())
+          func->getArg(arg_idx++)->setName(std::string(ident.name));
+
+    struct_method_links[struct_name].push_back({link_name, method_name});
+  }
+}
+
+void CodeGen::emit_struct_methods(const SourceNode &src) {
+  // Emit in-bound method bodies.
+  for (auto &decl : src.declarations) {
+    auto *s = std::get_if<StructDeclNode>(&decl->data);
+    if (!s)
+      continue;
+
+    std::string struct_name(s->name.name);
+
+    for (auto &member : s->members) {
+      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
+      if (!fn)
+        continue;
+
+      std::string method_name(fn->name.name);
+      std::string link_name = struct_name + "." + method_name;
+
+      auto *func = module->getFunction(link_name);
+      if (!func || !func->empty())
+        continue;
+
+      auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+      builder.SetInsertPoint(entry);
+
+      locals.clear();
+      managed_locals.clear();
+      current_func_is_main = false;
+
+      // Self parameter — alloca for the struct pointer.
+      auto *self_alloca = create_entry_alloca(
+          func, "self", llvm::PointerType::getUnqual(context));
+      builder.CreateStore(func->getArg(0), self_alloca);
+      locals["self"] = self_alloca;
+
+      // Struct fields are accessible directly by name through self.
+      // We store self as a local so field accesses work via selectors.
+
+      // Regular parameters.
+      size_t arg_idx = 1;
+      for (auto &param : fn->signature.params) {
+        auto *ll_type = resolve_type_node(*param.type);
+        for (auto &ident : param.names.identifiers) {
+          std::string pname(ident.name);
+          auto *alloca = create_entry_alloca(func, pname, ll_type);
+          builder.CreateStore(func->getArg(arg_idx++), alloca);
+          locals[pname] = alloca;
+        }
+      }
+
+      // Emit body.
+      auto &block = std::get<BlockNode>(fn->body->data);
+      auto *tail_val = emit_block(block);
+
+      if (!builder.GetInsertBlock()->getTerminator()) {
+        emit_release_locals();
+        auto *ret_type = func->getReturnType();
+        if (ret_type->isVoidTy()) {
+          builder.CreateRetVoid();
+        } else if (tail_val && tail_val->getType() == ret_type) {
+          builder.CreateRet(tail_val);
+        } else {
+          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+        }
+      }
+
+      llvm::verifyFunction(*func);
+    }
+  }
+
+  // Emit out-bound method bodies (top-level functions with receivers).
+  for (auto &decl : src.declarations) {
+    auto *fn = std::get_if<FuncDeclNode>(&decl->data);
+    if (!fn || !fn->receiver)
+      continue;
+
+    auto *recv_ident = std::get_if<IdentifierNode>(&fn->receiver->type->data);
+    if (!recv_ident)
+      continue;
+
+    std::string struct_name(recv_ident->name);
+    if (!struct_types.count(struct_name))
+      continue;
+
+    std::string method_name(fn->name.name);
+    std::string link_name = struct_name + "." + method_name;
+
+    auto *func = module->getFunction(link_name);
+    if (!func || !func->empty())
+      continue;
+
+    auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+    builder.SetInsertPoint(entry);
+
+    locals.clear();
+    managed_locals.clear();
+    current_func_is_main = false;
+
+    // Receiver parameter.
+    std::string recv_name(fn->receiver->name.name);
+    auto *recv_alloca = create_entry_alloca(
+        func, recv_name, llvm::PointerType::getUnqual(context));
+    builder.CreateStore(func->getArg(0), recv_alloca);
+    locals[recv_name] = recv_alloca;
+
+    // Regular parameters.
+    size_t arg_idx = 1;
+    for (auto &param : fn->signature.params) {
+      auto *ll_type = resolve_type_node(*param.type);
+      for (auto &ident : param.names.identifiers) {
+        std::string pname(ident.name);
+        auto *alloca = create_entry_alloca(func, pname, ll_type);
+        builder.CreateStore(func->getArg(arg_idx++), alloca);
+        locals[pname] = alloca;
+      }
+    }
+
+    // Emit body.
+    auto &block = std::get<BlockNode>(fn->body->data);
+    auto *tail_val = emit_block(block);
+
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      emit_release_locals();
+      auto *ret_type = func->getReturnType();
+      if (ret_type->isVoidTy()) {
+        builder.CreateRetVoid();
+      } else if (tail_val && tail_val->getType() == ret_type) {
+        builder.CreateRet(tail_val);
+      } else {
+        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+      }
+    }
+
+    llvm::verifyFunction(*func);
+  }
+}
+
+// ===========================================================================
+// Vtable generation
+// ===========================================================================
+
+llvm::GlobalVariable *CodeGen::get_or_create_vtable(
+    const std::string &struct_name, const std::string &iface_name) {
+  std::string key = struct_name + "::" + iface_name;
+  auto it = vtable_globals.find(key);
+  if (it != vtable_globals.end())
+    return it->second;
+
+  auto vt_it = iface_vtable_types.find(iface_name);
+  if (vt_it == iface_vtable_types.end())
+    return nullptr;
+  auto *vtable_st = vt_it->second;
+
+  auto &method_names = iface_method_names[iface_name];
+  auto &methods = struct_method_links[struct_name];
+
+  // Build the vtable constant.
+  std::vector<llvm::Constant *> entries;
+  for (auto &iface_method : method_names) {
+    // Find the corresponding struct method.
+    std::string link_name = struct_name + "." + iface_method;
+    auto *fn = module->getFunction(link_name);
+    if (fn) {
+      entries.push_back(fn);
+    } else {
+      // Method not found — null pointer (shouldn't happen if analyzer passed).
+      entries.push_back(
+          llvm::ConstantPointerNull::get(
+              llvm::PointerType::getUnqual(context)));
+    }
+  }
+
+  auto *vtable_const = llvm::ConstantStruct::get(vtable_st, entries);
+  auto *vtable_global = new llvm::GlobalVariable(
+      *module, vtable_st, true, llvm::GlobalValue::PrivateLinkage,
+      vtable_const, "mc.vtable." + struct_name + "." + iface_name);
+
+  vtable_globals[key] = vtable_global;
+  return vtable_global;
+}
+
+// ===========================================================================
+// Interface boxing
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_interface_box(llvm::Value *concrete_val,
+                                          const TypePtr &concrete_type,
+                                          const TypePtr &iface_type) {
+  if (!concrete_val || !concrete_type || !iface_type)
+    return nullptr;
+  if (iface_type->kind != TypeKind::Interface)
+    return nullptr;
+
+
+  auto &iface_info = std::get<InterfaceTypeInfo>(iface_type->detail);
+  std::string iface_name = iface_info.name;
+
+  // Determine the struct name.
+  std::string struct_name;
+  if (concrete_type->kind == TypeKind::Struct) {
+    struct_name = std::get<StructTypeInfo>(concrete_type->detail).name;
+  } else {
+    return nullptr; // Only struct boxing supported for now.
+  }
+
+  // Get or create the vtable.
+  auto *vtable = get_or_create_vtable(struct_name, iface_name);
+  if (!vtable)
+    return nullptr;
+
+  // Allocate a fat pointer on the stack.
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *fat_alloca = create_entry_alloca(func, "iface.box", iface_fat_ptr_type);
+
+  // Store the data pointer (the concrete struct pointer).
+  auto *data_gep = builder.CreateStructGEP(iface_fat_ptr_type, fat_alloca, 0, "iface.data");
+  builder.CreateStore(concrete_val, data_gep);
+
+  // Store the vtable pointer.
+  auto *vtable_gep = builder.CreateStructGEP(iface_fat_ptr_type, fat_alloca, 1, "iface.vtable");
+  builder.CreateStore(vtable, vtable_gep);
+
+  return fat_alloca;
+}
+
+// ===========================================================================
 // Function type building
 // ===========================================================================
 
@@ -328,6 +726,8 @@ llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
       return llvm::PointerType::getUnqual(context); // struct as ptr
     if (enum_types.count(tname))
       return i64_type; // enum as i64 tag
+    if (iface_vtable_types.count(tname))
+      return llvm::PointerType::getUnqual(context); // interface as ptr to fat ptr
   }
   // Fall back to analyzer resolve (works for builtins).
   auto sem_type = analyzer.resolve_type(type_node);
@@ -484,13 +884,56 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   // Determine semantic type for refcount tracking.
   TypePtr sem_type_ptr = nullptr;
   if (node.type) {
-    sem_type_ptr = analyzer.resolve_type(**node.type);
+    // Try the node_types map first (set during analysis), falling back
+    // to resolve_type for builtins.  For user-defined types like interfaces,
+    // resolve_type may fail outside analyzer scope, so also check global
+    // scope symbols.
+    auto it = analyzer.node_types.find(&**node.type);
+    if (it != analyzer.node_types.end()) {
+      sem_type_ptr = it->second;
+    } else {
+      sem_type_ptr = analyzer.resolve_type(**node.type);
+    }
+    // If resolve returned an error/null, try our named_sem_types registry.
+    if ((!sem_type_ptr || sem_type_ptr->kind == TypeKind::Error) && node.type) {
+      if (auto *ident = std::get_if<IdentifierNode>(&(*node.type)->data)) {
+        auto nst_it = named_sem_types.find(std::string(ident->name));
+        if (nst_it != named_sem_types.end())
+          sem_type_ptr = nst_it->second;
+      }
+    }
   } else if (node.init) {
     sem_type_ptr = semantic_type(**node.init);
   }
 
   if (node.init) {
     auto *val = emit_expr(**node.init);
+    // Interface boxing: declared type is interface, init is a concrete struct.
+    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Interface) {
+      auto init_sem = semantic_type(**node.init);
+      if (init_sem && init_sem->kind == TypeKind::Struct) {
+        // We need the struct pointer, not the loaded value.
+        // Check if the init expression is an identifier referencing
+        // a local struct alloca.
+        llvm::Value *struct_ptr = val;
+        if (auto *id = std::get_if<IdentifierNode>(&(*node.init)->data)) {
+          auto local_it = locals.find(std::string(id->name));
+          if (local_it != locals.end())
+            struct_ptr = local_it->second; // The alloca pointer.
+        }
+        if (struct_ptr) {
+          auto *boxed = emit_interface_box(struct_ptr, init_sem, sem_type_ptr);
+          if (boxed) {
+            if (auto *ba = llvm::dyn_cast<llvm::AllocaInst>(boxed)) {
+              ba->setName(name);
+              locals[name] = ba;
+            }
+            return;
+          }
+        }
+      }
+    }
+
     // If the init is a struct alloca, alias it directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
       auto sem = semantic_type(**node.init);
@@ -2037,6 +2480,138 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
         auto *ext = builder.CreateZExt(obj, i64_type, "bext");
         return builder.CreateCall(
             module->getFunction("mc_bool_to_string"), {ext}, "str");
+      }
+    }
+
+    // Struct method call: obj.Method(args) → StructName.Method(obj, args).
+    if (obj_sem && obj_sem->kind == TypeKind::Struct) {
+      auto &info = std::get<StructTypeInfo>(obj_sem->detail);
+      std::string link_name = info.name + "." + method;
+      auto *callee = module->getFunction(link_name);
+      if (callee) {
+        // Build argument list: self + explicit args.
+        // For struct methods, self is a pointer to the struct.
+        // obj might be a loaded pointer or a direct alloca — we need
+        // the alloca (pointer) for self.
+        llvm::Value *self_ptr = obj;
+
+        // If the object is an identifier referencing a local, use the alloca.
+        if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
+          auto local_it = locals.find(std::string(id->name));
+          if (local_it != locals.end()) {
+            auto *alloca = local_it->second;
+            auto *alloca_type = alloca->getAllocatedType();
+            auto st_it = struct_types.find(info.name);
+            if (st_it != struct_types.end() && alloca_type == st_it->second) {
+              self_ptr = alloca; // Direct struct alloca.
+            } else if (alloca_type->isPointerTy()) {
+              self_ptr = builder.CreateLoad(alloca_type, alloca, "self.ptr");
+            }
+          }
+        }
+
+        std::vector<llvm::Value *> args;
+        args.push_back(self_ptr);
+        for (auto &arg_node : node.args) {
+          auto *val = emit_expr(*arg_node);
+          if (val)
+            args.push_back(val);
+        }
+        if (callee->getReturnType()->isVoidTy()) {
+          builder.CreateCall(callee, args);
+          return nullptr;
+        }
+        return builder.CreateCall(callee, args, "mcall");
+      }
+    }
+
+    // Interface dynamic dispatch: obj.Method(args) via vtable.
+    if (obj_sem && obj_sem->kind == TypeKind::Interface) {
+      auto &iface_info = std::get<InterfaceTypeInfo>(obj_sem->detail);
+      std::string iface_name = iface_info.name;
+
+      auto mn_it = iface_method_names.find(iface_name);
+      auto vt_it = iface_vtable_types.find(iface_name);
+      if (mn_it != iface_method_names.end() &&
+          vt_it != iface_vtable_types.end()) {
+        auto &methods = mn_it->second;
+        auto *vtable_st = vt_it->second;
+
+        // Find the method index.
+        int method_idx = -1;
+        for (size_t i = 0; i < methods.size(); ++i) {
+          if (methods[i] == method) {
+            method_idx = static_cast<int>(i);
+            break;
+          }
+        }
+        if (method_idx >= 0) {
+          // obj is a ptr to mc_iface { ptr data, ptr vtable }.
+          // Load data and vtable pointers.
+          auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+          // If obj is an identifier, get the alloca for the fat pointer.
+          llvm::Value *fat_ptr = obj;
+          if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
+            auto local_it = locals.find(std::string(id->name));
+            if (local_it != locals.end()) {
+              auto *alloca = local_it->second;
+              if (alloca->getAllocatedType() == iface_fat_ptr_type) {
+                fat_ptr = alloca;
+              } else if (alloca->getAllocatedType()->isPointerTy()) {
+                fat_ptr = builder.CreateLoad(ptr_type, alloca, "fat.load");
+              }
+            }
+          }
+
+          auto *data_gep = builder.CreateStructGEP(
+              iface_fat_ptr_type, fat_ptr, 0, "iface.data.ptr");
+          auto *data_ptr = builder.CreateLoad(ptr_type, data_gep, "data");
+
+          auto *vtable_gep = builder.CreateStructGEP(
+              iface_fat_ptr_type, fat_ptr, 1, "iface.vtable.ptr");
+          auto *vtable_ptr = builder.CreateLoad(ptr_type, vtable_gep, "vtable");
+
+          // Load the function pointer from the vtable.
+          auto *fn_gep = builder.CreateStructGEP(
+              vtable_st, vtable_ptr, method_idx, "vfn.ptr");
+          auto *fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "vfn");
+
+          // Build the function type for the indirect call.
+          // First param is the data pointer (self), then explicit args.
+          std::vector<llvm::Type *> param_ll_types;
+          param_ll_types.push_back(ptr_type); // self
+
+          std::vector<llvm::Value *> args;
+          args.push_back(data_ptr);
+
+          for (auto &arg_node : node.args) {
+            auto *val = emit_expr(*arg_node);
+            if (val) {
+              args.push_back(val);
+              param_ll_types.push_back(val->getType());
+            }
+          }
+
+          // Determine return type from the interface method signature.
+          llvm::Type *ret_ll = void_ll_type;
+          for (auto &im : iface_info.methods) {
+            if (im.name == method && im.signature) {
+              auto &fi = std::get<FuncTypeInfo>(im.signature->detail);
+              if (!fi.returns.empty())
+                ret_ll = llvm_type(fi.returns[0]);
+              break;
+            }
+          }
+
+          auto *fn_type = llvm::FunctionType::get(ret_ll, param_ll_types, false);
+
+          if (ret_ll->isVoidTy()) {
+            builder.CreateCall(fn_type, fn_ptr, args);
+            return nullptr;
+          }
+          return builder.CreateCall(fn_type, fn_ptr, args, "iface.call");
+        }
       }
     }
 
