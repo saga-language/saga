@@ -1086,10 +1086,10 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   auto body_type = check_block(block);
 
   // Check that the tail expression matches the return type (if non-Void).
-  // If the last statement is a return, it already checked its own values.
+  // If the last statement always returns (directly or through branches),
+  // the return values were already checked by check_return.
   if (!current_scope->return_types.empty() && !block.stmts.empty()) {
-    bool tail_is_return =
-        std::holds_alternative<ReturnNode>(block.stmts.back()->data);
+    bool tail_is_return = always_returns(*block.stmts.back());
     if (!tail_is_return) {
       auto &expected = current_scope->return_types;
       if (expected.size() == 1 && !is_error_type(body_type)) {
@@ -1960,11 +1960,10 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
   auto &block = std::get<BlockNode>(node.body->data);
   auto body_type = check_block(block);
 
-  // Check tail expression matches return type (unless tail is a return).
+  // Check tail expression matches return type (unless tail always returns).
   auto &fn_info = std::get<FuncTypeInfo>(fn_type->detail);
   bool tail_is_return =
-      !block.stmts.empty() &&
-      std::holds_alternative<ReturnNode>(block.stmts.back()->data);
+      !block.stmts.empty() && always_returns(*block.stmts.back());
   if (!tail_is_return && fn_info.returns.size() == 1 &&
       !is_error_type(body_type)) {
     if (!types_equal(fn_info.returns[0], builtins.void_type)) {
@@ -2205,6 +2204,48 @@ TypePtr Analyzer::check_block(const BlockNode &block) {
     last_type = check_expr(*stmt);
   }
   return last_type;
+}
+
+// ---------------------------------------------------------------------------
+// always_returns — true if every control-flow path through the node ends
+// with a `return` statement.
+// ---------------------------------------------------------------------------
+
+bool Analyzer::always_returns(const Node &node) const {
+  return std::visit(
+      overloaded{
+          [](const ReturnNode &) -> bool { return true; },
+
+          [&](const BlockNode &b) -> bool {
+            // A block always returns if its last statement always returns.
+            if (b.stmts.empty())
+              return false;
+            return always_returns(*b.stmts.back());
+          },
+
+          [&](const IfExprNode &n) -> bool {
+            // Both then and else must exist and both must always return.
+            if (!n.else_block)
+              return false;
+            bool then_ret = always_returns(*n.then_block);
+            bool else_ret = always_returns(**n.else_block);
+            return then_ret && else_ret;
+          },
+
+          [&](const SwitchExprNode &n) -> bool {
+            // Every arm must always return, and there must be an else.
+            if (!n.else_body)
+              return false;
+            for (auto &arm : n.arms) {
+              if (!always_returns(*arm.body))
+                return false;
+            }
+            return always_returns(**n.else_body);
+          },
+
+          [](const auto &) -> bool { return false; },
+      },
+      node.data);
 }
 
 // ===========================================================================

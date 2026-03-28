@@ -170,6 +170,11 @@ private:
   /// Inject a struct's fields into the current scope as local variables.
   void inject_struct_fields(const TypePtr &struct_type);
 
+  /// Returns true if a node always terminates via `return` on every
+  /// control-flow path (e.g. if/else where both branches return, or
+  /// a switch where every arm returns).
+  bool always_returns(const Node &node) const;
+
   // Phase 3: Name resolution in expressions — resolve identifiers,
   // record symbols, and walk all sub-expressions.
   void resolve_expr(const Node &node);

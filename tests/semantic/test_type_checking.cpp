@@ -778,4 +778,118 @@ TEST(TypeCheck, InterfaceMethodCallInExpression) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// Return inside branching constructs (if/else, switch)
+// ===========================================================================
+
+TEST(TypeCheck, ReturnInIfElseBranches) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  if x > 0 {\n"
+      "    return 1\n"
+      "  } else {\n"
+      "    return -1\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "if/else where both branches return should satisfy return type";
+}
+
+TEST(TypeCheck, ReturnInSwitchAllArms) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      return 100\n"
+      "    }\n"
+      "    case 1: {\n"
+      "      return 200\n"
+      "    }\n"
+      "    else: {\n"
+      "      return 300\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "switch where all arms return should satisfy return type";
+}
+
+TEST(TypeCheck, ReturnInNestedIfInsideSwitch) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      if x == 0 {\n"
+      "        return 10\n"
+      "      } else {\n"
+      "        return 20\n"
+      "      }\n"
+      "    }\n"
+      "    else: {\n"
+      "      return 30\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "nested if/else inside switch arms should be recognized";
+}
+
+TEST(TypeCheck, ReturnInIfWithoutElseStillErrors) {
+  // If there's no else, the function might not return.
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  if x > 0 {\n"
+      "    return 1\n"
+      "  }\n"
+      "}");
+  EXPECT_FALSE(r.ok())
+      << "if without else doesn't guarantee a return";
+}
+
+TEST(TypeCheck, ReturnInSwitchWithoutElseStillErrors) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      return 100\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_FALSE(r.ok())
+      << "switch without else doesn't guarantee a return";
+}
+
+TEST(TypeCheck, ReturnInSwitchPartialArmStillErrors) {
+  // One arm doesn't return.
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      return 100\n"
+      "    }\n"
+      "    case 1: {\n"
+      "      intrinsic_print(\"hi\")\n"
+      "    }\n"
+      "    else: {\n"
+      "      return 300\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_FALSE(r.ok())
+      << "switch with a non-returning arm doesn't guarantee a return";
+}
+
+TEST(TypeCheck, MixedReturnAndTailValue) {
+  // Some branches return, last one uses tail expression — should still work.
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  if x > 0 {\n"
+      "    return 1\n"
+      "  }\n"
+      "  0\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "early return + tail value should be fine";
+}
+
 } // namespace mc
