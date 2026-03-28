@@ -420,7 +420,43 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     return true;
   }
 
-  // TODO: interface satisfaction check (Phase 5).
+  // Interface satisfaction: concrete type can be assigned to an interface
+  // if it implements all methods required by the interface.
+  if (target->kind == TypeKind::Interface) {
+    // Check whether the source type has all methods required by the
+    // interface.  We do a structural check here — the full
+    // satisfies_interface logic lives in the Analyzer, but for
+    // is_assignable_to we replicate the method-matching check so it
+    // works without an Analyzer instance.
+    auto &iface_info = std::get<InterfaceTypeInfo>(target->detail);
+
+    std::vector<MethodInfo> concrete_methods;
+    if (source->kind == TypeKind::Struct) {
+      concrete_methods = std::get<StructTypeInfo>(source->detail).methods;
+    }
+    // For non-struct types, builtin_methods would be needed but we don't
+    // have access to builtins here.  Return false for now; the Analyzer's
+    // satisfies_interface handles the full check.
+    if (concrete_methods.empty() && source->kind != TypeKind::Struct)
+      return false;
+
+    bool satisfied = true;
+    for (auto &im : iface_info.methods) {
+      bool found = false;
+      for (auto &cm : concrete_methods) {
+        if (cm.name == im.name) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        satisfied = false;
+        break;
+      }
+    }
+    if (satisfied)
+      return true;
+  }
 
   return false;
 }

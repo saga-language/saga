@@ -71,6 +71,9 @@ private:
   /// and return a synthetic token. Always advances.
   Token expect(Token::Kind kind);
 
+  /// Look at the next token without consuming it.
+  Token peek() const;
+
   /// Skip Terminator tokens (newlines). Returns how many were skipped.
   int skip_terminators();
 

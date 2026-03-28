@@ -17,10 +17,9 @@ include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(include)
 
 # Gather source files
-file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DPENDS
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
     src/frontend/*.cpp
     src/ir/*.cpp
-    src/runtime/*.cpp
     src/semantic/*.cpp
 )
 
@@ -36,10 +35,31 @@ target_include_directories(compiler_core
     ${PROJECT_SOURCE_DIR}/include
 )
 
+# Saga runtime library (C)
+file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS src/runtime/*.c)
+
+add_library(saga_runtime STATIC ${RUNTIME_SOURCES})
+
+target_include_directories(saga_runtime
+    PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+)
+
+# Install the runtime archive so the compiler can find it at link time.
+set(SAGA_RUNTIME_DIR "${CMAKE_BINARY_DIR}/lib")
+set_target_properties(saga_runtime PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY "${SAGA_RUNTIME_DIR}"
+)
+
 # Compiler CLI
 add_executable(compiler src/main.cpp)
 
 target_link_libraries(compiler PRIVATE LLVM compiler_core)
+
+# Pass the runtime library path to the compiler binary as a compile definition.
+target_compile_definitions(compiler PRIVATE
+    SAGA_RUNTIME_LIB="${SAGA_RUNTIME_DIR}/libsaga_runtime.a"
+)
 
 enable_testing()
 add_subdirectory(tests)

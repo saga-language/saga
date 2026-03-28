@@ -52,8 +52,25 @@ struct Analyzer {
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
 
+  // ── Closure capture tracking ─────────────────────────────────────────
+
+  /// Information about a single captured variable in a closure.
+  struct CaptureInfo {
+    std::string name;       // variable name
+    TypePtr type;           // resolved type of the captured variable
+  };
+
+  /// Maps each FuncExprNode (by Node*) to its list of captured variables.
+  std::unordered_map<const Node *, std::vector<CaptureInfo>> node_captures;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
+
+  // ── Closure resolution state ─────────────────────────────────────────
+  /// Stack of closure nodes currently being resolved (for nested closures).
+  std::vector<const Node *> closure_node_stack_;
+  /// Pointer to the current closure node being resolved (top of stack).
+  const Node *pending_closure_node_ = nullptr;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -125,6 +142,10 @@ struct Analyzer {
   /// and outer-scope shadowing.  Returns false on error.
   bool declare_local(const Symbol &sym);
 
+  // Phase 2: Type resolution — resolve type annotations to TypePtrs.
+  // Public so codegen can query return types from signature nodes.
+  TypePtr resolve_type(const Node &node);
+
 private:
   // ── Node visitors (to be implemented in phases) ──────────────────────
 
@@ -132,9 +153,6 @@ private:
   void visit_package(const PackageNode &node);
   void visit_source(const SourceNode &node);
   void collect_declaration(const Node &node);
-
-  // Phase 2: Type resolution — resolve type annotations to TypePtrs.
-  TypePtr resolve_type(const Node &node);
   TypePtr resolve_identifier_type(const IdentifierNode &node);
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
@@ -157,10 +175,22 @@ private:
   void declare_parameters(const SignatureNode &sig);
 
   // Phase 3: Resolve names inside function/method bodies.
-  void resolve_func_decl_body(const FuncDeclNode &fn);
+  // If `enclosing_struct` is non-null, the struct's fields are injected
+  // into the function scope (for in-bound methods).
+  void resolve_func_decl_body(const FuncDeclNode &fn,
+                               const TypePtr &enclosing_struct = nullptr);
 
   // Phase 4: Type-check function/method bodies.
-  void check_func_decl_body(const FuncDeclNode &fn);
+  void check_func_decl_body(const FuncDeclNode &fn,
+                             const TypePtr &enclosing_struct = nullptr);
+
+  /// Inject a struct's fields into the current scope as local variables.
+  void inject_struct_fields(const TypePtr &struct_type);
+
+  /// Returns true if a node always terminates via `return` on every
+  /// control-flow path (e.g. if/else where both branches return, or
+  /// a switch where every arm returns).
+  bool always_returns(const Node &node) const;
 
   // Phase 3: Name resolution in expressions — resolve identifiers,
   // record symbols, and walk all sub-expressions.
@@ -178,7 +208,7 @@ private:
   void resolve_range_expr(const RangeExprNode &node);
   void resolve_spawn_expr(const SpawnExprNode &node);
   void resolve_or_expr(const OrExprNode &node);
-  void resolve_func_expr(const FuncExprNode &node);
+  void resolve_func_expr(const FuncExprNode &node, const Node &parent);
   void resolve_group_expr(const GroupExprNode &node);
   void resolve_string_literal(const StringLiteralNode &node);
   void resolve_array_literal(const ArrayLiteralNode &node);
@@ -221,7 +251,7 @@ private:
   TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node);
   TypePtr check_or_expr(const OrExprNode &node);
-  TypePtr check_func_expr(const FuncExprNode &node);
+  TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
 

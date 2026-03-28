@@ -220,10 +220,16 @@ void Analyzer::visit_source(const SourceNode &src) {
               resolve_func_decl_body(fn);
             },
             [&](const StructDeclNode &s) {
+              // Look up the struct's resolved type for field injection.
+              TypePtr struct_type = nullptr;
+              auto sym = lookup(std::string(s.name.name));
+              if (sym)
+                struct_type = sym->type;
+
               for (auto &member : s.members) {
                 if (auto *fn =
                         std::get_if<FuncDeclNode>(&member.member->data)) {
-                  resolve_func_decl_body(*fn);
+                  resolve_func_decl_body(*fn, struct_type);
                 }
               }
             },
@@ -239,10 +245,17 @@ void Analyzer::visit_source(const SourceNode &src) {
             [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
             [&](const StructDeclNode &s) {
               check_struct_decl(s);
+
+              // Look up the struct's resolved type for field injection.
+              TypePtr struct_type = nullptr;
+              auto sym = lookup(std::string(s.name.name));
+              if (sym)
+                struct_type = sym->type;
+
               for (auto &member : s.members) {
                 if (auto *fn =
                         std::get_if<FuncDeclNode>(&member.member->data)) {
-                  check_func_decl_body(*fn);
+                  check_func_decl_body(*fn, struct_type);
                 }
               }
             },
@@ -616,12 +629,32 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
 
 // Helper: resolve names inside a function declaration body.  Called from
 // visit_source after all declarations have been resolved.
-void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
+void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
+  if (!struct_type || struct_type->kind != TypeKind::Struct)
+    return;
+  auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  for (auto &field : info.fields) {
+    // Inject as a variable so the field name resolves in scope.
+    // Use declare() (not declare_local) to avoid shadowing errors
+    // against the outer struct scope.
+    current_scope->symbols.emplace(
+        field.name,
+        Symbol::variable(field.name, field.type, Span{}));
+  }
+}
+
+void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
+                                       const TypePtr &enclosing_struct) {
   push_scope(ScopeKind::Function);
 
   // Enter generics if present.
   if (fn.generic) {
     enter_generics(*fn.generic);
+  }
+
+  // For in-bound methods, inject the enclosing struct's fields into scope.
+  if (enclosing_struct) {
+    inject_struct_fields(enclosing_struct);
   }
 
   // Declare the receiver if present.
@@ -676,7 +709,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const RangeExprNode &n) { resolve_range_expr(n); },
           [&](const SpawnExprNode &n) { resolve_spawn_expr(n); },
           [&](const OrExprNode &n) { resolve_or_expr(n); },
-          [&](const FuncExprNode &n) { resolve_func_expr(n); },
+          [&](const FuncExprNode &n) { resolve_func_expr(n, node); },
           [&](const ImportExprNode &) { /* deferred to module support */ },
           [&](const BlockNode &n) {
             push_scope(ScopeKind::Block);
@@ -713,6 +746,37 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
     return;
   }
   record_symbol(parent, *sym);
+
+  // ── Capture detection for closures ─────────────────────────────────
+  // If this symbol is a local variable/parameter and we're inside a closure,
+  // check if it was declared outside the closure boundary.
+  if (sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Parameter) {
+    // Walk from current_scope outward looking for a closure boundary.
+    // If we find one before we find the symbol's declaration scope,
+    // the symbol is captured by that closure.
+    auto scope = current_scope;
+    while (scope) {
+      // If the symbol is declared in this scope, it's local — not captured.
+      if (scope->lookup_local(name))
+        break;
+      // If we cross a closure boundary, this variable is captured.
+      if (scope->is_closure) {
+        // Record the capture on the closure's pending list.
+        // (pending_closure_captures is set when resolving a FuncExprNode)
+        if (pending_closure_node_) {
+          auto &caps = node_captures[pending_closure_node_];
+          // Avoid duplicate captures.
+          bool already = false;
+          for (auto &c : caps)
+            if (c.name == name) { already = true; break; }
+          if (!already)
+            caps.push_back({name, sym->type});
+        }
+        break;
+      }
+      scope = scope->parent;
+    }
+  }
 }
 
 void Analyzer::resolve_block(const BlockNode &block) {
@@ -932,8 +996,14 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   pop_scope();
 }
 
-void Analyzer::resolve_func_expr(const FuncExprNode &node) {
+void Analyzer::resolve_func_expr(const FuncExprNode &node,
+                                  const Node &parent) {
   push_scope(ScopeKind::Function);
+  current_scope->is_closure = true;
+
+  // Push this closure onto the stack for capture tracking.
+  closure_node_stack_.push_back(&parent);
+  pending_closure_node_ = &parent;
 
   if (node.generic) {
     enter_generics(*node.generic);
@@ -948,6 +1018,12 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node) {
 
   auto &block = std::get<BlockNode>(node.body->data);
   resolve_block(block);
+
+  // Pop closure tracking state.
+  closure_node_stack_.pop_back();
+  pending_closure_node_ = closure_node_stack_.empty()
+                              ? nullptr
+                              : closure_node_stack_.back();
 
   pop_scope();
 }
@@ -1026,11 +1102,17 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 // Phase 4 — Type-check function/method bodies
 // ===========================================================================
 
-void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
+void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
+                                     const TypePtr &enclosing_struct) {
   push_scope(ScopeKind::Function);
 
   if (fn.generic)
     enter_generics(*fn.generic);
+
+  // For in-bound methods, inject the enclosing struct's fields into scope.
+  if (enclosing_struct) {
+    inject_struct_fields(enclosing_struct);
+  }
 
   if (fn.receiver) {
     auto recv_type = resolve_type(*fn.receiver->type);
@@ -1047,10 +1129,10 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
   auto body_type = check_block(block);
 
   // Check that the tail expression matches the return type (if non-Void).
-  // If the last statement is a return, it already checked its own values.
+  // If the last statement always returns (directly or through branches),
+  // the return values were already checked by check_return.
   if (!current_scope->return_types.empty() && !block.stmts.empty()) {
-    bool tail_is_return =
-        std::holds_alternative<ReturnNode>(block.stmts.back()->data);
+    bool tail_is_return = always_returns(*block.stmts.back());
     if (!tail_is_return) {
       auto &expected = current_scope->return_types;
       if (expected.size() == 1 && !is_error_type(body_type)) {
@@ -1136,7 +1218,7 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_or_expr(n);
           },
           [&](const FuncExprNode &n) -> TypePtr {
-            return check_func_expr(n);
+            return check_func_expr(n, node);
           },
           [&](const ImportExprNode &n) -> TypePtr {
             return check_import_expr(n);
@@ -1375,6 +1457,29 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
   // Comparison: == != > < >= <=
   case K::Equal:
   case K::NotEqual: {
+    // Type matching: if LHS is a union and RHS is a type name, this is a
+    // type assertion (e.g. `value == Int`). Returns Bool.
+    if (lhs->kind == TypeKind::Union) {
+      // Check if RHS is a type symbol.
+      if (auto *rhs_ident = std::get_if<IdentifierNode>(&node.rhs->data)) {
+        auto sym = lookup(std::string(rhs_ident->name));
+        if (sym && sym->kind == SymbolKind::Type) {
+          // Verify the type is one of the union alternatives.
+          auto &union_info = std::get<UnionTypeInfo>(lhs->detail);
+          bool found = false;
+          for (auto &alt : union_info.alternatives) {
+            if (types_equal(alt, rhs) || is_assignable_to(rhs, alt))
+              found = true;
+          }
+          if (!found) {
+            error(node.rhs->span,
+                  std::format("type {} is not an alternative of {}",
+                              type_to_string(rhs), type_to_string(lhs)));
+          }
+          return builtins.bool_type;
+        }
+      }
+    }
     if (!is_equatable(lhs)) {
       error(node.lhs->span,
             std::format("type {} does not support equality",
@@ -1631,6 +1736,15 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     }
   }
 
+  // Interface methods.
+  if (obj_type->kind == TypeKind::Interface) {
+    auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
+    for (auto &m : info.methods) {
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+    }
+  }
+
   if (obj_type->kind == TypeKind::Enum) {
     auto &info = std::get<EnumTypeInfo>(obj_type->detail);
     for (auto &v : info.variants) {
@@ -1642,8 +1756,24 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
   // Check built-in methods for the type kind.
   auto methods = builtin_methods(obj_type->kind, builtins);
   for (auto &m : methods) {
-    if (m.name == field_name)
-      return m.signature ? m.signature : builtins.error_type;
+    if (m.name == field_name) {
+      if (!m.signature) return builtins.error_type;
+      // For Map and Array methods, substitute concrete type params.
+      if (obj_type->kind == TypeKind::Map && has_type_params(m.signature)) {
+        auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
+        std::unordered_map<uint32_t, TypePtr> bindings;
+        bindings[9991] = map_info.key;   // K
+        bindings[9992] = map_info.value; // V
+        return substitute(m.signature, bindings);
+      }
+      if (obj_type->kind == TypeKind::Array && has_type_params(m.signature)) {
+        auto &arr_info = std::get<ArrayTypeInfo>(obj_type->detail);
+        std::unordered_map<uint32_t, TypePtr> bindings;
+        bindings[9990] = arr_info.element; // T
+        return substitute(m.signature, bindings);
+      }
+      return m.signature;
+    }
   }
 
   error(node.field.span,
@@ -1656,13 +1786,58 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
   auto cond_type = check_expr(*node.condition);
   expect_bool(node.condition->span, cond_type);
 
+  // Detect type-matching pattern: `if value == TypeName`
+  // to narrow the variable in the then-block.
+  std::string narrowed_var;
+  TypePtr narrowed_type = nullptr;
+  TypePtr else_narrowed_type = nullptr;
+
+  if (auto *binop = std::get_if<BinaryExprNode>(&node.condition->data)) {
+    if (binop->op == Token::Kind::Equal) {
+      if (auto *lhs_id = std::get_if<IdentifierNode>(&binop->lhs->data)) {
+        if (auto *rhs_id = std::get_if<IdentifierNode>(&binop->rhs->data)) {
+          auto sym = lookup(std::string(rhs_id->name));
+          if (sym && sym->kind == SymbolKind::Type) {
+            auto lhs_sym = lookup(std::string(lhs_id->name));
+            if (lhs_sym && lhs_sym->type &&
+                lhs_sym->type->kind == TypeKind::Union) {
+              narrowed_var = std::string(lhs_id->name);
+              narrowed_type = sym->type;
+              // Compute the else narrowed type (union minus matched type).
+              auto &info = std::get<UnionTypeInfo>(lhs_sym->type->detail);
+              std::vector<TypePtr> remaining;
+              for (auto &alt : info.alternatives) {
+                if (!types_equal(alt, sym->type))
+                  remaining.push_back(alt);
+              }
+              if (remaining.size() == 1)
+                else_narrowed_type = remaining[0];
+              else if (remaining.size() > 1)
+                else_narrowed_type = make_union_type(std::move(remaining));
+            }
+          }
+        }
+      }
+    }
+  }
+
   push_scope(ScopeKind::Block);
+  if (!narrowed_var.empty() && narrowed_type) {
+    // Narrow the variable in the then-scope.
+    current_scope->symbols[narrowed_var] =
+        Symbol::variable(narrowed_var, narrowed_type, node.then_block->span);
+  }
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   auto then_type = check_block(then_block);
   pop_scope();
 
   if (node.else_block) {
     push_scope(ScopeKind::Block);
+    if (!narrowed_var.empty() && else_narrowed_type) {
+      current_scope->symbols[narrowed_var] =
+          Symbol::variable(narrowed_var, else_narrowed_type,
+                           (*node.else_block)->span);
+    }
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     auto else_type = check_block(else_block);
     pop_scope();
@@ -1676,17 +1851,61 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   auto subject_type = check_expr(*node.subject);
   TypePtr result_type = nullptr;
 
+  // Detect if this is a type-matching switch (subject is a union and
+  // patterns are type names).
+  bool is_type_match = false;
+  std::string subject_var;
+  if (subject_type && subject_type->kind == TypeKind::Union) {
+    if (auto *id = std::get_if<IdentifierNode>(&node.subject->data)) {
+      subject_var = std::string(id->name);
+    }
+    // Check if the first arm's pattern is a type name.
+    if (!node.arms.empty()) {
+      if (auto *pid = std::get_if<IdentifierNode>(&node.arms[0].pattern->data)) {
+        auto sym = lookup(std::string(pid->name));
+        if (sym && sym->kind == SymbolKind::Type)
+          is_type_match = true;
+      }
+    }
+  }
+
   for (auto &arm : node.arms) {
     auto pattern_type = check_expr(*arm.pattern);
-    // Value matching: pattern must be same type as subject.
-    if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
-      expect_assignable(arm.pattern->span, subject_type, pattern_type,
-                        "case pattern");
+
+    if (is_type_match) {
+      // Type matching: verify the pattern type is an alternative of the union.
+      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+        auto &info = std::get<UnionTypeInfo>(subject_type->detail);
+        bool found = false;
+        for (auto &alt : info.alternatives) {
+          if (types_equal(alt, pattern_type) ||
+              is_assignable_to(pattern_type, alt))
+            found = true;
+        }
+        if (!found) {
+          error(arm.pattern->span,
+                std::format("type {} is not an alternative of {}",
+                            type_to_string(pattern_type),
+                            type_to_string(subject_type)));
+        }
+      }
+    } else {
+      // Value matching: pattern must be same type as subject.
+      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+        expect_assignable(arm.pattern->span, subject_type, pattern_type,
+                          "case pattern");
+      }
     }
 
     TypePtr arm_type;
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
+      // For type matching, narrow the subject variable in the arm scope.
+      if (is_type_match && !subject_var.empty() &&
+          !is_error_type(pattern_type)) {
+        current_scope->symbols[subject_var] =
+            Symbol::variable(subject_var, pattern_type, arm.pattern->span);
+      }
       arm_type = check_block(*block);
       pop_scope();
     } else {
@@ -1846,9 +2065,43 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node) {
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   auto expr_type = check_expr(*node.expr);
 
-  // The expression should be an impure type (contains Error).
-  // The or-clause strips the Error from the union.
+  if (is_error_type(expr_type)) {
+    // Still check the fallback block for internal errors.
+    push_scope(ScopeKind::Block);
+    if (node.pipe) {
+      current_scope->symbols.emplace(
+          std::string(node.pipe->name),
+          Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
+                           node.pipe->span));
+    }
+    auto &block = std::get<BlockNode>(node.fallback->data);
+    check_block(block);
+    pop_scope();
+    return builtins.error_type;
+  }
 
+  // Check that the expression is an impure type (contains Error).
+  bool has_error = false;
+  if (expr_type->kind == TypeKind::Union) {
+    auto &info = std::get<UnionTypeInfo>(expr_type->detail);
+    for (auto &alt : info.alternatives) {
+      if (alt->kind == TypeKind::Interface &&
+          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
+        has_error = true;
+        break;
+      }
+      // Also check for concrete types that satisfy Error (e.g. Missing).
+      if (satisfies_interface(alt, builtins.error_iface)) {
+        has_error = true;
+        break;
+      }
+    }
+  }
+  if (!has_error && expr_type->kind != TypeKind::Union) {
+    // Non-union, non-error type — or is a no-op. Allow but pass through.
+  }
+
+  // The or-clause strips the Error from the union.
   push_scope(ScopeKind::Block);
 
   if (node.pipe) {
@@ -1863,30 +2116,44 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
 
   pop_scope();
 
-  if (is_error_type(expr_type))
-    return builtins.error_type;
-
   // Strip Error/Missing from the union to get the purified type.
   if (expr_type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(expr_type->detail);
     std::vector<TypePtr> purified;
     for (auto &alt : info.alternatives) {
-      if (alt->kind != TypeKind::Interface ||
-          std::get<InterfaceTypeInfo>(alt->detail).name != "Error") {
-        purified.push_back(alt);
+      // Strip the Error interface.
+      if (alt->kind == TypeKind::Interface &&
+          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
+        continue;
       }
+      // Strip concrete types that satisfy Error (e.g. Missing).
+      if (alt->kind == TypeKind::Struct &&
+          satisfies_interface(alt, builtins.error_iface)) {
+        continue;
+      }
+      purified.push_back(alt);
     }
     if (purified.empty())
-      return fallback_type;
-    if (purified.size() == 1)
+      return fallback_type ? fallback_type : builtins.void_type;
+    if (purified.size() == 1) {
+      // Validate fallback type matches the purified type (if non-empty block).
+      if (fallback_type && !is_error_type(fallback_type) &&
+          !types_equal(fallback_type, builtins.void_type) &&
+          !block.stmts.empty()) {
+        expect_assignable(node.fallback->span, purified[0], fallback_type,
+                          "or fallback");
+      }
       return purified[0];
-    return make_union_type(std::move(purified));
+    }
+    TypePtr result = make_union_type(std::move(purified));
+    return result;
   }
 
   return expr_type;
 }
 
-TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
+TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
+                                  const Node &parent) {
   push_scope(ScopeKind::Function);
 
   if (node.generic)
@@ -1912,11 +2179,10 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
   auto &block = std::get<BlockNode>(node.body->data);
   auto body_type = check_block(block);
 
-  // Check tail expression matches return type (unless tail is a return).
+  // Check tail expression matches return type (unless tail always returns).
   auto &fn_info = std::get<FuncTypeInfo>(fn_type->detail);
   bool tail_is_return =
-      !block.stmts.empty() &&
-      std::holds_alternative<ReturnNode>(block.stmts.back()->data);
+      !block.stmts.empty() && always_returns(*block.stmts.back());
   if (!tail_is_return && fn_info.returns.size() == 1 &&
       !is_error_type(body_type)) {
     if (!types_equal(fn_info.returns[0], builtins.void_type)) {
@@ -1926,6 +2192,20 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node) {
   }
 
   pop_scope();
+
+  // Update capture types now that type checking is complete.
+  // During resolve phase, capture types may have been nullptr.
+  auto cap_it = node_captures.find(&parent);
+  if (cap_it != node_captures.end()) {
+    for (auto &cap : cap_it->second) {
+      if (!cap.type) {
+        auto sym = lookup(cap.name);
+        if (sym)
+          cap.type = sym->type;
+      }
+    }
+  }
+
   return fn_type;
 }
 
@@ -1956,8 +2236,13 @@ void Analyzer::check_stmt(const Node &node) {
 
 void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
   TypePtr declared_type = nullptr;
-  if (var.type)
+  if (var.type) {
     declared_type = resolve_type(**var.type);
+    // Record the resolved type for the type annotation node so codegen
+    // can look it up after analysis (when scopes are no longer available).
+    if (declared_type)
+      record_type(**var.type, declared_type);
+  }
 
   TypePtr final_type = declared_type;
 
@@ -1984,6 +2269,42 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   auto rhs_type = check_expr(*decl.value);
+
+  // ── Multi-return unpacking ───────────────────────────────────────────
+  // If there are multiple targets and the RHS is a call to a function with
+  // multiple returns, assign each target the corresponding return type.
+  if (decl.targets.identifiers.size() > 1) {
+    if (auto *call = std::get_if<CallExprNode>(&decl.value->data)) {
+      auto callee_type = check_expr(*call->callee);
+      if (!is_error_type(callee_type) &&
+          callee_type->kind == TypeKind::Func) {
+        auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
+        if (fn_info.returns.size() > 1) {
+          if (decl.targets.identifiers.size() != fn_info.returns.size()) {
+            error(decl.span,
+                  std::format("expected {} receiver(s), got {}",
+                              fn_info.returns.size(),
+                              decl.targets.identifiers.size()));
+          }
+          size_t count = std::min(decl.targets.identifiers.size(),
+                                  fn_info.returns.size());
+          for (size_t i = 0; i < count; ++i) {
+            std::string name(decl.targets.identifiers[i].name);
+            auto sym_it = current_scope->symbols.find(name);
+            if (sym_it != current_scope->symbols.end()) {
+              sym_it->second.type = fn_info.returns[i];
+            } else {
+              current_scope->symbols.emplace(
+                  name, Symbol::variable(name, fn_info.returns[i],
+                                         decl.targets.identifiers[i].span));
+            }
+
+          }
+          return;
+        }
+      }
+    }
+  }
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
@@ -2116,6 +2437,48 @@ TypePtr Analyzer::check_block(const BlockNode &block) {
     last_type = check_expr(*stmt);
   }
   return last_type;
+}
+
+// ---------------------------------------------------------------------------
+// always_returns — true if every control-flow path through the node ends
+// with a `return` statement.
+// ---------------------------------------------------------------------------
+
+bool Analyzer::always_returns(const Node &node) const {
+  return std::visit(
+      overloaded{
+          [](const ReturnNode &) -> bool { return true; },
+
+          [&](const BlockNode &b) -> bool {
+            // A block always returns if its last statement always returns.
+            if (b.stmts.empty())
+              return false;
+            return always_returns(*b.stmts.back());
+          },
+
+          [&](const IfExprNode &n) -> bool {
+            // Both then and else must exist and both must always return.
+            if (!n.else_block)
+              return false;
+            bool then_ret = always_returns(*n.then_block);
+            bool else_ret = always_returns(**n.else_block);
+            return then_ret && else_ret;
+          },
+
+          [&](const SwitchExprNode &n) -> bool {
+            // Every arm must always return, and there must be an else.
+            if (!n.else_body)
+              return false;
+            for (auto &arm : n.arms) {
+              if (!always_returns(*arm.body))
+                return false;
+            }
+            return always_returns(**n.else_body);
+          },
+
+          [](const auto &) -> bool { return false; },
+      },
+      node.data);
 }
 
 // ===========================================================================

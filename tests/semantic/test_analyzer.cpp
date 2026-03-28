@@ -21,7 +21,7 @@ struct AnalysisResult {
 
   static AnalysisResult from(const std::string &source) {
     AnalysisResult r;
-    auto file = File::from_source("test.mc", source);
+    auto file = File::from_source("test.sg", source);
     r.fileset.add_file(std::move(file));
 
     Parser parser(r.fileset);
@@ -80,7 +80,7 @@ TEST(Analyzer, DeclareAndLookup) {
 
 TEST(Analyzer, DuplicateDeclarationReportsError) {
   FileSet fs;
-  fs.add_file(File::from_source("test.mc", ""));
+  fs.add_file(File::from_source("test.sg", ""));
   Analyzer a(fs);
 
   auto sym = Symbol::variable("x", make_int_type(), Span{0, 0});
@@ -119,7 +119,7 @@ TEST(Analyzer, FreshTypeParamIds) {
 
 TEST(Analyzer, ErrorReporting) {
   FileSet fs;
-  fs.add_file(File::from_source("test.mc", "hello"));
+  fs.add_file(File::from_source("test.sg", "hello"));
   Analyzer a(fs);
 
   a.error(Span{0, 5}, "test error");
@@ -129,7 +129,7 @@ TEST(Analyzer, ErrorReporting) {
 
 TEST(Analyzer, TypeErrorFormatting) {
   FileSet fs;
-  fs.add_file(File::from_source("test.mc", "x"));
+  fs.add_file(File::from_source("test.sg", "x"));
   Analyzer a(fs);
 
   a.type_error(Span{0, 1}, make_int_type(), make_string_type(), "assignment");
@@ -144,7 +144,7 @@ TEST(Analyzer, TypeErrorFormatting) {
 
 TEST(Analyzer, DeclareLocalSuccess) {
   FileSet fs;
-  fs.add_file(File::from_source("test.mc", ""));
+  fs.add_file(File::from_source("test.sg", ""));
   Analyzer a(fs);
 
   a.push_scope(ScopeKind::Function);
@@ -156,7 +156,7 @@ TEST(Analyzer, DeclareLocalSuccess) {
 
 TEST(Analyzer, DeclareLocalRedeclaration) {
   FileSet fs;
-  fs.add_file(File::from_source("test.mc", ""));
+  fs.add_file(File::from_source("test.sg", ""));
   Analyzer a(fs);
 
   a.push_scope(ScopeKind::Function);
@@ -169,7 +169,7 @@ TEST(Analyzer, DeclareLocalRedeclaration) {
 
 TEST(Analyzer, DeclareLocalShadowingError) {
   FileSet fs;
-  fs.add_file(File::from_source("test.mc", ""));
+  fs.add_file(File::from_source("test.sg", ""));
   Analyzer a(fs);
 
   a.push_scope(ScopeKind::Function);

@@ -21,7 +21,7 @@ struct TC {
 
   static TC from(const std::string &source) {
     TC r;
-    r.fileset.add_file(File::from_source("test.mc", source));
+    r.fileset.add_file(File::from_source("test.sg", source));
     Parser parser(r.fileset);
     r.ast = parser.parse();
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
@@ -639,6 +639,378 @@ TEST(TypeCheck, CharNotDirectlyAssignableFromInt) {
 TEST(TypeCheck, IntCharConversion) {
   auto r = TC::from("fn f() {\n  x := 65\n  x.Char()\n}");
   EXPECT_TRUE(r.ok()) << "Int should have a .Char() method";
+}
+
+// ===========================================================================
+// In-bound struct methods — field access by name
+// ===========================================================================
+
+TEST(TypeCheck, InBoundMethodAccessesField) {
+  auto r = TC::from(
+      "struct Dog {\n"
+      "  name String\n"
+      "  pub fn Speak() String { name }\n"
+      "}");
+  EXPECT_TRUE(r.ok()) << "In-bound method should access struct fields by name";
+}
+
+TEST(TypeCheck, InBoundMethodAccessesMultipleFields) {
+  auto r = TC::from(
+      "struct Point {\n"
+      "  x, y Int\n"
+      "  pub fn Sum() Int { x + y }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InBoundMethodWithParams) {
+  auto r = TC::from(
+      "struct Counter {\n"
+      "  n Int\n"
+      "  pub fn Add(x Int) Int { n + x }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InBoundMethodFieldTypeChecked) {
+  // Using a field in an incompatible way should still produce a type error.
+  auto r = TC::from(
+      "struct Foo {\n"
+      "  name String\n"
+      "  pub fn Bad() Int { name }\n"
+      "}");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("return type"));
+}
+
+TEST(TypeCheck, InBoundMethodUndefinedFieldStillErrors) {
+  // Accessing a name that isn't a field should still error.
+  auto r = TC::from(
+      "struct Foo {\n"
+      "  x Int\n"
+      "  pub fn Bad() Int { unknown }\n"
+      "}");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("undefined"));
+}
+
+TEST(TypeCheck, InBoundMethodDoesNotLeakFields) {
+  // Fields should not be visible outside the struct's methods.
+  auto r = TC::from(
+      "struct Foo {\n"
+      "  x Int\n"
+      "  pub fn Get() Int { x }\n"
+      "}\n"
+      "fn f() Int { x }");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("undefined"));
+}
+
+// ===========================================================================
+// Interface method resolution
+// ===========================================================================
+
+TEST(TypeCheck, InterfaceMethodCall) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "fn f(s Speaker) String { s.Speak() }");
+  EXPECT_TRUE(r.ok()) << "Should resolve method Speak() on interface Speaker";
+}
+
+TEST(TypeCheck, InterfaceMethodCallReturnType) {
+  // The return type of the interface method should be used for the expression.
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "fn f(s Speaker) String { s.Speak() }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InterfaceMethodUnknown) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "fn f(s Speaker) Void { s.Bark() }");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("no member"));
+}
+
+TEST(TypeCheck, InterfaceAssignConcreteType) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Dog { name String }\n"
+      "fn (d Dog) Speak() String { d.name }\n"
+      "fn f() Void {\n"
+      "  d := Dog{name: \"Rex\"}\n"
+      "  s Speaker = d\n"
+      "}");
+  EXPECT_TRUE(r.ok()) << "Concrete struct satisfying interface should be assignable";
+}
+
+TEST(TypeCheck, InterfaceAssignNonConforming) {
+  auto r = TC::from(
+      "interface Speaker { Speak() String }\n"
+      "struct Cat { name String }\n"
+      "fn f() Void {\n"
+      "  c := Cat{name: \"Mittens\"}\n"
+      "  s Speaker = c\n"
+      "}");
+  EXPECT_FALSE(r.ok()) << "Cat does not implement Speak(), should error";
+}
+
+TEST(TypeCheck, InterfaceMultipleMethods) {
+  auto r = TC::from(
+      "interface ReadWriter {\n"
+      "  Read() String\n"
+      "  Write(s String) Void\n"
+      "}\n"
+      "fn f(rw ReadWriter) Void {\n"
+      "  x := rw.Read()\n"
+      "  rw.Write(x)\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, InterfaceMethodCallInExpression) {
+  auto r = TC::from(
+      "interface Sizer { Size() Int }\n"
+      "fn f(s Sizer) Int { s.Size() + 1 }");
+  EXPECT_TRUE(r.ok());
+}
+
+// ===========================================================================
+// Return inside branching constructs (if/else, switch)
+// ===========================================================================
+
+TEST(TypeCheck, ReturnInIfElseBranches) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  if x > 0 {\n"
+      "    return 1\n"
+      "  } else {\n"
+      "    return -1\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "if/else where both branches return should satisfy return type";
+}
+
+TEST(TypeCheck, ReturnInSwitchAllArms) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      return 100\n"
+      "    }\n"
+      "    case 1: {\n"
+      "      return 200\n"
+      "    }\n"
+      "    else: {\n"
+      "      return 300\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "switch where all arms return should satisfy return type";
+}
+
+TEST(TypeCheck, ReturnInNestedIfInsideSwitch) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      if x == 0 {\n"
+      "        return 10\n"
+      "      } else {\n"
+      "        return 20\n"
+      "      }\n"
+      "    }\n"
+      "    else: {\n"
+      "      return 30\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "nested if/else inside switch arms should be recognized";
+}
+
+TEST(TypeCheck, ReturnInIfWithoutElseStillErrors) {
+  // If there's no else, the function might not return.
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  if x > 0 {\n"
+      "    return 1\n"
+      "  }\n"
+      "}");
+  EXPECT_FALSE(r.ok())
+      << "if without else doesn't guarantee a return";
+}
+
+TEST(TypeCheck, ReturnInSwitchWithoutElseStillErrors) {
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      return 100\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_FALSE(r.ok())
+      << "switch without else doesn't guarantee a return";
+}
+
+TEST(TypeCheck, ReturnInSwitchPartialArmStillErrors) {
+  // One arm doesn't return.
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  switch x {\n"
+      "    case 0: {\n"
+      "      return 100\n"
+      "    }\n"
+      "    case 1: {\n"
+      "      intrinsic_print(\"hi\")\n"
+      "    }\n"
+      "    else: {\n"
+      "      return 300\n"
+      "    }\n"
+      "  }\n"
+      "}");
+  EXPECT_FALSE(r.ok())
+      << "switch with a non-returning arm doesn't guarantee a return";
+}
+
+TEST(TypeCheck, MixedReturnAndTailValue) {
+  // Some branches return, last one uses tail expression — should still work.
+  auto r = TC::from(
+      "fn f(x Int) Int {\n"
+      "  if x > 0 {\n"
+      "    return 1\n"
+      "  }\n"
+      "  0\n"
+      "}");
+  EXPECT_TRUE(r.ok())
+      << "early return + tail value should be fine";
+}
+
+// ===========================================================================
+// Union types and or-clause
+// ===========================================================================
+
+TEST(TypeCheck, UnionTypeVarDecl) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | Error = 0\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, DivisionOrExprStripsToInt) {
+  // Division returns Int | Error, or should strip to Int.
+  auto r = TC::from(
+      "fn f() Int {\n"
+      "  10 / 2 or { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprWithPipeVariable) {
+  auto r = TC::from(
+      "fn f() Int {\n"
+      "  10 / 2 or |err| { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprEmptyBlock) {
+  // Empty or block returns zero value of the type.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 10 / 2 or {}\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprOnNonUnionPassesThrough) {
+  // Using or on a non-union type should not error (it's a no-op).
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 42\n"
+      "  x or { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, PureUnionType) {
+  // Bool | Int is a pure union (no Error).
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Bool | Int = 0\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, UnionTypeAssignString) {
+  // Assigning a String to an Int | String union should work.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String = \"hello\"\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, OrExprStripsManyToUnion) {
+  // Int | String | Error — or should strip Error, leaving Int | String.
+  // We can't easily construct this without a function that returns it,
+  // but we can verify the general analysis doesn't crash.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 10 / 2\n"
+      "  y := x or { 0 }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+// ===========================================================================
+// Type matching on unions
+// ===========================================================================
+
+TEST(TypeCheck, IfTypeMatchNarrows) {
+  // Type matching in if should narrow the variable.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | Error = 0\n"
+      "  if x == Int {\n"
+      "    y := x + 1\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, SwitchTypeMatch) {
+  // Type matching in switch on a union.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String = 0\n"
+      "  switch x {\n"
+      "    case Int: { 0 }\n"
+      "    case String: { 1 }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IfTypeMatchWithElse) {
+  // Type matching with else should narrow the else branch too.
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String = 0\n"
+      "  if x == Int {\n"
+      "    y := x + 1\n"
+      "  } else {\n"
+      "    z := x\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
 }
 
 } // namespace mc

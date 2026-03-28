@@ -57,6 +57,9 @@ struct Scope : public std::enable_shared_from_this<Scope> {
   // For Loop scopes: the expected break-value type (if any).
   std::optional<TypePtr> break_type;
 
+  // True if this Function scope belongs to a closure (FuncExprNode).
+  bool is_closure = false;
+
   // ── Construction ─────────────────────────────────────────────────────
 
   explicit Scope(ScopeKind k, Ptr parent = nullptr);

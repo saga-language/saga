@@ -21,7 +21,7 @@ struct GR {
 
   static GR from(const std::string &source) {
     GR r;
-    r.fileset.add_file(File::from_source("test.mc", source));
+    r.fileset.add_file(File::from_source("test.sg", source));
     Parser parser(r.fileset);
     r.ast = parser.parse();
     r.analyzer = std::make_unique<Analyzer>(r.fileset);

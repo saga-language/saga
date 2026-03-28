@@ -26,5 +26,8 @@ struct File {
 
   static std::unique_ptr<File> from_source(std::string filename,
                                            std::string source);
+
+  /// Read a file from disk.  Returns nullptr if the file cannot be opened.
+  static std::unique_ptr<File> from_path(const std::string &path);
 };
 } // namespace mc

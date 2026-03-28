@@ -144,44 +144,53 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
         {"Equals", make_func_type({t.string_type}, {t.bool_type}), true});
     break;
 
-  case TypeKind::Array:
-    // Generic methods — T is the element type, resolved during type-checking.
+  case TypeKind::Array: {
+    // Array methods use a type-param placeholder for the element type.
+    // The analyzer's type-checker resolves the concrete element type at
+    // each call site; these signatures just need the right arity.
+    auto tp = make_type_param(9990, "T");
     methods.push_back(
-        {"At", make_func_type({t.int_type}, {}), true}); // return type TBD
+        {"At", make_func_type({t.int_type}, {tp}), true});
     methods.push_back(
-        {"Find", make_func_type({}, {}), true}); // generic signature TBD
+        {"Find", make_func_type({tp}, {make_union_type({t.int_type, t.error_iface})}), true});
     methods.push_back(
-        {"Insert", make_func_type({}, {t.void_type}), true});
+        {"Insert", make_func_type({tp, t.int_type}, {t.void_type}), true});
     methods.push_back(
-        {"Push", make_func_type({}, {}), true});
+        {"Push", make_func_type({tp}, {tp}), true});
     methods.push_back(
-        {"Pop", make_func_type({}, {}), true});
+        {"Pop", make_func_type({}, {tp}), true});
     methods.push_back(
-        {"Set", make_func_type({}, {t.void_type}), true});
+        {"Set", make_func_type({t.int_type, tp}, {t.void_type}), true});
     methods.push_back(
         {"Size", make_func_type({}, {t.int_type}), true});
     // Universal methods
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
+  }
 
-  case TypeKind::Map:
+  case TypeKind::Map: {
+    // Map methods use type-param placeholders for key (K) and value (V).
+    // The analyzer's type-checker resolves concrete types at call sites.
+    auto kp = make_type_param(9991, "K");
+    auto vp = make_type_param(9992, "V");
     methods.push_back(
-        {"At", make_func_type({}, {}), true});       // generic
+        {"At", make_func_type({kp}, {vp}), true});
     methods.push_back(
-        {"Key?", make_func_type({}, {t.bool_type}), true});
+        {"Key?", make_func_type({kp}, {t.bool_type}), true});
     methods.push_back(
-        {"Keys", make_func_type({}, {}), true});     // generic
+        {"Keys", make_func_type({}, {make_array_type(kp)}), true});
     methods.push_back(
-        {"Remove", make_func_type({}, {t.void_type}), true});
+        {"Remove", make_func_type({kp}, {t.void_type}), true});
     methods.push_back(
-        {"Set", make_func_type({}, {t.void_type}), true});
+        {"Set", make_func_type({kp, vp}, {t.void_type}), true});
     methods.push_back(
         {"Size", make_func_type({}, {t.int_type}), true});
     // Universal methods
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
+  }
 
   case TypeKind::Int:
     // Universal methods
@@ -313,6 +322,11 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       Symbol::builtin("true", SymbolKind::Constant, types.bool_type));
   global_scope->declare(
       Symbol::builtin("false", SymbolKind::Constant, types.bool_type));
+
+  // -- Built-in intrinsic functions ----------------------------------------
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_print", SymbolKind::Function,
+      make_func_type({types.string_type}, {types.void_type})));
 }
 
 } // namespace mc

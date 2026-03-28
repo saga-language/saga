@@ -4,7 +4,9 @@
 #include "frontend/file.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 
 namespace mc {
@@ -22,5 +24,13 @@ Position File::position_at(std::size_t offset) const {
 std::unique_ptr<File> File::from_source(std::string filename,
                                         std::string source) {
   return std::make_unique<File>(std::move(filename), std::move(source));
+}
+std::unique_ptr<File> File::from_path(const std::string &path) {
+  std::ifstream in(path);
+  if (!in.is_open())
+    return nullptr;
+  std::ostringstream buf;
+  buf << in.rdbuf();
+  return from_source(path, buf.str());
 }
 } // namespace mc
