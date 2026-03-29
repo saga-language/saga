@@ -1,5 +1,6 @@
 /* Executor, actor, and deque tests for the Saga runtime. */
 
+#include "runtime_test_types.h"
 #include <gtest/gtest.h>
 #include <csetjmp>
 #include <cstring>
@@ -7,80 +8,6 @@
 #include <vector>
 #include <thread>
 #include <chrono>
-#include <pthread.h>
-
-extern "C" {
-
-/* ── Types from runtime.c ─────────────────────────────────────────────── */
-
-typedef struct {
-  char    *base;
-  int64_t  offset;
-  int64_t  committed;
-  int64_t  reserved;
-  int64_t  max_limit;
-} mc_arena;
-
-typedef struct mc_channel mc_channel;
-
-typedef struct mc_actor {
-  int64_t          refcount;
-  void            *result;
-  int64_t          result_size;
-  int64_t          status;
-  int64_t          cancelled;
-  pthread_mutex_t  lock;
-  pthread_cond_t   done_cond;
-  mc_arena        *arena;
-  void           (*entry)(struct mc_actor *);
-  void            *closure_data;
-  int64_t          closure_size;
-  int64_t          reduction_count;
-  int64_t          last_cycle;
-  mc_channel      *channel;
-  jmp_buf          trap;
-} mc_actor;
-
-enum {
-  MC_ACTOR_PENDING   = 0,
-  MC_ACTOR_RUNNING   = 1,
-  MC_ACTOR_COMPLETED = 2,
-  MC_ACTOR_CANCELLED = 3,
-  MC_ACTOR_KILLED    = 4,
-  MC_ACTOR_ZOMBIE    = 5
-};
-
-typedef struct {
-  mc_actor      **buffer;
-  int64_t         head;
-  int64_t         tail;
-  int64_t         cap;
-  pthread_mutex_t lock;
-} mc_deque;
-
-/* ── Functions under test ─────────────────────────────────────────────── */
-
-mc_arena *mc_arena_new(int64_t max_limit);
-void     *mc_arena_alloc(mc_arena *a, int64_t size);
-void      mc_arena_destroy(mc_arena *a);
-
-mc_actor *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
-                       int64_t closure_size, int64_t arena_max);
-void      mc_actor_retain(mc_actor *a);
-void      mc_actor_release(mc_actor *a);
-
-void      mc_deque_push(mc_deque *d, mc_actor *actor);
-mc_actor *mc_deque_pop(mc_deque *d);
-mc_actor *mc_deque_steal(mc_deque *d);
-void      mc_deque_drain(mc_deque *src, mc_deque *dst);
-
-void      mc_executor_init(int64_t num_workers);
-mc_actor *mc_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
-                            int64_t closure_size, int64_t arena_max);
-void      mc_executor_shutdown(void);
-void      mc_executor_replace_worker(int64_t worker_id);
-
-} // extern "C"
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 

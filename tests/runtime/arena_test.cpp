@@ -1,49 +1,9 @@
-/* Arena allocator tests for the Saga runtime.
- *
- * The runtime is compiled as C, so we pull it in via extern "C".
- */
+/* Arena allocator tests for the Saga runtime. */
 
+#include "runtime_test_types.h"
 #include <gtest/gtest.h>
 #include <cstring>
 #include <vector>
-
-extern "C" {
-
-/* ── Types needed from runtime.c ──────────────────────────────────────── */
-
-typedef struct {
-  const char *data;
-  int64_t len;
-  int64_t refcount;
-} mc_string;
-
-typedef struct {
-  void *data;
-  int64_t len;
-  int64_t cap;
-  int64_t elem_size;
-  int64_t refcount;
-} mc_array;
-
-typedef struct {
-  char    *base;
-  int64_t  offset;
-  int64_t  committed;
-  int64_t  reserved;
-  int64_t  max_limit;
-} mc_arena;
-
-/* ── Functions under test ─────────────────────────────────────────────── */
-
-mc_arena *mc_arena_new(int64_t max_limit);
-void     *mc_arena_alloc(mc_arena *a, int64_t size);
-void      mc_arena_destroy(mc_arena *a);
-
-mc_string *mc_arena_alloc_string(mc_arena *a, const char *buf, int64_t len);
-mc_array  *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
-                                int64_t initial_cap);
-
-} // extern "C"
 
 // ─────────────────────────────────────────────────────────────────────────
 // Basic lifecycle

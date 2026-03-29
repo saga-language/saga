@@ -1,0 +1,345 @@
+/* Task & Context API tests for the Saga runtime. */
+
+#include "runtime_test_types.h"
+#include <gtest/gtest.h>
+#include <cstring>
+#include <thread>
+#include <chrono>
+#include <vector>
+
+/* ── Helper: wait for actor under lock ─────────────────────────────────── */
+static void wait_for_actor(mc_actor *a) {
+  pthread_mutex_lock(&a->lock);
+  while (a->status < MC_ACTOR_COMPLETED)
+    pthread_cond_wait(&a->done_cond, &a->lock);
+  pthread_mutex_unlock(&a->lock);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* Fixture: starts/stops the executor per test.                           */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+class TaskContextTest : public ::testing::Test {
+protected:
+  void SetUp() override    { mc_executor_init(2); }
+  void TearDown() override { mc_executor_shutdown(); }
+};
+
+/* ── Actor entries used by tests ───────────────────────────────────────── */
+
+static void noop_entry(mc_actor *) {}
+
+/* Exit with an int64_t value allocated in the arena. */
+static void exit_with_value_entry(mc_actor *a) {
+  int64_t *val = (int64_t *)mc_arena_alloc(a->arena, sizeof(int64_t));
+  *val = 42;
+  mc_context_exit(a, val, sizeof(int64_t));
+  /* mc_context_exit does not return. */
+}
+
+/* Exit with a larger struct. */
+struct Payload { int64_t x; int64_t y; };
+
+static void exit_with_struct_entry(mc_actor *a) {
+  Payload *p = (Payload *)mc_arena_alloc(a->arena, sizeof(Payload));
+  p->x = 100;
+  p->y = 200;
+  mc_context_exit(a, p, sizeof(Payload));
+}
+
+/* Poll cancelled and exit cleanly when asked. */
+static void poll_cancel_entry(mc_actor *a) {
+  while (!mc_context_cancelled(a)) {
+    /* spin */
+  }
+  /* Return normally — COMPLETED. */
+}
+
+/* Send several values through the channel, then exit. */
+static void channel_sender_entry(mc_actor *a) {
+  for (int64_t i = 1; i <= 5; i++)
+    mc_context_send(a, &i);
+  /* Return normally — worker will close the channel. */
+}
+
+/* Send values and exit with a result. */
+static void send_then_exit_entry(mc_actor *a) {
+  for (int64_t i = 10; i <= 12; i++)
+    mc_context_send(a, &i);
+
+  int64_t *val = (int64_t *)mc_arena_alloc(a->arena, sizeof(int64_t));
+  *val = 99;
+  mc_context_exit(a, val, sizeof(int64_t));
+}
+
+/* Busy-loop forever (used to test term). */
+static void infinite_loop_entry(mc_actor *a) {
+  while (1) {
+    if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == MC_ACTOR_KILLED)
+      longjmp(a->trap, 1);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* Task API tests                                                         */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+TEST_F(TaskContextTest, WaitReturnsResult) {
+  mc_actor *a = mc_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  int64_t status;
+  void *result = mc_task_wait(a, &status);
+
+  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(*(int64_t *)result, 42);
+  EXPECT_EQ(a->arena, nullptr); /* arena destroyed */
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, WaitReturnsStruct) {
+  mc_actor *a = mc_executor_spawn(exit_with_struct_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  int64_t status;
+  void *result = mc_task_wait(a, &status);
+
+  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  ASSERT_NE(result, nullptr);
+  Payload *p = (Payload *)result;
+  EXPECT_EQ(p->x, 100);
+  EXPECT_EQ(p->y, 200);
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, WaitNoopReturnsNull) {
+  mc_actor *a = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  int64_t status;
+  void *result = mc_task_wait(a, &status);
+
+  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(result, nullptr); /* no context_exit was called */
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, WaitNullStatusPtr) {
+  mc_actor *a = mc_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
+  void *result = mc_task_wait(a, nullptr);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(*(int64_t *)result, 42);
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, WaitNullActor) {
+  int64_t status = -1;
+  void *result = mc_task_wait(nullptr, &status);
+  EXPECT_EQ(result, nullptr);
+  EXPECT_EQ(status, MC_ACTOR_KILLED);
+}
+
+TEST_F(TaskContextTest, AliveBeforeCompletion) {
+  mc_actor *a = mc_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  /* Give it a moment to start. */
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  EXPECT_EQ(mc_task_alive(a), 1);
+
+  mc_task_cancel(a);
+  wait_for_actor(a);
+
+  EXPECT_EQ(mc_task_alive(a), 0);
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, AliveNullReturnsFalse) {
+  EXPECT_EQ(mc_task_alive(nullptr), 0);
+}
+
+/* ── Cancel ────────────────────────────────────────────────────────────── */
+
+TEST_F(TaskContextTest, CancelSetsFlag) {
+  mc_actor *a = mc_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  mc_task_cancel(a);
+
+  int64_t status;
+  mc_task_wait(a, &status);
+  EXPECT_EQ(status, MC_ACTOR_COMPLETED); /* exited cleanly after cancel */
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, CancelNullIsSafe) {
+  mc_task_cancel(nullptr); // must not crash
+}
+
+/* ── Term ──────────────────────────────────────────────────────────────── */
+
+TEST_F(TaskContextTest, TermKillsActor) {
+  mc_actor *a = mc_executor_spawn(infinite_loop_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  mc_task_term(a);
+
+  int64_t status;
+  mc_task_wait(a, &status);
+  EXPECT_EQ(status, MC_ACTOR_KILLED);
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, TermAfterCompletionIsNoop) {
+  mc_actor *a = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  mc_task_wait(a, nullptr);
+  mc_task_term(a); // already completed — should be safe
+  EXPECT_EQ(a->status, MC_ACTOR_COMPLETED);
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, TermNullIsSafe) {
+  mc_task_term(nullptr); // must not crash
+}
+
+/* ── Drop ──────────────────────────────────────────────────────────────── */
+
+TEST_F(TaskContextTest, DropReleasesRef) {
+  mc_actor *a = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+  mc_task_wait(a, nullptr);
+
+  /* After wait, worker has released its ref.  refcount should be 1
+     (parent only).  Drop releases the last ref and frees. */
+  EXPECT_EQ(a->refcount, 1);
+  mc_task_drop(a);
+  /* No crash = success. */
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* Context API tests                                                      */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+TEST_F(TaskContextTest, ContextCancelledReflectsTaskCancel) {
+  mc_actor *a = mc_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  /* Actor is polling cancelled — it should still be running. */
+  EXPECT_EQ(mc_task_alive(a), 1);
+
+  mc_task_cancel(a);
+  mc_task_wait(a, nullptr);
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, ContextCancelledNullReturnsFalse) {
+  EXPECT_EQ(mc_context_cancelled(nullptr), 0);
+}
+
+/* ── context_send + channel iteration ──────────────────────────────────── */
+
+TEST_F(TaskContextTest, SendThroughChannel) {
+  /* Create actor, attach channel, THEN schedule — no race. */
+  mc_actor *a = mc_actor_new(channel_sender_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+  a->channel = mc_channel_new(sizeof(int64_t), 8);
+  ASSERT_NE(a->channel, nullptr);
+  mc_executor_schedule(a);
+
+  /* Iterate — recv returns -1 after actor exits and channel is closed. */
+  std::vector<int64_t> received;
+  int64_t val;
+  while (mc_channel_recv(a->channel, &val) == 0)
+    received.push_back(val);
+
+  ASSERT_EQ(received.size(), 5u);
+  EXPECT_EQ(received[0], 1);
+  EXPECT_EQ(received[4], 5);
+
+  mc_channel_destroy(a->channel);
+  a->channel = nullptr;
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, SendAndExitWithResult) {
+  mc_actor *a = mc_actor_new(send_then_exit_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+  a->channel = mc_channel_new(sizeof(int64_t), 8);
+  ASSERT_NE(a->channel, nullptr);
+  mc_executor_schedule(a);
+
+  /* Drain the channel. */
+  std::vector<int64_t> received;
+  int64_t val;
+  while (mc_channel_recv(a->channel, &val) == 0)
+    received.push_back(val);
+
+  ASSERT_EQ(received.size(), 3u);
+  EXPECT_EQ(received[0], 10);
+  EXPECT_EQ(received[2], 12);
+
+  /* Also get the exit result. */
+  int64_t status;
+  void *result = mc_task_wait(a, &status);
+  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(*(int64_t *)result, 99);
+
+  mc_channel_destroy(a->channel);
+  a->channel = nullptr;
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, SendWithNoChannelReturnsError) {
+  mc_actor *a = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+  mc_task_wait(a, nullptr);
+
+  /* context_send with no channel attached should return -1. */
+  int64_t val = 1;
+  EXPECT_EQ(mc_context_send(a, &val), -1);
+
+  mc_task_drop(a);
+}
+
+TEST_F(TaskContextTest, SendNullActorReturnsError) {
+  int64_t val = 1;
+  EXPECT_EQ(mc_context_send(nullptr, &val), -1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* Multiple spawns with results                                           */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+TEST_F(TaskContextTest, MultipleActorsWithResults) {
+  const int N = 20;
+  std::vector<mc_actor *> actors(N);
+
+  for (int i = 0; i < N; i++) {
+    actors[i] = mc_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
+    ASSERT_NE(actors[i], nullptr);
+  }
+
+  for (int i = 0; i < N; i++) {
+    int64_t status;
+    void *result = mc_task_wait(actors[i], &status);
+    EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+    ASSERT_NE(result, nullptr);
+    EXPECT_EQ(*(int64_t *)result, 42);
+    mc_task_drop(actors[i]);
+  }
+}

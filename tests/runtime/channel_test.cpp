@@ -1,64 +1,12 @@
 /* Channel tests for the Saga runtime. */
 
+#include "runtime_test_types.h"
 #include <gtest/gtest.h>
 #include <cstring>
-#include <csetjmp>
-#include <pthread.h>
 #include <vector>
 #include <thread>
 #include <chrono>
 #include <atomic>
-
-extern "C" {
-
-/* ── Types from runtime.c ─────────────────────────────────────────────── */
-
-typedef struct {
-  char    *base;
-  int64_t  offset;
-  int64_t  committed;
-  int64_t  reserved;
-  int64_t  max_limit;
-} mc_arena;
-
-typedef struct mc_channel mc_channel;
-
-enum {
-  MC_ACTOR_PENDING   = 0,
-  MC_ACTOR_RUNNING   = 1,
-  MC_ACTOR_COMPLETED = 2,
-  MC_ACTOR_CANCELLED = 3,
-  MC_ACTOR_KILLED    = 4,
-  MC_ACTOR_ZOMBIE    = 5
-};
-
-typedef struct mc_actor {
-  int64_t          refcount;
-  void            *result;
-  int64_t          result_size;
-  int64_t          status;
-  int64_t          cancelled;
-  pthread_mutex_t  lock;
-  pthread_cond_t   done_cond;
-  mc_arena        *arena;
-  void           (*entry)(struct mc_actor *);
-  void            *closure_data;
-  int64_t          closure_size;
-  int64_t          reduction_count;
-  int64_t          last_cycle;
-  mc_channel      *channel;
-  jmp_buf          trap;
-} mc_actor;
-
-/* ── Functions under test ─────────────────────────────────────────────── */
-
-mc_channel *mc_channel_new(int64_t elem_size, int64_t capacity);
-int         mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor);
-int         mc_channel_recv(mc_channel *ch, void *out_buf);
-void        mc_channel_close(mc_channel *ch);
-void        mc_channel_destroy(mc_channel *ch);
-
-} // extern "C"
 
 // ─────────────────────────────────────────────────────────────────────────
 // Basic lifecycle

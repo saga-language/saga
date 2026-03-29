@@ -182,9 +182,11 @@ enum {
   MC_ACTOR_ZOMBIE    = 5
 };
 
-/* Forward declarations — full definitions follow after the executor. */
+/* Forward declarations — full definitions follow below. */
+typedef struct mc_actor   mc_actor;
 typedef struct mc_channel mc_channel;
 void mc_channel_close(mc_channel *ch);
+int  mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor);
 
 typedef struct mc_actor {
   /* -- Stable fields (malloc'd, outlive the arena) ---------------------- */
@@ -204,6 +206,7 @@ typedef struct mc_actor {
   int64_t          reduction_count;
   int64_t          last_cycle;     /* monotonic ns timestamp                */
   mc_channel      *channel;        /* typed channel for Send() / iteration  */
+  void            *result_in_arena;/* set by context_exit, lives in arena   */
   jmp_buf          trap;           /* setjmp target for panic / quota       */
 } mc_actor;
 
@@ -491,18 +494,23 @@ static void *mc_worker_loop(void *arg) {
       if (final_status == MC_ACTOR_RUNNING)
         final_status = MC_ACTOR_COMPLETED;
     } else {
-      /* longjmp path — actor was killed, trapped, or exited.
-         status was set by the code that triggered the longjmp. */
+      /* longjmp path — actor was killed, trapped, or exited. */
       final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
-      if (final_status == MC_ACTOR_RUNNING)
-        final_status = MC_ACTOR_KILLED;
+      if (final_status == MC_ACTOR_RUNNING) {
+        /* If result_in_arena is set, context_exit was called — treat as
+           completed.  Otherwise default to killed. */
+        final_status = actor->result_in_arena ? MC_ACTOR_COMPLETED
+                                              : MC_ACTOR_KILLED;
+      }
     }
 
     /* Copy result out of arena BEFORE destroying it. */
-    if (actor->result_size > 0 && actor->result == NULL) {
-      /* result_in_arena was stashed in closure_data by context_exit.
-         For now this is a placeholder — Phase 4 (Task/Context API) will
-         flesh out the exact mechanism. */
+    if (actor->result_in_arena && actor->result_size > 0
+        && actor->result == NULL) {
+      actor->result = malloc((size_t)actor->result_size);
+      if (actor->result)
+        memcpy(actor->result, actor->result_in_arena,
+               (size_t)actor->result_size);
     }
 
     /* Tear down the arena. */
@@ -595,6 +603,21 @@ mc_actor *mc_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
 }
 
 /*
+ * mc_executor_schedule  —  push an already-created actor into the executor.
+ *
+ * Use this when you need to configure the actor (e.g. attach a channel)
+ * between creation and scheduling.  The actor must have been created with
+ * mc_actor_new().
+ */
+void mc_executor_schedule(mc_actor *actor) {
+  if (!g_executor || !actor) return;
+  mc_deque_push(&g_executor->inject_queue, actor);
+  pthread_mutex_lock(&g_executor->work_avail_lock);
+  pthread_cond_signal(&g_executor->work_avail_cond);
+  pthread_mutex_unlock(&g_executor->work_avail_lock);
+}
+
+/*
  * mc_executor_shutdown  —  signal all workers to stop and join them.
  */
 void mc_executor_shutdown(void) {
@@ -657,6 +680,131 @@ void mc_executor_replace_worker(int64_t worker_id) {
   pthread_mutex_lock(&ex->work_avail_lock);
   pthread_cond_signal(&ex->work_avail_cond);
   pthread_mutex_unlock(&ex->work_avail_lock);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Task API                                                                 */
+/*                                                                          */
+/* Called from the parent / spawning thread.  These operate on the          */
+/* mc_actor* that mc_executor_spawn() returned (the "Task handle").         */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * mc_task_alive  —  returns 1 if the actor is still running or pending.
+ */
+int64_t mc_task_alive(mc_actor *a) {
+  if (!a) return 0;
+  pthread_mutex_lock(&a->lock);
+  int alive = (a->status == MC_ACTOR_PENDING ||
+               a->status == MC_ACTOR_RUNNING);
+  pthread_mutex_unlock(&a->lock);
+  return alive ? 1 : 0;
+}
+
+/*
+ * mc_task_cancel  —  ask the actor to stop.  The actor must poll
+ *                    mc_context_cancelled() to honour this.
+ */
+void mc_task_cancel(mc_actor *a) {
+  if (!a) return;
+  __atomic_store_n(&a->cancelled, 1, __ATOMIC_RELEASE);
+}
+
+/*
+ * mc_task_term  —  immediately kill the actor.  If it is blocked on a
+ *                  channel the channel is closed to unblock it; on its
+ *                  next reduction tick or blocking call it will longjmp
+ *                  out (status poisoning).
+ */
+void mc_task_term(mc_actor *a) {
+  if (!a) return;
+  pthread_mutex_lock(&a->lock);
+  if (a->status == MC_ACTOR_PENDING || a->status == MC_ACTOR_RUNNING) {
+    a->status = MC_ACTOR_KILLED;
+    if (a->channel)
+      mc_channel_close(a->channel);
+  }
+  /* If the actor already finished, term is a no-op. */
+  pthread_cond_signal(&a->done_cond);
+  pthread_mutex_unlock(&a->lock);
+}
+
+/*
+ * mc_task_wait  —  block until the actor reaches a terminal status.
+ *                  Returns a pointer to the result (malloc'd, outlives
+ *                  the arena) or NULL if no result was set.
+ *
+ *                  `out_status` is set to the terminal status if non-NULL.
+ */
+void *mc_task_wait(mc_actor *a, int64_t *out_status) {
+  if (!a) {
+    if (out_status) *out_status = MC_ACTOR_KILLED;
+    return NULL;
+  }
+  pthread_mutex_lock(&a->lock);
+  while (a->status < MC_ACTOR_COMPLETED)
+    pthread_cond_wait(&a->done_cond, &a->lock);
+  int64_t st = a->status;
+  pthread_mutex_unlock(&a->lock);
+
+  if (out_status) *out_status = st;
+  return a->result;
+}
+
+/*
+ * mc_task_drop  —  release the parent's reference.  Called when the Task
+ *                  handle goes out of scope in generated code.
+ */
+void mc_task_drop(mc_actor *a) {
+  mc_actor_release(a);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Context API                                                              */
+/*                                                                          */
+/* Called from inside the spawned actor.  The actor receives a pointer to   */
+/* its own mc_actor as the "context".                                       */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * mc_context_cancelled  —  returns 1 if the parent called mc_task_cancel.
+ */
+int64_t mc_context_cancelled(mc_actor *a) {
+  if (!a) return 0;
+  return __atomic_load_n(&a->cancelled, __ATOMIC_ACQUIRE) ? 1 : 0;
+}
+
+/*
+ * mc_context_exit  —  terminate the actor with a return value.
+ *
+ * `value` must point to data inside the actor's arena (or stack).
+ * The worker loop copies it to a malloc'd buffer before destroying
+ * the arena.
+ *
+ * Does not return — calls longjmp.
+ */
+void mc_context_exit(mc_actor *a, void *value, int64_t size) {
+  if (!a) return;
+  a->result_in_arena = value;
+  a->result_size     = size;
+  /* Do NOT set status here — the worker loop publishes the final status
+     under the lock after arena cleanup.  We stash the desired status in
+     a field the worker reads.  For context_exit the desired status is
+     always COMPLETED; the worker detects this via result_in_arena being
+     set and final_status still being RUNNING → it promotes to COMPLETED. */
+  longjmp(a->trap, 1);
+}
+
+/*
+ * mc_context_send  —  push a value into the actor's channel.
+ *
+ * Non-blocking from the actor's perspective unless the channel buffer is
+ * full, in which case it blocks until a consumer drains an element.
+ * Resets the reduction counter (I/O counts as yielding).
+ */
+int mc_context_send(mc_actor *a, const void *data) {
+  if (!a || !a->channel) return -1;
+  return mc_channel_send(a->channel, data, a);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
