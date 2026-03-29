@@ -182,9 +182,9 @@ enum {
   MC_ACTOR_ZOMBIE    = 5
 };
 
-/* Forward declaration — full definition of mc_channel comes in a later     */
-/* phase.  For now the actor stores a void* placeholder.                    */
+/* Forward declarations — full definitions follow after the executor. */
 typedef struct mc_channel mc_channel;
+void mc_channel_close(mc_channel *ch);
 
 typedef struct mc_actor {
   /* -- Stable fields (malloc'd, outlive the arena) ---------------------- */
@@ -509,8 +509,9 @@ static void *mc_worker_loop(void *arg) {
     mc_arena_destroy(actor->arena);
     actor->arena = NULL;
 
-    /* TODO(phase3): close channel if present.
-       if (actor->channel) mc_channel_close(actor->channel); */
+    /* Close the channel so any parent iterating via recv sees EOF. */
+    if (actor->channel)
+      mc_channel_close(actor->channel);
 
     /* Publish the final status and signal waiters under the lock.
        This guarantees that anyone waking from mc_task_wait() sees
@@ -656,6 +657,169 @@ void mc_executor_replace_worker(int64_t worker_id) {
   pthread_mutex_lock(&ex->work_avail_lock);
   pthread_cond_signal(&ex->work_avail_cond);
   pthread_mutex_unlock(&ex->work_avail_lock);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Channel                                                                  */
+/*                                                                          */
+/* Fixed-size ring buffer for transferring data between actors.  Data is    */
+/* copied (ownership transfer) — the sender retains no reference.           */
+/*                                                                          */
+/* mc_channel_send blocks if the buffer is full.                            */
+/* mc_channel_recv blocks if the buffer is empty.                           */
+/* mc_channel_close wakes all waiters; subsequent recv returns -1 once the  */
+/* buffer drains.                                                           */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+#ifndef MC_CHANNEL_DEFAULT_CAP
+#define MC_CHANNEL_DEFAULT_CAP 64
+#endif
+
+struct mc_channel {
+  char           *buffer;      /* ring buffer: capacity * elem_size bytes  */
+  int64_t         elem_size;
+  int64_t         capacity;    /* fixed at creation                        */
+  int64_t         head;        /* read position                            */
+  int64_t         tail;        /* write position                           */
+  int64_t         count;       /* items currently in the buffer            */
+  int             closed;
+  pthread_mutex_t lock;
+  pthread_cond_t  not_empty;   /* recv waits here                         */
+  pthread_cond_t  not_full;    /* send waits here                         */
+};
+
+/*
+ * mc_channel_new  —  create a channel with a fixed ring buffer.
+ *
+ * `elem_size` is the byte size of each element.
+ * `capacity`  is the max number of elements; 0 → MC_CHANNEL_DEFAULT_CAP.
+ */
+mc_channel *mc_channel_new(int64_t elem_size, int64_t capacity) {
+  if (elem_size <= 0) return NULL;
+  if (capacity <= 0) capacity = MC_CHANNEL_DEFAULT_CAP;
+
+  mc_channel *ch = (mc_channel *)calloc(1, sizeof(mc_channel));
+  if (!ch) return NULL;
+
+  ch->buffer    = (char *)calloc((size_t)capacity, (size_t)elem_size);
+  if (!ch->buffer) { free(ch); return NULL; }
+
+  ch->elem_size = elem_size;
+  ch->capacity  = capacity;
+  ch->head      = 0;
+  ch->tail      = 0;
+  ch->count     = 0;
+  ch->closed    = 0;
+
+  pthread_mutex_init(&ch->lock, NULL);
+  pthread_cond_init(&ch->not_empty, NULL);
+  pthread_cond_init(&ch->not_full, NULL);
+  return ch;
+}
+
+/*
+ * mc_channel_send  —  copy `data` into the channel (blocking if full).
+ *
+ * `actor` may be NULL (for sends from the main thread).  When non-NULL the
+ * function checks status poisoning so a killed actor unblocks immediately.
+ *
+ * Returns  0 on success, -1 if the channel is closed.
+ */
+int mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor) {
+  if (!ch || !data) return -1;
+
+  pthread_mutex_lock(&ch->lock);
+
+  /* Block while full — respect close and actor kill. */
+  while (ch->count == ch->capacity && !ch->closed) {
+    if (actor && __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE)
+                    == MC_ACTOR_KILLED) {
+      pthread_mutex_unlock(&ch->lock);
+      longjmp(actor->trap, 1);
+    }
+    pthread_cond_wait(&ch->not_full, &ch->lock);
+  }
+
+  if (ch->closed) {
+    pthread_mutex_unlock(&ch->lock);
+    return -1;
+  }
+
+  /* Copy element into the ring buffer. */
+  memcpy(ch->buffer + (ch->tail * ch->elem_size), data,
+         (size_t)ch->elem_size);
+  ch->tail = (ch->tail + 1) % ch->capacity;
+  ch->count++;
+
+  /* Reset the actor's reduction counter (I/O counts as yielding). */
+  if (actor)
+    actor->reduction_count = 0;
+
+  pthread_cond_signal(&ch->not_empty);
+  pthread_mutex_unlock(&ch->lock);
+  return 0;
+}
+
+/*
+ * mc_channel_recv  —  read the next element into `out_buf` (blocking).
+ *
+ * Returns  0 on success.
+ * Returns -1 if the channel is closed AND the buffer is drained (EOF).
+ */
+int mc_channel_recv(mc_channel *ch, void *out_buf) {
+  if (!ch || !out_buf) return -1;
+
+  pthread_mutex_lock(&ch->lock);
+
+  /* Block while empty — break out when data arrives or channel closes. */
+  while (ch->count == 0 && !ch->closed)
+    pthread_cond_wait(&ch->not_empty, &ch->lock);
+
+  /* Closed with nothing left → EOF. */
+  if (ch->count == 0 && ch->closed) {
+    pthread_mutex_unlock(&ch->lock);
+    return -1;
+  }
+
+  /* Copy element out of the ring buffer. */
+  memcpy(out_buf, ch->buffer + (ch->head * ch->elem_size),
+         (size_t)ch->elem_size);
+  ch->head = (ch->head + 1) % ch->capacity;
+  ch->count--;
+
+  pthread_cond_signal(&ch->not_full);
+  pthread_mutex_unlock(&ch->lock);
+  return 0;
+}
+
+/*
+ * mc_channel_close  —  mark the channel closed, wake all waiters.
+ *
+ * Safe to call multiple times.  After close, send returns -1.  recv
+ * continues to drain buffered data, then returns -1.
+ */
+void mc_channel_close(mc_channel *ch) {
+  if (!ch) return;
+
+  pthread_mutex_lock(&ch->lock);
+  ch->closed = 1;
+  pthread_cond_broadcast(&ch->not_empty);
+  pthread_cond_broadcast(&ch->not_full);
+  pthread_mutex_unlock(&ch->lock);
+}
+
+/*
+ * mc_channel_destroy  —  free all channel resources.
+ *
+ * The channel must already be closed and no threads may be blocked on it.
+ */
+void mc_channel_destroy(mc_channel *ch) {
+  if (!ch) return;
+  free(ch->buffer);
+  pthread_mutex_destroy(&ch->lock);
+  pthread_cond_destroy(&ch->not_empty);
+  pthread_cond_destroy(&ch->not_full);
+  free(ch);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
