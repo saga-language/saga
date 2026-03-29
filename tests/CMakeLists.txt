@@ -45,6 +45,7 @@ if(RUNTIME_TEST_SOURCES)
   target_link_libraries(runtime_tests
       PRIVATE
       saga_runtime
+      pthread
       GTest::gtest_main
   )
 
