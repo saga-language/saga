@@ -271,6 +271,18 @@ mc_actor *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
   return a;
 }
 
+/* Runtime accessor for closure_data — used by codegen to unpack captures
+   without hardcoding struct offsets in LLVM IR. */
+void *mc_actor_get_closure(mc_actor *a) {
+  return a ? a->closure_data : NULL;
+}
+
+/* Runtime setter for channel — used by codegen to attach a channel after
+   mc_executor_spawn() returns the actor. */
+void mc_actor_set_channel(mc_actor *a, mc_channel *ch) {
+  if (a) a->channel = ch;
+}
+
 void mc_actor_retain(mc_actor *a) {
   if (!a) return;
   __atomic_add_fetch(&a->refcount, 1, __ATOMIC_SEQ_CST);
@@ -975,6 +987,19 @@ void mc_context_exit(mc_actor *a, void *value, int64_t size) {
 int mc_context_send(mc_actor *a, const void *data) {
   if (!a || !a->channel) return -1;
   return mc_channel_send(a->channel, data, a);
+}
+
+/*
+ * mc_actor_yield  —  voluntarily yield execution and reset the reduction
+ *                    counter.  Called by the yield intrinsic.
+ */
+#include <sched.h>
+
+void mc_actor_yield(mc_actor *a) {
+  if (!a) return;
+  sched_yield();
+  a->reduction_count = 0;
+  a->last_cycle = mc_monotonic_now();
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */

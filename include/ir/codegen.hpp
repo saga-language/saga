@@ -98,7 +98,7 @@ struct CodeGen {
   std::unordered_map<std::string, llvm::AllocaInst *> locals;
 
   /// Tracks which locals need release at scope exit and their kind.
-  enum class ManagedKind { String, Array, Map };
+  enum class ManagedKind { String, Array, Map, Task };
   struct ManagedLocal {
     std::string name;
     ManagedKind kind;
@@ -115,6 +115,23 @@ struct CodeGen {
 
   /// Counter for generating unique closure names.
   int next_closure_id = 0;
+
+  /// Counter for generating unique spawn outlined function names.
+  int next_spawn_id = 0;
+
+  // ── Spawn support ─────────────────────────────────────────────────────
+
+  /// When non-null, we are inside a spawn outlined function.
+  /// Points to the mc_actor* parameter of the outlined function.
+  llvm::Value *current_actor = nullptr;
+
+  /// True if the current module contains any spawn expressions
+  /// (triggers executor init/shutdown in main).
+  bool has_spawn = false;
+
+  /// Pending channel alloca from the most recent spawn with a generic type.
+  /// Picked up by the next DeclAssign to create a companion ".channel" local.
+  llvm::AllocaInst *pending_channel_alloca_ = nullptr;
 
   // ── Loop context (for break/next) ────────────────────────────────────
 
@@ -234,6 +251,7 @@ private:
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *emit_or_expr(const OrExprNode &node);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
+  llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   std::pair<llvm::Value *, llvm::Type *>
