@@ -96,6 +96,18 @@ mc_string  *mc_arena_alloc_string(mc_arena *a, const char *buf, int64_t len);
 mc_array   *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
                                  int64_t initial_cap);
 
+/* ── COW helpers ───────────────────────────────────────────────────────── */
+
+mc_string  *mc_cow_copy_string(mc_arena *a, mc_string *src);
+mc_array   *mc_cow_copy_array(mc_arena *a, mc_array *src);
+
+/* ── Refcount helpers (for COW tests) ──────────────────────────────────── */
+
+void        mc_retain_string(mc_string *s);
+void        mc_release_string(mc_string *s);
+void        mc_retain_array(mc_array *arr);
+void        mc_release_array(mc_array *arr);
+
 /* ── Actor API ─────────────────────────────────────────────────────────── */
 
 mc_actor   *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,

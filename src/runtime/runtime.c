@@ -1766,3 +1766,42 @@ mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
   m->refcount    = -1; /* arena-owned */
   return m;
 }
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Copy-on-Write helpers                                                    */
+/*                                                                          */
+/* These create a deep copy of a refcounted object into a target arena.     */
+/* Called when a shared object is about to be mutated inside a spawn block.  */
+/*                                                                          */
+/* The COW barrier pattern (emitted by codegen):                            */
+/*   if (obj->refcount > 1) obj = mc_cow_copy_*(arena, obj);               */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * mc_cow_copy_string  —  deep-copy a string into an arena.
+ */
+mc_string *mc_cow_copy_string(mc_arena *a, mc_string *src) {
+  if (!a || !src) return src;
+  mc_string *copy = mc_arena_alloc_string(a, src->data, src->len);
+  if (copy) mc_release_string(src); /* drop the shared ref */
+  return copy ? copy : src;         /* fallback to original on alloc failure */
+}
+
+/*
+ * mc_cow_copy_array  —  deep-copy an array into an arena.
+ *
+ * Elements are shallow-copied (memcpy).  For arrays of refcounted types,
+ * the caller (codegen) must recursively COW-copy each element.
+ */
+mc_array *mc_cow_copy_array(mc_arena *a, mc_array *src) {
+  if (!a || !src) return src;
+  mc_array *copy = mc_arena_alloc_array(a, src->elem_size, src->cap);
+  if (!copy) return src;
+
+  if (src->len > 0 && src->data)
+    memcpy(copy->data, src->data, (size_t)(src->elem_size * src->len));
+  copy->len = src->len;
+
+  mc_release_array(src);
+  return copy;
+}
