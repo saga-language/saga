@@ -102,6 +102,7 @@ mc_actor   *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
                          int64_t closure_size, int64_t arena_max);
 void        mc_actor_retain(mc_actor *a);
 void        mc_actor_release(mc_actor *a);
+void        mc_reduction_tick(mc_actor *a);
 
 /* ── Deque API ─────────────────────────────────────────────────────────── */
 

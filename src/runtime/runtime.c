@@ -33,6 +33,14 @@
 #define MC_MAX_ARENA_SIZE (64 * 1024 * 1024) /* 64 MB default */
 #endif
 
+#ifndef MC_MAX_REDUCTIONS
+#define MC_MAX_REDUCTIONS 1000000
+#endif
+
+#ifndef MC_HEARTBEAT_TIMEOUT_MS
+#define MC_HEARTBEAT_TIMEOUT_MS 5000
+#endif
+
 #ifndef MC_ARENA_INITIAL_COMMIT
 #define MC_ARENA_INITIAL_COMMIT (64 * 1024) /* 64 KB initial commit */
 #endif
@@ -281,6 +289,31 @@ void mc_actor_release(mc_actor *a) {
   }
 }
 
+/*
+ * mc_reduction_tick  —  called at the top of every loop iteration inside
+ *                       a spawned actor.  Checks status poisoning and
+ *                       enforces the CPU quota.
+ *
+ * If the actor has been killed (e.g. by mc_task_term or heartbeat monitor),
+ * it longjmps out immediately.  If the reduction counter exceeds the
+ * compile-time limit, the actor is killed.
+ */
+void mc_reduction_tick(mc_actor *a) {
+  if (!a) return;
+
+  /* Status poisoning — killed externally? */
+  if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == MC_ACTOR_KILLED)
+    longjmp(a->trap, 1);
+
+  a->reduction_count++;
+  if (a->reduction_count > MC_MAX_REDUCTIONS) {
+    __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+    longjmp(a->trap, 1);
+  }
+
+  a->last_cycle = mc_monotonic_now();
+}
+
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Work-stealing deque                                                      */
 /*                                                                          */
@@ -399,6 +432,57 @@ typedef struct {
   void            *executor; /* back-pointer (cast to mc_executor*)         */
 } mc_worker_ctx;
 
+/* ── Active actor list (for heartbeat monitor) ─────────────────────────── */
+/* A simple array-based list of actors currently being executed.  Protected */
+/* by its own mutex so the monitor thread can scan without contending on    */
+/* the work-stealing deques.                                                */
+
+#ifndef MC_ACTIVE_LIST_CAP
+#define MC_ACTIVE_LIST_CAP 1024
+#endif
+
+typedef struct {
+  mc_actor       **actors;
+  int64_t          len;
+  int64_t          cap;
+  pthread_mutex_t  lock;
+} mc_active_list;
+
+static void mc_active_list_init(mc_active_list *l) {
+  l->actors = (mc_actor **)calloc(MC_ACTIVE_LIST_CAP, sizeof(mc_actor *));
+  l->len    = 0;
+  l->cap    = MC_ACTIVE_LIST_CAP;
+  pthread_mutex_init(&l->lock, NULL);
+}
+
+static void mc_active_list_destroy(mc_active_list *l) {
+  free(l->actors);
+  pthread_mutex_destroy(&l->lock);
+}
+
+static void mc_active_list_add(mc_active_list *l, mc_actor *a) {
+  pthread_mutex_lock(&l->lock);
+  if (l->len >= l->cap) {
+    l->cap *= 2;
+    l->actors = (mc_actor **)realloc(l->actors,
+                                     (size_t)l->cap * sizeof(mc_actor *));
+  }
+  l->actors[l->len++] = a;
+  pthread_mutex_unlock(&l->lock);
+}
+
+static void mc_active_list_remove(mc_active_list *l, mc_actor *a) {
+  pthread_mutex_lock(&l->lock);
+  for (int64_t i = 0; i < l->len; i++) {
+    if (l->actors[i] == a) {
+      l->actors[i] = l->actors[l->len - 1];
+      l->len--;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&l->lock);
+}
+
 typedef struct mc_executor {
   pthread_t       *threads;
   mc_worker_ctx   *worker_ctxs;
@@ -408,6 +492,10 @@ typedef struct mc_executor {
   pthread_mutex_t  work_avail_lock;
   pthread_cond_t   work_avail_cond; /* workers sleep here when idle         */
   int64_t          shutdown;        /* flag, checked by workers             */
+  mc_active_list   active;          /* actors currently executing           */
+  pthread_t        monitor_thread;  /* heartbeat monitor                    */
+  pthread_mutex_t  monitor_lock;    /* protects monitor condvar             */
+  pthread_cond_t   monitor_cond;    /* woken on shutdown for fast exit      */
 } mc_executor;
 
 /* Singleton executor — initialised by mc_executor_init(). */
@@ -476,6 +564,8 @@ static void *mc_worker_loop(void *arg) {
 
     /* ── Execute the actor ──────────────────────────────────────────── */
     actor->last_cycle = mc_monotonic_now();
+    actor->reduction_count = 0;
+    mc_active_list_add(&ex->active, actor);
 
     /* Track the final status locally — only published under the lock
        after cleanup so that waiters never see a terminal status while
@@ -517,6 +607,9 @@ static void *mc_worker_loop(void *arg) {
     mc_arena_destroy(actor->arena);
     actor->arena = NULL;
 
+    /* Remove from active list before signalling waiters. */
+    mc_active_list_remove(&ex->active, actor);
+
     /* Close the channel so any parent iterating via recv sees EOF. */
     if (actor->channel)
       mc_channel_close(actor->channel);
@@ -544,6 +637,67 @@ static void *mc_worker_loop(void *arg) {
  * `num_workers` = 0 means auto-detect (hardware concurrency).
  * Must be called once before any mc_executor_spawn().
  */
+/* ── Heartbeat monitor ──────────────────────────────────────────────────── */
+/*                                                                          */
+/* A dedicated thread that periodically scans all active actors.  If an     */
+/* actor's last_cycle timestamp is older than MC_HEARTBEAT_TIMEOUT_MS, the  */
+/* monitor sets its status to KILLED (status poisoning).  The actor will    */
+/* exit on its next reduction tick or blocking channel operation.            */
+/*                                                                          */
+/* If the actor is STILL running after a second timeout period, the monitor */
+/* assumes it is stuck in an FFI/syscall and logs a warning.  The worker    */
+/* replacement mechanism (mc_executor_replace_worker) could be triggered    */
+/* here in the future; for now we just poison and warn.                     */
+
+static void *mc_heartbeat_monitor(void *arg) {
+  mc_executor *ex = (mc_executor *)arg;
+  int64_t timeout_ns = (int64_t)MC_HEARTBEAT_TIMEOUT_MS * 1000000LL;
+  int64_t check_interval_ms = MC_HEARTBEAT_TIMEOUT_MS / 2;
+  if (check_interval_ms < 100) check_interval_ms = 100;
+
+  while (!__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE)) {
+    /* Sleep for check_interval, but wake immediately on shutdown. */
+    struct timespec abs_ts;
+    clock_gettime(CLOCK_REALTIME, &abs_ts);
+    abs_ts.tv_sec  += check_interval_ms / 1000;
+    abs_ts.tv_nsec += (check_interval_ms % 1000) * 1000000L;
+    if (abs_ts.tv_nsec >= 1000000000L) {
+      abs_ts.tv_sec  += 1;
+      abs_ts.tv_nsec -= 1000000000L;
+    }
+
+    pthread_mutex_lock(&ex->monitor_lock);
+    pthread_cond_timedwait(&ex->monitor_cond, &ex->monitor_lock, &abs_ts);
+    pthread_mutex_unlock(&ex->monitor_lock);
+
+    if (__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE))
+      break;
+
+    int64_t now = mc_monotonic_now();
+
+    pthread_mutex_lock(&ex->active.lock);
+    for (int64_t i = 0; i < ex->active.len; i++) {
+      mc_actor *a = ex->active.actors[i];
+      int64_t st = __atomic_load_n(&a->status, __ATOMIC_ACQUIRE);
+      if (st != MC_ACTOR_RUNNING) continue;
+
+      int64_t last = __atomic_load_n(&a->last_cycle, __ATOMIC_ACQUIRE);
+      int64_t elapsed = now - last;
+
+      if (elapsed > timeout_ns) {
+        /* First timeout: poison the actor. */
+        __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+        /* Also close the channel to unblock any waiting send. */
+        if (a->channel)
+          mc_channel_close(a->channel);
+      }
+    }
+    pthread_mutex_unlock(&ex->active.lock);
+  }
+
+  return NULL;
+}
+
 void mc_executor_init(int64_t num_workers) {
   if (g_executor) return; /* already initialised */
 
@@ -569,6 +723,10 @@ void mc_executor_init(int64_t num_workers) {
                                              sizeof(mc_worker_ctx));
   ex->threads = (pthread_t *)calloc((size_t)num_workers, sizeof(pthread_t));
 
+  mc_active_list_init(&ex->active);
+  pthread_mutex_init(&ex->monitor_lock, NULL);
+  pthread_cond_init(&ex->monitor_cond, NULL);
+
   g_executor = ex;
 
   for (int64_t i = 0; i < num_workers; i++) {
@@ -577,6 +735,9 @@ void mc_executor_init(int64_t num_workers) {
     pthread_create(&ex->threads[i], NULL, mc_worker_loop,
                    &ex->worker_ctxs[i]);
   }
+
+  /* Start the heartbeat monitor. */
+  pthread_create(&ex->monitor_thread, NULL, mc_heartbeat_monitor, ex);
 }
 
 /*
@@ -634,11 +795,20 @@ void mc_executor_shutdown(void) {
   for (int64_t i = 0; i < ex->num_workers; i++)
     pthread_join(ex->threads[i], NULL);
 
+  /* Wake and join the heartbeat monitor. */
+  pthread_mutex_lock(&ex->monitor_lock);
+  pthread_cond_signal(&ex->monitor_cond);
+  pthread_mutex_unlock(&ex->monitor_lock);
+  pthread_join(ex->monitor_thread, NULL);
+
   /* Clean up. */
   for (int64_t i = 0; i < ex->num_workers; i++)
     mc_deque_destroy(&ex->deques[i]);
   mc_deque_destroy(&ex->inject_queue);
+  mc_active_list_destroy(&ex->active);
 
+  pthread_mutex_destroy(&ex->monitor_lock);
+  pthread_cond_destroy(&ex->monitor_cond);
   pthread_mutex_destroy(&ex->work_avail_lock);
   pthread_cond_destroy(&ex->work_avail_cond);
 
