@@ -3621,6 +3621,160 @@ TEST(CodeGen, VarDeclZeroInitStringWithExplicit) {
   EXPECT_TRUE(has_alloca_named(main, "s"));
 }
 
+// ===========================================================================
+// Intrinsics — yield, atomic_add, trap
+// ===========================================================================
+
+// Helper: check if any function in the module contains a call to a named fn.
+static bool module_has_call_to(llvm::Module &mod, const std::string &callee_name) {
+  for (auto &fn : mod)
+    for (auto &bb : fn)
+      for (auto &inst : bb)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (call->getCalledFunction() &&
+              call->getCalledFunction()->getName() == callee_name)
+            return true;
+  return false;
+}
+
+// Helper: check if any function in the module contains an atomicrmw instruction.
+static bool module_has_atomicrmw(llvm::Module &mod) {
+  for (auto &fn : mod)
+    for (auto &bb : fn)
+      for (auto &inst : bb)
+        if (llvm::isa<llvm::AtomicRMWInst>(&inst))
+          return true;
+  return false;
+}
+
+TEST(CodeGen, IntrinsicYieldInsideSpawn) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn |ctx| {\n"
+      "    intrinsic_yield()\n"
+      "    42\n"
+      "  }\n"
+      "}");
+  // The outlined spawn body should call mc_actor_yield.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_actor_yield"));
+}
+
+TEST(CodeGen, IntrinsicYieldOutsideSpawnIsNoop) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  intrinsic_yield()\n"
+      "}");
+  // Outside a spawn block, yield is a no-op — no call emitted.
+  EXPECT_FALSE(module_has_call_to(r.mod(), "mc_actor_yield"));
+}
+
+TEST(CodeGen, IntrinsicTrapInsideSpawn) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn |ctx| {\n"
+      "    intrinsic_trap(\"fatal\")\n"
+      "    42\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_actor_trap"));
+}
+
+TEST(CodeGen, IntrinsicTrapOutsideSpawnIsNoop) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  intrinsic_trap(\"oops\")\n"
+      "}");
+  // Outside a spawn block, trap is a no-op.
+  EXPECT_FALSE(module_has_call_to(r.mod(), "mc_actor_trap"));
+}
+
+TEST(CodeGen, IntrinsicAtomicAdd) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  x := 0\n"
+      "  old := intrinsic_atomic_add(x, 1)\n"
+      "}");
+  // Should produce an atomicrmw add instruction.
+  EXPECT_TRUE(module_has_atomicrmw(r.mod()));
+}
+
+// ===========================================================================
+// Spawn codegen — basic structure
+// ===========================================================================
+
+TEST(CodeGen, SpawnBasicEmitsExecutorInit) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn { 42 }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  // Main should call mc_executor_init and mc_executor_shutdown.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_executor_init"));
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_executor_shutdown"));
+}
+
+TEST(CodeGen, SpawnEmitsOutlinedFunction) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn { 42 }\n"
+      "}");
+  // An outlined function should exist (named spawn_entry or similar).
+  bool found_outlined = false;
+  for (auto &fn : r.mod()) {
+    if (fn.getName().starts_with("mc.spawn."))
+      found_outlined = true;
+  }
+  EXPECT_TRUE(found_outlined);
+}
+
+TEST(CodeGen, SpawnEmitsExecutorSpawnCall) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn { 42 }\n"
+      "}");
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_executor_spawn"));
+}
+
+TEST(CodeGen, SpawnWithPipeVariable) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn |ctx| {\n"
+      "    ctx.Cancelled?()\n"
+      "    42\n"
+      "  }\n"
+      "}");
+  // Should call mc_context_cancelled in the outlined function.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_context_cancelled"));
+}
+
+TEST(CodeGen, SpawnReductionTickInLoop) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  t := spawn {\n"
+      "    i := 0\n"
+      "    for i < 10 {\n"
+      "      i = i + 1\n"
+      "    }\n"
+      "    i\n"
+      "  }\n"
+      "}");
+  // Loop inside spawn should emit mc_reduction_tick calls.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_reduction_tick"));
+}
+
+TEST(CodeGen, NoReductionTickOutsideSpawn) {
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  i := 0\n"
+      "  for i < 10 {\n"
+      "    i = i + 1\n"
+      "  }\n"
+      "}");
+  // Loop outside spawn should NOT emit mc_reduction_tick.
+  EXPECT_FALSE(module_has_call_to(r.mod(), "mc_reduction_tick"));
+}
+
 } // namespace mc
 
 

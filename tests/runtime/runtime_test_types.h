@@ -115,6 +115,8 @@ mc_actor   *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
 void        mc_actor_retain(mc_actor *a);
 void        mc_actor_release(mc_actor *a);
 void        mc_reduction_tick(mc_actor *a);
+void        mc_actor_yield(mc_actor *a);
+void        mc_actor_trap(mc_actor *a, mc_string *reason);
 
 /* ── Deque API ─────────────────────────────────────────────────────────── */
 
