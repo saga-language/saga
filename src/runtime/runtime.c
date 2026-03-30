@@ -1180,6 +1180,36 @@ typedef struct {
 } mc_string;
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* mc_actor_trap  —  transition actor to ZOMBIE state                       */
+/*                                                                          */
+/* The actor's arena is NOT destroyed so a supervisor can inspect it.        */
+/* Called by the intrinsic_trap() Saga intrinsic from inside a spawn block.  */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+void mc_actor_trap(mc_actor *a, mc_string *reason) {
+  if (!a) return;
+
+  __atomic_store_n(&a->status, MC_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
+
+  /* Store a copy of the reason string in heap memory (outlives arena). */
+  if (reason) {
+    mc_string *copy = (mc_string *)malloc(sizeof(mc_string) + reason->len + 1);
+    if (copy) {
+      char *buf = (char *)copy + sizeof(mc_string);
+      memcpy(buf, reason->data, reason->len);
+      buf[reason->len] = '\0';
+      copy->data = buf;
+      copy->len = reason->len;
+      copy->refcount = 1;
+      a->result = copy;
+      a->result_size = sizeof(mc_string);
+    }
+  }
+
+  longjmp(a->trap, 1);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* String refcounting                                                       */
 /* ───────────────────────────────────────────────────────────────────────── */
 

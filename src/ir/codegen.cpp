@@ -297,6 +297,11 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "mc_actor_yield", module.get());
+
+  // void mc_actor_trap(mc_actor* a, mc_string* reason)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_actor_trap", module.get());
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -3978,6 +3983,57 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     return nullptr;
 
   std::string name(ident->name);
+
+  // ── Concurrency intrinsics ──────────────────────────────────────────
+  // These need special handling because they inject the current_actor
+  // pointer or emit inline LLVM instructions.
+
+  if (name == "intrinsic_yield") {
+    // intrinsic_yield() → mc_actor_yield(current_actor)
+    if (current_actor) {
+      builder.CreateCall(module->getFunction("mc_actor_yield"),
+                         {current_actor});
+    }
+    // Outside a spawn block this is a no-op.
+    return llvm::Constant::getNullValue(
+        llvm::PointerType::getUnqual(context));
+  }
+
+  if (name == "intrinsic_atomic_add") {
+    // intrinsic_atomic_add(ptr, val) → atomicrmw add i64* %ptr, i64 %val
+    // The first argument is treated as a pointer to an i64.
+    // We need to get the *address* of the first argument, not its value.
+    auto *val = emit_expr(*node.args[1]);
+    // Get the address of the first argument (must be a variable).
+    auto *ptr_ident = std::get_if<IdentifierNode>(&node.args[0]->data);
+    llvm::Value *ptr = nullptr;
+    if (ptr_ident) {
+      auto it = locals.find(std::string(ptr_ident->name));
+      if (it != locals.end())
+        ptr = it->second; // alloca — this IS the pointer
+    }
+    if (!ptr) {
+      // Fallback: emit the expression as a value (won't be atomic, but
+      // won't crash).  Semantic analysis should catch misuse.
+      return llvm::Constant::getNullValue(i64_type);
+    }
+    return builder.CreateAtomicRMW(llvm::AtomicRMWInst::Add, ptr, val,
+                                   llvm::MaybeAlign(),
+                                   llvm::AtomicOrdering::SequentiallyConsistent);
+  }
+
+  if (name == "intrinsic_trap") {
+    // intrinsic_trap(reason) → mc_actor_trap(current_actor, reason)
+    auto *reason = emit_expr(*node.args[0]);
+    if (current_actor) {
+      builder.CreateCall(module->getFunction("mc_actor_trap"),
+                         {current_actor, reason});
+    }
+    return llvm::Constant::getNullValue(
+        llvm::PointerType::getUnqual(context));
+  }
+
+  // ── Regular function dispatch ───────────────────────────────────────
   std::string link_name;
   if (name == "intrinsic_print")
     link_name = "mc_intrinsic_print";
