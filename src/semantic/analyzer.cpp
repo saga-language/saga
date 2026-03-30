@@ -1042,7 +1042,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const SwitchExprNode &n) { resolve_switch_expr(n); },
           [&](const ForExprNode &n) { resolve_for_expr(n); },
           [&](const RangeExprNode &n) { resolve_range_expr(n); },
-          [&](const SpawnExprNode &n) { resolve_spawn_expr(n); },
+          [&](const SpawnExprNode &n) { resolve_spawn_expr(n, node); },
           [&](const OrExprNode &n) { resolve_or_expr(n); },
           [&](const FuncExprNode &n) { resolve_func_expr(n, node); },
           [&](const ImportExprNode &) { /* processed during import phase */ },
@@ -1107,6 +1107,28 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
           if (!already)
             caps.push_back({name, sym->type});
         }
+        break;
+      }
+      scope = scope->parent;
+    }
+  }
+
+  // ── Capture detection for spawn blocks ────────────────────────────
+  // If this symbol is a local variable/parameter and we're inside a
+  // spawn block, check if it was declared outside the spawn boundary.
+  if ((sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Parameter)
+      && pending_spawn_node_) {
+    auto scope = current_scope;
+    while (scope) {
+      if (scope->lookup_local(name))
+        break;
+      if (scope->kind == ScopeKind::Spawn) {
+        auto &caps = spawn_captures[pending_spawn_node_];
+        bool already = false;
+        for (auto &c : caps)
+          if (c.name == name) { already = true; break; }
+        if (!already)
+          caps.push_back({name, sym->type, SpawnCaptureKind::Copy});
         break;
       }
       scope = scope->parent;
@@ -1318,8 +1340,13 @@ void Analyzer::resolve_range_expr(const RangeExprNode &node) {
   resolve_expr(*node.high);
 }
 
-void Analyzer::resolve_spawn_expr(const SpawnExprNode &node) {
+void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
+                                   const Node &parent) {
   push_scope(ScopeKind::Spawn);
+
+  // Push this spawn onto the stack for capture tracking.
+  spawn_node_stack_.push_back(&parent);
+  pending_spawn_node_ = &parent;
 
   // Declare the pipe variable (task context) if present.
   if (node.pipe) {
@@ -1332,6 +1359,35 @@ void Analyzer::resolve_spawn_expr(const SpawnExprNode &node) {
     resolve_block(*block);
   } else {
     resolve_expr(*node.body);
+  }
+
+  // Pop the spawn stack.
+  spawn_node_stack_.pop_back();
+  pending_spawn_node_ = spawn_node_stack_.empty()
+                            ? nullptr
+                            : spawn_node_stack_.back();
+
+  // Classify spawn captures based on their types.
+  auto cap_it = spawn_captures.find(&parent);
+  if (cap_it != spawn_captures.end()) {
+    for (auto &cap : cap_it->second) {
+      if (!cap.type) {
+        cap.kind = SpawnCaptureKind::Copy;
+        continue;
+      }
+      // Refcounted types (String, Array, Map) use Share (COW).
+      // Everything else (scalars, structs) is trivially copied.
+      switch (cap.type->kind) {
+      case TypeKind::String:
+      case TypeKind::Array:
+      case TypeKind::Map:
+        cap.kind = SpawnCaptureKind::Share;
+        break;
+      default:
+        cap.kind = SpawnCaptureKind::Copy;
+        break;
+      }
+    }
   }
 
   pop_scope();
@@ -1570,7 +1626,7 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_range_expr(n);
           },
           [&](const SpawnExprNode &n) -> TypePtr {
-            return check_spawn_expr(n);
+            return check_spawn_expr(n, node);
           },
           [&](const OrExprNode &n) -> TypePtr {
             return check_or_expr(n);
@@ -2419,7 +2475,8 @@ TypePtr Analyzer::check_range_expr(const RangeExprNode &node) {
   return make_range_type(elem ? elem : builtins.int_type);
 }
 
-TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node) {
+TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
+                                    const Node &parent) {
   push_scope(ScopeKind::Spawn);
 
   if (node.pipe) {
@@ -2433,6 +2490,37 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node) {
     check_block(*block);
   } else {
     check_expr(*node.body);
+  }
+
+  // Update spawn capture types now that type-checking is complete.
+  auto cap_it = spawn_captures.find(&parent);
+  if (cap_it != spawn_captures.end()) {
+    for (auto &cap : cap_it->second) {
+      auto sym = current_scope->lookup(cap.name);
+      if (!sym) {
+        // Try the parent scope (the capture is from outside spawn).
+        auto outer = current_scope->parent;
+        while (outer) {
+          sym = outer->lookup_local(cap.name);
+          if (sym) break;
+          outer = outer->parent;
+        }
+      }
+      if (sym && sym->type) {
+        cap.type = sym->type;
+        // Re-classify with the resolved type.
+        switch (cap.type->kind) {
+        case TypeKind::String:
+        case TypeKind::Array:
+        case TypeKind::Map:
+          cap.kind = SpawnCaptureKind::Share;
+          break;
+        default:
+          cap.kind = SpawnCaptureKind::Copy;
+          break;
+        }
+      }
+    }
   }
 
   pop_scope();

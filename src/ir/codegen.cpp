@@ -200,6 +200,108 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "mc_release_map", module.get());
+
+  // ── Spawn / Actor runtime functions ────────────────────────────────
+
+  // void mc_executor_init(i64 num_workers)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_executor_init", module.get());
+
+  // void mc_executor_shutdown()
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {}, false),
+      llvm::Function::ExternalLinkage, "mc_executor_shutdown", module.get());
+
+  // mc_actor* mc_executor_spawn(void(*entry)(mc_actor*), void* closure,
+  //                             i64 closure_size, i64 arena_max)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type,
+                              {ptr_type, ptr_type, i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_executor_spawn", module.get());
+
+  // void mc_executor_schedule(mc_actor* actor)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_executor_schedule", module.get());
+
+  // mc_channel* mc_channel_new(i64 elem_size, i64 capacity)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "mc_channel_new", module.get());
+
+  // int mc_channel_recv(mc_channel* ch, void* out_buf)
+  llvm::Function::Create(
+      llvm::FunctionType::get(llvm::Type::getInt32Ty(context),
+                              {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_channel_recv", module.get());
+
+  // void mc_channel_close(mc_channel* ch)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_channel_close", module.get());
+
+  // void mc_channel_destroy(mc_channel* ch)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_channel_destroy", module.get());
+
+  // i64 mc_task_alive(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_task_alive", module.get());
+
+  // void mc_task_cancel(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_task_cancel", module.get());
+
+  // void mc_task_term(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_task_term", module.get());
+
+  // void* mc_task_wait(mc_actor* a, i64* out_status)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_task_wait", module.get());
+
+  // void mc_task_drop(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_task_drop", module.get());
+
+  // i64 mc_context_cancelled(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_context_cancelled", module.get());
+
+  // void mc_context_exit(mc_actor* a, void* value, i64 size)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, i64_type},
+                              false),
+      llvm::Function::ExternalLinkage, "mc_context_exit", module.get());
+
+  // int mc_context_send(mc_actor* a, void* data)
+  llvm::Function::Create(
+      llvm::FunctionType::get(llvm::Type::getInt32Ty(context),
+                              {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_context_send", module.get());
+
+  // void mc_reduction_tick(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_reduction_tick", module.get());
+
+  // void mc_actor_yield(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_actor_yield", module.get());
+
+  // void mc_actor_trap(mc_actor* a, mc_string* reason)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_actor_trap", module.get());
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -278,7 +380,49 @@ void CodeGen::emit_package(const PackageNode &pkg) {
     emit_source(std::get<SourceNode>(src->data));
 }
 
+/// Pre-scan declarations for spawn expressions to set has_spawn early.
+static bool source_has_spawn(const Node &node) {
+  bool found = false;
+  auto visitor = [&](const auto &self, const Node &n) -> void {
+    if (found) return;
+    std::visit(overloaded{
+        [&](const SpawnExprNode &) { found = true; },
+        [&](const BlockNode &b) {
+          for (auto &s : b.stmts) self(self, *s);
+        },
+        [&](const FuncDeclNode &fn) {
+          if (fn.body) self(self, *fn.body);
+        },
+        [&](const SourceNode &s) {
+          for (auto &d : s.declarations) self(self, *d);
+        },
+        [&](const DeclAssignNode &d) { self(self, *d.value); },
+        [&](const VarDeclNode &d) { if (d.init) self(self, **d.init); },
+        [&](const IfExprNode &e) {
+          self(self, *e.then_block);
+          if (e.else_block) self(self, **e.else_block);
+        },
+        [&](const ForExprNode &e) { self(self, *e.body); },
+        [&](const auto &) {},
+    }, n.data);
+  };
+  visitor(visitor, node);
+  return found;
+}
+
 void CodeGen::emit_source(const SourceNode &src) {
+  // Pre-scan for spawn expressions so executor init/shutdown can be placed.
+  if (!has_spawn) {
+    // Build a temporary Node wrapping the SourceNode for the visitor.
+    // Instead, scan declarations directly.
+    for (auto &decl : src.declarations) {
+      if (source_has_spawn(*decl)) {
+        has_spawn = true;
+        break;
+      }
+    }
+  }
+
   // Pass 1: create LLVM struct types, register enums and interfaces.
   declare_structs(src);
   declare_enums(src);
@@ -889,6 +1033,12 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   managed_locals.clear();
   current_func_is_main = is_main;
 
+  // If this is Main and we have spawn expressions, init the executor.
+  if (is_main && has_spawn) {
+    builder.CreateCall(module->getFunction("mc_executor_init"),
+                       {llvm::ConstantInt::get(i64_type, 0)});
+  }
+
   // Create allocas for parameters and store the incoming argument values.
   size_t arg_idx = 0;
   for (auto &param : fn.signature.params) {
@@ -910,6 +1060,8 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
     emit_release_locals();
     auto *ret_type = func->getReturnType();
     if (is_main) {
+      if (has_spawn)
+        builder.CreateCall(module->getFunction("mc_executor_shutdown"), {});
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
     } else if (ret_type->isVoidTy()) {
@@ -1269,6 +1421,14 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
 
     // Track managed types for release at scope exit.
     track_managed(name, val_sem);
+
+    // If a pending channel alloca exists from a spawn expression,
+    // create a companion local "<name>.channel" for for-range iteration.
+    if (pending_channel_alloca_) {
+      std::string ch_name = name + ".channel";
+      locals[ch_name] = pending_channel_alloca_;
+      pending_channel_alloca_ = nullptr;
+    }
   }
 }
 
@@ -1392,6 +1552,8 @@ void CodeGen::emit_assign(const AssignNode &node) {
 void CodeGen::emit_return(const ReturnNode &node) {
   if (current_func_is_main) {
     emit_release_locals();
+    if (has_spawn)
+      builder.CreateCall(module->getFunction("mc_executor_shutdown"), {});
     if (node.values.empty()) {
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
@@ -1579,6 +1741,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           },
           [&](const FuncExprNode &n) -> llvm::Value * {
             return emit_func_expr(n, node);
+          },
+          [&](const SpawnExprNode &n) -> llvm::Value * {
+            return emit_spawn_expr(n, node);
           },
           [&](const IdentifierNode &n) -> llvm::Value * {
             return emit_identifier(n);
@@ -2553,6 +2718,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
     // Body.
     func->insert(func->end(), body_bb);
     builder.SetInsertPoint(body_bb);
+    if (current_actor)
+      builder.CreateCall(module->getFunction("mc_reduction_tick"),
+                         {current_actor});
     auto &body_block = std::get<BlockNode>(node.body->data);
     emit_block(body_block);
     if (!builder.GetInsertBlock()->getTerminator())
@@ -2584,6 +2752,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       // Body.
       func->insert(func->end(), body_bb);
       builder.SetInsertPoint(body_bb);
+      if (current_actor)
+        builder.CreateCall(module->getFunction("mc_reduction_tick"),
+                           {current_actor});
       auto &body_block = std::get<BlockNode>(node.body->data);
       emit_block(body_block);
       if (!builder.GetInsertBlock()->getTerminator())
@@ -2645,6 +2816,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           // Body: load element, store to loop var(s).
           func->insert(func->end(), body_bb);
           builder.SetInsertPoint(body_bb);
+          if (current_actor)
+            builder.CreateCall(module->getFunction("mc_reduction_tick"),
+                               {current_actor});
 
           auto *at_fn = module->getFunction("mc_array_at");
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
@@ -2717,6 +2891,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           // Body: load key and value at current index.
           func->insert(func->end(), body_bb);
           builder.SetInsertPoint(body_bb);
+          if (current_actor)
+            builder.CreateCall(module->getFunction("mc_reduction_tick"),
+                               {current_actor});
 
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
 
@@ -2749,8 +2926,96 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               upd_idx, llvm::ConstantInt::get(i64_type, 1), "map.idx.next");
           builder.CreateStore(next_idx, idx_alloca);
           builder.CreateBr(cond_bb);
+        } else if (iter_sem && iter_sem->kind == TypeKind::Struct) {
+          // Check for Task iteration: for msg : task { ... }
+          auto &st_info = std::get<StructTypeInfo>(iter_sem->detail);
+          if (st_info.name == "Task") {
+            // Get the channel pointer from the actor:
+            // actor->channel is at a known offset.  We pass the actor ptr
+            // to mc_channel_recv which expects (ch, buf).
+            // The actor struct layout has `channel` at a specific offset.
+            // We use a helper: load actor->channel as a ptr.
+            //
+            // actor->channel offset: we GEP into the raw struct.
+            // However, codegen doesn't have the C struct layout.  Instead,
+            // we store the channel pointer at the spawn site into a local
+            // variable, and iterate on it.
+            //
+            // For now, we emit a runtime call pattern:
+            //   actor ptr = iterable (the Task handle)
+            //   channel ptr was stored alongside the task in a companion
+            //   local variable named "<task>.channel".
+
+            // Look for companion channel variable.
+            std::string task_name;
+            if (auto *iter_id = std::get_if<IdentifierNode>(
+                    &range->iterable->data))
+              task_name = std::string(iter_id->name);
+
+            llvm::Value *ch_ptr = nullptr;
+            if (!task_name.empty()) {
+              auto ch_it = locals.find(task_name + ".channel");
+              if (ch_it != locals.end())
+                ch_ptr = builder.CreateLoad(
+                    llvm::PointerType::getUnqual(context),
+                    ch_it->second, "ch.ptr");
+            }
+
+            if (ch_ptr) {
+              // Determine message type.  Default to i64 if unknown.
+              llvm::Type *msg_ll = i64_type;
+              // TODO: Extract element type from generic type parameter.
+
+              // Create message buffer alloca.
+              llvm::AllocaInst *msg_alloca = nullptr;
+              if (range->vars.size() >= 1) {
+                std::string vname(range->vars[0].name);
+                msg_alloca = create_entry_alloca(func, vname, msg_ll);
+                locals[vname] = msg_alloca;
+              } else {
+                msg_alloca = create_entry_alloca(func, ".msg.buf", msg_ll);
+              }
+
+              // Branch to condition (recv loop).
+              builder.CreateBr(cond_bb);
+
+              // Condition: call mc_channel_recv; break if -1.
+              builder.SetInsertPoint(cond_bb);
+              auto *recv_fn = module->getFunction("mc_channel_recv");
+              auto *rc = builder.CreateCall(recv_fn, {ch_ptr, msg_alloca},
+                                             "recv.rc");
+              auto *eof = builder.CreateICmpEQ(
+                  rc, llvm::ConstantInt::get(
+                      llvm::Type::getInt32Ty(context), -1),
+                  "recv.eof");
+              builder.CreateCondBr(eof, exit_bb, body_bb);
+
+              // Body.
+              func->insert(func->end(), body_bb);
+              builder.SetInsertPoint(body_bb);
+              if (current_actor)
+                builder.CreateCall(
+                    module->getFunction("mc_reduction_tick"),
+                    {current_actor});
+              auto &body_block = std::get<BlockNode>(node.body->data);
+              emit_block(body_block);
+              if (!builder.GetInsertBlock()->getTerminator())
+                builder.CreateBr(update_bb);
+
+              // Update block: just loop back to recv.
+              func->insert(func->end(), update_bb);
+              builder.SetInsertPoint(update_bb);
+              builder.CreateBr(cond_bb);
+            } else {
+              // No channel found — skip.
+              builder.CreateBr(exit_bb);
+            }
+          } else {
+            // Non-Task struct iterable — not yet supported.
+            builder.CreateBr(exit_bb);
+          }
         } else {
-          // Non-array/map iterable — not yet supported.
+          // Non-array/map/task iterable — not yet supported.
           builder.CreateBr(exit_bb);
         }
       }
@@ -2774,6 +3039,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       // Body.
       func->insert(func->end(), body_bb);
       builder.SetInsertPoint(body_bb);
+      if (current_actor)
+        builder.CreateCall(module->getFunction("mc_reduction_tick"),
+                           {current_actor});
       auto &body_block = std::get<BlockNode>(node.body->data);
       emit_block(body_block);
       if (!builder.GetInsertBlock()->getTerminator())
@@ -3483,6 +3751,97 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       }
     }
 
+    // ── Task method calls ─────────────────────────────────────────────
+    // Task is a semantic struct wrapping mc_actor*.  obj is the actor ptr.
+    if (obj_sem && obj_sem->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
+      if (sinfo.name == "Task") {
+        if (method == "Alive?") {
+          auto *fn = module->getFunction("mc_task_alive");
+          auto *result = builder.CreateCall(fn, {obj}, "alive");
+          return builder.CreateICmpNE(result,
+              llvm::ConstantInt::get(i64_type, 0), "alive.bool");
+        }
+        if (method == "Cancel") {
+          builder.CreateCall(module->getFunction("mc_task_cancel"), {obj});
+          return nullptr;
+        }
+        if (method == "Term") {
+          builder.CreateCall(module->getFunction("mc_task_term"), {obj});
+          return nullptr;
+        }
+        if (method == "Wait") {
+          auto *func = builder.GetInsertBlock()->getParent();
+          auto *status_alloca = create_entry_alloca(func, "wait.status",
+                                                     i64_type);
+          builder.CreateStore(llvm::ConstantInt::get(i64_type, 0),
+                              status_alloca);
+          auto *result_ptr = builder.CreateCall(
+              module->getFunction("mc_task_wait"),
+              {obj, status_alloca}, "wait.result");
+          // Load the status to check for error.
+          auto *status = builder.CreateLoad(i64_type, status_alloca,
+                                             "wait.status");
+          // MC_ACTOR_COMPLETED == 2
+          auto *is_ok = builder.CreateICmpEQ(status,
+              llvm::ConstantInt::get(i64_type, 2), "wait.ok");
+
+          // The result type depends on the generic type parameter.
+          // For now return the raw pointer — the or-expr handler will
+          // wrap it into a union if needed.  If the parent expects a
+          // specific type, the result_ptr points to a copy of it.
+          // We return result_ptr as an opaque ptr.
+          return result_ptr;
+        }
+        // Fall through to generic struct method handling if not matched.
+      }
+
+      // ── Context method calls (inside spawn body) ─────────────────
+      if (sinfo.name == "Context") {
+        if (method == "Cancelled?") {
+          auto *fn = module->getFunction("mc_context_cancelled");
+          auto *result = builder.CreateCall(fn, {obj}, "cancelled");
+          return builder.CreateICmpNE(result,
+              llvm::ConstantInt::get(i64_type, 0), "cancelled.bool");
+        }
+        if (method == "Send" && !node.args.empty()) {
+          auto *val = emit_expr(*node.args[0]);
+          if (!val) return nullptr;
+          auto *func = builder.GetInsertBlock()->getParent();
+          auto *tmp = create_entry_alloca(func, "send.tmp", val->getType());
+          builder.CreateStore(val, tmp);
+          builder.CreateCall(module->getFunction("mc_context_send"),
+                             {obj, tmp});
+          return nullptr;
+        }
+        if (method == "Exit") {
+          auto *func = builder.GetInsertBlock()->getParent();
+          if (!node.args.empty()) {
+            auto *val = emit_expr(*node.args[0]);
+            if (val) {
+              auto *tmp = create_entry_alloca(func, "exit.tmp",
+                                               val->getType());
+              builder.CreateStore(val, tmp);
+              auto &dl = module->getDataLayout();
+              uint64_t sz = dl.getTypeAllocSize(val->getType());
+              builder.CreateCall(
+                  module->getFunction("mc_context_exit"),
+                  {obj, tmp,
+                   llvm::ConstantInt::get(i64_type, sz)});
+            }
+          } else {
+            auto *null_ptr = llvm::ConstantPointerNull::get(
+                llvm::PointerType::getUnqual(context));
+            builder.CreateCall(
+                module->getFunction("mc_context_exit"),
+                {obj, null_ptr, llvm::ConstantInt::get(i64_type, 0)});
+          }
+          return nullptr;
+        }
+        // Fall through to generic struct method handling if not matched.
+      }
+    }
+
     // Struct method call: obj.Method(args) → StructName.Method(obj, args).
     if (obj_sem && obj_sem->kind == TypeKind::Struct) {
       auto &info = std::get<StructTypeInfo>(obj_sem->detail);
@@ -3624,6 +3983,57 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     return nullptr;
 
   std::string name(ident->name);
+
+  // ── Concurrency intrinsics ──────────────────────────────────────────
+  // These need special handling because they inject the current_actor
+  // pointer or emit inline LLVM instructions.
+
+  if (name == "intrinsic_yield") {
+    // intrinsic_yield() → mc_actor_yield(current_actor)
+    if (current_actor) {
+      builder.CreateCall(module->getFunction("mc_actor_yield"),
+                         {current_actor});
+    }
+    // Outside a spawn block this is a no-op.
+    return llvm::Constant::getNullValue(
+        llvm::PointerType::getUnqual(context));
+  }
+
+  if (name == "intrinsic_atomic_add") {
+    // intrinsic_atomic_add(ptr, val) → atomicrmw add i64* %ptr, i64 %val
+    // The first argument is treated as a pointer to an i64.
+    // We need to get the *address* of the first argument, not its value.
+    auto *val = emit_expr(*node.args[1]);
+    // Get the address of the first argument (must be a variable).
+    auto *ptr_ident = std::get_if<IdentifierNode>(&node.args[0]->data);
+    llvm::Value *ptr = nullptr;
+    if (ptr_ident) {
+      auto it = locals.find(std::string(ptr_ident->name));
+      if (it != locals.end())
+        ptr = it->second; // alloca — this IS the pointer
+    }
+    if (!ptr) {
+      // Fallback: emit the expression as a value (won't be atomic, but
+      // won't crash).  Semantic analysis should catch misuse.
+      return llvm::Constant::getNullValue(i64_type);
+    }
+    return builder.CreateAtomicRMW(llvm::AtomicRMWInst::Add, ptr, val,
+                                   llvm::MaybeAlign(),
+                                   llvm::AtomicOrdering::SequentiallyConsistent);
+  }
+
+  if (name == "intrinsic_trap") {
+    // intrinsic_trap(reason) → mc_actor_trap(current_actor, reason)
+    auto *reason = emit_expr(*node.args[0]);
+    if (current_actor) {
+      builder.CreateCall(module->getFunction("mc_actor_trap"),
+                         {current_actor, reason});
+    }
+    return llvm::Constant::getNullValue(
+        llvm::PointerType::getUnqual(context));
+  }
+
+  // ── Regular function dispatch ───────────────────────────────────────
   std::string link_name;
   if (name == "intrinsic_print")
     link_name = "mc_intrinsic_print";
@@ -3882,6 +4292,277 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   return closure_alloca;
 }
 
+// ===========================================================================
+// Spawn expression
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
+                                       const Node &parent) {
+  has_spawn = true;
+
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  auto *enclosing_func = builder.GetInsertBlock()->getParent();
+
+  // Generate a unique name for this spawn's outlined function.
+  std::string spawn_name = "mc.spawn." + std::to_string(next_spawn_id++);
+
+  // ── Look up captured variables ─────────────────────────────────────
+  std::vector<Analyzer::SpawnCaptureInfo> captures;
+  auto cap_it = analyzer.spawn_captures.find(&parent);
+  if (cap_it != analyzer.spawn_captures.end())
+    captures = cap_it->second;
+
+  // ── Build the closure struct type ──────────────────────────────────
+  // Holds one field per captured variable.
+  std::vector<llvm::Type *> closure_field_types;
+  std::vector<std::string> closure_field_names;
+  for (auto &cap : captures) {
+    auto *ll = llvm_type(cap.type);
+    closure_field_types.push_back(ll);
+    closure_field_names.push_back(cap.name);
+  }
+
+  llvm::StructType *closure_st = nullptr;
+  uint64_t closure_size = 0;
+  if (!closure_field_types.empty()) {
+    closure_st = llvm::StructType::create(context, closure_field_types,
+                                           spawn_name + ".closure");
+    closure_size = module->getDataLayout().getTypeAllocSize(closure_st);
+  }
+
+  // ── Build the outlined function: void(mc_actor*) ───────────────────
+  auto *outlined_fn_type = llvm::FunctionType::get(
+      void_ll_type, {ptr_type}, false);
+  auto *outlined_fn = llvm::Function::Create(
+      outlined_fn_type, llvm::Function::InternalLinkage, spawn_name,
+      module.get());
+  outlined_fn->getArg(0)->setName("actor");
+
+  // ── Emit the outlined function body ────────────────────────────────
+  auto saved_block = builder.GetInsertBlock();
+  auto saved_point = builder.GetInsertPoint();
+  auto saved_locals = locals;
+  auto saved_managed = managed_locals;
+  auto saved_is_main = current_func_is_main;
+  auto saved_actor = current_actor;
+
+  auto *entry = llvm::BasicBlock::Create(context, "entry", outlined_fn);
+  builder.SetInsertPoint(entry);
+
+  locals.clear();
+  managed_locals.clear();
+  current_func_is_main = false;
+  current_actor = outlined_fn->getArg(0);
+
+  // Unpack closure data from actor->closure_data.
+  // The runtime copies the closure struct into the actor's arena, so we
+  // just read it back from the pointer stored in the mc_actor.  However,
+  // we don't have the C struct layout in LLVM IR, so the runtime passes
+  // the closure_data pointer.  We store it in a local and GEP into the
+  // closure struct type.
+  //
+  // The mc_actor struct has closure_data at a known offset.  We'll use
+  // a dedicated runtime helper or a fixed byte offset.  Since mc_actor
+  // is opaque to codegen, we pass the closure_data as the entry arg's
+  // associated data.  The runtime stores it in actor->closure_data and
+  // the worker loop calls entry(actor).  We load it via:
+  //   closure_data = *(void**)(actor + offsetof(mc_actor, closure_data))
+  //
+  // offsetof(mc_actor, closure_data) needs to match the C struct.
+  // mc_actor layout (64-bit): refcount(8) result(8) result_size(8)
+  //   status(8) cancelled(8) lock(40) done_cond(48) arena(8)
+  //   entry(8) closure_data(8) ...
+  // That's fragile.  Instead, generate a tiny C helper.
+  //
+  // Simpler approach: add a runtime function mc_actor_closure_data(actor)
+  // that returns actor->closure_data.
+  //
+  // For now, let's define the offset based on the mc_actor C struct.
+  // A more robust approach: declare mc_actor_closure_data as a runtime fn.
+  //
+  // Actually, the cleanest approach: we already have the closure_data
+  // pointer passed via mc_actor_new.  The outlined function receives the
+  // actor*, and the closure_data was memcpy'd into the arena.
+  // We need to access it.  Let's add a trivial runtime accessor.
+
+  if (closure_st && !captures.empty()) {
+    // Declare or get the accessor: void* mc_actor_get_closure(mc_actor*)
+    auto *accessor = module->getFunction("mc_actor_get_closure");
+    if (!accessor) {
+      accessor = llvm::Function::Create(
+          llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+          llvm::Function::ExternalLinkage, "mc_actor_get_closure",
+          module.get());
+    }
+
+    auto *closure_ptr = builder.CreateCall(accessor, {current_actor},
+                                            "closure.ptr");
+
+    for (size_t i = 0; i < captures.size(); ++i) {
+      auto *field_gep = builder.CreateStructGEP(
+          closure_st, closure_ptr, i, captures[i].name + ".cap");
+      auto *val = builder.CreateLoad(closure_field_types[i], field_gep,
+                                      captures[i].name);
+      auto *alloca = create_entry_alloca(outlined_fn, captures[i].name,
+                                          closure_field_types[i]);
+      builder.CreateStore(val, alloca);
+      locals[captures[i].name] = alloca;
+
+      // Retain shared refcounted captures.
+      if (captures[i].kind == Analyzer::SpawnCaptureKind::Share) {
+        // The runtime already memcpy'd the data, but we need to retain
+        // the refcounted objects so they aren't freed while we use them.
+        TypePtr cap_type = captures[i].type;
+        emit_retain(val, cap_type);
+      }
+    }
+  }
+
+  // If the spawn has a pipe variable (|task|), bind it to the actor ptr.
+  if (node.pipe) {
+    std::string pipe_name(node.pipe->name);
+    auto *alloca = create_entry_alloca(outlined_fn, pipe_name, ptr_type);
+    builder.CreateStore(current_actor, alloca);
+    locals[pipe_name] = alloca;
+  }
+
+  // Emit the spawn body.
+  if (auto *block = std::get_if<BlockNode>(&node.body->data)) {
+    emit_block(*block);
+  } else {
+    // Identifier body (function reference) — call it as a trampoline.
+    auto *body_val = emit_expr(*node.body);
+    // If it returned a value, we could use context_exit, but for
+    // simplicity we just ignore it; the function should use task.Exit().
+    (void)body_val;
+  }
+
+  // Add terminator if needed.
+  if (!builder.GetInsertBlock()->getTerminator())
+    builder.CreateRetVoid();
+
+  llvm::verifyFunction(*outlined_fn);
+
+  // ── Restore enclosing function state ───────────────────────────────
+  builder.SetInsertPoint(saved_block, saved_point);
+  locals = saved_locals;
+  managed_locals = saved_managed;
+  current_func_is_main = saved_is_main;
+  current_actor = saved_actor;
+
+  // ── Pack closure data at the spawn site ────────────────────────────
+  llvm::Value *closure_ptr_val =
+      llvm::ConstantPointerNull::get(ptr_type);
+
+  if (closure_st && !captures.empty()) {
+    auto *closure_alloca = create_entry_alloca(
+        enclosing_func, spawn_name + ".closure", closure_st);
+
+    for (size_t i = 0; i < captures.size(); ++i) {
+      auto *field_gep = builder.CreateStructGEP(
+          closure_st, closure_alloca, i, captures[i].name + ".pack");
+
+      auto local_it = locals.find(captures[i].name);
+      if (local_it != locals.end()) {
+        auto *alloca = local_it->second;
+        auto *val = builder.CreateLoad(closure_field_types[i], alloca,
+                                        captures[i].name + ".cap.val");
+        builder.CreateStore(val, field_gep);
+
+        // Retain shared refcounted captures at the spawn site.
+        if (captures[i].kind == Analyzer::SpawnCaptureKind::Share)
+          emit_retain(val, captures[i].type);
+      } else {
+        builder.CreateStore(
+            llvm::Constant::getNullValue(closure_field_types[i]),
+            field_gep);
+      }
+    }
+    closure_ptr_val = closure_alloca;
+  }
+
+  // ── Create channel if generic type present ─────────────────────────
+  llvm::Value *channel_ptr = nullptr;
+  int64_t channel_elem_size = 0;
+  if (node.generic && !node.generic->type_params.empty()) {
+    // Resolve the channel element type.
+    auto &type_param_node = *node.generic->type_params[0];
+    auto chan_elem_sem = analyzer.resolve_type(type_param_node);
+    auto *chan_elem_ll = llvm_type(chan_elem_sem);
+    channel_elem_size = static_cast<int64_t>(
+        module->getDataLayout().getTypeAllocSize(chan_elem_ll));
+
+    auto *ch = builder.CreateCall(
+        module->getFunction("mc_channel_new"),
+        {llvm::ConstantInt::get(i64_type, channel_elem_size),
+         llvm::ConstantInt::get(i64_type, 0)}, // 0 = default capacity
+        "channel");
+    channel_ptr = ch;
+  }
+
+  // ── Spawn the actor ────────────────────────────────────────────────
+  auto *actor = builder.CreateCall(
+      module->getFunction("mc_executor_spawn"),
+      {outlined_fn,
+       closure_ptr_val,
+       llvm::ConstantInt::get(i64_type, static_cast<int64_t>(closure_size)),
+       llvm::ConstantInt::get(i64_type, 0)}, // 0 = default arena max
+      "actor");
+
+  // Attach channel to actor if present.
+  // We need to store ch into actor->channel.  Use a runtime helper.
+  if (channel_ptr) {
+    auto *attach_fn = module->getFunction("mc_actor_set_channel");
+    if (!attach_fn) {
+      attach_fn = llvm::Function::Create(
+          llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
+          llvm::Function::ExternalLinkage, "mc_actor_set_channel",
+          module.get());
+    }
+    builder.CreateCall(attach_fn, {actor, channel_ptr});
+  }
+
+  // ── Store the actor ptr as the Task handle ─────────────────────────
+  // The actor ptr IS the Task — mc_actor* is our runtime Task handle.
+  // Store it in a local alloca (caller will bind it via DeclAssign).
+
+  // If there's a channel, also store it as a companion local so the
+  // for-range iteration can find it.  The DeclAssign handler will bind
+  // the task name, and we store the channel under "<name>.channel".
+  // Since we don't know the target name yet, we use a temporary.
+  // The channel is returned alongside the actor via a small wrapper.
+
+  // For channel-based spawns, store the channel ptr in a pseudo-local
+  // that the for-range handler can look up.
+  if (channel_ptr) {
+    // We'll store it with a predictable name.  The DeclAssign that
+    // receives this spawn result will rename the actor alloca.  We
+    // stash the channel in a local keyed by the spawn id.
+    std::string ch_local = spawn_name + ".channel";
+    auto *ch_alloca = create_entry_alloca(enclosing_func, ch_local, ptr_type);
+    builder.CreateStore(channel_ptr, ch_alloca);
+    locals[ch_local] = ch_alloca;
+
+    // Also, we'll need to make the DeclAssign handler aware.
+    // Store a mapping from the actor value to the channel local name.
+    // For simplicity, we use a side-channel: after the DeclAssign binds
+    // the task name, we create a "<taskname>.channel" alias.
+    // We handle this by storing the channel under a known key and
+    // having a post-decl-assign hook.  Instead, let's just store the
+    // channel alloca indexed by the actor pointer value — but that's
+    // fragile with LLVM values.
+    //
+    // Simplest approach: return a tagged pair.  But since our codegen
+    // returns a single llvm::Value*, we need another mechanism.
+    //
+    // Pragmatic solution: stash the pending channel in a member variable.
+    // The next DeclAssign that receives this actor ptr will pick it up.
+    pending_channel_alloca_ = ch_alloca;
+  }
+
+  return actor;
+}
+
 llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   std::string name(node.name);
 
@@ -4087,6 +4768,11 @@ void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
     managed_locals.push_back({name, ManagedKind::Array});
   else if (sem->kind == TypeKind::Map)
     managed_locals.push_back({name, ManagedKind::Map});
+  else if (sem->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(sem->detail);
+    if (info.name == "Task")
+      managed_locals.push_back({name, ManagedKind::Task});
+  }
 }
 
 void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
@@ -4123,6 +4809,8 @@ void CodeGen::emit_release_locals() {
       builder.CreateCall(module->getFunction("mc_release_array"), {val});
     else if (ml.kind == ManagedKind::Map)
       builder.CreateCall(module->getFunction("mc_release_map"), {val});
+    else if (ml.kind == ManagedKind::Task)
+      builder.CreateCall(module->getFunction("mc_task_drop"), {val});
   }
 }
 

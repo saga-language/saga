@@ -104,6 +104,26 @@ struct Analyzer {
   /// Maps each FuncExprNode (by Node*) to its list of captured variables.
   std::unordered_map<const Node *, std::vector<CaptureInfo>> node_captures;
 
+  // ── Spawn capture tracking ───────────────────────────────────────────
+
+  /// How a captured variable should be transferred to a spawn block.
+  enum class SpawnCaptureKind : uint8_t {
+    Copy,   // value is trivially copyable (scalars, small structs)
+    Share,  // refcounted type, read-only in both contexts → retain
+    Move,   // variable not used after spawn → transfer ownership
+  };
+
+  /// Information about a single variable captured by a spawn expression.
+  struct SpawnCaptureInfo {
+    std::string name;
+    TypePtr type;
+    SpawnCaptureKind kind = SpawnCaptureKind::Copy;
+  };
+
+  /// Maps each SpawnExprNode (by Node*) to its list of captured variables.
+  std::unordered_map<const Node *, std::vector<SpawnCaptureInfo>>
+      spawn_captures;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
 
@@ -112,6 +132,12 @@ struct Analyzer {
   std::vector<const Node *> closure_node_stack_;
   /// Pointer to the current closure node being resolved (top of stack).
   const Node *pending_closure_node_ = nullptr;
+
+  // ── Spawn resolution state ──────────────────────────────────────────
+  /// Stack of spawn nodes currently being resolved (for nested spawns).
+  std::vector<const Node *> spawn_node_stack_;
+  /// Pointer to the current spawn node being resolved (top of stack).
+  const Node *pending_spawn_node_ = nullptr;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -257,7 +283,7 @@ private:
   void resolve_switch_expr(const SwitchExprNode &node);
   void resolve_for_expr(const ForExprNode &node);
   void resolve_range_expr(const RangeExprNode &node);
-  void resolve_spawn_expr(const SpawnExprNode &node);
+  void resolve_spawn_expr(const SpawnExprNode &node, const Node &parent);
   void resolve_or_expr(const OrExprNode &node);
   void resolve_func_expr(const FuncExprNode &node, const Node &parent);
   void resolve_group_expr(const GroupExprNode &node);
@@ -300,7 +326,7 @@ private:
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node);
   TypePtr check_range_expr(const RangeExprNode &node);
-  TypePtr check_spawn_expr(const SpawnExprNode &node);
+  TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr check_or_expr(const OrExprNode &node);
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);

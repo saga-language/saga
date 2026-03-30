@@ -1013,4 +1013,55 @@ TEST(TypeCheck, IfTypeMatchWithElse) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// Intrinsic type checking
+// ===========================================================================
+
+TEST(TypeCheck, IntrinsicYieldAcceptsNoArgs) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  intrinsic_yield()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntrinsicTrapAcceptsString) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  intrinsic_trap(\"reason\")\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntrinsicAtomicAddAcceptsTwoInts) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x := 0\n"
+      "  old := intrinsic_atomic_add(x, 1)\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntrinsicYieldInsideSpawn) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  spawn |ctx| {\n"
+      "    intrinsic_yield()\n"
+      "    42\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntrinsicTrapInsideSpawn) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  spawn |ctx| {\n"
+      "    intrinsic_trap(\"fatal\")\n"
+      "    42\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
 } // namespace mc

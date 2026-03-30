@@ -327,6 +327,22 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   global_scope->declare(Symbol::builtin(
       "intrinsic_print", SymbolKind::Function,
       make_func_type({types.string_type}, {types.void_type})));
+
+  // intrinsic_yield() — voluntarily yield execution inside a spawn block
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_yield", SymbolKind::Function,
+      make_func_type({}, {types.void_type})));
+
+  // intrinsic_atomic_add(ptr: Int, val: Int) -> Int
+  // Atomically adds val to *ptr and returns the old value.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_atomic_add", SymbolKind::Function,
+      make_func_type({types.int_type, types.int_type}, {types.int_type})));
+
+  // intrinsic_trap(reason: String) — transition actor to ZOMBIE state
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_trap", SymbolKind::Function,
+      make_func_type({types.string_type}, {types.void_type})));
 }
 
 } // namespace mc

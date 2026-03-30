@@ -10,6 +10,1160 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <time.h>
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Arena allocator                                                          */
+/*                                                                          */
+/* Virtual-memory-reservation based bump allocator.  A large virtual region */
+/* is reserved up front with mmap(PROT_NONE).  Physical pages are committed */
+/* on demand via mprotect as the bump pointer advances.  The base address   */
+/* never moves, so all pointers into the arena remain valid for its entire  */
+/* lifetime.  Deallocation is a single munmap of the whole region.          */
+/*                                                                          */
+/* Layout: { char *base, i64 offset, i64 committed, i64 reserved,          */
+/*           i64 max_limit }                                                */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+#ifndef MC_MAX_ARENA_SIZE
+#define MC_MAX_ARENA_SIZE (64 * 1024 * 1024) /* 64 MB default */
+#endif
+
+#ifndef MC_MAX_REDUCTIONS
+#define MC_MAX_REDUCTIONS 1000000
+#endif
+
+#ifndef MC_HEARTBEAT_TIMEOUT_MS
+#define MC_HEARTBEAT_TIMEOUT_MS 5000
+#endif
+
+#ifndef MC_ARENA_INITIAL_COMMIT
+#define MC_ARENA_INITIAL_COMMIT (64 * 1024) /* 64 KB initial commit */
+#endif
+
+#define MC_ARENA_ALIGN 16
+
+typedef struct {
+  char    *base;      /* mmap'd region — never moves                       */
+  int64_t  offset;    /* next free byte (bump pointer)                     */
+  int64_t  committed; /* bytes currently backed by physical pages          */
+  int64_t  reserved;  /* total virtual reservation                         */
+  int64_t  max_limit; /* hard quota — allocation fails if exceeded         */
+} mc_arena;
+
+/* Round `n` up to the nearest multiple of `align` (must be power of 2). */
+static inline int64_t mc_align_up(int64_t n, int64_t align) {
+  return (n + align - 1) & ~(align - 1);
+}
+
+/* Return the system page size, cached after first call. */
+static inline int64_t mc_page_size(void) {
+  static int64_t ps = 0;
+  if (ps == 0) ps = (int64_t)sysconf(_SC_PAGESIZE);
+  return ps;
+}
+
+/*
+ * mc_arena_new  —  reserve virtual address space and commit an initial chunk.
+ *
+ * `max_limit` is the hard memory quota for this arena.  If 0 the compile-time
+ * default MC_MAX_ARENA_SIZE is used.  The virtual reservation is the larger of
+ * max_limit and MC_MAX_ARENA_SIZE (virtual space is free on 64-bit).
+ *
+ * Returns NULL if the mmap or initial commit fails.
+ */
+mc_arena *mc_arena_new(int64_t max_limit) {
+  if (max_limit <= 0) max_limit = MC_MAX_ARENA_SIZE;
+
+  int64_t page = mc_page_size();
+  int64_t reserved = max_limit;
+  if (reserved < MC_MAX_ARENA_SIZE) reserved = MC_MAX_ARENA_SIZE;
+  reserved = mc_align_up(reserved, page);
+
+  /* Reserve the entire virtual region with no access permissions. */
+  void *base = mmap(NULL, (size_t)reserved,
+                    PROT_NONE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                    -1, 0);
+  if (base == MAP_FAILED) return NULL;
+
+  /* Commit the initial chunk so early allocations don't page-fault. */
+  int64_t initial = MC_ARENA_INITIAL_COMMIT;
+  if (initial > reserved) initial = reserved;
+  initial = mc_align_up(initial, page);
+  if (mprotect(base, (size_t)initial, PROT_READ | PROT_WRITE) != 0) {
+    munmap(base, (size_t)reserved);
+    return NULL;
+  }
+
+  mc_arena *a = (mc_arena *)malloc(sizeof(mc_arena));
+  if (!a) {
+    munmap(base, (size_t)reserved);
+    return NULL;
+  }
+  a->base      = (char *)base;
+  a->offset    = 0;
+  a->committed = initial;
+  a->reserved  = reserved;
+  a->max_limit = max_limit;
+  return a;
+}
+
+/*
+ * mc_arena_alloc  —  bump-allocate `size` bytes from the arena.
+ *
+ * Returns a 16-byte-aligned pointer, or NULL if the allocation would exceed
+ * the arena's max_limit (the caller is expected to kill the actor).
+ */
+void *mc_arena_alloc(mc_arena *a, int64_t size) {
+  if (!a || size <= 0) return NULL;
+
+  int64_t aligned = mc_align_up(size, MC_ARENA_ALIGN);
+  int64_t new_offset = a->offset + aligned;
+
+  /* Hard quota check. */
+  if (new_offset > a->max_limit) return NULL;
+
+  /* Commit more pages if needed. */
+  if (new_offset > a->committed) {
+    int64_t page = mc_page_size();
+    /* Commit in chunks: at least double current committed or enough for the
+     * request, whichever is larger, capped at reserved. */
+    int64_t want = a->committed * 2;
+    if (want < new_offset) want = mc_align_up(new_offset, page);
+    if (want > a->reserved) want = a->reserved;
+    want = mc_align_up(want, page);
+
+    if (want > a->committed) {
+      if (mprotect(a->base, (size_t)want, PROT_READ | PROT_WRITE) != 0)
+        return NULL;
+      a->committed = want;
+    }
+
+    /* Even after committing as much as possible, not enough room. */
+    if (new_offset > a->committed) return NULL;
+  }
+
+  void *ptr = a->base + a->offset;
+  a->offset = new_offset;
+  return ptr;
+}
+
+/*
+ * mc_arena_destroy  —  release the entire virtual region in one call.
+ *
+ * After this call every pointer into the arena is invalid.
+ */
+void mc_arena_destroy(mc_arena *a) {
+  if (!a) return;
+  if (a->base) munmap(a->base, (size_t)a->reserved);
+  a->base = NULL;
+  a->offset = 0;
+  a->committed = 0;
+  a->reserved = 0;
+  free(a);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Actor                                                                    */
+/*                                                                          */
+/* An actor is the unit of concurrent execution.  It owns an arena for its  */
+/* working memory and is scheduled by the executor on a pool of OS threads. */
+/*                                                                          */
+/* The mc_actor struct itself is heap-allocated (malloc) and refcounted so   */
+/* it outlives the arena.  The worker holds one ref, the parent's Task      */
+/* handle holds another.  The struct is freed when refcount reaches 0.      */
+/*                                                                          */
+/* Lifecycle: PENDING → RUNNING → COMPLETED | KILLED | ZOMBIE              */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+enum {
+  MC_ACTOR_PENDING   = 0,
+  MC_ACTOR_RUNNING   = 1,
+  MC_ACTOR_COMPLETED = 2,
+  MC_ACTOR_CANCELLED = 3,
+  MC_ACTOR_KILLED    = 4,
+  MC_ACTOR_ZOMBIE    = 5
+};
+
+/* Forward declarations — full definitions follow below. */
+typedef struct mc_actor   mc_actor;
+typedef struct mc_channel mc_channel;
+void mc_channel_close(mc_channel *ch);
+int  mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor);
+
+typedef struct mc_actor {
+  /* -- Stable fields (malloc'd, outlive the arena) ---------------------- */
+  int64_t          refcount;       /* 1 worker + 1 parent Task handle      */
+  void            *result;         /* exit value, copied out before arena   */
+  int64_t          result_size;    /*   dies — always malloc'd             */
+  int64_t          status;         /* MC_ACTOR_{PENDING,RUNNING,...}        */
+  int64_t          cancelled;      /* set by parent Cancel(), read by actor */
+  pthread_mutex_t  lock;           /* guards status transitions             */
+  pthread_cond_t   done_cond;      /* signalled on completion (for Wait())  */
+
+  /* -- Arena-lifetime fields -------------------------------------------- */
+  mc_arena        *arena;
+  void           (*entry)(struct mc_actor *);
+  void            *closure_data;   /* captured vars packed by codegen       */
+  int64_t          closure_size;
+  int64_t          reduction_count;
+  int64_t          last_cycle;     /* monotonic ns timestamp                */
+  mc_channel      *channel;        /* typed channel for Send() / iteration  */
+  void            *result_in_arena;/* set by context_exit, lives in arena   */
+  jmp_buf          trap;           /* setjmp target for panic / quota       */
+} mc_actor;
+
+/* Monotonic clock helper (nanoseconds). */
+static int64_t mc_monotonic_now(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+mc_actor *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
+                       int64_t closure_size, int64_t arena_max) {
+  mc_actor *a = (mc_actor *)calloc(1, sizeof(mc_actor));
+  if (!a) return NULL;
+
+  a->refcount      = 2; /* one for worker, one for parent Task handle */
+  a->status        = MC_ACTOR_PENDING;
+  a->cancelled     = 0;
+  a->result        = NULL;
+  a->result_size   = 0;
+  a->entry         = entry;
+  a->closure_size  = closure_size;
+  a->reduction_count = 0;
+  a->last_cycle    = mc_monotonic_now();
+  a->channel       = NULL;
+
+  pthread_mutex_init(&a->lock, NULL);
+  pthread_cond_init(&a->done_cond, NULL);
+
+  /* Create the actor's arena. */
+  a->arena = mc_arena_new(arena_max);
+  if (!a->arena) {
+    pthread_mutex_destroy(&a->lock);
+    pthread_cond_destroy(&a->done_cond);
+    free(a);
+    return NULL;
+  }
+
+  /* Copy closure data into the actor's arena so it's fully owned. */
+  if (closure_data && closure_size > 0) {
+    a->closure_data = mc_arena_alloc(a->arena, closure_size);
+    if (!a->closure_data) {
+      mc_arena_destroy(a->arena);
+      pthread_mutex_destroy(&a->lock);
+      pthread_cond_destroy(&a->done_cond);
+      free(a);
+      return NULL;
+    }
+    memcpy(a->closure_data, closure_data, (size_t)closure_size);
+  } else {
+    a->closure_data = NULL;
+  }
+
+  return a;
+}
+
+/* Runtime accessor for closure_data — used by codegen to unpack captures
+   without hardcoding struct offsets in LLVM IR. */
+void *mc_actor_get_closure(mc_actor *a) {
+  return a ? a->closure_data : NULL;
+}
+
+/* Runtime setter for channel — used by codegen to attach a channel after
+   mc_executor_spawn() returns the actor. */
+void mc_actor_set_channel(mc_actor *a, mc_channel *ch) {
+  if (a) a->channel = ch;
+}
+
+void mc_actor_retain(mc_actor *a) {
+  if (!a) return;
+  __atomic_add_fetch(&a->refcount, 1, __ATOMIC_SEQ_CST);
+}
+
+void mc_actor_release(mc_actor *a) {
+  if (!a) return;
+  int64_t rc = __atomic_sub_fetch(&a->refcount, 1, __ATOMIC_SEQ_CST);
+  if (rc <= 0) {
+    /* Last ref — free the actor struct itself. */
+    if (a->result) free(a->result);
+    pthread_mutex_destroy(&a->lock);
+    pthread_cond_destroy(&a->done_cond);
+    /* Arena should already be destroyed by the worker. */
+    free(a);
+  }
+}
+
+/*
+ * mc_reduction_tick  —  called at the top of every loop iteration inside
+ *                       a spawned actor.  Checks status poisoning and
+ *                       enforces the CPU quota.
+ *
+ * If the actor has been killed (e.g. by mc_task_term or heartbeat monitor),
+ * it longjmps out immediately.  If the reduction counter exceeds the
+ * compile-time limit, the actor is killed.
+ */
+void mc_reduction_tick(mc_actor *a) {
+  if (!a) return;
+
+  /* Status poisoning — killed externally? */
+  if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == MC_ACTOR_KILLED)
+    longjmp(a->trap, 1);
+
+  a->reduction_count++;
+  if (a->reduction_count > MC_MAX_REDUCTIONS) {
+    __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+    longjmp(a->trap, 1);
+  }
+
+  a->last_cycle = mc_monotonic_now();
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Work-stealing deque                                                      */
+/*                                                                          */
+/* Mutex-protected double-ended queue.  The owning worker pushes/pops from  */
+/* the tail (LIFO for cache locality); thieves steal from the head (FIFO).  */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+#ifndef MC_DEQUE_INITIAL_CAP
+#define MC_DEQUE_INITIAL_CAP 256
+#endif
+
+typedef struct {
+  mc_actor      **buffer;
+  int64_t         head;  /* steal from here (FIFO end) */
+  int64_t         tail;  /* push/pop here  (LIFO end)  */
+  int64_t         cap;
+  pthread_mutex_t lock;
+} mc_deque;
+
+static void mc_deque_init(mc_deque *d) {
+  d->buffer = (mc_actor **)calloc((size_t)MC_DEQUE_INITIAL_CAP,
+                                  sizeof(mc_actor *));
+  d->head = 0;
+  d->tail = 0;
+  d->cap  = MC_DEQUE_INITIAL_CAP;
+  pthread_mutex_init(&d->lock, NULL);
+}
+
+static void mc_deque_destroy(mc_deque *d) {
+  if (!d) return;
+  free(d->buffer);
+  d->buffer = NULL;
+  pthread_mutex_destroy(&d->lock);
+}
+
+static int64_t mc_deque_size_locked(mc_deque *d) {
+  return d->tail - d->head;
+}
+
+/* Grow the ring buffer (caller must hold the lock). */
+static void mc_deque_grow(mc_deque *d) {
+  int64_t new_cap = d->cap * 2;
+  mc_actor **new_buf = (mc_actor **)calloc((size_t)new_cap,
+                                           sizeof(mc_actor *));
+  int64_t n = mc_deque_size_locked(d);
+  for (int64_t i = 0; i < n; i++)
+    new_buf[i] = d->buffer[(d->head + i) % d->cap];
+  free(d->buffer);
+  d->buffer = new_buf;
+  d->head   = 0;
+  d->tail   = n;
+  d->cap    = new_cap;
+}
+
+/* Push an actor onto the tail (owner side). */
+void mc_deque_push(mc_deque *d, mc_actor *actor) {
+  pthread_mutex_lock(&d->lock);
+  if (mc_deque_size_locked(d) >= d->cap)
+    mc_deque_grow(d);
+  d->buffer[d->tail % d->cap] = actor;
+  d->tail++;
+  pthread_mutex_unlock(&d->lock);
+}
+
+/* Pop from the tail (owner side, LIFO). Returns NULL if empty. */
+mc_actor *mc_deque_pop(mc_deque *d) {
+  pthread_mutex_lock(&d->lock);
+  if (mc_deque_size_locked(d) <= 0) {
+    pthread_mutex_unlock(&d->lock);
+    return NULL;
+  }
+  d->tail--;
+  mc_actor *a = d->buffer[d->tail % d->cap];
+  pthread_mutex_unlock(&d->lock);
+  return a;
+}
+
+/* Steal from the head (thief side, FIFO). Returns NULL if empty. */
+mc_actor *mc_deque_steal(mc_deque *d) {
+  pthread_mutex_lock(&d->lock);
+  if (mc_deque_size_locked(d) <= 0) {
+    pthread_mutex_unlock(&d->lock);
+    return NULL;
+  }
+  mc_actor *a = d->buffer[d->head % d->cap];
+  d->head++;
+  pthread_mutex_unlock(&d->lock);
+  return a;
+}
+
+/* Drain all actors from `src` into `dst`.  Used during worker replacement  */
+/* to rescue stranded actors before detaching a stuck thread.               */
+void mc_deque_drain(mc_deque *src, mc_deque *dst) {
+  pthread_mutex_lock(&src->lock);
+  while (mc_deque_size_locked(src) > 0) {
+    mc_actor *a = src->buffer[src->head % src->cap];
+    src->head++;
+    /* Push into dst (acquires dst lock internally). */
+    pthread_mutex_unlock(&src->lock);
+    mc_deque_push(dst, a);
+    pthread_mutex_lock(&src->lock);
+  }
+  pthread_mutex_unlock(&src->lock);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Executor                                                                 */
+/*                                                                          */
+/* A fixed-size thread pool with per-worker deques and a global inject      */
+/* queue.  Workers sleep on a condition variable when idle and are woken     */
+/* instantly when work is submitted.                                        */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+  int64_t          id;       /* index into executor arrays                  */
+  void            *executor; /* back-pointer (cast to mc_executor*)         */
+} mc_worker_ctx;
+
+/* ── Active actor list (for heartbeat monitor) ─────────────────────────── */
+/* A simple array-based list of actors currently being executed.  Protected */
+/* by its own mutex so the monitor thread can scan without contending on    */
+/* the work-stealing deques.                                                */
+
+#ifndef MC_ACTIVE_LIST_CAP
+#define MC_ACTIVE_LIST_CAP 1024
+#endif
+
+typedef struct {
+  mc_actor       **actors;
+  int64_t          len;
+  int64_t          cap;
+  pthread_mutex_t  lock;
+} mc_active_list;
+
+static void mc_active_list_init(mc_active_list *l) {
+  l->actors = (mc_actor **)calloc(MC_ACTIVE_LIST_CAP, sizeof(mc_actor *));
+  l->len    = 0;
+  l->cap    = MC_ACTIVE_LIST_CAP;
+  pthread_mutex_init(&l->lock, NULL);
+}
+
+static void mc_active_list_destroy(mc_active_list *l) {
+  free(l->actors);
+  pthread_mutex_destroy(&l->lock);
+}
+
+static void mc_active_list_add(mc_active_list *l, mc_actor *a) {
+  pthread_mutex_lock(&l->lock);
+  if (l->len >= l->cap) {
+    l->cap *= 2;
+    l->actors = (mc_actor **)realloc(l->actors,
+                                     (size_t)l->cap * sizeof(mc_actor *));
+  }
+  l->actors[l->len++] = a;
+  pthread_mutex_unlock(&l->lock);
+}
+
+static void mc_active_list_remove(mc_active_list *l, mc_actor *a) {
+  pthread_mutex_lock(&l->lock);
+  for (int64_t i = 0; i < l->len; i++) {
+    if (l->actors[i] == a) {
+      l->actors[i] = l->actors[l->len - 1];
+      l->len--;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&l->lock);
+}
+
+typedef struct mc_executor {
+  pthread_t       *threads;
+  mc_worker_ctx   *worker_ctxs;
+  mc_deque        *deques;          /* one per worker slot                  */
+  int64_t          num_workers;
+  mc_deque         inject_queue;    /* global queue for newly spawned actors*/
+  pthread_mutex_t  work_avail_lock;
+  pthread_cond_t   work_avail_cond; /* workers sleep here when idle         */
+  int64_t          shutdown;        /* flag, checked by workers             */
+  mc_active_list   active;          /* actors currently executing           */
+  pthread_t        monitor_thread;  /* heartbeat monitor                    */
+  pthread_mutex_t  monitor_lock;    /* protects monitor condvar             */
+  pthread_cond_t   monitor_cond;    /* woken on shutdown for fast exit      */
+} mc_executor;
+
+/* Singleton executor — initialised by mc_executor_init(). */
+static mc_executor *g_executor = NULL;
+
+/* Random peer selection for stealing. */
+static uint32_t mc_xorshift32(uint32_t *state) {
+  uint32_t x = *state;
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  *state = x;
+  return x;
+}
+
+/* ── Worker thread entry point ─────────────────────────────────────────── */
+
+static void *mc_worker_loop(void *arg) {
+  mc_worker_ctx *ctx = (mc_worker_ctx *)arg;
+  mc_executor *ex = (mc_executor *)ctx->executor;
+  int64_t my_id = ctx->id;
+  mc_deque *my_deque = &ex->deques[my_id];
+
+  /* Seed the PRNG with something unique per worker. */
+  uint32_t rng = (uint32_t)(my_id + 1) * 2654435761u;
+
+  while (1) {
+    /* Check shutdown. */
+    if (__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE))
+      break;
+
+    /* 1. Try own deque. */
+    mc_actor *actor = mc_deque_pop(my_deque);
+
+    /* 2. Try the global inject queue. */
+    if (!actor)
+      actor = mc_deque_steal(&ex->inject_queue);
+
+    /* 3. Try stealing from a random peer. */
+    if (!actor && ex->num_workers > 1) {
+      int64_t victim = (int64_t)(mc_xorshift32(&rng) % (uint32_t)ex->num_workers);
+      if (victim == my_id)
+        victim = (victim + 1) % ex->num_workers;
+      actor = mc_deque_steal(&ex->deques[victim]);
+    }
+
+    /* 4. No work — sleep until signalled. */
+    if (!actor) {
+      pthread_mutex_lock(&ex->work_avail_lock);
+      /* Re-check shutdown and inject queue while holding the lock to
+         avoid a missed-wakeup race. */
+      if (__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_unlock(&ex->work_avail_lock);
+        break;
+      }
+      /* Quick non-blocking peek at the inject queue before sleeping. */
+      actor = mc_deque_steal(&ex->inject_queue);
+      if (actor) {
+        pthread_mutex_unlock(&ex->work_avail_lock);
+      } else {
+        pthread_cond_wait(&ex->work_avail_cond, &ex->work_avail_lock);
+        pthread_mutex_unlock(&ex->work_avail_lock);
+        continue; /* loop back and try again */
+      }
+    }
+
+    /* ── Execute the actor ──────────────────────────────────────────── */
+    actor->last_cycle = mc_monotonic_now();
+    actor->reduction_count = 0;
+    mc_active_list_add(&ex->active, actor);
+
+    /* Track the final status locally — only published under the lock
+       after cleanup so that waiters never see a terminal status while
+       the arena is still alive. */
+    int64_t final_status;
+
+    /* Set status to RUNNING *before* setjmp so the actor can read it. */
+    __atomic_store_n(&actor->status, MC_ACTOR_RUNNING, __ATOMIC_RELEASE);
+
+    if (setjmp(actor->trap) == 0) {
+      /* Normal path: run the actor's entry function. */
+      actor->entry(actor);
+      /* Default to COMPLETED.  context_exit may have set a different
+         status — we capture whatever is current. */
+      final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
+      if (final_status == MC_ACTOR_RUNNING)
+        final_status = MC_ACTOR_COMPLETED;
+    } else {
+      /* longjmp path — actor was killed, trapped, or exited. */
+      final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
+      if (final_status == MC_ACTOR_RUNNING) {
+        /* If result_in_arena is set, context_exit was called — treat as
+           completed.  Otherwise default to killed. */
+        final_status = actor->result_in_arena ? MC_ACTOR_COMPLETED
+                                              : MC_ACTOR_KILLED;
+      }
+    }
+
+    /* Copy result out of arena BEFORE destroying it. */
+    if (actor->result_in_arena && actor->result_size > 0
+        && actor->result == NULL) {
+      actor->result = malloc((size_t)actor->result_size);
+      if (actor->result)
+        memcpy(actor->result, actor->result_in_arena,
+               (size_t)actor->result_size);
+    }
+
+    /* Tear down the arena. */
+    mc_arena_destroy(actor->arena);
+    actor->arena = NULL;
+
+    /* Remove from active list before signalling waiters. */
+    mc_active_list_remove(&ex->active, actor);
+
+    /* Close the channel so any parent iterating via recv sees EOF. */
+    if (actor->channel)
+      mc_channel_close(actor->channel);
+
+    /* Publish the final status and signal waiters under the lock.
+       This guarantees that anyone waking from mc_task_wait() sees
+       arena == NULL and result fully populated. */
+    pthread_mutex_lock(&actor->lock);
+    actor->status = final_status;
+    pthread_cond_signal(&actor->done_cond);
+    pthread_mutex_unlock(&actor->lock);
+
+    /* Drop the worker's reference. */
+    mc_actor_release(actor);
+  }
+
+  return NULL;
+}
+
+/* ── Public executor API ───────────────────────────────────────────────── */
+
+/*
+ * mc_executor_init  —  create the global executor and spawn worker threads.
+ *
+ * `num_workers` = 0 means auto-detect (hardware concurrency).
+ * Must be called once before any mc_executor_spawn().
+ */
+/* ── Heartbeat monitor ──────────────────────────────────────────────────── */
+/*                                                                          */
+/* A dedicated thread that periodically scans all active actors.  If an     */
+/* actor's last_cycle timestamp is older than MC_HEARTBEAT_TIMEOUT_MS, the  */
+/* monitor sets its status to KILLED (status poisoning).  The actor will    */
+/* exit on its next reduction tick or blocking channel operation.            */
+/*                                                                          */
+/* If the actor is STILL running after a second timeout period, the monitor */
+/* assumes it is stuck in an FFI/syscall and logs a warning.  The worker    */
+/* replacement mechanism (mc_executor_replace_worker) could be triggered    */
+/* here in the future; for now we just poison and warn.                     */
+
+static void *mc_heartbeat_monitor(void *arg) {
+  mc_executor *ex = (mc_executor *)arg;
+  int64_t timeout_ns = (int64_t)MC_HEARTBEAT_TIMEOUT_MS * 1000000LL;
+  int64_t check_interval_ms = MC_HEARTBEAT_TIMEOUT_MS / 2;
+  if (check_interval_ms < 100) check_interval_ms = 100;
+
+  while (!__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE)) {
+    /* Sleep for check_interval, but wake immediately on shutdown. */
+    struct timespec abs_ts;
+    clock_gettime(CLOCK_REALTIME, &abs_ts);
+    abs_ts.tv_sec  += check_interval_ms / 1000;
+    abs_ts.tv_nsec += (check_interval_ms % 1000) * 1000000L;
+    if (abs_ts.tv_nsec >= 1000000000L) {
+      abs_ts.tv_sec  += 1;
+      abs_ts.tv_nsec -= 1000000000L;
+    }
+
+    pthread_mutex_lock(&ex->monitor_lock);
+    pthread_cond_timedwait(&ex->monitor_cond, &ex->monitor_lock, &abs_ts);
+    pthread_mutex_unlock(&ex->monitor_lock);
+
+    if (__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE))
+      break;
+
+    int64_t now = mc_monotonic_now();
+
+    pthread_mutex_lock(&ex->active.lock);
+    for (int64_t i = 0; i < ex->active.len; i++) {
+      mc_actor *a = ex->active.actors[i];
+      int64_t st = __atomic_load_n(&a->status, __ATOMIC_ACQUIRE);
+      if (st != MC_ACTOR_RUNNING) continue;
+
+      int64_t last = __atomic_load_n(&a->last_cycle, __ATOMIC_ACQUIRE);
+      int64_t elapsed = now - last;
+
+      if (elapsed > timeout_ns) {
+        /* First timeout: poison the actor. */
+        __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+        /* Also close the channel to unblock any waiting send. */
+        if (a->channel)
+          mc_channel_close(a->channel);
+      }
+    }
+    pthread_mutex_unlock(&ex->active.lock);
+  }
+
+  return NULL;
+}
+
+void mc_executor_init(int64_t num_workers) {
+  if (g_executor) return; /* already initialised */
+
+  if (num_workers <= 0) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    num_workers = (n > 0) ? (int64_t)n : 4;
+  }
+
+  mc_executor *ex = (mc_executor *)calloc(1, sizeof(mc_executor));
+  ex->num_workers = num_workers;
+  ex->shutdown    = 0;
+
+  pthread_mutex_init(&ex->work_avail_lock, NULL);
+  pthread_cond_init(&ex->work_avail_cond, NULL);
+
+  mc_deque_init(&ex->inject_queue);
+
+  ex->deques = (mc_deque *)calloc((size_t)num_workers, sizeof(mc_deque));
+  for (int64_t i = 0; i < num_workers; i++)
+    mc_deque_init(&ex->deques[i]);
+
+  ex->worker_ctxs = (mc_worker_ctx *)calloc((size_t)num_workers,
+                                             sizeof(mc_worker_ctx));
+  ex->threads = (pthread_t *)calloc((size_t)num_workers, sizeof(pthread_t));
+
+  mc_active_list_init(&ex->active);
+  pthread_mutex_init(&ex->monitor_lock, NULL);
+  pthread_cond_init(&ex->monitor_cond, NULL);
+
+  g_executor = ex;
+
+  for (int64_t i = 0; i < num_workers; i++) {
+    ex->worker_ctxs[i].id = i;
+    ex->worker_ctxs[i].executor = ex;
+    pthread_create(&ex->threads[i], NULL, mc_worker_loop,
+                   &ex->worker_ctxs[i]);
+  }
+
+  /* Start the heartbeat monitor. */
+  pthread_create(&ex->monitor_thread, NULL, mc_heartbeat_monitor, ex);
+}
+
+/*
+ * mc_executor_spawn  —  create a new actor and schedule it for execution.
+ *
+ * Returns a pointer to the actor (the parent's Task handle).  The caller
+ * owns one reference; the worker holds the other.
+ */
+mc_actor *mc_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
+                            int64_t closure_size, int64_t arena_max) {
+  if (!g_executor) return NULL;
+
+  mc_actor *actor = mc_actor_new(entry, closure_data, closure_size, arena_max);
+  if (!actor) return NULL;
+
+  mc_deque_push(&g_executor->inject_queue, actor);
+
+  /* Wake one idle worker. */
+  pthread_mutex_lock(&g_executor->work_avail_lock);
+  pthread_cond_signal(&g_executor->work_avail_cond);
+  pthread_mutex_unlock(&g_executor->work_avail_lock);
+
+  return actor;
+}
+
+/*
+ * mc_executor_schedule  —  push an already-created actor into the executor.
+ *
+ * Use this when you need to configure the actor (e.g. attach a channel)
+ * between creation and scheduling.  The actor must have been created with
+ * mc_actor_new().
+ */
+void mc_executor_schedule(mc_actor *actor) {
+  if (!g_executor || !actor) return;
+  mc_deque_push(&g_executor->inject_queue, actor);
+  pthread_mutex_lock(&g_executor->work_avail_lock);
+  pthread_cond_signal(&g_executor->work_avail_cond);
+  pthread_mutex_unlock(&g_executor->work_avail_lock);
+}
+
+/*
+ * mc_executor_shutdown  —  signal all workers to stop and join them.
+ */
+void mc_executor_shutdown(void) {
+  if (!g_executor) return;
+  mc_executor *ex = g_executor;
+
+  __atomic_store_n(&ex->shutdown, 1, __ATOMIC_RELEASE);
+
+  /* Wake all workers so they see the shutdown flag. */
+  pthread_mutex_lock(&ex->work_avail_lock);
+  pthread_cond_broadcast(&ex->work_avail_cond);
+  pthread_mutex_unlock(&ex->work_avail_lock);
+
+  for (int64_t i = 0; i < ex->num_workers; i++)
+    pthread_join(ex->threads[i], NULL);
+
+  /* Wake and join the heartbeat monitor. */
+  pthread_mutex_lock(&ex->monitor_lock);
+  pthread_cond_signal(&ex->monitor_cond);
+  pthread_mutex_unlock(&ex->monitor_lock);
+  pthread_join(ex->monitor_thread, NULL);
+
+  /* Clean up. */
+  for (int64_t i = 0; i < ex->num_workers; i++)
+    mc_deque_destroy(&ex->deques[i]);
+  mc_deque_destroy(&ex->inject_queue);
+  mc_active_list_destroy(&ex->active);
+
+  pthread_mutex_destroy(&ex->monitor_lock);
+  pthread_cond_destroy(&ex->monitor_cond);
+  pthread_mutex_destroy(&ex->work_avail_lock);
+  pthread_cond_destroy(&ex->work_avail_cond);
+
+  free(ex->threads);
+  free(ex->worker_ctxs);
+  free(ex->deques);
+  free(ex);
+  g_executor = NULL;
+}
+
+/*
+ * mc_executor_replace_worker  —  abandon a stuck worker and spawn a
+ * replacement.  The old thread is detached (leaked); its deque is drained
+ * into the inject queue first, and a fresh deque is allocated for the
+ * replacement so there is no contention.
+ */
+void mc_executor_replace_worker(int64_t worker_id) {
+  if (!g_executor) return;
+  mc_executor *ex = g_executor;
+  if (worker_id < 0 || worker_id >= ex->num_workers) return;
+
+  /* Drain stranded actors into the global inject queue. */
+  mc_deque_drain(&ex->deques[worker_id], &ex->inject_queue);
+
+  /* Destroy the old deque and create a fresh one. */
+  mc_deque_destroy(&ex->deques[worker_id]);
+  mc_deque_init(&ex->deques[worker_id]);
+
+  /* Detach the stuck thread — it keeps running but we no longer join it. */
+  pthread_detach(ex->threads[worker_id]);
+
+  /* Spawn a replacement. */
+  ex->worker_ctxs[worker_id].id = worker_id;
+  ex->worker_ctxs[worker_id].executor = ex;
+  pthread_create(&ex->threads[worker_id], NULL, mc_worker_loop,
+                 &ex->worker_ctxs[worker_id]);
+
+  /* Wake the new worker in case there's work. */
+  pthread_mutex_lock(&ex->work_avail_lock);
+  pthread_cond_signal(&ex->work_avail_cond);
+  pthread_mutex_unlock(&ex->work_avail_lock);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Task API                                                                 */
+/*                                                                          */
+/* Called from the parent / spawning thread.  These operate on the          */
+/* mc_actor* that mc_executor_spawn() returned (the "Task handle").         */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * mc_task_alive  —  returns 1 if the actor is still running or pending.
+ */
+int64_t mc_task_alive(mc_actor *a) {
+  if (!a) return 0;
+  pthread_mutex_lock(&a->lock);
+  int alive = (a->status == MC_ACTOR_PENDING ||
+               a->status == MC_ACTOR_RUNNING);
+  pthread_mutex_unlock(&a->lock);
+  return alive ? 1 : 0;
+}
+
+/*
+ * mc_task_cancel  —  ask the actor to stop.  The actor must poll
+ *                    mc_context_cancelled() to honour this.
+ */
+void mc_task_cancel(mc_actor *a) {
+  if (!a) return;
+  __atomic_store_n(&a->cancelled, 1, __ATOMIC_RELEASE);
+}
+
+/*
+ * mc_task_term  —  immediately kill the actor.  If it is blocked on a
+ *                  channel the channel is closed to unblock it; on its
+ *                  next reduction tick or blocking call it will longjmp
+ *                  out (status poisoning).
+ */
+void mc_task_term(mc_actor *a) {
+  if (!a) return;
+  pthread_mutex_lock(&a->lock);
+  if (a->status == MC_ACTOR_PENDING || a->status == MC_ACTOR_RUNNING) {
+    a->status = MC_ACTOR_KILLED;
+    if (a->channel)
+      mc_channel_close(a->channel);
+  }
+  /* If the actor already finished, term is a no-op. */
+  pthread_cond_signal(&a->done_cond);
+  pthread_mutex_unlock(&a->lock);
+}
+
+/*
+ * mc_task_wait  —  block until the actor reaches a terminal status.
+ *                  Returns a pointer to the result (malloc'd, outlives
+ *                  the arena) or NULL if no result was set.
+ *
+ *                  `out_status` is set to the terminal status if non-NULL.
+ */
+void *mc_task_wait(mc_actor *a, int64_t *out_status) {
+  if (!a) {
+    if (out_status) *out_status = MC_ACTOR_KILLED;
+    return NULL;
+  }
+  pthread_mutex_lock(&a->lock);
+  while (a->status < MC_ACTOR_COMPLETED)
+    pthread_cond_wait(&a->done_cond, &a->lock);
+  int64_t st = a->status;
+  pthread_mutex_unlock(&a->lock);
+
+  if (out_status) *out_status = st;
+  return a->result;
+}
+
+/*
+ * mc_task_drop  —  release the parent's reference.  Called when the Task
+ *                  handle goes out of scope in generated code.
+ */
+void mc_task_drop(mc_actor *a) {
+  mc_actor_release(a);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Context API                                                              */
+/*                                                                          */
+/* Called from inside the spawned actor.  The actor receives a pointer to   */
+/* its own mc_actor as the "context".                                       */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * mc_context_cancelled  —  returns 1 if the parent called mc_task_cancel.
+ */
+int64_t mc_context_cancelled(mc_actor *a) {
+  if (!a) return 0;
+  return __atomic_load_n(&a->cancelled, __ATOMIC_ACQUIRE) ? 1 : 0;
+}
+
+/*
+ * mc_context_exit  —  terminate the actor with a return value.
+ *
+ * `value` must point to data inside the actor's arena (or stack).
+ * The worker loop copies it to a malloc'd buffer before destroying
+ * the arena.
+ *
+ * Does not return — calls longjmp.
+ */
+void mc_context_exit(mc_actor *a, void *value, int64_t size) {
+  if (!a) return;
+  a->result_in_arena = value;
+  a->result_size     = size;
+  /* Do NOT set status here — the worker loop publishes the final status
+     under the lock after arena cleanup.  We stash the desired status in
+     a field the worker reads.  For context_exit the desired status is
+     always COMPLETED; the worker detects this via result_in_arena being
+     set and final_status still being RUNNING → it promotes to COMPLETED. */
+  longjmp(a->trap, 1);
+}
+
+/*
+ * mc_context_send  —  push a value into the actor's channel.
+ *
+ * Non-blocking from the actor's perspective unless the channel buffer is
+ * full, in which case it blocks until a consumer drains an element.
+ * Resets the reduction counter (I/O counts as yielding).
+ */
+int mc_context_send(mc_actor *a, const void *data) {
+  if (!a || !a->channel) return -1;
+  return mc_channel_send(a->channel, data, a);
+}
+
+/*
+ * mc_actor_yield  —  voluntarily yield execution and reset the reduction
+ *                    counter.  Called by the yield intrinsic.
+ */
+#include <sched.h>
+
+void mc_actor_yield(mc_actor *a) {
+  if (!a) return;
+  sched_yield();
+  a->reduction_count = 0;
+  a->last_cycle = mc_monotonic_now();
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Channel                                                                  */
+/*                                                                          */
+/* Fixed-size ring buffer for transferring data between actors.  Data is    */
+/* copied (ownership transfer) — the sender retains no reference.           */
+/*                                                                          */
+/* mc_channel_send blocks if the buffer is full.                            */
+/* mc_channel_recv blocks if the buffer is empty.                           */
+/* mc_channel_close wakes all waiters; subsequent recv returns -1 once the  */
+/* buffer drains.                                                           */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+#ifndef MC_CHANNEL_DEFAULT_CAP
+#define MC_CHANNEL_DEFAULT_CAP 64
+#endif
+
+struct mc_channel {
+  char           *buffer;      /* ring buffer: capacity * elem_size bytes  */
+  int64_t         elem_size;
+  int64_t         capacity;    /* fixed at creation                        */
+  int64_t         head;        /* read position                            */
+  int64_t         tail;        /* write position                           */
+  int64_t         count;       /* items currently in the buffer            */
+  int             closed;
+  pthread_mutex_t lock;
+  pthread_cond_t  not_empty;   /* recv waits here                         */
+  pthread_cond_t  not_full;    /* send waits here                         */
+};
+
+/*
+ * mc_channel_new  —  create a channel with a fixed ring buffer.
+ *
+ * `elem_size` is the byte size of each element.
+ * `capacity`  is the max number of elements; 0 → MC_CHANNEL_DEFAULT_CAP.
+ */
+mc_channel *mc_channel_new(int64_t elem_size, int64_t capacity) {
+  if (elem_size <= 0) return NULL;
+  if (capacity <= 0) capacity = MC_CHANNEL_DEFAULT_CAP;
+
+  mc_channel *ch = (mc_channel *)calloc(1, sizeof(mc_channel));
+  if (!ch) return NULL;
+
+  ch->buffer    = (char *)calloc((size_t)capacity, (size_t)elem_size);
+  if (!ch->buffer) { free(ch); return NULL; }
+
+  ch->elem_size = elem_size;
+  ch->capacity  = capacity;
+  ch->head      = 0;
+  ch->tail      = 0;
+  ch->count     = 0;
+  ch->closed    = 0;
+
+  pthread_mutex_init(&ch->lock, NULL);
+  pthread_cond_init(&ch->not_empty, NULL);
+  pthread_cond_init(&ch->not_full, NULL);
+  return ch;
+}
+
+/*
+ * mc_channel_send  —  copy `data` into the channel (blocking if full).
+ *
+ * `actor` may be NULL (for sends from the main thread).  When non-NULL the
+ * function checks status poisoning so a killed actor unblocks immediately.
+ *
+ * Returns  0 on success, -1 if the channel is closed.
+ */
+int mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor) {
+  if (!ch || !data) return -1;
+
+  pthread_mutex_lock(&ch->lock);
+
+  /* Block while full — respect close and actor kill. */
+  while (ch->count == ch->capacity && !ch->closed) {
+    if (actor && __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE)
+                    == MC_ACTOR_KILLED) {
+      pthread_mutex_unlock(&ch->lock);
+      longjmp(actor->trap, 1);
+    }
+    pthread_cond_wait(&ch->not_full, &ch->lock);
+  }
+
+  if (ch->closed) {
+    pthread_mutex_unlock(&ch->lock);
+    return -1;
+  }
+
+  /* Copy element into the ring buffer. */
+  memcpy(ch->buffer + (ch->tail * ch->elem_size), data,
+         (size_t)ch->elem_size);
+  ch->tail = (ch->tail + 1) % ch->capacity;
+  ch->count++;
+
+  /* Reset the actor's reduction counter (I/O counts as yielding). */
+  if (actor)
+    actor->reduction_count = 0;
+
+  pthread_cond_signal(&ch->not_empty);
+  pthread_mutex_unlock(&ch->lock);
+  return 0;
+}
+
+/*
+ * mc_channel_recv  —  read the next element into `out_buf` (blocking).
+ *
+ * Returns  0 on success.
+ * Returns -1 if the channel is closed AND the buffer is drained (EOF).
+ */
+int mc_channel_recv(mc_channel *ch, void *out_buf) {
+  if (!ch || !out_buf) return -1;
+
+  pthread_mutex_lock(&ch->lock);
+
+  /* Block while empty — break out when data arrives or channel closes. */
+  while (ch->count == 0 && !ch->closed)
+    pthread_cond_wait(&ch->not_empty, &ch->lock);
+
+  /* Closed with nothing left → EOF. */
+  if (ch->count == 0 && ch->closed) {
+    pthread_mutex_unlock(&ch->lock);
+    return -1;
+  }
+
+  /* Copy element out of the ring buffer. */
+  memcpy(out_buf, ch->buffer + (ch->head * ch->elem_size),
+         (size_t)ch->elem_size);
+  ch->head = (ch->head + 1) % ch->capacity;
+  ch->count--;
+
+  pthread_cond_signal(&ch->not_full);
+  pthread_mutex_unlock(&ch->lock);
+  return 0;
+}
+
+/*
+ * mc_channel_close  —  mark the channel closed, wake all waiters.
+ *
+ * Safe to call multiple times.  After close, send returns -1.  recv
+ * continues to drain buffered data, then returns -1.
+ */
+void mc_channel_close(mc_channel *ch) {
+  if (!ch) return;
+
+  pthread_mutex_lock(&ch->lock);
+  ch->closed = 1;
+  pthread_cond_broadcast(&ch->not_empty);
+  pthread_cond_broadcast(&ch->not_full);
+  pthread_mutex_unlock(&ch->lock);
+}
+
+/*
+ * mc_channel_destroy  —  free all channel resources.
+ *
+ * The channel must already be closed and no threads may be blocked on it.
+ */
+void mc_channel_destroy(mc_channel *ch) {
+  if (!ch) return;
+  free(ch->buffer);
+  pthread_mutex_destroy(&ch->lock);
+  pthread_cond_destroy(&ch->not_empty);
+  pthread_cond_destroy(&ch->not_full);
+  free(ch);
+}
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* String representation                                                    */
@@ -24,6 +1178,36 @@ typedef struct {
   int64_t len;
   int64_t refcount;
 } mc_string;
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* mc_actor_trap  —  transition actor to ZOMBIE state                       */
+/*                                                                          */
+/* The actor's arena is NOT destroyed so a supervisor can inspect it.        */
+/* Called by the intrinsic_trap() Saga intrinsic from inside a spawn block.  */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+void mc_actor_trap(mc_actor *a, mc_string *reason) {
+  if (!a) return;
+
+  __atomic_store_n(&a->status, MC_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
+
+  /* Store a copy of the reason string in heap memory (outlives arena). */
+  if (reason) {
+    mc_string *copy = (mc_string *)malloc(sizeof(mc_string) + reason->len + 1);
+    if (copy) {
+      char *buf = (char *)copy + sizeof(mc_string);
+      memcpy(buf, reason->data, reason->len);
+      buf[reason->len] = '\0';
+      copy->data = buf;
+      copy->len = reason->len;
+      copy->refcount = 1;
+      a->result = copy;
+      a->result_size = sizeof(mc_string);
+    }
+  }
+
+  longjmp(a->trap, 1);
+}
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* String refcounting                                                       */
@@ -561,4 +1745,118 @@ void mc_intrinsic_print(const mc_string *s) {
     fwrite(s->data, 1, (size_t)s->len, stdout);
   }
   fflush(stdout);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Arena-aware allocation helpers                                           */
+/*                                                                          */
+/* These mirror mc_alloc_string / mc_array_new / mc_map_new but allocate    */
+/* from an arena instead of malloc.  The refcount is set to -1 (static /    */
+/* never-freed) because the arena owns the memory — individual objects are  */
+/* not freed; the entire arena is munmap'd at once.                         */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+mc_string *mc_arena_alloc_string(mc_arena *a, const char *buf, int64_t len) {
+  if (!a) return NULL;
+
+  mc_string *s = (mc_string *)mc_arena_alloc(a, (int64_t)sizeof(mc_string));
+  if (!s) return NULL;
+
+  char *data = (char *)mc_arena_alloc(a, len > 0 ? len : 1);
+  if (!data) return NULL;
+  if (len > 0 && buf) memcpy(data, buf, (size_t)len);
+
+  s->data     = data;
+  s->len      = len;
+  s->refcount = -1; /* arena-owned: never individually freed */
+  return s;
+}
+
+mc_array *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
+                               int64_t initial_cap) {
+  if (!a) return NULL;
+  if (initial_cap < 4) initial_cap = 4;
+
+  mc_array *arr = (mc_array *)mc_arena_alloc(a, (int64_t)sizeof(mc_array));
+  if (!arr) return NULL;
+
+  void *data = mc_arena_alloc(a, elem_size * initial_cap);
+  if (!data) return NULL;
+
+  arr->data      = data;
+  arr->len       = 0;
+  arr->cap       = initial_cap;
+  arr->elem_size = elem_size;
+  arr->refcount  = -1; /* arena-owned */
+  return arr;
+}
+
+mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
+  if (!a) return NULL;
+
+  int64_t initial_ecap = 8;
+  int64_t initial_icap = 16;
+
+  mc_map *m = (mc_map *)mc_arena_alloc(a, (int64_t)sizeof(mc_map));
+  if (!m) return NULL;
+
+  mc_map_entry *entries = (mc_map_entry *)mc_arena_alloc(
+      a, initial_ecap * (int64_t)sizeof(mc_map_entry));
+  if (!entries) return NULL;
+
+  int64_t *indices = (int64_t *)mc_arena_alloc(
+      a, initial_icap * (int64_t)sizeof(int64_t));
+  if (!indices) return NULL;
+
+  for (int64_t i = 0; i < initial_icap; i++)
+    indices[i] = MC_MAP_EMPTY;
+
+  m->entries     = entries;
+  m->indices     = indices;
+  m->len         = 0;
+  m->entries_cap = initial_ecap;
+  m->index_cap   = initial_icap;
+  m->key_size    = (key_size < 0) ? (int64_t)sizeof(void *) : key_size;
+  m->val_size    = val_size;
+  m->refcount    = -1; /* arena-owned */
+  return m;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Copy-on-Write helpers                                                    */
+/*                                                                          */
+/* These create a deep copy of a refcounted object into a target arena.     */
+/* Called when a shared object is about to be mutated inside a spawn block.  */
+/*                                                                          */
+/* The COW barrier pattern (emitted by codegen):                            */
+/*   if (obj->refcount > 1) obj = mc_cow_copy_*(arena, obj);               */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * mc_cow_copy_string  —  deep-copy a string into an arena.
+ */
+mc_string *mc_cow_copy_string(mc_arena *a, mc_string *src) {
+  if (!a || !src) return src;
+  mc_string *copy = mc_arena_alloc_string(a, src->data, src->len);
+  if (copy) mc_release_string(src); /* drop the shared ref */
+  return copy ? copy : src;         /* fallback to original on alloc failure */
+}
+
+/*
+ * mc_cow_copy_array  —  deep-copy an array into an arena.
+ *
+ * Elements are shallow-copied (memcpy).  For arrays of refcounted types,
+ * the caller (codegen) must recursively COW-copy each element.
+ */
+mc_array *mc_cow_copy_array(mc_arena *a, mc_array *src) {
+  if (!a || !src) return src;
+  mc_array *copy = mc_arena_alloc_array(a, src->elem_size, src->cap);
+  if (!copy) return src;
+
+  if (src->len > 0 && src->data)
+    memcpy(copy->data, src->data, (size_t)(src->elem_size * src->len));
+  copy->len = src->len;
+
+  mc_release_array(src);
+  return copy;
 }
