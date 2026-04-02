@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "semantic/analyzer.hpp"
+#include "semantic/sgi.hpp"
 #include "frontend/parser.hpp"
 
 #include <algorithm>
@@ -38,6 +39,23 @@ PackageResolver::find_package_dir(const std::string &import_path) const {
   for (auto &base : search_paths) {
     std::string candidate = base + "/" + import_path;
     if (fs::is_directory(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+std::string
+PackageResolver::find_sgi_file(const std::string &import_path) const {
+  // Extract package name from import path (last segment).
+  auto last_slash = import_path.rfind('/');
+  std::string pkg_name = (last_slash != std::string::npos)
+                             ? import_path.substr(last_slash + 1)
+                             : import_path;
+  std::string filename = pkg_name + ".sgi";
+
+  for (auto &base : sgi_search_paths) {
+    std::string candidate = base + "/" + filename;
+    if (fs::is_regular_file(candidate))
       return candidate;
   }
   return {};
@@ -548,6 +566,19 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   if (package_resolver && package_resolver->in_progress.count(import_path)) {
     error(span, std::format("circular import detected: '{}'", import_path));
     return builtins.error_type;
+  }
+
+  // Check for pre-compiled .sgi interface file.
+  if (package_resolver) {
+    std::string sgi_path = package_resolver->find_sgi_file(import_path);
+    if (!sgi_path.empty()) {
+      auto sgi = load_sgi(sgi_path);
+      if (sgi) {
+        auto module_type = sgi_to_module_type(*sgi, import_path);
+        package_resolver->cache[import_path] = module_type;
+        return module_type;
+      }
+    }
   }
 
   // Resolve the filesystem path.

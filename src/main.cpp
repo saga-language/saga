@@ -6,6 +6,7 @@
 #include "frontend/parser.hpp"
 #include "ir/codegen.hpp"
 #include "semantic/analyzer.hpp"
+#include "semantic/sgi.hpp"
 
 #include <filesystem>
 #include <format>
@@ -47,9 +48,12 @@ static void usage(const char *prog) {
   std::cerr
       << "  --emit-ir    Write LLVM IR to <name>.ll instead of compiling\n";
   std::cerr << "  --emit-obj    Write package to object file\n";
+  std::cerr << "  --lib        Build as library (.o + .sgi, no link)\n";
   std::cerr << "  --dump-ir    Print LLVM IR to stderr\n";
   std::cerr << "  -o <file>    Output file name (default: a.out)\n";
   std::cerr << "  -I <dir>     Add directory to package search path\n";
+  std::cerr
+      << "  --sgi-path <dir>  Add directory to .sgi search path\n";
 }
 
 int main(int argc, char **argv) {
@@ -59,8 +63,10 @@ int main(int argc, char **argv) {
   std::string output_path;
   bool emit_ir = false;
   bool dump_ir = false;
-  bool emit_obj = false; // temporary until --lib supported
+  bool emit_obj = false;
+  bool lib_mode = false;
   std::vector<std::string> search_paths;
+  std::vector<std::string> sgi_search_paths;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -70,6 +76,10 @@ int main(int argc, char **argv) {
       dump_ir = true;
     } else if (arg == "--emit-obj") {
       emit_obj = true;
+    } else if (arg == "--lib") {
+      lib_mode = true;
+    } else if (arg == "--sgi-path" && i + 1 < argc) {
+      sgi_search_paths.push_back(argv[++i]);
     } else if (arg == "-o" && i + 1 < argc) {
       output_path = argv[++i];
     } else if (arg == "-I" && i + 1 < argc) {
@@ -159,6 +169,9 @@ int main(int argc, char **argv) {
   for (auto &sp : search_paths) {
     analyzer.package_resolver->search_paths.push_back(sp);
   }
+  for (auto &sp : sgi_search_paths) {
+    analyzer.package_resolver->sgi_search_paths.push_back(sp);
+  }
 
   analyzer.analyze(*ast);
 
@@ -194,11 +207,10 @@ int main(int argc, char **argv) {
 
   // ── Compile to object file, then link ──────────────────────────────
 
-  // When --emit-obj: write directly to the -o path (default: <name>.o).
-  // Otherwise:       write a temp .o, link to the -o path (default: a.out),
-  //                  then remove the temp.
+  // When --emit-obj or --lib: write .o to the -o path (default: <name>.o).
+  // Otherwise:                 write a temp .o, link, then remove the temp.
   std::string obj_path;
-  if (emit_obj) {
+  if (emit_obj || lib_mode) {
     obj_path = output_path.empty() ? (module_name + ".o") : output_path;
   } else {
     obj_path = module_name + ".o";
@@ -210,6 +222,41 @@ int main(int argc, char **argv) {
   }
 
   if (emit_obj) {
+    return 0;
+  }
+
+  // ── Library mode: write .o + .sgi, no link ─────────────────────────
+
+  if (lib_mode) {
+    // Generate .sgi interface file from the analyzer's package scope.
+    std::vector<mc::SgiExport> exports;
+    std::vector<mc::SgiImport> imports;
+
+    if (analyzer.package_scope_) {
+      for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
+        if (sym.is_public && !sym.is_builtin && sym.type) {
+          bool is_type = (sym.kind == mc::SymbolKind::Type);
+          exports.push_back({"", sym_name, sym.type, is_type});
+        }
+      }
+    }
+
+    // Determine .sgi output path alongside the .o.
+    std::string sgi_base;
+    if (!output_path.empty()) {
+      // Strip extension from -o path to get base.
+      fs::path op(output_path);
+      sgi_base = (op.parent_path() / op.stem()).string();
+    } else {
+      sgi_base = module_name;
+    }
+    std::string sgi_path = sgi_base + ".sgi";
+
+    if (!mc::write_sgi(sgi_path, module_name, imports, exports)) {
+      std::cerr << std::format("Error: cannot write interface to '{}'\n",
+                               sgi_path);
+      return 1;
+    }
     return 0;
   }
 
