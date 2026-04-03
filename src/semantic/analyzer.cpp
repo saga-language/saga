@@ -576,6 +576,9 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
       if (sgi) {
         auto module_type = sgi_to_module_type(*sgi, import_path);
         package_resolver->cache[import_path] = module_type;
+        // Record the directory so the linker can find the .o file.
+        package_resolver->sgi_resolved_dirs[import_path] =
+            fs::path(sgi_path).parent_path().string();
         return module_type;
       }
     }

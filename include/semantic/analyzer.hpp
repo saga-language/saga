@@ -37,6 +37,10 @@ struct PackageResolver {
   /// For testing: pre-registered mock packages that bypass filesystem.
   std::unordered_map<std::string, TypePtr> mock_packages;
 
+  /// Maps import_path → directory where .sgi (and presumably .o) was found.
+  /// Populated when a package is resolved via .sgi.
+  std::unordered_map<std::string, std::string> sgi_resolved_dirs;
+
   /// Find the filesystem directory for the given import path.
   /// Returns empty string if not found.
   std::string find_package_dir(const std::string &import_path) const;

@@ -266,8 +266,24 @@ int main(int argc, char **argv) {
 #endif
   std::string binary_path = output_path.empty() ? "a.out" : output_path;
   std::string runtime_lib = SAGA_RUNTIME_LIB;
+
+  // Collect dependency .o files from .sgi-resolved imports.
+  std::string dep_objects;
+  for (auto &[imp_path, dir] : analyzer.package_resolver->sgi_resolved_dirs) {
+    // Extract package name (last segment of import path).
+    auto last_slash = imp_path.rfind('/');
+    std::string pkg_name = (last_slash != std::string::npos)
+                               ? imp_path.substr(last_slash + 1)
+                               : imp_path;
+    std::string dep_obj = dir + "/" + pkg_name + ".o";
+    if (fs::is_regular_file(dep_obj)) {
+      dep_objects += " " + dep_obj;
+    }
+  }
+
   std::string link_cmd =
-      std::format("cc {} {} -o {} -no-pie", obj_path, runtime_lib, binary_path);
+      std::format("cc {} {}{} -o {} -no-pie", obj_path, runtime_lib,
+                  dep_objects, binary_path);
   int link_status = std::system(link_cmd.c_str());
 
   // Clean up the temporary object file.
