@@ -52,8 +52,9 @@ set_target_properties(saga_runtime PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${SAGA_RUNTIME_DIR}"
 )
 
-# Compiler CLI
-add_executable(compiler src/main.cpp)
+# Compiler CLI — main.cpp dispatcher + subcommand implementations
+file(GLOB CMD_SOURCES CONFIGURE_DEPENDS src/cmd/*.cpp)
+add_executable(compiler src/main.cpp ${CMD_SOURCES})
 
 target_link_libraries(compiler PRIVATE LLVM compiler_core)
 
