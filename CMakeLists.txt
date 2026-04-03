@@ -18,6 +18,7 @@ include_directories(include)
 
 # Gather source files
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
+    src/build/*.cpp
     src/frontend/*.cpp
     src/ir/*.cpp
     src/semantic/*.cpp
@@ -63,3 +64,4 @@ target_compile_definitions(compiler PRIVATE
 
 enable_testing()
 add_subdirectory(tests)
+add_subdirectory(std)

@@ -13,6 +13,7 @@ FetchContent_MakeAvailable(googletest)
 
 # Gather test sources (exclude runtime/ — those have their own target)
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/build/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frontend/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ir/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/semantic/*.cpp

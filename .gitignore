@@ -47,7 +47,7 @@ CMakeCache.txt
 CMakeFiles/
 Testing/
 _deps/
-build/
+/build/
 *.cmake
 
 # Editors
