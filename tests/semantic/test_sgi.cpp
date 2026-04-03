@@ -533,4 +533,91 @@ pub fn Main() Void {
   std::filesystem::remove_all(tmp_dir);
 }
 
+// ---------------------------------------------------------------------------
+// Named-type resolution in .sgi: const whose type is a struct defined in the
+// same .sgi file should expose the struct's methods.
+// ---------------------------------------------------------------------------
+
+TEST(SgiNamedTypeResolution, ConstTypeHasMethods) {
+  // os.sgi pattern: struct File has Write; const Stdout is of type File.
+  // Parsing "const Stdout File" should yield a File type WITH Write,
+  // not an empty stub.
+  const std::string sgi_text = R"(
+sgi 1
+package os
+
+struct File {
+  pub fn Write(String)
+}
+
+const Stdout File
+)";
+
+  auto parsed = parse_sgi(sgi_text);
+  ASSERT_TRUE(parsed.has_value());
+
+  // Find the Stdout export.
+  const SgiExport *stdout_exp = nullptr;
+  const SgiExport *file_exp = nullptr;
+  for (auto &e : parsed->exports) {
+    if (e.name == "Stdout") stdout_exp = &e;
+    if (e.name == "File")   file_exp   = &e;
+  }
+  ASSERT_NE(stdout_exp, nullptr) << "Stdout export not found";
+  ASSERT_NE(file_exp,   nullptr) << "File export not found";
+
+  // Stdout's type should be the same File type (with methods), not a stub.
+  ASSERT_NE(stdout_exp->type, nullptr);
+  ASSERT_EQ(stdout_exp->type->kind, TypeKind::Struct);
+  auto &info = std::get<StructTypeInfo>(stdout_exp->type->detail);
+  EXPECT_FALSE(info.methods.empty())
+      << "Stdout.type (File) should have methods but got none — named type stub not resolved";
+  bool has_write = false;
+  for (auto &m : info.methods)
+    if (m.name == "Write") { has_write = true; break; }
+  EXPECT_TRUE(has_write) << "File should have Write method";
+
+  // The Stdout TypePtr should be the SAME object as the File export's TypePtr.
+  EXPECT_EQ(stdout_exp->type, file_exp->type)
+      << "Stdout type should be the same TypePtr as the File export";
+}
+
+TEST(SgiNamedTypeResolution, ModuleExportPropagatesMethods) {
+  // After sgi_to_module_type(), accessing Stdout through the module should
+  // still expose Write.
+  const std::string sgi_text = R"(
+sgi 1
+package os
+
+struct File {
+  pub fn Write(String)
+}
+
+const Stdout File
+)";
+
+  auto parsed = parse_sgi(sgi_text);
+  ASSERT_TRUE(parsed.has_value());
+
+  auto mod_type = sgi_to_module_type(*parsed, "os");
+  ASSERT_NE(mod_type, nullptr);
+  ASSERT_EQ(mod_type->kind, TypeKind::Module);
+
+  auto &mod_info = std::get<ModuleTypeInfo>(mod_type->detail);
+  const ModuleExport *stdout_export = nullptr;
+  for (auto &exp : mod_info.exports)
+    if (exp.name == "Stdout") { stdout_export = &exp; break; }
+
+  ASSERT_NE(stdout_export, nullptr);
+  ASSERT_NE(stdout_export->type, nullptr);
+  ASSERT_EQ(stdout_export->type->kind, TypeKind::Struct);
+
+  auto &file_info = std::get<StructTypeInfo>(stdout_export->type->detail);
+  bool has_write = false;
+  for (auto &m : file_info.methods)
+    if (m.name == "Write") { has_write = true; break; }
+  EXPECT_TRUE(has_write)
+      << "Module export Stdout should expose File's Write method";
+}
+
 } // namespace mc

@@ -422,6 +422,10 @@ struct SgiParser {
   std::string content;
   size_t pos = 0;
 
+  // Types defined so far in this .sgi — lets const/func declarations
+  // reference struct/enum/interface types by name without producing stubs.
+  std::unordered_map<std::string, TypePtr> defined_types;
+
   bool at_end() const { return pos >= content.size(); }
 
   char peek() const { return at_end() ? '\0' : content[pos]; }
@@ -692,9 +696,13 @@ struct SgiParser {
       }
     }
 
-    // Otherwise it's a named type reference (struct, enum, interface).
-    // For now, return a struct type with just the name — the caller
-    // can resolve it against the module's type table later.
+    // Named type reference: check if it was already defined in this .sgi.
+    // If so, return the real type so methods/fields are visible.
+    auto it = defined_types.find(name);
+    if (it != defined_types.end())
+      return it->second;
+
+    // Otherwise return a stub with just the name — resolved later if needed.
     return make_struct_type(name);
   }
 
@@ -1039,11 +1047,17 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
     } else if (kw == "func") {
       sgi.exports.push_back(p.parse_func_decl(doc));
     } else if (kw == "struct") {
-      sgi.exports.push_back(p.parse_struct_decl(doc));
+      auto exp = p.parse_struct_decl(doc);
+      if (exp.type) p.defined_types[exp.name] = exp.type; // register for forward refs
+      sgi.exports.push_back(std::move(exp));
     } else if (kw == "enum") {
-      sgi.exports.push_back(p.parse_enum_decl(doc));
+      auto exp = p.parse_enum_decl(doc);
+      if (exp.type) p.defined_types[exp.name] = exp.type;
+      sgi.exports.push_back(std::move(exp));
     } else if (kw == "interface") {
-      sgi.exports.push_back(p.parse_interface_decl(doc));
+      auto exp = p.parse_interface_decl(doc);
+      if (exp.type) p.defined_types[exp.name] = exp.type;
+      sgi.exports.push_back(std::move(exp));
     } else if (kw == "const") {
       sgi.exports.push_back(p.parse_const_decl(doc));
     } else {

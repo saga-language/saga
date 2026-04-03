@@ -17,6 +17,44 @@
 namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
+// Install-prefix detection for release builds.
+// In dev builds SAGA_STD_SGI_DIR / SAGA_STD_LIB are baked in at compile time.
+// In an installed build (no compile-time defines) we derive them from the
+// location of the running binary:  <prefix>/bin/saga  →  prefix.
+// ---------------------------------------------------------------------------
+
+static fs::path detect_install_prefix(const char *argv0) {
+  std::error_code ec;
+  fs::path binary = fs::weakly_canonical(argv0, ec);
+  if (ec)
+    binary = fs::absolute(argv0);
+  // binary = <prefix>/bin/saga  →  parent = <prefix>/bin  →  parent = <prefix>
+  return binary.parent_path().parent_path();
+}
+
+// Return the directory where stdlib .sgi files live (auto-detected).
+static std::string saga_std_sgi_dir(const char *argv0) {
+#ifdef SAGA_STD_SGI_DIR
+  return SAGA_STD_SGI_DIR;
+#else
+  return (detect_install_prefix(argv0) / "lib" / "saga" / "std").string();
+#endif
+}
+
+// Return the path of libsaga_std.a (auto-detected).
+// argv0 may be null/empty — in that case falls back to compile-time define only.
+static std::string saga_std_lib(const char *argv0) {
+#ifdef SAGA_STD_LIB
+  (void)argv0;
+  return SAGA_STD_LIB;
+#else
+  if (!argv0 || !*argv0)
+    return {};
+  return (detect_install_prefix(argv0) / "lib" / "saga" / "libsaga_std.a").string();
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Platform helpers (mirrors logic in analyzer.cpp)
 // ---------------------------------------------------------------------------
 
@@ -185,10 +223,12 @@ static bool compile_package(const std::string &source_dir,
 // Returns exit code (0 = success).
 // ---------------------------------------------------------------------------
 
-static int build_graph_mode(const std::string &source_dir,
+static int build_graph_mode(const char *argv0,
+                             const std::string &source_dir,
                              const std::string &import_path,
                              const std::string &output_dir,
                              const std::vector<std::string> &search_paths,
+                             const std::vector<std::string> &sgi_search_paths,
                              const std::string &binary_path,
                              bool lib_mode,
                              bool verbose) {
@@ -208,8 +248,16 @@ static int build_graph_mode(const std::string &source_dir,
     std::cerr << std::format("Build graph: {} package(s)\n", sorted.size());
 
   // Collect sgi dirs for each node as we compile them, in order.
-  // These let downstream packages find the .sgi of already-built deps.
-  std::vector<std::string> cumulative_sgi_dirs;
+  // Seed with the stdlib SGI dir and any user-supplied sgi paths so all
+  // packages can resolve std types without explicit --sgi-path flags.
+  std::vector<std::string> cumulative_sgi_dirs = sgi_search_paths;
+  {
+    std::string std_sgi = saga_std_sgi_dir(argv0);
+    if (fs::is_directory(std_sgi) &&
+        std::find(cumulative_sgi_dirs.begin(), cumulative_sgi_dirs.end(), std_sgi)
+            == cumulative_sgi_dirs.end())
+      cumulative_sgi_dirs.push_back(std_sgi);
+  }
 
   std::vector<std::string> dep_obj_paths;   // for final link
   std::vector<std::string> dep_sgi_dirs;    // for final package's analyzer
@@ -268,8 +316,16 @@ static int build_graph_mode(const std::string &source_dir,
 #define SAGA_RUNTIME_LIB ""
 #endif
   std::string runtime_lib = SAGA_RUNTIME_LIB;
-  std::string link_cmd = std::format("cc {} {}{} -o {} -no-pie",
-                                     root_obj, runtime_lib, dep_objs,
+
+  // Auto-include libsaga_std.a when linking.
+  std::string std_lib_path_bg = saga_std_lib(argv0);
+  std::string std_lib_arg_bg;
+  if (fs::is_regular_file(std_lib_path_bg))
+    std_lib_arg_bg = " " + std_lib_path_bg;
+
+  std::string link_cmd = std::format("cc {} {} {}{} -o {} -no-pie",
+                                     root_obj, runtime_lib,
+                                     std_lib_arg_bg, dep_objs,
                                      binary_path);
   if (verbose)
     std::cerr << std::format("  link: {}\n", link_cmd);
@@ -370,7 +426,7 @@ int main(int argc, char **argv) {
     std::string abs_source = fs::canonical(input).string();
     std::string pkg_name = input.filename().string();
 
-    // Default output dir: <source>/.build or -o dir.
+    // Default output dir: <source>/.build or --out-dir value.
     std::string build_out_dir = out_dir.empty()
         ? (abs_source + "/.build")
         : out_dir;
@@ -378,8 +434,16 @@ int main(int argc, char **argv) {
     // The final binary path.
     std::string bin_path = output_path.empty() ? "a.out" : output_path;
 
-    return build_graph_mode(abs_source, pkg_name, build_out_dir,
-                            search_paths, bin_path, lib_mode, verbose);
+    // Auto-add stdlib SGI dir so all packages in the graph can see std types.
+    std::string std_sgi = saga_std_sgi_dir(argv[0]);
+    if (fs::is_directory(std_sgi) &&
+        std::find(sgi_search_paths.begin(), sgi_search_paths.end(), std_sgi)
+            == sgi_search_paths.end())
+      sgi_search_paths.push_back(std_sgi);
+
+    return build_graph_mode(argv[0], abs_source, pkg_name, build_out_dir,
+                            search_paths, sgi_search_paths, bin_path,
+                            lib_mode, verbose);
   }
 
   // ── Legacy single-package mode ─────────────────────────────────────
@@ -435,6 +499,12 @@ int main(int argc, char **argv) {
   }
   for (auto &sp : search_paths)
     analyzer.package_resolver->search_paths.push_back(sp);
+  // Always include the stdlib SGI dir so std types resolve without --sgi-path.
+  {
+    std::string std_sgi = saga_std_sgi_dir(argv[0]);
+    if (fs::is_directory(std_sgi))
+      analyzer.package_resolver->sgi_search_paths.push_back(std_sgi);
+  }
   for (auto &sp : sgi_search_paths)
     analyzer.package_resolver->sgi_search_paths.push_back(sp);
 
@@ -513,8 +583,18 @@ int main(int argc, char **argv) {
   std::string binary_path = output_path.empty() ? "a.out" : output_path;
   std::string runtime_lib = SAGA_RUNTIME_LIB;
 
+  // Auto-include libsaga_std.a (only when linking a binary, not --lib).
+  std::string std_lib_path = saga_std_lib(argv[0]);
+  std::string std_lib_arg;
+  if (fs::is_regular_file(std_lib_path))
+    std_lib_arg = " " + std_lib_path;
+
+  // Dep .o files from packages resolved via .sgi (user packages, not std).
   std::string dep_objects;
   for (auto &[imp_path, dir] : analyzer.package_resolver->sgi_resolved_dirs) {
+    // Skip packages that came from the stdlib dir — they're in libsaga_std.a.
+    if (!std_lib_arg.empty() && dir == saga_std_sgi_dir(argv[0]))
+      continue;
     auto last_slash = imp_path.rfind('/');
     std::string pkg_name = (last_slash != std::string::npos)
                                ? imp_path.substr(last_slash + 1)
@@ -525,8 +605,8 @@ int main(int argc, char **argv) {
   }
 
   std::string link_cmd =
-      std::format("cc {} {}{} -o {} -no-pie", obj_path, runtime_lib,
-                  dep_objects, binary_path);
+      std::format("cc {} {} {}{} -o {} -no-pie",
+                  obj_path, runtime_lib, std_lib_arg, dep_objects, binary_path);
   int link_status = std::system(link_cmd.c_str());
   std::filesystem::remove(obj_path);
 
