@@ -21,6 +21,7 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
     src/build/*.cpp
     src/frontend/*.cpp
     src/ir/*.cpp
+    src/pkg/*.cpp
     src/semantic/*.cpp
 )
 

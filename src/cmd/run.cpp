@@ -73,6 +73,10 @@ int cmd_run(const char *prog, int argc, char **argv) {
     return 1;
   }
 
+  // Apply deps from the nearest project.saga.
+  apply_manifest_deps(prog, fs::current_path().string(), search_paths,
+                      sgi_search_paths);
+
   // ── Compile ───────────────────────────────────────────────────────────────
 
   mc::FileSet fileset;

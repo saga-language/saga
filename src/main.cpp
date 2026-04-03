@@ -13,6 +13,8 @@ static void usage(const char *prog) {
                            "  build   Compile a binary or library\n"
                            "  check   Type-check without generating code\n"
                            "  run     Compile and run immediately\n"
+                           "  get     Download and install packages\n"
+                           "  init    Initialise a new project\n"
                            "\nRun '{} <command> --help' for command options.\n",
                            prog, prog);
 }
@@ -25,6 +27,8 @@ int main(int argc, char **argv) {
     if (cmd == "build") return cmd_build(prog, argc - 1, argv + 1);
     if (cmd == "check") return cmd_check(prog, argc - 1, argv + 1);
     if (cmd == "run")   return cmd_run  (prog, argc - 1, argv + 1);
+    if (cmd == "get")   return cmd_get  (prog, argc - 1, argv + 1);
+    if (cmd == "init")  return cmd_init (prog, argc - 1, argv + 1);
 
     // If the first arg looks like a file/directory (not a known command),
     // treat the whole invocation as 'build' for backwards compatibility:

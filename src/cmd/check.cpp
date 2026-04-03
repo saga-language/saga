@@ -54,6 +54,10 @@ int cmd_check(const char *prog, int argc, char **argv) {
     return 1;
   }
 
+  // Apply deps from the nearest project.saga.
+  apply_manifest_deps(prog, fs::current_path().string(), search_paths,
+                      sgi_search_paths);
+
   mc::FileSet fileset;
   std::string package_dir = load_sources(source_path, fileset);
   if (package_dir.empty() && fileset.files.empty())

@@ -106,6 +106,7 @@ inline std::vector<fs::path> collect_sg_files(const fs::path &dir) {
 
 #include "frontend/file.hpp"
 #include "frontend/fileset.hpp"
+#include "pkg/manifest.hpp"
 
 inline std::string load_sources(const std::string &source_path,
                                  mc::FileSet &fileset) {
@@ -146,6 +147,78 @@ inline std::string load_sources(const std::string &source_path,
 // ---------------------------------------------------------------------------
 
 #include "semantic/analyzer.hpp"
+
+// ---------------------------------------------------------------------------
+// Apply manifest dependencies to search/sgi path vectors.
+// Call before setup_analyzer_paths so all deps are visible to the analyzer.
+// ---------------------------------------------------------------------------
+
+// Compile a single dep package to .o + .sgi using the running compiler binary.
+// out_dir is created if absent. Returns true on success.
+inline bool compile_dep_package(const char *prog,
+                                 const std::string &src_dir,
+                                 const std::string &pkg_name,
+                                 const std::string &out_dir,
+                                 const std::vector<std::string> &extra_sgi_dirs) {
+  std::error_code ec;
+  fs::create_directories(out_dir, ec);
+
+  // Resolve the binary to an absolute path so it works from any CWD.
+  std::string binary = fs::weakly_canonical(prog, ec).string();
+  if (ec) binary = prog;
+
+  std::string cmd =
+      std::format("\"{}\" --lib -o \"{}/{}.o\"", binary, out_dir, pkg_name);
+  for (auto &d : extra_sgi_dirs)
+    cmd += std::format(" --sgi-path \"{}\"", d);
+  cmd += std::format(" \"{}\"", src_dir);
+
+  return std::system(cmd.c_str()) == 0;
+}
+
+inline void apply_manifest_deps(const char *prog,
+                                 const std::string &start_dir,
+                                 std::vector<std::string> &search_paths,
+                                 std::vector<std::string> &sgi_search_paths) {
+  auto manifest_path = mc::find_manifest(start_dir);
+  if (!manifest_path) return;
+
+  auto manifest = mc::Manifest::load(*manifest_path);
+  if (!manifest) return;
+
+  fs::path project_dir = fs::path(*manifest_path).parent_path();
+  // Local deps are compiled into <project>/.build/<name>/
+  fs::path build_cache = project_dir / ".build";
+
+  for (auto &dep : manifest->dependencies) {
+    if (dep.is_local()) {
+      fs::path dep_src = fs::weakly_canonical(project_dir / dep.path);
+      fs::path dep_out = build_cache / dep.name;
+
+      std::string sgi_file = (dep_out / (dep.name + ".sgi")).string();
+      std::string obj_file = (dep_out / (dep.name + ".o")).string();
+
+      // Compile if artifacts are absent (incremental via BuildGraph is
+      // available for multi-package projects; here we just compile once).
+      if (!fs::is_regular_file(sgi_file) || !fs::is_regular_file(obj_file)) {
+        compile_dep_package(prog, dep_src.string(), dep.name,
+                            dep_out.string(), sgi_search_paths);
+      }
+
+      if (fs::is_directory(dep_out) &&
+          std::find(sgi_search_paths.begin(), sgi_search_paths.end(),
+                    dep_out.string()) == sgi_search_paths.end())
+        sgi_search_paths.push_back(dep_out.string());
+
+    } else if (dep.is_remote() && !dep.commit.empty()) {
+      fs::path cache = mc::pkg_cache_dir(dep);
+      if (fs::is_directory(cache) &&
+          std::find(sgi_search_paths.begin(), sgi_search_paths.end(),
+                    cache.string()) == sgi_search_paths.end())
+        sgi_search_paths.push_back(cache.string());
+    }
+  }
+}
 
 inline void setup_analyzer_paths(mc::Analyzer &analyzer,
                                   const std::string &package_dir,

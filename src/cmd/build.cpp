@@ -275,6 +275,10 @@ int cmd_build(const char *prog, int argc, char **argv) {
     return 1;
   }
 
+  // Apply deps from the nearest project.saga (local paths + cached remotes).
+  apply_manifest_deps(prog, fs::current_path().string(), search_paths,
+                      sgi_search_paths);
+
   // ── DAG mode ──────────────────────────────────────────────────────────────
 
   if (dag_mode) {
