@@ -12,3 +12,6 @@ int cmd_check(const char *prog, int argc, char **argv);
 int cmd_run  (const char *prog, int argc, char **argv);
 int cmd_get  (const char *prog, int argc, char **argv);
 int cmd_init (const char *prog, int argc, char **argv);
+int cmd_lsp  (const char *prog, int argc, char **argv);
+int cmd_doc  (const char *prog, int argc, char **argv);
+int cmd_mcp  (const char *prog, int argc, char **argv);
