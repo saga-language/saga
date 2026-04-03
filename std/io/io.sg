@@ -1,0 +1,6 @@
+import "os"
+
+pub fn Println(s String) Void {
+  os.Stdout.Write(s)
+  os.Stdout.Write("\n")
+}

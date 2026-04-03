@@ -1,0 +1,9 @@
+import "sys"
+
+pub struct File {
+  fd Int
+
+  pub fn Write(s String) Void {
+    sys.Write(fd, s)
+  }
+}
