@@ -255,6 +255,7 @@ private:
   TypePtr resolve_range_type(const RangeTypeNode &node);
   TypePtr resolve_struct_type(const StructTypeNode &node);
   TypePtr resolve_union_type(const UnionTypeNode &node);
+  TypePtr resolve_generic_type_app(const GenericTypeAppNode &node);
 
   // Phase 2b: Resolve top-level declaration bodies — fills in TypePtrs
   // that were left nullptr during collection.

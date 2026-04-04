@@ -178,6 +178,14 @@ struct StructTypeNode {
   std::vector<FieldSpecNode> fields;
 };
 
+// GenericTypeApp = "|" TypeList "|" Identifier
+// e.g. |Int| Task, |String, Int| Map
+struct GenericTypeAppNode {
+  Span span;
+  std::vector<NodePtr> type_args; // concrete type arguments
+  NodePtr base_type;              // the generic type being parameterized
+};
+
 // Generic = "|" TypeList "|"   e.g. |T|, |T, U|
 struct GenericNode {
   Span span;
@@ -545,7 +553,7 @@ struct Node {
 
     // --- Types ---
     UnionTypeNode,  ArrayTypeNode,  MapTypeNode,   FuncTypeNode,
-    RangeTypeNode,  StructTypeNode, GenericNode,
+    RangeTypeNode,  StructTypeNode, GenericTypeAppNode, GenericNode,
 
     // --- Shared sub-nodes ---
     CaseArmNode, ParameterNode,
