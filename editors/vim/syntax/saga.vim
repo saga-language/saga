@@ -8,11 +8,14 @@ endif
 
 " ── Keywords ──────────────────────────────────────────────────────────────────
 
-" Control-flow keywords
-syntax keyword sagaKeyword  break case else for if next return switch
+" Control-flow keywords (includes fn — it behaves like a keyword, not a modifier)
+syntax keyword sagaKeyword  break case else fn for if next return switch
 
 " Declaration keywords
-syntax keyword sagaKeyword  const enum fn import interface pub struct
+syntax keyword sagaKeyword  const enum import interface struct
+
+" Visibility modifier
+syntax keyword sagaModifier  pub
 
 " Keyword operators (used as expression-level operators in the grammar)
 syntax keyword sagaKeywordOperator  or spawn
@@ -95,6 +98,7 @@ syntax match sagaOperator  "[-+*/%!<>&|^~=]"
 " ── Default highlight links ───────────────────────────────────────────────────
 
 highlight default link sagaKeyword          Keyword
+highlight default link sagaModifier         StorageClass
 highlight default link sagaKeywordOperator  Keyword
 highlight default link sagaType             Type
 highlight default link sagaBoolean          Boolean

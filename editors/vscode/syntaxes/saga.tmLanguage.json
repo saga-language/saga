@@ -11,6 +11,7 @@
     { "include": "#keyword-declaration" },
     { "include": "#keyword-control" },
     { "include": "#keyword-operator" },
+    { "include": "#storage-modifier" },
     { "include": "#storage-type" },
     { "include": "#constant-language" },
     { "include": "#constant-numeric" },
@@ -31,12 +32,17 @@
 
     "keyword-control": {
       "name": "keyword.control.saga",
-      "match": "\\b(break|case|else|for|if|next|return|switch)\\b"
+      "match": "\\b(break|case|else|fn|for|if|next|return|switch)\\b"
     },
 
     "keyword-declaration": {
       "name": "keyword.declaration.saga",
-      "match": "\\b(const|enum|fn|import|interface|pub|struct)\\b"
+      "match": "\\b(const|enum|import|interface|struct)\\b"
+    },
+
+    "storage-modifier": {
+      "name": "storage.modifier.saga",
+      "match": "\\bpub\\b"
     },
 
     "keyword-operator": {
@@ -106,6 +112,7 @@
         { "include": "#keyword-control" },
         { "include": "#keyword-declaration" },
         { "include": "#keyword-operator" },
+        { "include": "#storage-modifier" },
         { "include": "#storage-type" },
         { "include": "#constant-language" },
         { "include": "#constant-numeric" },
