@@ -196,6 +196,9 @@ private:
   void declare_structs(const SourceNode &src);
   void emit_struct_decl(const StructDeclNode &node);
 
+  /// Emit a package-level constant as an LLVM global variable.
+  void emit_const_decl(const ConstDeclNode &node);
+
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
   void emit_enum_decl(const EnumDeclNode &node);

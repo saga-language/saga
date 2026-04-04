@@ -3,6 +3,8 @@
 
 #include "ir/codegen.hpp"
 
+#include <charconv>
+
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LegacyPassManager.h>
@@ -484,6 +486,16 @@ void CodeGen::emit_source(const SourceNode &src) {
   declare_functions(src);
   declare_struct_methods(src);
 
+  // Pass 2b: emit package-level constants as globals.
+  for (auto &decl : src.declarations) {
+    std::visit(
+        overloaded{
+            [&](const ConstDeclNode &c) { emit_const_decl(c); },
+            [&](const auto &) {},
+        },
+        decl->data);
+  }
+
   // Pass 3: emit function bodies and struct method bodies.
   for (auto &decl : src.declarations) {
     std::visit(
@@ -566,6 +578,98 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
 // ===========================================================================
 // Enum declarations
 // ===========================================================================
+
+// ===========================================================================
+// Package-level constant declarations
+// ===========================================================================
+
+void CodeGen::emit_const_decl(const ConstDeclNode &node) {
+  std::string name(node.name.name);
+  std::string link_name = mangle(name);
+
+  // Skip if already emitted (e.g. by a previous source file).
+  if (module->getGlobalVariable(link_name))
+    return;
+
+  // Determine the semantic type.
+  auto sem_type = analyzer.node_types.count(&*node.value)
+                      ? analyzer.node_types.at(&*node.value)
+                      : nullptr;
+  if (!sem_type && node.type)
+    sem_type = analyzer.resolve_type(**node.type);
+  if (!sem_type)
+    return;
+
+  auto *ll_type = llvm_type(sem_type);
+
+  // Try to build a constant initializer.
+  llvm::Constant *init = nullptr;
+
+  // Integer literal.
+  if (auto *int_lit = std::get_if<IntegerLiteralNode>(&node.value->data)) {
+    int64_t val = 0;
+    auto sv = int_lit->literal;
+    std::from_chars(sv.data(), sv.data() + sv.size(), val);
+    init = llvm::ConstantInt::get(i64_type, val);
+  }
+  // Float literal.
+  else if (auto *flt_lit = std::get_if<FloatLiteralNode>(&node.value->data)) {
+    double val = std::stod(std::string(flt_lit->literal));
+    init = llvm::ConstantFP::get(f64_type, val);
+  }
+  // Bool literal.
+  else if (auto *bool_lit = std::get_if<BoolLiteralNode>(&node.value->data)) {
+    init = llvm::ConstantInt::get(i1_type, bool_lit->literal == "true" ? 1 : 0);
+  }
+  // Struct literal.
+  else if (auto *slit = std::get_if<StructLiteralNode>(&node.value->data)) {
+    if (sem_type->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(sem_type->detail);
+      auto st_it = struct_types.find(sinfo.name);
+      if (st_it != struct_types.end()) {
+        auto *st = st_it->second;
+        auto &fnames = struct_fields[sinfo.name];
+        // Build field constants (zero-init if not provided).
+        std::vector<llvm::Constant *> field_vals(fnames.size(), nullptr);
+        for (size_t i = 0; i < fnames.size(); ++i)
+          field_vals[i] = llvm::Constant::getNullValue(st->getElementType(i));
+        for (auto &fa : slit->fields) {
+          std::string fname(fa.name.name);
+          for (size_t i = 0; i < fnames.size(); ++i) {
+            if (fnames[i] == fname) {
+              // Try to evaluate field value as constant.
+              if (auto *il = std::get_if<IntegerLiteralNode>(&fa.value->data)) {
+                int64_t v = 0;
+                auto sv = il->literal;
+                std::from_chars(sv.data(), sv.data() + sv.size(), v);
+                field_vals[i] = llvm::ConstantInt::get(
+                    st->getElementType(i), v);
+              } else if (auto *fl = std::get_if<FloatLiteralNode>(&fa.value->data)) {
+                double v = std::stod(std::string(fl->literal));
+                field_vals[i] = llvm::ConstantFP::get(
+                    st->getElementType(i), v);
+              } else if (auto *bl = std::get_if<BoolLiteralNode>(&fa.value->data)) {
+                field_vals[i] = llvm::ConstantInt::get(
+                    st->getElementType(i), bl->literal == "true" ? 1 : 0);
+              }
+              break;
+            }
+          }
+        }
+        init = llvm::ConstantStruct::get(st, field_vals);
+        ll_type = st;
+      }
+    }
+  }
+
+  if (!init)
+    init = llvm::Constant::getNullValue(ll_type);
+
+  auto *gv = new llvm::GlobalVariable(
+      *module, ll_type, /*isConstant=*/true,
+      llvm::GlobalValue::ExternalLinkage, init, link_name);
+  (void)gv;
+}
 
 void CodeGen::declare_enums(const SourceNode &src) {
   for (auto &decl : src.declarations) {
@@ -796,8 +900,25 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       builder.CreateStore(func->getArg(0), self_alloca);
       locals["self"] = self_alloca;
 
-      // Struct fields are accessible directly by name through self.
-      // We store self as a local so field accesses work via selectors.
+      // Inject struct fields as locals so bare names (e.g. `fd`) resolve.
+      // Load each field from self via GEP and copy into a local alloca.
+      {
+        auto st_it = struct_types.find(struct_name);
+        if (st_it != struct_types.end()) {
+          auto *st = st_it->second;
+          auto &fields = struct_fields[struct_name];
+          auto *self_ptr = builder.CreateLoad(
+              llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
+          for (size_t fi = 0; fi < fields.size(); ++fi) {
+            auto *ftype = st->getElementType(fi);
+            auto *gep = builder.CreateStructGEP(st, self_ptr, fi, fields[fi]);
+            auto *val = builder.CreateLoad(ftype, gep, fields[fi] + ".val");
+            auto *field_alloca = create_entry_alloca(func, fields[fi], ftype);
+            builder.CreateStore(val, field_alloca);
+            locals[fields[fi]] = field_alloca;
+          }
+        }
+      }
 
       // Regular parameters.
       size_t arg_idx = 1;
@@ -3649,6 +3770,42 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
           // The field might be accessing a variant of the enum.
           // This would be mod.EnumName which is the type, not a value.
           // Variant access would be mod.EnumName.Variant — handled elsewhere.
+          break;
+        }
+
+        // Non-function, non-enum export: a module-level constant.
+        // Declare (or find) an external global and load from it.
+        {
+          std::string gv_name = mangle(mod.name, field_name);
+          auto *ll = llvm_type(exp.type);
+
+          // For struct-typed constants, ensure the LLVM struct type exists.
+          if (exp.type && exp.type->kind == TypeKind::Struct) {
+            auto &sinfo = std::get<StructTypeInfo>(exp.type->detail);
+            if (!struct_types.count(sinfo.name)) {
+              // Register a minimal LLVM struct from the semantic info.
+              std::vector<llvm::Type *> ftypes;
+              std::vector<std::string> fnames;
+              for (auto &f : sinfo.fields) {
+                ftypes.push_back(llvm_type(f.type));
+                fnames.push_back(f.name);
+              }
+              auto *st = llvm::StructType::create(context, ftypes,
+                                                   "mc." + sinfo.name);
+              struct_types[sinfo.name] = st;
+              struct_fields[sinfo.name] = std::move(fnames);
+            }
+            ll = struct_types[sinfo.name];
+          }
+
+          auto *gv = module->getGlobalVariable(gv_name);
+          if (!gv) {
+            gv = new llvm::GlobalVariable(
+                *module, ll, /*isConstant=*/true,
+                llvm::GlobalValue::ExternalLinkage,
+                /*Initializer=*/nullptr, gv_name);
+          }
+          return builder.CreateLoad(ll, gv, field_name);
         }
         break;
       }
@@ -3956,8 +4113,63 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     // Struct method call: obj.Method(args) → StructName.Method(obj, args).
     if (obj_sem && obj_sem->kind == TypeKind::Struct) {
       auto &info = std::get<StructTypeInfo>(obj_sem->detail);
-      std::string link_name = mangle(info.name + "__" + method);
+
+      // Determine the package that defines this struct.
+      // If the struct exists in our local struct_types, use package_name.
+      // Otherwise, check if the object originates from a module selector
+      // and use that module's name.
+      // Determine the package that defines this struct.
+      // Walk the selector chain to find if the object originates from an
+      // imported module. For chained selectors like os.Stdout.Write,
+      // the inner selector's object is the module.
+      std::string origin_pkg = package_name;
+      {
+        const Node *walk = sel->object.get();
+        while (walk) {
+          if (auto *inner_sel = std::get_if<SelectorNode>(&walk->data)) {
+            auto inner_sem = semantic_type(*inner_sel->object);
+            if (inner_sem && inner_sem->kind == TypeKind::Module) {
+              origin_pkg = std::get<ModuleTypeInfo>(inner_sem->detail).name;
+              break;
+            }
+            walk = inner_sel->object.get();
+          } else if (auto *id = std::get_if<IdentifierNode>(&walk->data)) {
+            auto id_sem = semantic_type(*walk);
+            if (id_sem && id_sem->kind == TypeKind::Module) {
+              origin_pkg = std::get<ModuleTypeInfo>(id_sem->detail).name;
+            }
+            break;
+          } else {
+            break;
+          }
+        }
+      }
+
+      std::string link_name = mangle(origin_pkg, info.name + "__" + method);
       auto *callee = module->getFunction(link_name);
+
+      // If the method isn't in this module (cross-package struct), declare it.
+      if (!callee) {
+        for (auto &m : info.methods) {
+          if (m.name == method && m.signature &&
+              m.signature->kind == TypeKind::Func) {
+            auto &finfo = std::get<FuncTypeInfo>(m.signature->detail);
+            auto *ptr_type = llvm::PointerType::getUnqual(context);
+            std::vector<llvm::Type *> param_ll;
+            param_ll.push_back(ptr_type); // self
+            for (auto &p : finfo.params)
+              param_ll.push_back(llvm_type(p));
+            llvm::Type *ret_ll = finfo.returns.empty()
+                                     ? void_ll_type
+                                     : llvm_type(finfo.returns[0]);
+            auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
+            callee = llvm::Function::Create(
+                ft, llvm::Function::ExternalLinkage, link_name, module.get());
+            break;
+          }
+        }
+      }
+
       if (callee) {
         // Build argument list: self + explicit args.
         // For struct methods, self is a pointer to the struct.
@@ -3978,6 +4190,17 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
               self_ptr = builder.CreateLoad(alloca_type, alloca, "self.ptr");
             }
           }
+        }
+
+        // If self_ptr is a struct value (not a pointer/alloca), we need
+        // to spill it to a temporary alloca so the method gets a ptr.
+        auto st_it2 = struct_types.find(info.name);
+        if (st_it2 != struct_types.end() &&
+            self_ptr->getType() == st_it2->second) {
+          auto *func = builder.GetInsertBlock()->getParent();
+          auto *tmp = create_entry_alloca(func, "self.tmp", st_it2->second);
+          builder.CreateStore(self_ptr, tmp);
+          self_ptr = tmp;
         }
 
         std::vector<llvm::Value *> args;
