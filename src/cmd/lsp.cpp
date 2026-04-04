@@ -146,6 +146,23 @@ find_node_at(const mc::Analyzer &az, size_t offset) {
   return best;
 }
 
+// Check the auxiliary span_types vector for a match tighter than best_len.
+// Returns the type if found, nullptr otherwise.
+static mc::TypePtr
+find_span_type_at(const mc::Analyzer &az, size_t offset, size_t best_len) {
+  mc::TypePtr best = nullptr;
+  for (auto &[span, type] : az.span_types) {
+    if (span.start <= offset && offset < span.end) {
+      size_t len = span.end - span.start;
+      if (len < best_len) {
+        best_len = len;
+        best = type;
+      }
+    }
+  }
+  return best;
+}
+
 // ---------------------------------------------------------------------------
 // LSP position ↔ byte-offset conversion
 // ---------------------------------------------------------------------------
@@ -381,12 +398,17 @@ struct LspServer {
       send_response(id, json::Value{}); return;
     }
 
-    std::string type_str = mc::type_to_string(type_it->second);
+    // Check span_types for a tighter match (e.g. struct-literal field names).
+    size_t node_len = node->span.end - node->span.start;
+    auto span_type = find_span_type_at(*doc.analyzer, offset, node_len);
+
+    std::string type_str = mc::type_to_string(
+        span_type ? span_type : type_it->second);
 
     // Include symbol name if available.
     std::string hover_text = "```saga\n" + type_str + "\n```";
     auto sym_it = doc.analyzer->node_symbols.find(node);
-    if (sym_it != doc.analyzer->node_symbols.end()) {
+    if (sym_it != doc.analyzer->node_symbols.end() && !span_type) {
       hover_text = "```saga\n" + sym_it->second.name + ": " + type_str + "\n```";
     }
 

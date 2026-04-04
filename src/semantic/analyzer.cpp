@@ -1828,7 +1828,8 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   }
 
   // Validate each field assignment against the (possibly instantiated) type.
-  for (auto &[fname, val_type] : field_vals) {
+  for (size_t i = 0; i < field_vals.size(); ++i) {
+    auto &[fname, val_type] = field_vals[i];
     bool found = false;
     for (auto &fi : all_fields) {
       if (fi.name == fname) {
@@ -1837,6 +1838,11 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
           expect_assignable(node.span, fi.type, val_type,
                             std::format("field '{}'", fname));
         }
+        // Record the field's declared type on the field-name span so
+        // that LSP hover can display it (the IdentifierNode is not a
+        // Node*, so node_types can't be used).
+        if (fi.type)
+          span_types.push_back({node.fields[i].name.span, fi.type});
         break;
       }
     }
@@ -2386,7 +2392,8 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   return result_type ? result_type : builtins.void_type;
 }
 
-TypePtr Analyzer::check_for_expr(const ForExprNode &node) {
+TypePtr Analyzer::check_for_expr(const ForExprNode &node,
+                                 TypePtr accumulator_hint) {
   push_scope(ScopeKind::Loop);
 
   if (node.mode) {
@@ -2457,11 +2464,12 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node) {
                (*node.mode)->data);
   }
 
-  // Accumulator pipe.
+  // Accumulator pipe — typed from the variable declaration's type hint.
+  TypePtr acc_type = accumulator_hint ? accumulator_hint : builtins.void_type;
   if (node.accumulator) {
     current_scope->symbols.emplace(
         std::string(node.accumulator->name),
-        Symbol::variable(std::string(node.accumulator->name), nullptr,
+        Symbol::variable(std::string(node.accumulator->name), acc_type,
                          node.accumulator->span));
   }
 
@@ -2469,7 +2477,7 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node) {
   check_block(body_block);
 
   pop_scope();
-  return builtins.void_type;
+  return node.accumulator ? acc_type : builtins.void_type;
 }
 
 TypePtr Analyzer::check_range_expr(const RangeExprNode &node) {
@@ -2739,7 +2747,15 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
   TypePtr final_type = declared_type;
 
   if (var.init) {
-    auto init_type = check_expr(**var.init);
+    TypePtr init_type;
+    // When the initializer is a for-expression with an accumulator,
+    // pass the declared type so the accumulator variable is typed.
+    if (auto *for_node = std::get_if<ForExprNode>(&(*var.init)->data)) {
+      init_type = check_for_expr(*for_node, declared_type);
+      record_type(**var.init, init_type);
+    } else {
+      init_type = check_expr(**var.init);
+    }
     if (declared_type && !is_error_type(init_type)) {
       expect_assignable((*var.init)->span, declared_type, init_type,
                         "variable initializer");
