@@ -1,0 +1,182 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Saga",
+  "scopeName": "source.saga",
+  "fileTypes": ["sg"],
+
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string-multiline" },
+    { "include": "#string" },
+    { "include": "#keyword-declaration" },
+    { "include": "#keyword-control" },
+    { "include": "#keyword-operator" },
+    { "include": "#storage-modifier" },
+    { "include": "#storage-type" },
+    { "include": "#constant-language" },
+    { "include": "#constant-numeric" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+
+  "repository": {
+
+    "comment": {
+      "name": "comment.line.double-slash.saga",
+      "begin": "//",
+      "end": "$",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.saga" }
+      }
+    },
+
+    "keyword-control": {
+      "name": "keyword.control.saga",
+      "match": "\\b(break|case|else|fn|for|if|next|return|switch)\\b"
+    },
+
+    "keyword-declaration": {
+      "name": "keyword.declaration.saga",
+      "match": "\\b(const|enum|import|interface|struct)\\b"
+    },
+
+    "storage-modifier": {
+      "name": "storage.modifier.saga",
+      "match": "\\bpub\\b"
+    },
+
+    "keyword-operator": {
+      "name": "keyword.operator.word.saga",
+      "match": "\\b(or|spawn)\\b"
+    },
+
+    "storage-type": {
+      "name": "storage.type.saga",
+      "match": "\\b(Bool|Byte|Float|Float32|Float64|Int|Int8|Int16|Int32|Int64|String|Uint8|Uint16|Uint32|Uint64|Void)\\b"
+    },
+
+    "constant-language": {
+      "name": "constant.language.saga",
+      "match": "\\b(true|false)\\b"
+    },
+
+    "constant-numeric": {
+      "patterns": [
+        {
+          "comment": "Float literal: 1.0, 1_000.5, 1.5e+3",
+          "name": "constant.numeric.float.saga",
+          "match": "\\b(\\d[\\d_]*\\.[\\d][\\d_]*(?:[eE][+-]?\\d[\\d_]*)?)\\b"
+        },
+        {
+          "comment": "Binary integer: 0b1010",
+          "name": "constant.numeric.integer.binary.saga",
+          "match": "\\b(0[bB][01_]+)\\b"
+        },
+        {
+          "comment": "Hexadecimal integer: 0x1a3f",
+          "name": "constant.numeric.integer.hexadecimal.saga",
+          "match": "\\b(0[xX][0-9a-fA-F_]+)\\b"
+        },
+        {
+          "comment": "Octal integer: 0o755",
+          "name": "constant.numeric.integer.octal.saga",
+          "match": "\\b(0[oO][0-7_]+)\\b"
+        },
+        {
+          "comment": "Decimal integer: 42, 1_000",
+          "name": "constant.numeric.integer.decimal.saga",
+          "match": "\\b(\\d[\\d_]*)\\b"
+        }
+      ]
+    },
+
+    "string-escape": {
+      "name": "constant.character.escape.saga",
+      "match": "\\\\[ntr\\\\\"{}]"
+    },
+
+    "string-interpolation": {
+      "name": "meta.interpolation.saga",
+      "begin": "(?<!\\\\)\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.saga" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.saga" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#string-multiline" },
+        { "include": "#string" },
+        { "include": "#keyword-control" },
+        { "include": "#keyword-declaration" },
+        { "include": "#keyword-operator" },
+        { "include": "#storage-modifier" },
+        { "include": "#storage-type" },
+        { "include": "#constant-language" },
+        { "include": "#constant-numeric" },
+        { "include": "#operator" },
+        { "include": "#string-interpolation" }
+      ]
+    },
+
+    "string-multiline": {
+      "comment": "Triple-quoted multi-line string — must appear before single-line string",
+      "name": "string.quoted.triple.saga",
+      "begin": "\"\"\"",
+      "end": "\"\"\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.saga" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.saga" }
+      },
+      "patterns": [
+        { "include": "#string-escape" },
+        { "include": "#string-interpolation" }
+      ]
+    },
+
+    "string": {
+      "name": "string.quoted.double.saga",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.saga" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.saga" }
+      },
+      "patterns": [
+        { "include": "#string-escape" },
+        { "include": "#string-interpolation" }
+      ]
+    },
+
+    "operator": {
+      "patterns": [
+        {
+          "comment": "Multi-character operators — matched before single-char to avoid splitting",
+          "name": "keyword.operator.saga",
+          "match": ":=|\\+=|-=|\\*=|/=|==|!=|<=|>=|&&|\\|\\||\\*\\*|\\.\\.\\.|\\.\\."
+        },
+        {
+          "name": "keyword.operator.saga",
+          "match": "[-+*/%!<>&|^~=]"
+        }
+      ]
+    },
+
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.separator.comma.saga",     "match": "," },
+        { "name": "punctuation.separator.colon.saga",     "match": ":" },
+        { "name": "punctuation.accessor.dot.saga",        "match": "\\." },
+        { "name": "punctuation.definition.block.saga",    "match": "[{}]" },
+        { "name": "punctuation.definition.brackets.saga", "match": "[\\[\\]]" },
+        { "name": "punctuation.definition.parens.saga",   "match": "[()]" }
+      ]
+    }
+  }
+}

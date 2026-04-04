@@ -91,6 +91,12 @@ struct Analyzer {
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
 
+  /// Auxiliary type map keyed by byte-offset span, for identifiers that are
+  /// not wrapped in a Node (e.g. struct-literal field names, accumulator
+  /// pipes).  The LSP hover handler consults this when node_types has no
+  /// tighter match.
+  std::vector<std::pair<Span, TypePtr>> span_types;
+
   // ── Module/Import system ─────────────────────────────────────────────
 
   /// Package resolver (shared across sub-package analyzers).
@@ -336,7 +342,8 @@ private:
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
   TypePtr check_if_expr(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
-  TypePtr check_for_expr(const ForExprNode &node);
+  TypePtr check_for_expr(const ForExprNode &node,
+                         TypePtr accumulator_hint = nullptr);
   TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr check_or_expr(const OrExprNode &node);

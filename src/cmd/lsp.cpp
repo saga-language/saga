@@ -115,8 +115,9 @@ struct DocumentState {
   std::string uri;
   std::string content;
 
-  // Populated after analysis (null AST means parse failed).
+  // Populated after analysis.
   mc::FileSet fileset;
+  mc::ErrorList parse_errors;
   std::unique_ptr<mc::Node> ast;
   std::unique_ptr<mc::Analyzer> analyzer;
 };
@@ -139,6 +140,23 @@ find_node_at(const mc::Analyzer &az, size_t offset) {
       if (len < best_len) {
         best_len = len;
         best = node;
+      }
+    }
+  }
+  return best;
+}
+
+// Check the auxiliary span_types vector for a match tighter than best_len.
+// Returns the type if found, nullptr otherwise.
+static mc::TypePtr
+find_span_type_at(const mc::Analyzer &az, size_t offset, size_t best_len) {
+  mc::TypePtr best = nullptr;
+  for (auto &[span, type] : az.span_types) {
+    if (span.start <= offset && offset < span.end) {
+      size_t len = span.end - span.start;
+      if (len < best_len) {
+        best_len = len;
+        best = type;
       }
     }
   }
@@ -178,6 +196,7 @@ static std::pair<int, int> offset_to_lsp(const mc::File &file, size_t offset) {
 
 static void run_analysis(DocumentState &doc, const char *prog) {
   doc.fileset = mc::FileSet{};
+  doc.parse_errors = mc::ErrorList{};
   doc.ast.reset();
   doc.analyzer.reset();
 
@@ -187,7 +206,8 @@ static void run_analysis(DocumentState &doc, const char *prog) {
 
   mc::Parser parser(doc.fileset);
   doc.ast = parser.parse();
-  if (!doc.ast) return;
+  doc.parse_errors = std::move(parser.errors);
+  if (!doc.ast || !doc.parse_errors.errors.empty()) return;
 
   doc.analyzer = std::make_unique<mc::Analyzer>(doc.fileset);
 
@@ -205,7 +225,13 @@ static void run_analysis(DocumentState &doc, const char *prog) {
   if (fs::is_directory(std_sgi))
     doc.analyzer->package_resolver->sgi_search_paths.push_back(std_sgi);
 
-  doc.analyzer->analyze(*doc.ast);
+  try {
+    doc.analyzer->analyze(*doc.ast);
+  } catch (...) {
+    // Gracefully handle unexpected analyzer crashes so the LSP server
+    // stays alive.  Diagnostics from the partial run (if any) will
+    // still be published below.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,21 +310,10 @@ struct LspServer {
 
   void publish_diagnostics(const std::string &uri, const DocumentState &doc) {
     json::Value diags = json::make_array();
-    if (doc.analyzer) {
-      diags = errors_to_diagnostics(doc.fileset,
-                                     doc.analyzer->errors);
-    } else if (doc.ast == nullptr) {
-      // Parse failed — emit a generic error.
-      json::Value d = json::obj({
-          {"range", json::obj({
-              {"start", json::obj({{"line", 0}, {"character", 0}})},
-              {"end",   json::obj({{"line", 0}, {"character", 1}})},
-          })},
-          {"severity", 1},
-          {"source",  "saga"},
-          {"message", "parse error"},
-      });
-      diags.push(std::move(d));
+    if (!doc.parse_errors.errors.empty()) {
+      diags = errors_to_diagnostics(doc.fileset, doc.parse_errors);
+    } else if (doc.analyzer) {
+      diags = errors_to_diagnostics(doc.fileset, doc.analyzer->errors);
     }
 
     send_notification("textDocument/publishDiagnostics", json::obj({
@@ -383,12 +398,17 @@ struct LspServer {
       send_response(id, json::Value{}); return;
     }
 
-    std::string type_str = mc::type_to_string(type_it->second);
+    // Check span_types for a tighter match (e.g. struct-literal field names).
+    size_t node_len = node->span.end - node->span.start;
+    auto span_type = find_span_type_at(*doc.analyzer, offset, node_len);
+
+    std::string type_str = mc::type_to_string(
+        span_type ? span_type : type_it->second);
 
     // Include symbol name if available.
     std::string hover_text = "```saga\n" + type_str + "\n```";
     auto sym_it = doc.analyzer->node_symbols.find(node);
-    if (sym_it != doc.analyzer->node_symbols.end()) {
+    if (sym_it != doc.analyzer->node_symbols.end() && !span_type) {
       hover_text = "```saga\n" + sym_it->second.name + ": " + type_str + "\n```";
     }
 

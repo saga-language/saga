@@ -16,12 +16,12 @@ foreach(pkg ${SAGA_STD_PACKAGES})
         OUTPUT  "${SAGA_STD_SGI_DIR_LOCAL}/${pkg}.o"
                 "${SAGA_STD_SGI_DIR_LOCAL}/${pkg}.sgi"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SAGA_STD_SGI_DIR_LOCAL}"
-        COMMAND compiler
+        COMMAND saga
                 --lib
                 -o "${SAGA_STD_SGI_DIR_LOCAL}/${pkg}.o"
                 --sgi-path "${SAGA_STD_SGI_DIR_LOCAL}"
                 "${SAGA_STD_DIR}/${pkg}"
-        DEPENDS compiler ${${pkg}_SOURCES} ${${pkg}_SGI_DEPS}
+        DEPENDS saga ${${pkg}_SOURCES} ${${pkg}_SGI_DEPS}
         COMMENT "Compiling stdlib package: ${pkg}"
     )
     list(APPEND SAGA_STD_OBJECTS "${SAGA_STD_SGI_DIR_LOCAL}/${pkg}.o")

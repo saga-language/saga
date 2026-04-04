@@ -2913,8 +2913,16 @@ NodePtr Parser::parse_struct_literal(NodePtr type_expr) {
     expect(Token::Kind::Colon);
 
     // ── Field value ─────────────────────────────────────────────────────
-    // parse_expression() allows nested struct literals as values.
-    NodePtr value = parse_expression();
+    // Shorthand: `host:,` or `host:\n` means use the local variable
+    // with the same name as the field, equivalent to `host: host`.
+    NodePtr value;
+    if (check(Token::Kind::Comma) || check(Token::Kind::RightBrace) ||
+        check(Token::Kind::Terminator)) {
+      value = make_node<IdentifierNode>(span_from(id_start), id.literal);
+    } else {
+      // parse_expression() allows nested struct literals as values.
+      value = parse_expression();
+    }
 
     fields.push_back(FieldAssignmentNode{span_from(field_start),
                                          std::move(name), std::move(value)});
