@@ -54,6 +54,8 @@ _deps/
 *.swp
 .vscode/
 .zed/
+node_modules/
 
 # AI
 ai/
+
