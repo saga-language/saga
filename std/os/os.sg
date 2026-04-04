@@ -1,0 +1,1 @@
+pub const Stdout File = File{ fd: 1 }

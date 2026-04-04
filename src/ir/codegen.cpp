@@ -37,13 +37,65 @@ static bool is_string_key_type(const TypePtr &t) {
 CodeGen::CodeGen(const std::string &module_name, Analyzer &analyzer)
     : module(std::make_unique<llvm::Module>(module_name, context)),
       builder(context),
-      analyzer(analyzer) {
+      analyzer(analyzer),
+      package_name(module_name) {
   // Set a default data layout so LLVM can compute type alignments.
   // This is overridden by write_object() with the actual target layout.
   module->setDataLayout("e-m:e-p270:32:32-p271:32:32-p272:64:64-"
                         "i64:64-i128:128-f80:128-n8:16:32:64-S128");
   init_types();
   declare_runtime();
+}
+
+// ===========================================================================
+// Symbol mangling
+// ===========================================================================
+
+std::string CodeGen::mangle(const std::string &name) const {
+  return mangle(package_name, name);
+}
+
+std::string CodeGen::mangle(const std::string &pkg, const std::string &name) {
+  return pkg + "__" + name;
+}
+
+llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
+                                         const std::string &symbol_name,
+                                         const TypePtr &func_type) {
+  std::string link_name = mangle(pkg_name, symbol_name);
+
+  // Return existing declaration if already present.
+  if (auto *existing = module->getFunction(link_name))
+    return existing;
+
+  // Build the LLVM function type from the semantic type.
+  auto &fi = std::get<FuncTypeInfo>(func_type->detail);
+
+  std::vector<llvm::Type *> param_types;
+  for (auto &p : fi.params)
+    param_types.push_back(llvm_type(p));
+
+  llvm::Type *ret_ll = void_ll_type;
+  if (!fi.returns.empty() && fi.returns[0]->kind != TypeKind::Void) {
+    if (fi.returns.size() == 1) {
+      ret_ll = llvm_type(fi.returns[0]);
+    } else {
+      // Multi-return: create a struct type.
+      std::vector<llvm::Type *> ret_types;
+      for (auto &r : fi.returns)
+        ret_types.push_back(llvm_type(r));
+      auto *st = llvm::StructType::create(context, ret_types,
+                                           "mc.ret." + link_name);
+      multi_return_types[link_name] = st;
+      multi_return_counts[link_name] = fi.returns.size();
+      ret_ll = st;
+    }
+  }
+
+  auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, fi.is_variadic);
+  auto *func = llvm::Function::Create(
+      fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+  return func;
 }
 
 // ===========================================================================
@@ -453,7 +505,7 @@ void CodeGen::declare_functions(const SourceNode &src) {
     if (auto *fn = std::get_if<FuncDeclNode>(&decl->data)) {
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
-      std::string link_name = is_main ? "main" : name;
+      std::string link_name = is_main ? "main" : mangle(name);
 
       // Skip if already declared (e.g. by a previous source file).
       if (module->getFunction(link_name))
@@ -625,7 +677,7 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
         continue;
 
       std::string method_name(fn->name.name);
-      std::string link_name = struct_name + "." + method_name;
+      std::string link_name = mangle(struct_name + "__" + method_name);
 
       if (module->getFunction(link_name))
         continue;
@@ -676,7 +728,7 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
       continue;
 
     std::string method_name(fn->name.name);
-    std::string link_name = struct_name + "." + method_name;
+    std::string link_name = mangle(struct_name + "__" + method_name);
 
     if (module->getFunction(link_name))
       continue;
@@ -725,7 +777,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
         continue;
 
       std::string method_name(fn->name.name);
-      std::string link_name = struct_name + "." + method_name;
+      std::string link_name = mangle(struct_name + "__" + method_name);
 
       auto *func = module->getFunction(link_name);
       if (!func || !func->empty())
@@ -806,7 +858,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string method_name(fn->name.name);
-    std::string link_name = struct_name + "." + method_name;
+    std::string link_name = mangle(struct_name + "__" + method_name);
 
     auto *func = module->getFunction(link_name);
     if (!func || !func->empty())
@@ -893,7 +945,7 @@ llvm::GlobalVariable *CodeGen::get_or_create_vtable(
   std::vector<llvm::Constant *> entries;
   for (auto &iface_method : method_names) {
     // Find the corresponding struct method.
-    std::string link_name = struct_name + "." + iface_method;
+    std::string link_name = mangle(struct_name + "__" + iface_method);
     auto *fn = module->getFunction(link_name);
     if (fn) {
       entries.push_back(fn);
@@ -979,7 +1031,7 @@ llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
 
 llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   bool is_main = (fn.name.name == "Main");
-  std::string link_name = is_main ? "main" : std::string(fn.name.name);
+  std::string link_name = is_main ? "main" : mangle(std::string(fn.name.name));
 
   // Return type.
   llvm::Type *ret_type = void_ll_type;
@@ -1019,7 +1071,7 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   std::string name(fn.name.name);
   bool is_main = (name == "Main");
-  std::string link_name = is_main ? "main" : name;
+  std::string link_name = is_main ? "main" : mangle(name);
 
   auto *func = module->getFunction(link_name);
   if (!func)
@@ -1358,7 +1410,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       if (auto *ident = std::get_if<IdentifierNode>(&call->callee->data))
         callee_name = std::string(ident->name);
     }
-    std::string link_name = (callee_name == "Main") ? "main" : callee_name;
+    std::string link_name = (callee_name == "Main") ? "main" : mangle(callee_name);
     auto mr_it = multi_return_types.find(link_name);
 
     if (!callee_name.empty() && mr_it != multi_return_types.end()) {
@@ -3578,6 +3630,32 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
                                     const Node &parent) {
   std::string field_name(node.field.name);
 
+  // Module selector: mod.Symbol — used for constants, enum variants, etc.
+  // Function calls are handled in emit_call_expr, so here we handle
+  // non-call access (e.g., module constants, enum variant tags).
+  auto obj_sem = semantic_type(*node.object);
+  if (obj_sem && obj_sem->kind == TypeKind::Module) {
+    auto &mod = std::get<ModuleTypeInfo>(obj_sem->detail);
+    for (auto &exp : mod.exports) {
+      if (exp.name == field_name) {
+        if (exp.type && exp.type->kind == TypeKind::Func) {
+          // Function reference (not a call) — declare and return.
+          auto *fn = declare_import(mod.name, field_name, exp.type);
+          return fn;
+        }
+        // For enum variants from an imported module, look up the tag.
+        if (exp.type && exp.type->kind == TypeKind::Enum) {
+          auto &einfo = std::get<EnumTypeInfo>(exp.type->detail);
+          // The field might be accessing a variant of the enum.
+          // This would be mod.EnumName which is the type, not a value.
+          // Variant access would be mod.EnumName.Variant — handled elsewhere.
+        }
+        break;
+      }
+    }
+    return nullptr;
+  }
+
   // Emit the object expression.  For a struct variable this will be a load
   // of a pointer (from the alloca).  But we need the alloca itself to GEP.
   // Check if the object is an identifier referencing a local struct.
@@ -3645,11 +3723,44 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   // Check for method calls on objects (selector calls like arr.Size()).
   if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
     std::string method(sel->field.name);
+
+    auto obj_sem = semantic_type(*sel->object);
+
+    // ── Module function call: mod.Func(args) ────────────────────────
+    if (obj_sem && obj_sem->kind == TypeKind::Module) {
+      auto &mod = std::get<ModuleTypeInfo>(obj_sem->detail);
+      // Find the export.
+      TypePtr func_type;
+      for (auto &exp : mod.exports) {
+        if (exp.name == method) {
+          func_type = exp.type;
+          break;
+        }
+      }
+      if (!func_type || func_type->kind != TypeKind::Func)
+        return nullptr;
+
+      auto *callee = declare_import(mod.name, method, func_type);
+      if (!callee)
+        return nullptr;
+
+      std::vector<llvm::Value *> args;
+      for (auto &arg_node : node.args) {
+        auto *val = emit_expr(*arg_node);
+        if (val)
+          args.push_back(val);
+      }
+
+      if (callee->getReturnType()->isVoidTy()) {
+        builder.CreateCall(callee, args);
+        return nullptr;
+      }
+      return builder.CreateCall(callee, args, "pkg.call");
+    }
+
     auto *obj = emit_expr(*sel->object);
     if (!obj)
       return nullptr;
-
-    auto obj_sem = semantic_type(*sel->object);
 
     // Array methods.
     if (obj_sem && obj_sem->kind == TypeKind::Array) {
@@ -3845,7 +3956,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     // Struct method call: obj.Method(args) → StructName.Method(obj, args).
     if (obj_sem && obj_sem->kind == TypeKind::Struct) {
       auto &info = std::get<StructTypeInfo>(obj_sem->detail);
-      std::string link_name = info.name + "." + method;
+      std::string link_name = mangle(info.name + "__" + method);
       auto *callee = module->getFunction(link_name);
       if (callee) {
         // Build argument list: self + explicit args.
@@ -4038,7 +4149,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   if (name == "intrinsic_print")
     link_name = "mc_intrinsic_print";
   else
-    link_name = name;
+    link_name = mangle(name);
 
   auto *callee = module->getFunction(link_name);
 

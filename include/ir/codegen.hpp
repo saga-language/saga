@@ -30,6 +30,9 @@ struct CodeGen {
   Analyzer &analyzer;
   ErrorList errors;
 
+  /// Package name for symbol mangling (e.g. "io", "os").
+  std::string package_name;
+
   // ── LLVM type cache ──────────────────────────────────────────────────
 
   llvm::StructType *string_type = nullptr;   // { ptr, i64 }
@@ -144,6 +147,18 @@ struct CodeGen {
   // ── Construction ─────────────────────────────────────────────────────
 
   CodeGen(const std::string &module_name, Analyzer &analyzer);
+
+  /// Compute the mangled link name for a symbol in this package.
+  std::string mangle(const std::string &name) const;
+
+  /// Compute the mangled link name for a symbol in another package.
+  static std::string mangle(const std::string &pkg, const std::string &name);
+
+  /// Declare an external function from an imported package.
+  /// Returns the LLVM Function*, creating it if needed.
+  llvm::Function *declare_import(const std::string &pkg_name,
+                                  const std::string &symbol_name,
+                                  const TypePtr &func_type);
 
   // ── Entry point ──────────────────────────────────────────────────────
 

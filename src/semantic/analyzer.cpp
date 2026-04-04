@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "semantic/analyzer.hpp"
+#include "semantic/sgi.hpp"
 #include "frontend/parser.hpp"
 
 #include <algorithm>
@@ -15,18 +16,15 @@ namespace mc {
 // ===========================================================================
 
 Analyzer::Analyzer(FileSet &fs)
-    : fileset(fs),
-      global_scope(std::make_shared<Scope>(ScopeKind::Global)),
+    : fileset(fs), global_scope(std::make_shared<Scope>(ScopeKind::Global)),
       current_scope(global_scope),
       package_resolver(std::make_shared<PackageResolver>()) {
   register_builtins(global_scope, builtins);
 }
 
 Analyzer::Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver)
-    : fileset(fs),
-      global_scope(std::make_shared<Scope>(ScopeKind::Global)),
-      current_scope(global_scope),
-      package_resolver(std::move(resolver)) {
+    : fileset(fs), global_scope(std::make_shared<Scope>(ScopeKind::Global)),
+      current_scope(global_scope), package_resolver(std::move(resolver)) {
   register_builtins(global_scope, builtins);
 }
 
@@ -36,8 +34,8 @@ Analyzer::Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver)
 
 namespace fs = std::filesystem;
 
-std::string PackageResolver::find_package_dir(
-    const std::string &import_path) const {
+std::string
+PackageResolver::find_package_dir(const std::string &import_path) const {
   for (auto &base : search_paths) {
     std::string candidate = base + "/" + import_path;
     if (fs::is_directory(candidate))
@@ -46,13 +44,55 @@ std::string PackageResolver::find_package_dir(
   return {};
 }
 
-std::vector<std::string> PackageResolver::list_source_files(
-    const std::string &dir) const {
+std::string
+PackageResolver::find_sgi_file(const std::string &import_path) const {
+  // Extract package name from import path (last segment).
+  auto last_slash = import_path.rfind('/');
+  std::string pkg_name = (last_slash != std::string::npos)
+                             ? import_path.substr(last_slash + 1)
+                             : import_path;
+  std::string filename = pkg_name + ".sgi";
+
+  for (auto &base : sgi_search_paths) {
+    std::string candidate = base + "/" + filename;
+    if (fs::is_regular_file(candidate))
+      return candidate;
+  }
+  return {};
+}
+
+// Skip files like foo_darwin.sg when building for linux
+static bool is_platform_file(const std::string &stem) {
+  static const std::vector<std::string> platforms = {"_linux", "_darwin",
+                                                     "_windows"};
+  for (auto &p : platforms) {
+    if (stem.ends_with(p))
+      return true;
+  }
+  return false;
+}
+
+static std::string current_platform() {
+#if defined(__linux__)
+  return "_linux";
+#elif defined(__APPLE__)
+  return "_darwin";
+#elif defined(_WIN32)
+  return "_windows";
+#else
+  return "";
+#endif
+}
+
+std::vector<std::string>
+PackageResolver::list_source_files(const std::string &dir) const {
   std::vector<std::string> files;
   if (!fs::is_directory(dir))
     return files;
   for (auto &entry : fs::directory_iterator(dir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".sg") {
+    std::string stem = entry.path().stem().string();
+    if (entry.is_regular_file() && entry.path().extension() == ".sg" &&
+        (!is_platform_file(stem) || stem.ends_with(current_platform()))) {
       files.push_back(entry.path().string());
     }
   }
@@ -254,7 +294,8 @@ void Analyzer::visit_package(const PackageNode &pkg) {
     process_imports(src_node.declarations);
   }
 
-  // Phase 2: resolve declaration types (struct fields, signatures, etc.) from ALL files.
+  // Phase 2: resolve declaration types (struct fields, signatures, etc.) from
+  // ALL files.
   for (auto &src : pkg.sources) {
     auto &src_node = std::get<SourceNode>(src->data);
     for (auto &decl : src_node.declarations) {
@@ -268,9 +309,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
     for (auto &decl : src_node.declarations) {
       std::visit(
           overloaded{
-              [&](const FuncDeclNode &fn) {
-                resolve_func_decl_body(fn);
-              },
+              [&](const FuncDeclNode &fn) { resolve_func_decl_body(fn); },
               [&](const StructDeclNode &s) {
                 TypePtr struct_type = nullptr;
                 auto sym = lookup(std::string(s.name.name));
@@ -290,7 +329,8 @@ void Analyzer::visit_package(const PackageNode &pkg) {
     }
   }
 
-  // Phase 4: type-check top-level declarations and function bodies from ALL files.
+  // Phase 4: type-check top-level declarations and function bodies from ALL
+  // files.
   for (auto &src : pkg.sources) {
     auto &src_node = std::get<SourceNode>(src->data);
     for (auto &decl : src_node.declarations) {
@@ -344,100 +384,95 @@ void Analyzer::visit_source(const SourceNode &src) {
 
   // Pass 3: resolve names inside function/method bodies.
   for (auto &decl : src.declarations) {
-    std::visit(
-        overloaded{
-            [&](const FuncDeclNode &fn) {
-              resolve_func_decl_body(fn);
-            },
-            [&](const StructDeclNode &s) {
-              TypePtr struct_type = nullptr;
-              auto sym = lookup(std::string(s.name.name));
-              if (sym)
-                struct_type = sym->type;
+    std::visit(overloaded{
+                   [&](const FuncDeclNode &fn) { resolve_func_decl_body(fn); },
+                   [&](const StructDeclNode &s) {
+                     TypePtr struct_type = nullptr;
+                     auto sym = lookup(std::string(s.name.name));
+                     if (sym)
+                       struct_type = sym->type;
 
-              for (auto &member : s.members) {
-                if (auto *fn =
-                        std::get_if<FuncDeclNode>(&member.member->data)) {
-                  resolve_func_decl_body(*fn, struct_type);
-                }
-              }
-            },
-            [&](const auto &) {},
-        },
-        decl->data);
+                     for (auto &member : s.members) {
+                       if (auto *fn = std::get_if<FuncDeclNode>(
+                               &member.member->data)) {
+                         resolve_func_decl_body(*fn, struct_type);
+                       }
+                     }
+                   },
+                   [&](const auto &) {},
+               },
+               decl->data);
   }
 
   // Pass 4: type-check top-level declarations and function bodies.
   for (auto &decl : src.declarations) {
-    std::visit(
-        overloaded{
-            [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
-            [&](const StructDeclNode &s) {
-              check_struct_decl(s);
+    std::visit(overloaded{
+                   [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
+                   [&](const StructDeclNode &s) {
+                     check_struct_decl(s);
 
-              TypePtr struct_type = nullptr;
-              auto sym = lookup(std::string(s.name.name));
-              if (sym)
-                struct_type = sym->type;
+                     TypePtr struct_type = nullptr;
+                     auto sym = lookup(std::string(s.name.name));
+                     if (sym)
+                       struct_type = sym->type;
 
-              for (auto &member : s.members) {
-                if (auto *fn =
-                        std::get_if<FuncDeclNode>(&member.member->data)) {
-                  check_func_decl_body(*fn, struct_type);
-                }
-              }
-            },
-            [&](const EnumDeclNode &e) { check_enum_decl(e); },
-            [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
-            [&](const ConstDeclNode &c) { check_const_decl(c); },
-            [&](const ImportDeclNode &imp) { check_import_decl(imp); },
-            [&](const auto &) {},
-        },
-        decl->data);
+                     for (auto &member : s.members) {
+                       if (auto *fn = std::get_if<FuncDeclNode>(
+                               &member.member->data)) {
+                         check_func_decl_body(*fn, struct_type);
+                       }
+                     }
+                   },
+                   [&](const EnumDeclNode &e) { check_enum_decl(e); },
+                   [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
+                   [&](const ConstDeclNode &c) { check_const_decl(c); },
+                   [&](const ImportDeclNode &imp) { check_import_decl(imp); },
+                   [&](const auto &) {},
+               },
+               decl->data);
   }
 
   pop_scope();
 }
 
 void Analyzer::collect_declaration(const Node &node) {
-  std::visit(
-      overloaded{
-          [&](const FuncDeclNode &fn) {
-            declare(Symbol::function(std::string(fn.name.name), nullptr,
-                                     fn.name.span, fn.is_public));
-          },
-          [&](const StructDeclNode &s) {
-            declare(Symbol::type_sym(std::string(s.name.name), nullptr,
-                                     s.name.span, s.is_public));
-          },
-          [&](const EnumDeclNode &e) {
-            declare(Symbol::type_sym(std::string(e.name.name), nullptr,
-                                     e.name.span, e.is_public));
-          },
-          [&](const InterfaceDeclNode &i) {
-            declare(Symbol::type_sym(std::string(i.name.name), nullptr,
-                                     i.name.span, i.is_public));
-          },
-          [&](const ConstDeclNode &c) {
-            declare(Symbol::constant(std::string(c.name.name), nullptr,
-                                     c.name.span, c.is_public));
-          },
-          [&](const ImportDeclNode &imp) {
-            // Derive the local name from the last path segment.
-            std::string path(imp.path);
-            auto last_slash = path.rfind('/');
-            std::string name = (last_slash != std::string::npos)
-                                   ? path.substr(last_slash + 1)
-                                   : path;
-            // Forward-declare the module symbol (type filled in during
-            // import processing).
-            declare(Symbol::module_sym(name, nullptr, imp.span));
-          },
-          [&](const auto &) {
-            error(node.span, "unexpected node at top level");
-          },
-      },
-      node.data);
+  std::visit(overloaded{
+                 [&](const FuncDeclNode &fn) {
+                   declare(Symbol::function(std::string(fn.name.name), nullptr,
+                                            fn.name.span, fn.is_public));
+                 },
+                 [&](const StructDeclNode &s) {
+                   declare(Symbol::type_sym(std::string(s.name.name), nullptr,
+                                            s.name.span, s.is_public));
+                 },
+                 [&](const EnumDeclNode &e) {
+                   declare(Symbol::type_sym(std::string(e.name.name), nullptr,
+                                            e.name.span, e.is_public));
+                 },
+                 [&](const InterfaceDeclNode &i) {
+                   declare(Symbol::type_sym(std::string(i.name.name), nullptr,
+                                            i.name.span, i.is_public));
+                 },
+                 [&](const ConstDeclNode &c) {
+                   declare(Symbol::constant(std::string(c.name.name), nullptr,
+                                            c.name.span, c.is_public));
+                 },
+                 [&](const ImportDeclNode &imp) {
+                   // Derive the local name from the last path segment.
+                   std::string path(imp.path);
+                   auto last_slash = path.rfind('/');
+                   std::string name = (last_slash != std::string::npos)
+                                          ? path.substr(last_slash + 1)
+                                          : path;
+                   // Forward-declare the module symbol (type filled in during
+                   // import processing).
+                   declare(Symbol::module_sym(name, nullptr, imp.span));
+                 },
+                 [&](const auto &) {
+                   error(node.span, "unexpected node at top level");
+                 },
+             },
+             node.data);
 }
 
 // ===========================================================================
@@ -453,8 +488,7 @@ void Analyzer::process_imports(const std::vector<NodePtr> &declarations) {
 
               // Check for duplicate imports.
               if (imported_paths_.count(path)) {
-                error(imp.span,
-                      std::format("duplicate import of '{}'", path));
+                error(imp.span, std::format("duplicate import of '{}'", path));
                 return;
               }
               imported_paths_.insert(path);
@@ -468,7 +502,8 @@ void Analyzer::process_imports(const std::vector<NodePtr> &declarations) {
               // Resolve the import to a module type.
               auto module_type = resolve_import(path, imp.span);
 
-              // Update the forward-declared module symbol with the resolved type.
+              // Update the forward-declared module symbol with the resolved
+              // type.
               auto sym_it = current_scope->symbols.find(name);
               if (sym_it != current_scope->symbols.end()) {
                 sym_it->second.type = module_type;
@@ -479,8 +514,7 @@ void Analyzer::process_imports(const std::vector<NodePtr> &declarations) {
               // bound to a named constant.
               if (!c.value)
                 return;
-              auto *import_expr =
-                  std::get_if<ImportExprNode>(&c.value->data);
+              auto *import_expr = std::get_if<ImportExprNode>(&c.value->data);
               if (!import_expr)
                 return;
 
@@ -534,6 +568,22 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
     return builtins.error_type;
   }
 
+  // Check for pre-compiled .sgi interface file.
+  if (package_resolver) {
+    std::string sgi_path = package_resolver->find_sgi_file(import_path);
+    if (!sgi_path.empty()) {
+      auto sgi = load_sgi(sgi_path);
+      if (sgi) {
+        auto module_type = sgi_to_module_type(*sgi, import_path);
+        package_resolver->cache[import_path] = module_type;
+        // Record the directory so the linker can find the .o file.
+        package_resolver->sgi_resolved_dirs[import_path] =
+            fs::path(sgi_path).parent_path().string();
+        return module_type;
+      }
+    }
+  }
+
   // Resolve the filesystem path.
   if (!package_resolver) {
     error(span, std::format("cannot resolve import '{}': no package resolver",
@@ -582,9 +632,8 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   }
 
   if (sub_fileset.files.empty()) {
-    error(span,
-          std::format("failed to read source files for package '{}'",
-                      import_path));
+    error(span, std::format("failed to read source files for package '{}'",
+                            import_path));
     package_resolver->in_progress.erase(import_path);
     return builtins.error_type;
   }
@@ -593,8 +642,8 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   auto sub_ast = sub_parser.parse();
 
   if (!sub_ast || !sub_parser.errors.errors.empty()) {
-    error(span, std::format("parse errors in imported package '{}'",
-                            import_path));
+    error(span,
+          std::format("parse errors in imported package '{}'", import_path));
     package_resolver->in_progress.erase(import_path);
     return builtins.error_type;
   }
@@ -617,8 +666,8 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   // Extract public symbols from the sub-package's module scope.
   auto last_slash = import_path.rfind('/');
   std::string pkg_name = (last_slash != std::string::npos)
-                              ? import_path.substr(last_slash + 1)
-                              : import_path;
+                             ? import_path.substr(last_slash + 1)
+                             : import_path;
 
   std::vector<ModuleExport> exports;
   if (sub_analyzer.package_scope_) {
@@ -652,9 +701,7 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const ArrayTypeNode &n) -> TypePtr {
             return resolve_array_type(n);
           },
-          [&](const MapTypeNode &n) -> TypePtr {
-            return resolve_map_type(n);
-          },
+          [&](const MapTypeNode &n) -> TypePtr { return resolve_map_type(n); },
           [&](const FuncTypeNode &n) -> TypePtr {
             return resolve_func_type(n);
           },
@@ -682,8 +729,7 @@ TypePtr Analyzer::resolve_identifier_type(const IdentifierNode &node) {
     return builtins.error_type;
   }
   if (sym->kind != SymbolKind::Type && sym->kind != SymbolKind::TypeParam) {
-    error(node.span,
-          std::format("'{}' is not a type", std::string(node.name)));
+    error(node.span, std::format("'{}' is not a type", std::string(node.name)));
     return builtins.error_type;
   }
   return sym->type ? sym->type : builtins.error_type;
@@ -769,17 +815,16 @@ void Analyzer::declare_parameters(const SignatureNode &sig) {
 }
 
 void Analyzer::resolve_declaration(const Node &node) {
-  std::visit(
-      overloaded{
-          [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
-          [&](const StructDeclNode &s) { resolve_struct_decl(s); },
-          [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
-          [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
-          [&](const ConstDeclNode &c) { resolve_const_decl(c); },
-          [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
-          [&](const auto &) { /* already reported in collect */ },
-      },
-      node.data);
+  std::visit(overloaded{
+                 [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
+                 [&](const StructDeclNode &s) { resolve_struct_decl(s); },
+                 [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
+                 [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
+                 [&](const ConstDeclNode &c) { resolve_const_decl(c); },
+                 [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
+                 [&](const auto &) { /* already reported in collect */ },
+             },
+             node.data);
 }
 
 void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
@@ -809,8 +854,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
       auto recv_sym = lookup(std::string(ident->name));
       if (recv_sym && recv_sym->type &&
           recv_sym->type->kind == TypeKind::Struct) {
-        auto &struct_info =
-            std::get<StructTypeInfo>(recv_sym->type->detail);
+        auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
         struct_info.methods.push_back(
             {std::string(fn.name.name), fn_type, fn.is_public});
       }
@@ -838,23 +882,22 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
 
   // Resolve fields and methods.
   for (auto &member : s.members) {
-    std::visit(
-        overloaded{
-            [&](const FieldSpecNode &fs) {
-              auto ft = resolve_type(*fs.type);
-              for (auto &ident : fs.names.identifiers) {
-                fields.push_back(
-                    {std::string(ident.name), ft, member.is_public});
-              }
-            },
-            [&](const FuncDeclNode &fn) {
-              auto fn_type = resolve_signature(fn.signature);
-              methods.push_back(
-                  {std::string(fn.name.name), fn_type, member.is_public});
-            },
-            [&](const auto &) {},
-        },
-        member.member->data);
+    std::visit(overloaded{
+                   [&](const FieldSpecNode &fs) {
+                     auto ft = resolve_type(*fs.type);
+                     for (auto &ident : fs.names.identifiers) {
+                       fields.push_back(
+                           {std::string(ident.name), ft, member.is_public});
+                     }
+                   },
+                   [&](const FuncDeclNode &fn) {
+                     auto fn_type = resolve_signature(fn.signature);
+                     methods.push_back({std::string(fn.name.name), fn_type,
+                                        member.is_public});
+                   },
+                   [&](const auto &) {},
+               },
+               member.member->data);
   }
 
   // Resolve embeds.
@@ -871,9 +914,9 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
     }
   }
 
-  auto struct_type = make_struct_type(std::string(s.name.name),
-                                      std::move(fields), std::move(methods),
-                                      std::move(type_params));
+  auto struct_type =
+      make_struct_type(std::string(s.name.name), std::move(fields),
+                       std::move(methods), std::move(type_params));
   // Set embeds on the created type.
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   info.embeds = std::move(embeds);
@@ -899,11 +942,10 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
     for (auto &fa : field.initializer) {
       // Enum field initializers are constant expressions; for now we just
       // record the name. Type-checking of values is deferred.
-      variant_fields.push_back(
-          {std::string(fa.name.name), nullptr, false});
+      variant_fields.push_back({std::string(fa.name.name), nullptr, false});
     }
-    variants.push_back({std::string(field.name.name),
-                        std::move(variant_fields)});
+    variants.push_back(
+        {std::string(field.name.name), std::move(variant_fields)});
   }
 
   auto enum_type =
@@ -927,8 +969,7 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
 
   for (auto &field : i.methods) {
     auto fn_type = resolve_signature(field.signature);
-    methods.push_back(
-        {std::string(field.name.name), fn_type, field.is_public});
+    methods.push_back({std::string(field.name.name), fn_type, field.is_public});
   }
 
   auto iface_type = make_interface_type(
@@ -973,13 +1014,12 @@ void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
     // Use declare() (not declare_local) to avoid shadowing errors
     // against the outer struct scope.
     current_scope->symbols.emplace(
-        field.name,
-        Symbol::variable(field.name, field.type, Span{}));
+        field.name, Symbol::variable(field.name, field.type, Span{}));
   }
 }
 
 void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
-                                       const TypePtr &enclosing_struct) {
+                                      const TypePtr &enclosing_struct) {
   push_scope(ScopeKind::Function);
 
   // Enter generics if present.
@@ -1021,9 +1061,7 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
 void Analyzer::resolve_expr(const Node &node) {
   std::visit(
       overloaded{
-          [&](const IdentifierNode &n) {
-            resolve_identifier(n, node);
-          },
+          [&](const IdentifierNode &n) { resolve_identifier(n, node); },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const IntegerLiteralNode &) { /* leaf */ },
           [&](const FloatLiteralNode &) { /* leaf */ },
@@ -1103,7 +1141,10 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
           // Avoid duplicate captures.
           bool already = false;
           for (auto &c : caps)
-            if (c.name == name) { already = true; break; }
+            if (c.name == name) {
+              already = true;
+              break;
+            }
           if (!already)
             caps.push_back({name, sym->type});
         }
@@ -1116,8 +1157,9 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
   // ── Capture detection for spawn blocks ────────────────────────────
   // If this symbol is a local variable/parameter and we're inside a
   // spawn block, check if it was declared outside the spawn boundary.
-  if ((sym->kind == SymbolKind::Variable || sym->kind == SymbolKind::Parameter)
-      && pending_spawn_node_) {
+  if ((sym->kind == SymbolKind::Variable ||
+       sym->kind == SymbolKind::Parameter) &&
+      pending_spawn_node_) {
     auto scope = current_scope;
     while (scope) {
       if (scope->lookup_local(name))
@@ -1126,7 +1168,10 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
         auto &caps = spawn_captures[pending_spawn_node_];
         bool already = false;
         for (auto &c : caps)
-          if (c.name == name) { already = true; break; }
+          if (c.name == name) {
+            already = true;
+            break;
+          }
         if (!already)
           caps.push_back({name, sym->type, SpawnCaptureKind::Copy});
         break;
@@ -1145,22 +1190,21 @@ void Analyzer::resolve_block(const BlockNode &block) {
 void Analyzer::resolve_block_stmt(const Node &node) {
   // Dispatch: some nodes are statements that introduce names,
   // others are expressions.
-  std::visit(
-      overloaded{
-          [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
-          [&](const DeclAssignNode &n) { resolve_decl_assign(n, node); },
-          [&](const AssignNode &n) { resolve_assign(n); },
-          [&](const IncrementNode &n) { resolve_increment(n); },
-          [&](const DecrementNode &n) { resolve_decrement(n); },
-          [&](const ReturnNode &n) { resolve_return(n); },
-          [&](const BreakNode &n) { resolve_break(n); },
-          [&](const NextNode &) { /* nothing */ },
-          [&](const auto &) {
-            // Everything else is an expression.
-            resolve_expr(node);
-          },
-      },
-      node.data);
+  std::visit(overloaded{
+                 [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
+                 [&](const DeclAssignNode &n) { resolve_decl_assign(n, node); },
+                 [&](const AssignNode &n) { resolve_assign(n); },
+                 [&](const IncrementNode &n) { resolve_increment(n); },
+                 [&](const DecrementNode &n) { resolve_decrement(n); },
+                 [&](const ReturnNode &n) { resolve_return(n); },
+                 [&](const BreakNode &n) { resolve_break(n); },
+                 [&](const NextNode &) { /* nothing */ },
+                 [&](const auto &) {
+                   // Everything else is an expression.
+                   resolve_expr(node);
+                 },
+             },
+             node.data);
 }
 
 // ── Expression sub-resolvers ───────────────────────────────────────────
@@ -1199,8 +1243,8 @@ void Analyzer::resolve_selector(const SelectorNode &node) {
       }
       if (!found) {
         error(node.field.span,
-              std::format("package '{}' has no exported member '{}'",
-                          mod.name, field_name));
+              std::format("package '{}' has no exported member '{}'", mod.name,
+                          field_name));
       }
     }
   }
@@ -1295,37 +1339,36 @@ void Analyzer::resolve_for_expr(const ForExprNode &node) {
 
   // Resolve the mode (condition, range clause, or iter clause).
   if (node.mode) {
-    std::visit(
-        overloaded{
-            [&](const ForRangeClauseNode &range) {
-              // Resolve the iterable expression first.
-              resolve_expr(*range.iterable);
-              // Declare the loop variable(s) into the loop scope.
-              for (auto &var : range.vars) {
-                declare_local(Symbol::variable(
-                    std::string(var.name), nullptr, var.span));
-              }
-            },
-            [&](const ForIterClauseNode &iter) {
-              // Init: typically a VarDecl or DeclAssign.
-              resolve_block_stmt(*iter.init);
-              // Condition.
-              resolve_expr(*iter.condition);
-              // Update.
-              resolve_block_stmt(*iter.update);
-            },
-            [&](const auto &) {
-              // Bare condition expression.
-              resolve_expr(**node.mode);
-            },
-        },
-        (*node.mode)->data);
+    std::visit(overloaded{
+                   [&](const ForRangeClauseNode &range) {
+                     // Resolve the iterable expression first.
+                     resolve_expr(*range.iterable);
+                     // Declare the loop variable(s) into the loop scope.
+                     for (auto &var : range.vars) {
+                       declare_local(Symbol::variable(std::string(var.name),
+                                                      nullptr, var.span));
+                     }
+                   },
+                   [&](const ForIterClauseNode &iter) {
+                     // Init: typically a VarDecl or DeclAssign.
+                     resolve_block_stmt(*iter.init);
+                     // Condition.
+                     resolve_expr(*iter.condition);
+                     // Update.
+                     resolve_block_stmt(*iter.update);
+                   },
+                   [&](const auto &) {
+                     // Bare condition expression.
+                     resolve_expr(**node.mode);
+                   },
+               },
+               (*node.mode)->data);
   }
 
   // Declare the accumulator pipe if present.
   if (node.accumulator) {
-    declare_local(Symbol::variable(std::string(node.accumulator->name),
-                                   nullptr, node.accumulator->span));
+    declare_local(Symbol::variable(std::string(node.accumulator->name), nullptr,
+                                   node.accumulator->span));
   }
 
   // Resolve the body.
@@ -1341,7 +1384,7 @@ void Analyzer::resolve_range_expr(const RangeExprNode &node) {
 }
 
 void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
-                                   const Node &parent) {
+                                  const Node &parent) {
   push_scope(ScopeKind::Spawn);
 
   // Push this spawn onto the stack for capture tracking.
@@ -1363,9 +1406,8 @@ void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
 
   // Pop the spawn stack.
   spawn_node_stack_.pop_back();
-  pending_spawn_node_ = spawn_node_stack_.empty()
-                            ? nullptr
-                            : spawn_node_stack_.back();
+  pending_spawn_node_ =
+      spawn_node_stack_.empty() ? nullptr : spawn_node_stack_.back();
 
   // Classify spawn captures based on their types.
   auto cap_it = spawn_captures.find(&parent);
@@ -1410,8 +1452,7 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   pop_scope();
 }
 
-void Analyzer::resolve_func_expr(const FuncExprNode &node,
-                                  const Node &parent) {
+void Analyzer::resolve_func_expr(const FuncExprNode &node, const Node &parent) {
   push_scope(ScopeKind::Function);
   current_scope->is_closure = true;
 
@@ -1435,9 +1476,8 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node,
 
   // Pop closure tracking state.
   closure_node_stack_.pop_back();
-  pending_closure_node_ = closure_node_stack_.empty()
-                              ? nullptr
-                              : closure_node_stack_.back();
+  pending_closure_node_ =
+      closure_node_stack_.empty() ? nullptr : closure_node_stack_.back();
 
   pop_scope();
 }
@@ -1446,9 +1486,7 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node,
 // Phase 4 — Statement name resolution
 // ===========================================================================
 
-void Analyzer::resolve_stmt(const Node &node) {
-  resolve_block_stmt(node);
-}
+void Analyzer::resolve_stmt(const Node &node) { resolve_block_stmt(node); }
 
 void Analyzer::resolve_var_decl(const VarDeclNode &var,
                                 const Node & /*parent*/) {
@@ -1517,7 +1555,7 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 // ===========================================================================
 
 void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
-                                     const TypePtr &enclosing_struct) {
+                                    const TypePtr &enclosing_struct) {
   push_scope(ScopeKind::Function);
 
   if (fn.generic)
@@ -1604,33 +1642,25 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const GroupExprNode &n) -> TypePtr {
             return check_group_expr(n);
           },
-          [&](const CallExprNode &n) -> TypePtr {
-            return check_call_expr(n);
-          },
+          [&](const CallExprNode &n) -> TypePtr { return check_call_expr(n); },
           [&](const IndexExprNode &n) -> TypePtr {
             return check_index_expr(n);
           },
           [&](const SelectorNode &n) -> TypePtr {
             return check_selector(n, node);
           },
-          [&](const IfExprNode &n) -> TypePtr {
-            return check_if_expr(n);
-          },
+          [&](const IfExprNode &n) -> TypePtr { return check_if_expr(n); },
           [&](const SwitchExprNode &n) -> TypePtr {
             return check_switch_expr(n);
           },
-          [&](const ForExprNode &n) -> TypePtr {
-            return check_for_expr(n);
-          },
+          [&](const ForExprNode &n) -> TypePtr { return check_for_expr(n); },
           [&](const RangeExprNode &n) -> TypePtr {
             return check_range_expr(n);
           },
           [&](const SpawnExprNode &n) -> TypePtr {
             return check_spawn_expr(n, node);
           },
-          [&](const OrExprNode &n) -> TypePtr {
-            return check_or_expr(n);
-          },
+          [&](const OrExprNode &n) -> TypePtr { return check_or_expr(n); },
           [&](const FuncExprNode &n) -> TypePtr {
             return check_func_expr(n, node);
           },
@@ -1672,12 +1702,8 @@ TypePtr Analyzer::check_expr(const Node &node) {
             check_break(n);
             return builtins.void_type;
           },
-          [&](const NextNode &) -> TypePtr {
-            return builtins.void_type;
-          },
-          [&](const auto &) -> TypePtr {
-            return builtins.error_type;
-          },
+          [&](const NextNode &) -> TypePtr { return builtins.void_type; },
+          [&](const auto &) -> TypePtr { return builtins.error_type; },
       },
       node.data);
 
@@ -1738,8 +1764,7 @@ TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
   for (size_t i = 1; i < node.elements.size(); ++i) {
     auto t = check_expr(*node.elements[i]);
     if (!is_error_type(t) && !is_error_type(elem_type)) {
-      expect_assignable(node.elements[i]->span, elem_type, t,
-                        "array element");
+      expect_assignable(node.elements[i]->span, elem_type, t, "array element");
     }
   }
   return make_array_type(elem_type);
@@ -1757,8 +1782,7 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
     if (!is_error_type(kt))
       expect_assignable(node.entries[i].key->span, key_type, kt, "map key");
     if (!is_error_type(vt))
-      expect_assignable(node.entries[i].value->span, val_type, vt,
-                        "map value");
+      expect_assignable(node.entries[i].value->span, val_type, vt, "map value");
   }
   return make_map_type(key_type, val_type);
 }
@@ -1769,9 +1793,8 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
     return builtins.error_type;
 
   if (type_expr_type->kind != TypeKind::Struct) {
-    error(node.type_expr->span,
-          std::format("'{}' is not a struct type",
-                      type_to_string(type_expr_type)));
+    error(node.type_expr->span, std::format("'{}' is not a struct type",
+                                            type_to_string(type_expr_type)));
     return builtins.error_type;
   }
 
@@ -1900,9 +1923,8 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
       }
     }
     if (!is_equatable(lhs)) {
-      error(node.lhs->span,
-            std::format("type {} does not support equality",
-                        type_to_string(lhs)));
+      error(node.lhs->span, std::format("type {} does not support equality",
+                                        type_to_string(lhs)));
       return builtins.error_type;
     }
     expect_assignable(node.rhs->span, lhs, rhs, "comparison");
@@ -1913,9 +1935,8 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
   case K::GreaterThan:
   case K::GreaterThanEqual: {
     if (!is_ordered(lhs)) {
-      error(node.lhs->span,
-            std::format("type {} does not support ordering",
-                        type_to_string(lhs)));
+      error(node.lhs->span, std::format("type {} does not support ordering",
+                                        type_to_string(lhs)));
       return builtins.error_type;
     }
     expect_assignable(node.rhs->span, lhs, rhs, "comparison");
@@ -2024,9 +2045,8 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
   // Check argument count.
   if (!fn_info.is_variadic) {
     if (arg_types.size() != fn_info.params.size()) {
-      error(node.span,
-            std::format("expected {} argument(s), got {}",
-                        fn_info.params.size(), arg_types.size()));
+      error(node.span, std::format("expected {} argument(s), got {}",
+                                   fn_info.params.size(), arg_types.size()));
       return builtins.error_type;
     }
   } else {
@@ -2100,8 +2120,7 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
   case TypeKind::Map: {
     auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
     if (!is_error_type(index_type)) {
-      expect_assignable(node.index->span, map_info.key, index_type,
-                        "map key");
+      expect_assignable(node.index->span, map_info.key, index_type, "map key");
     }
     // Map access returns V | Error (missing key).
     return make_union_type({map_info.value, builtins.error_iface});
@@ -2113,15 +2132,13 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
     return builtins.string_type;
   }
   default:
-    error(node.span,
-          std::format("type {} does not support indexing",
-                      type_to_string(obj_type)));
+    error(node.span, std::format("type {} does not support indexing",
+                                 type_to_string(obj_type)));
     return builtins.error_type;
   }
 }
 
-TypePtr Analyzer::check_selector(const SelectorNode &node,
-                                 const Node &parent) {
+TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
   auto obj_type = check_expr(*node.object);
   if (is_error_type(obj_type))
     return builtins.error_type;
@@ -2137,8 +2154,8 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
       }
     }
     error(node.field.span,
-          std::format("package '{}' has no exported member '{}'",
-                      mod.name, field_name));
+          std::format("package '{}' has no exported member '{}'", mod.name,
+                      field_name));
     return builtins.error_type;
   }
 
@@ -2190,7 +2207,8 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
   auto methods = builtin_methods(obj_type->kind, builtins);
   for (auto &m : methods) {
     if (m.name == field_name) {
-      if (!m.signature) return builtins.error_type;
+      if (!m.signature)
+        return builtins.error_type;
       // For Map and Array methods, substitute concrete type params.
       if (obj_type->kind == TypeKind::Map && has_type_params(m.signature)) {
         auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
@@ -2209,9 +2227,8 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     }
   }
 
-  error(node.field.span,
-        std::format("type {} has no member '{}'", type_to_string(obj_type),
-                    field_name));
+  error(node.field.span, std::format("type {} has no member '{}'",
+                                     type_to_string(obj_type), field_name));
   return builtins.error_type;
 }
 
@@ -2267,9 +2284,8 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
   if (node.else_block) {
     push_scope(ScopeKind::Block);
     if (!narrowed_var.empty() && else_narrowed_type) {
-      current_scope->symbols[narrowed_var] =
-          Symbol::variable(narrowed_var, else_narrowed_type,
-                           (*node.else_block)->span);
+      current_scope->symbols[narrowed_var] = Symbol::variable(
+          narrowed_var, else_narrowed_type, (*node.else_block)->span);
     }
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     auto else_type = check_block(else_block);
@@ -2294,7 +2310,8 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
     }
     // Check if the first arm's pattern is a type name.
     if (!node.arms.empty()) {
-      if (auto *pid = std::get_if<IdentifierNode>(&node.arms[0].pattern->data)) {
+      if (auto *pid =
+              std::get_if<IdentifierNode>(&node.arms[0].pattern->data)) {
         auto sym = lookup(std::string(pid->name));
         if (sym && sym->kind == SymbolKind::Type)
           is_type_match = true;
@@ -2373,72 +2390,71 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node) {
   push_scope(ScopeKind::Loop);
 
   if (node.mode) {
-    std::visit(
-        overloaded{
-            [&](const ForRangeClauseNode &range) {
-              auto iter_type = check_expr(*range.iterable);
-              // Infer loop variable types from the iterable.
-              TypePtr elem_type = builtins.error_type;
-              TypePtr key_type = builtins.int_type;
+    std::visit(overloaded{
+                   [&](const ForRangeClauseNode &range) {
+                     auto iter_type = check_expr(*range.iterable);
+                     // Infer loop variable types from the iterable.
+                     TypePtr elem_type = builtins.error_type;
+                     TypePtr key_type = builtins.int_type;
 
-              if (!is_error_type(iter_type)) {
-                switch (iter_type->kind) {
-                case TypeKind::Array: {
-                  auto &arr = std::get<ArrayTypeInfo>(iter_type->detail);
-                  elem_type = arr.element;
-                  break;
-                }
-                case TypeKind::Map: {
-                  auto &m = std::get<MapTypeInfo>(iter_type->detail);
-                  key_type = m.key;
-                  elem_type = m.value;
-                  break;
-                }
-                case TypeKind::Range: {
-                  auto &r = std::get<RangeTypeInfo>(iter_type->detail);
-                  elem_type = r.element;
-                  break;
-                }
-                case TypeKind::String:
-                  elem_type = builtins.string_type;
-                  break;
-                default:
-                  error(range.iterable->span,
-                        std::format("type {} is not iterable",
-                                    type_to_string(iter_type)));
-                  break;
-                }
-              }
+                     if (!is_error_type(iter_type)) {
+                       switch (iter_type->kind) {
+                       case TypeKind::Array: {
+                         auto &arr = std::get<ArrayTypeInfo>(iter_type->detail);
+                         elem_type = arr.element;
+                         break;
+                       }
+                       case TypeKind::Map: {
+                         auto &m = std::get<MapTypeInfo>(iter_type->detail);
+                         key_type = m.key;
+                         elem_type = m.value;
+                         break;
+                       }
+                       case TypeKind::Range: {
+                         auto &r = std::get<RangeTypeInfo>(iter_type->detail);
+                         elem_type = r.element;
+                         break;
+                       }
+                       case TypeKind::String:
+                         elem_type = builtins.string_type;
+                         break;
+                       default:
+                         error(range.iterable->span,
+                               std::format("type {} is not iterable",
+                                           type_to_string(iter_type)));
+                         break;
+                       }
+                     }
 
-              if (range.vars.size() == 1) {
-                current_scope->symbols.emplace(
-                    std::string(range.vars[0].name),
-                    Symbol::variable(std::string(range.vars[0].name),
-                                     elem_type, range.vars[0].span));
-              } else if (range.vars.size() == 2) {
-                current_scope->symbols.emplace(
-                    std::string(range.vars[0].name),
-                    Symbol::variable(std::string(range.vars[0].name),
-                                     key_type, range.vars[0].span));
-                current_scope->symbols.emplace(
-                    std::string(range.vars[1].name),
-                    Symbol::variable(std::string(range.vars[1].name),
-                                     elem_type, range.vars[1].span));
-              }
-            },
-            [&](const ForIterClauseNode &iter) {
-              check_stmt(*iter.init);
-              auto cond = check_expr(*iter.condition);
-              expect_bool(iter.condition->span, cond, "for condition");
-              check_stmt(*iter.update);
-            },
-            [&](const auto &) {
-              // Bare condition expression.
-              auto cond = check_expr(**node.mode);
-              expect_bool((*node.mode)->span, cond, "for condition");
-            },
-        },
-        (*node.mode)->data);
+                     if (range.vars.size() == 1) {
+                       current_scope->symbols.emplace(
+                           std::string(range.vars[0].name),
+                           Symbol::variable(std::string(range.vars[0].name),
+                                            elem_type, range.vars[0].span));
+                     } else if (range.vars.size() == 2) {
+                       current_scope->symbols.emplace(
+                           std::string(range.vars[0].name),
+                           Symbol::variable(std::string(range.vars[0].name),
+                                            key_type, range.vars[0].span));
+                       current_scope->symbols.emplace(
+                           std::string(range.vars[1].name),
+                           Symbol::variable(std::string(range.vars[1].name),
+                                            elem_type, range.vars[1].span));
+                     }
+                   },
+                   [&](const ForIterClauseNode &iter) {
+                     check_stmt(*iter.init);
+                     auto cond = check_expr(*iter.condition);
+                     expect_bool(iter.condition->span, cond, "for condition");
+                     check_stmt(*iter.update);
+                   },
+                   [&](const auto &) {
+                     // Bare condition expression.
+                     auto cond = check_expr(**node.mode);
+                     expect_bool((*node.mode)->span, cond, "for condition");
+                   },
+               },
+               (*node.mode)->data);
   }
 
   // Accumulator pipe.
@@ -2461,14 +2477,12 @@ TypePtr Analyzer::check_range_expr(const RangeExprNode &node) {
   auto high = check_expr(*node.high);
 
   if (!is_error_type(low) && !is_numeric(low)) {
-    error(node.low->span,
-          std::format("range requires numeric type, got {}",
-                      type_to_string(low)));
+    error(node.low->span, std::format("range requires numeric type, got {}",
+                                      type_to_string(low)));
   }
   if (!is_error_type(high) && !is_numeric(high)) {
-    error(node.high->span,
-          std::format("range requires numeric type, got {}",
-                      type_to_string(high)));
+    error(node.high->span, std::format("range requires numeric type, got {}",
+                                       type_to_string(high)));
   }
 
   auto elem = common_type(low, high);
@@ -2476,7 +2490,7 @@ TypePtr Analyzer::check_range_expr(const RangeExprNode &node) {
 }
 
 TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
-                                    const Node &parent) {
+                                   const Node &parent) {
   push_scope(ScopeKind::Spawn);
 
   if (node.pipe) {
@@ -2502,7 +2516,8 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
         auto outer = current_scope->parent;
         while (outer) {
           sym = outer->lookup_local(cap.name);
-          if (sym) break;
+          if (sym)
+            break;
           outer = outer->parent;
         }
       }
@@ -2636,8 +2651,7 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
       auto param_type = p.is_variadic ? make_array_type(pt) : pt;
       current_scope->symbols.emplace(
           std::string(ident.name),
-          Symbol::parameter(std::string(ident.name), param_type,
-                            ident.span));
+          Symbol::parameter(std::string(ident.name), param_type, ident.span));
     }
   }
 
@@ -2698,19 +2712,18 @@ TypePtr Analyzer::check_import_expr(const ImportExprNode &node) {
 // ===========================================================================
 
 void Analyzer::check_stmt(const Node &node) {
-  std::visit(
-      overloaded{
-          [&](const VarDeclNode &n) { check_var_decl(n, node); },
-          [&](const DeclAssignNode &n) { check_decl_assign(n); },
-          [&](const AssignNode &n) { check_assign(n); },
-          [&](const IncrementNode &n) { check_increment(n); },
-          [&](const DecrementNode &n) { check_decrement(n); },
-          [&](const ReturnNode &n) { check_return(n); },
-          [&](const BreakNode &n) { check_break(n); },
-          [&](const NextNode &) { check_next({}); },
-          [&](const auto &) { check_expr(node); },
-      },
-      node.data);
+  std::visit(overloaded{
+                 [&](const VarDeclNode &n) { check_var_decl(n, node); },
+                 [&](const DeclAssignNode &n) { check_decl_assign(n); },
+                 [&](const AssignNode &n) { check_assign(n); },
+                 [&](const IncrementNode &n) { check_increment(n); },
+                 [&](const DecrementNode &n) { check_decrement(n); },
+                 [&](const ReturnNode &n) { check_return(n); },
+                 [&](const BreakNode &n) { check_break(n); },
+                 [&](const NextNode &) { check_next({}); },
+                 [&](const auto &) { check_expr(node); },
+             },
+             node.data);
 }
 
 void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
@@ -2755,18 +2768,16 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   if (decl.targets.identifiers.size() > 1) {
     if (auto *call = std::get_if<CallExprNode>(&decl.value->data)) {
       auto callee_type = check_expr(*call->callee);
-      if (!is_error_type(callee_type) &&
-          callee_type->kind == TypeKind::Func) {
+      if (!is_error_type(callee_type) && callee_type->kind == TypeKind::Func) {
         auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
         if (fn_info.returns.size() > 1) {
           if (decl.targets.identifiers.size() != fn_info.returns.size()) {
-            error(decl.span,
-                  std::format("expected {} receiver(s), got {}",
-                              fn_info.returns.size(),
-                              decl.targets.identifiers.size()));
+            error(decl.span, std::format("expected {} receiver(s), got {}",
+                                         fn_info.returns.size(),
+                                         decl.targets.identifiers.size()));
           }
-          size_t count = std::min(decl.targets.identifiers.size(),
-                                  fn_info.returns.size());
+          size_t count =
+              std::min(decl.targets.identifiers.size(), fn_info.returns.size());
           for (size_t i = 0; i < count; ++i) {
             std::string name(decl.targets.identifiers[i].name);
             auto sym_it = current_scope->symbols.find(name);
@@ -2777,7 +2788,6 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
                   name, Symbol::variable(name, fn_info.returns[i],
                                          decl.targets.identifiers[i].span));
             }
-
           }
           return;
         }
@@ -2812,8 +2822,8 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else if (node.op == Token::Kind::AddAssignment &&
                  target_type->kind == TypeKind::String) {
         // String concatenation assignment: s += "..."
-        expect_assignable(node.values[i]->span, builtins.string_type,
-                          val_type, "string concatenation assignment");
+        expect_assignable(node.values[i]->span, builtins.string_type, val_type,
+                          "string concatenation assignment");
       } else if (node.op == Token::Kind::DivAssignment) {
         // Division assignment: x /= y — division can fail (div by zero),
         // so validate numeric but note the impure semantics.
@@ -2847,18 +2857,16 @@ void Analyzer::check_assign(const AssignNode &node) {
 void Analyzer::check_increment(const IncrementNode &node) {
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
-    error(node.span,
-          std::format("increment requires integer type, got {}",
-                      type_to_string(t)));
+    error(node.span, std::format("increment requires integer type, got {}",
+                                 type_to_string(t)));
   }
 }
 
 void Analyzer::check_decrement(const DecrementNode &node) {
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
-    error(node.span,
-          std::format("decrement requires integer type, got {}",
-                      type_to_string(t)));
+    error(node.span, std::format("decrement requires integer type, got {}",
+                                 type_to_string(t)));
   }
 }
 
@@ -2879,9 +2887,8 @@ void Analyzer::check_return(const ReturnNode &node) {
   }
 
   if (node.values.size() != expected.size()) {
-    error(node.span,
-          std::format("return has {} value(s), expected {}",
-                      node.values.size(), expected.size()));
+    error(node.span, std::format("return has {} value(s), expected {}",
+                                 node.values.size(), expected.size()));
     return;
   }
 
@@ -2924,40 +2931,42 @@ TypePtr Analyzer::check_block(const BlockNode &block) {
 // ---------------------------------------------------------------------------
 
 bool Analyzer::always_returns(const Node &node) const {
-  return std::visit(
-      overloaded{
-          [](const ReturnNode &) -> bool { return true; },
+  return std::visit(overloaded{
+                        [](const ReturnNode &) -> bool { return true; },
 
-          [&](const BlockNode &b) -> bool {
-            // A block always returns if its last statement always returns.
-            if (b.stmts.empty())
-              return false;
-            return always_returns(*b.stmts.back());
-          },
+                        [&](const BlockNode &b) -> bool {
+                          // A block always returns if its last statement always
+                          // returns.
+                          if (b.stmts.empty())
+                            return false;
+                          return always_returns(*b.stmts.back());
+                        },
 
-          [&](const IfExprNode &n) -> bool {
-            // Both then and else must exist and both must always return.
-            if (!n.else_block)
-              return false;
-            bool then_ret = always_returns(*n.then_block);
-            bool else_ret = always_returns(**n.else_block);
-            return then_ret && else_ret;
-          },
+                        [&](const IfExprNode &n) -> bool {
+                          // Both then and else must exist and both must always
+                          // return.
+                          if (!n.else_block)
+                            return false;
+                          bool then_ret = always_returns(*n.then_block);
+                          bool else_ret = always_returns(**n.else_block);
+                          return then_ret && else_ret;
+                        },
 
-          [&](const SwitchExprNode &n) -> bool {
-            // Every arm must always return, and there must be an else.
-            if (!n.else_body)
-              return false;
-            for (auto &arm : n.arms) {
-              if (!always_returns(*arm.body))
-                return false;
-            }
-            return always_returns(**n.else_body);
-          },
+                        [&](const SwitchExprNode &n) -> bool {
+                          // Every arm must always return, and there must be an
+                          // else.
+                          if (!n.else_body)
+                            return false;
+                          for (auto &arm : n.arms) {
+                            if (!always_returns(*arm.body))
+                              return false;
+                          }
+                          return always_returns(**n.else_body);
+                        },
 
-          [](const auto &) -> bool { return false; },
-      },
-      node.data);
+                        [](const auto &) -> bool { return false; },
+                    },
+                    node.data);
 }
 
 // ===========================================================================
@@ -3013,9 +3022,8 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
   std::unordered_map<std::string, bool> seen_fields;
   for (auto &f : info.fields) {
     if (seen_fields.count(f.name)) {
-      error(s.span,
-            std::format("duplicate field '{}' in struct '{}'", f.name,
-                        info.name));
+      error(s.span, std::format("duplicate field '{}' in struct '{}'", f.name,
+                                info.name));
     }
     seen_fields[f.name] = true;
   }
@@ -3024,9 +3032,8 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
   std::unordered_map<std::string, bool> seen_methods;
   for (auto &m : info.methods) {
     if (seen_methods.count(m.name)) {
-      error(s.span,
-            std::format("duplicate method '{}' in struct '{}'", m.name,
-                        info.name));
+      error(s.span, std::format("duplicate method '{}' in struct '{}'", m.name,
+                                info.name));
     }
     seen_methods[m.name] = true;
   }
@@ -3042,9 +3049,8 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
   std::unordered_map<std::string, bool> seen;
   for (auto &m : info.methods) {
     if (seen.count(m.name)) {
-      error(i.span,
-            std::format("duplicate method '{}' in interface '{}'", m.name,
-                        info.name));
+      error(i.span, std::format("duplicate method '{}' in interface '{}'",
+                                m.name, info.name));
     }
     seen[m.name] = true;
   }
@@ -3055,9 +3061,8 @@ void Analyzer::check_import_decl(const ImportDeclNode &node) {
   // Here we just verify the module symbol was successfully resolved.
   std::string path(node.path);
   auto last_slash = path.rfind('/');
-  std::string name = (last_slash != std::string::npos)
-                         ? path.substr(last_slash + 1)
-                         : path;
+  std::string name =
+      (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
   auto sym = lookup(name);
   if (sym && sym->type && is_error_type(sym->type)) {
     // Error was already reported during resolve_import.
@@ -3068,9 +3073,10 @@ void Analyzer::check_import_decl(const ImportDeclNode &node) {
 // Generic instantiation
 // ===========================================================================
 
-TypePtr Analyzer::instantiate_generic_call(
-    const TypePtr &callee_type, const std::vector<TypePtr> &arg_types,
-    Span call_span) {
+TypePtr
+Analyzer::instantiate_generic_call(const TypePtr &callee_type,
+                                   const std::vector<TypePtr> &arg_types,
+                                   Span call_span) {
   if (!callee_type || callee_type->kind != TypeKind::Func)
     return builtins.error_type;
 
@@ -3082,8 +3088,7 @@ TypePtr Analyzer::instantiate_generic_call(
   for (size_t i = 0; i < count; ++i) {
     if (!unify(fn_info.params[i], arg_types[i], bindings)) {
       error(call_span,
-            std::format("cannot infer type parameter from argument {}",
-                        i + 1));
+            std::format("cannot infer type parameter from argument {}", i + 1));
       return builtins.error_type;
     }
   }
@@ -3112,9 +3117,8 @@ TypePtr Analyzer::instantiate_generic_struct(
     for (auto &fi : info.fields) {
       if (fi.name == fname && fi.type) {
         if (!unify(fi.type, ftype, bindings)) {
-          error(span,
-                std::format("cannot infer type parameter from field '{}'",
-                            fname));
+          error(span, std::format("cannot infer type parameter from field '{}'",
+                                  fname));
           return builtins.error_type;
         }
         break;

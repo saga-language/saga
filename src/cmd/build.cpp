@@ -1,0 +1,406 @@
+// Copyright 2026 Rob Thornton
+// SPDX-License-Identifier: MIT
+
+#include "cmd/cmd.hpp"
+#include "cmd/common.hpp"
+
+#include "build/build_graph.hpp"
+#include "frontend/fileset.hpp"
+#include "frontend/parser.hpp"
+#include "ir/codegen.hpp"
+#include "semantic/analyzer.hpp"
+#include "semantic/sgi.hpp"
+
+#include <filesystem>
+#include <format>
+#include <iostream>
+#include <string>
+
+namespace fs = std::filesystem;
+
+// ---------------------------------------------------------------------------
+// compile_package — compile one package to .o + .sgi (library mode).
+//
+// Used by both the --lib single-package path and the --build DAG path.
+// ---------------------------------------------------------------------------
+
+static bool compile_package(const std::string &source_dir,
+                             const std::string &pkg_name,
+                             const std::string &output_dir,
+                             const std::vector<std::string> &search_paths,
+                             const std::vector<std::string> &sgi_dirs,
+                             bool verbose) {
+  std::error_code ec;
+  fs::create_directories(output_dir, ec);
+  if (ec) {
+    std::cerr << std::format("Error: cannot create output dir '{}': {}\n",
+                             output_dir, ec.message());
+    return false;
+  }
+
+  mc::FileSet fileset;
+  auto sg_files = collect_sg_files(source_dir);
+  if (sg_files.empty()) {
+    std::cerr << std::format("Error: no .sg files in '{}'\n", source_dir);
+    return false;
+  }
+  for (auto &sg : sg_files) {
+    auto file = mc::File::from_path(sg.string());
+    if (!file) {
+      std::cerr << std::format("Error: cannot open '{}'\n", sg.string());
+      return false;
+    }
+    fileset.add_file(std::move(file));
+  }
+
+  mc::Parser parser(fileset);
+  auto ast = parser.parse();
+  if (!ast || !parser.errors.errors.empty()) {
+    if (!parser.errors.errors.empty())
+      parser.errors.print_errors();
+    else
+      std::cerr << "Error: parse failed\n";
+    return false;
+  }
+
+  mc::Analyzer analyzer(fileset);
+  analyzer.current_package_dir = source_dir;
+  {
+    fs::path parent = fs::path(source_dir).parent_path();
+    if (!parent.empty())
+      analyzer.package_resolver->search_paths.push_back(parent.string());
+  }
+  for (auto &sp : search_paths)
+    analyzer.package_resolver->search_paths.push_back(sp);
+  for (auto &sd : sgi_dirs)
+    analyzer.package_resolver->sgi_search_paths.push_back(sd);
+
+  analyzer.analyze(*ast);
+  if (!analyzer.errors.errors.empty()) {
+    analyzer.errors.print_errors();
+    return false;
+  }
+
+  mc::CodeGen codegen(pkg_name, analyzer);
+  codegen.emit(*ast);
+
+  std::string obj_path = output_dir + "/" + pkg_name + ".o";
+  if (!codegen.write_object(obj_path)) {
+    std::cerr << std::format("Error: failed to write '{}'\n", obj_path);
+    return false;
+  }
+
+  std::vector<mc::SgiExport> exports;
+  std::vector<mc::SgiImport> imports;
+  if (analyzer.package_scope_) {
+    for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
+      if (sym.is_public && !sym.is_builtin && sym.type) {
+        bool is_type = (sym.kind == mc::SymbolKind::Type);
+        exports.push_back({"", sym_name, sym.type, is_type});
+      }
+    }
+  }
+  std::string sgi_path = output_dir + "/" + pkg_name + ".sgi";
+  if (!mc::write_sgi(sgi_path, pkg_name, imports, exports)) {
+    std::cerr << std::format("Error: cannot write interface to '{}'\n",
+                             sgi_path);
+    return false;
+  }
+
+  if (verbose)
+    std::cerr << std::format("  compiled {} → {}/{}.{{o,sgi}}\n",
+                             pkg_name, output_dir, pkg_name);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// build_graph_mode — compile all packages in dependency order.
+// ---------------------------------------------------------------------------
+
+static int build_graph_mode(const char *prog,
+                             const std::string &source_dir,
+                             const std::string &import_path,
+                             const std::string &output_dir,
+                             const std::vector<std::string> &search_paths,
+                             const std::vector<std::string> &sgi_search_paths,
+                             const std::string &binary_path,
+                             bool lib_mode,
+                             bool verbose) {
+  mc::BuildGraph graph;
+  if (!graph.scan(source_dir, import_path, output_dir, search_paths)) {
+    std::cerr << std::format("Error: {}\n", graph.error);
+    return 1;
+  }
+
+  auto sorted = graph.sorted();
+  if (sorted.empty() && !graph.error.empty()) {
+    std::cerr << std::format("Error: {}\n", graph.error);
+    return 1;
+  }
+
+  if (verbose)
+    std::cerr << std::format("Build graph: {} package(s)\n", sorted.size());
+
+  // Seed cumulative sgi dirs with stdlib + user-supplied paths.
+  std::vector<std::string> cumulative_sgi_dirs = sgi_search_paths;
+  {
+    std::string std_sgi = saga_std_sgi_dir(prog);
+    if (fs::is_directory(std_sgi) &&
+        std::find(cumulative_sgi_dirs.begin(), cumulative_sgi_dirs.end(),
+                  std_sgi) == cumulative_sgi_dirs.end())
+      cumulative_sgi_dirs.push_back(std_sgi);
+  }
+
+  std::vector<std::string> dep_obj_paths;
+
+  for (size_t i = 0; i < sorted.size(); ++i) {
+    const auto *node = sorted[i];
+    bool is_root = (i + 1 == sorted.size());
+
+    if (mc::BuildGraph::needs_rebuild(*node)) {
+      if (verbose)
+        std::cerr << std::format("  building {}\n", node->import_path);
+      if (!compile_package(node->source_dir, node->name, node->output_dir,
+                           search_paths, cumulative_sgi_dirs, verbose))
+        return 1;
+      if (!mc::BuildGraph::save_hash(*node))
+        std::cerr << std::format("Warning: could not save hash for '{}'\n",
+                                 node->import_path);
+    } else if (verbose) {
+      std::cerr << std::format("  up-to-date {}\n", node->import_path);
+    }
+
+    cumulative_sgi_dirs.push_back(node->output_dir);
+
+    if (!is_root) {
+      std::string obj = node->output_dir + "/" + node->name + ".o";
+      if (fs::is_regular_file(obj))
+        dep_obj_paths.push_back(obj);
+    }
+  }
+
+  if (lib_mode)
+    return 0;
+
+  if (sorted.empty())
+    return 0;
+
+  const auto *root = sorted.back();
+  std::string root_obj = root->output_dir + "/" + root->name + ".o";
+
+  std::string dep_objs;
+  for (auto &obj : dep_obj_paths)
+    dep_objs += " " + obj;
+
+  std::string runtime_lib = saga_runtime_lib();
+  std::string std_lib_path = saga_std_lib(prog);
+  std::string std_lib_arg =
+      fs::is_regular_file(std_lib_path) ? " " + std_lib_path : "";
+
+  std::string link_cmd =
+      std::format("cc {} {} {}{} -o {} -no-pie", root_obj, runtime_lib,
+                  std_lib_arg, dep_objs, binary_path);
+  if (verbose)
+    std::cerr << std::format("  link: {}\n", link_cmd);
+
+  if (std::system(link_cmd.c_str()) != 0) {
+    std::cerr << "Error: linking failed\n";
+    return 1;
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// cmd_build
+// ---------------------------------------------------------------------------
+
+static void usage_build() {
+  std::cerr << "Usage: saga build [options] <source.sg | directory>\n"
+               "       saga [options] <source.sg | directory>   (legacy)\n"
+               "\n"
+               "Options:\n"
+               "  --lib             Build as library (.o + .sgi, no link)\n"
+               "  --build           Build using the dependency graph (incremental)\n"
+               "  --emit-obj        Write package to object file only\n"
+               "  --emit-ir         Write LLVM IR to <name>.ll\n"
+               "  --dump-ir         Print LLVM IR to stderr\n"
+               "  -o <file>         Output file name (default: a.out)\n"
+               "  -I <dir>          Add directory to package search path\n"
+               "  --sgi-path <dir>  Add directory to .sgi search path\n"
+               "  --out-dir <dir>   Output directory for --build mode\n"
+               "  -v                Verbose output\n";
+}
+
+int cmd_build(const char *prog, int argc, char **argv) {
+  std::string source_path;
+  std::string output_path;
+  std::string out_dir;
+  bool emit_ir = false;
+  bool dump_ir = false;
+  bool emit_obj = false;
+  bool lib_mode = false;
+  bool dag_mode = false;
+  bool verbose = false;
+  std::vector<std::string> search_paths;
+  std::vector<std::string> sgi_search_paths;
+
+  // Argument parsing starts from argv[1] (argv[0] is "build" or the binary).
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--emit-ir")          { emit_ir = true; }
+    else if (arg == "--dump-ir")     { dump_ir = true; }
+    else if (arg == "--emit-obj")    { emit_obj = true; }
+    else if (arg == "--lib")         { lib_mode = true; }
+    else if (arg == "--build")       { dag_mode = true; }
+    else if (arg == "-v")            { verbose = true; }
+    else if (arg == "--sgi-path" && i + 1 < argc)
+      sgi_search_paths.push_back(argv[++i]);
+    else if (arg == "--out-dir" && i + 1 < argc)
+      out_dir = argv[++i];
+    else if (arg == "-o" && i + 1 < argc)
+      output_path = argv[++i];
+    else if (arg == "-I" && i + 1 < argc)
+      search_paths.push_back(argv[++i]);
+    else if (arg[0] == '-') {
+      std::cerr << std::format("Unknown option: {}\n", arg);
+      usage_build();
+      return 1;
+    } else {
+      source_path = arg;
+    }
+  }
+
+  if (source_path.empty()) {
+    usage_build();
+    return 1;
+  }
+
+  // Apply deps from the nearest project.saga (local paths + cached remotes).
+  apply_manifest_deps(prog, fs::current_path().string(), search_paths,
+                      sgi_search_paths);
+
+  // ── DAG mode ──────────────────────────────────────────────────────────────
+
+  if (dag_mode) {
+    fs::path input(source_path);
+    if (!fs::is_directory(input)) {
+      std::cerr << "Error: --build requires a package directory\n";
+      return 1;
+    }
+    std::string abs_source = fs::canonical(input).string();
+    std::string pkg_name = input.filename().string();
+    std::string build_out = out_dir.empty() ? (abs_source + "/.build") : out_dir;
+    std::string bin_path = output_path.empty() ? "a.out" : output_path;
+
+    // Auto-add stdlib SGI dir.
+    std::string std_sgi = saga_std_sgi_dir(prog);
+    if (fs::is_directory(std_sgi) &&
+        std::find(sgi_search_paths.begin(), sgi_search_paths.end(), std_sgi)
+            == sgi_search_paths.end())
+      sgi_search_paths.push_back(std_sgi);
+
+    return build_graph_mode(prog, abs_source, pkg_name, build_out,
+                            search_paths, sgi_search_paths, bin_path,
+                            lib_mode, verbose);
+  }
+
+  // ── Single-package mode ───────────────────────────────────────────────────
+
+  mc::FileSet fileset;
+  std::string package_dir = load_sources(source_path, fileset);
+  if (package_dir.empty() && fileset.files.empty())
+    return 1;
+
+  mc::Parser parser(fileset);
+  auto ast = parser.parse();
+  if (!ast) { std::cerr << "Error: parse failed\n"; return 1; }
+  if (!parser.errors.errors.empty()) { parser.errors.print_errors(); return 1; }
+
+  mc::Analyzer analyzer(fileset);
+  setup_analyzer_paths(analyzer, package_dir, search_paths, sgi_search_paths,
+                       prog);
+  analyzer.analyze(*ast);
+  if (!analyzer.errors.errors.empty()) { analyzer.errors.print_errors(); return 1; }
+
+  fs::path input_path(source_path);
+  std::string module_name = fs::is_directory(input_path)
+      ? input_path.filename().string()
+      : input_path.stem().string();
+
+  mc::CodeGen codegen(module_name, analyzer);
+  codegen.emit(*ast);
+
+  if (dump_ir) codegen.dump();
+
+  if (emit_ir) {
+    std::string ir_path = module_name + ".ll";
+    if (!codegen.write_ir(ir_path)) {
+      std::cerr << std::format("Error: cannot write IR to '{}'\n", ir_path);
+      return 1;
+    }
+    std::cerr << std::format("Wrote {}\n", ir_path);
+    return 0;
+  }
+
+  std::string obj_path = (emit_obj || lib_mode)
+      ? (output_path.empty() ? module_name + ".o" : output_path)
+      : module_name + ".o";
+
+  if (!codegen.write_object(obj_path)) {
+    std::cerr << "Error: failed to emit object file\n";
+    return 1;
+  }
+  if (emit_obj) return 0;
+
+  if (lib_mode) {
+    std::vector<mc::SgiExport> exports;
+    std::vector<mc::SgiImport> imports;
+    if (analyzer.package_scope_) {
+      for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
+        if (sym.is_public && !sym.is_builtin && sym.type) {
+          bool is_type = (sym.kind == mc::SymbolKind::Type);
+          exports.push_back({"", sym_name, sym.type, is_type});
+        }
+      }
+    }
+    fs::path op(obj_path);
+    std::string sgi_path = (op.parent_path() / op.stem()).string() + ".sgi";
+    if (!mc::write_sgi(sgi_path, module_name, imports, exports)) {
+      std::cerr << std::format("Error: cannot write interface to '{}'\n",
+                               sgi_path);
+      return 1;
+    }
+    return 0;
+  }
+
+  // ── Link ──────────────────────────────────────────────────────────────────
+
+  std::string binary_path = output_path.empty() ? "a.out" : output_path;
+  std::string runtime_lib = saga_runtime_lib();
+  std::string std_lib_path = saga_std_lib(prog);
+  std::string std_lib_arg =
+      fs::is_regular_file(std_lib_path) ? " " + std_lib_path : "";
+
+  // Dep .o from user packages resolved via .sgi (skip stdlib dir).
+  std::string dep_objects;
+  std::string std_sgi_dir = saga_std_sgi_dir(prog);
+  for (auto &[imp_path, dir] : analyzer.package_resolver->sgi_resolved_dirs) {
+    if (!std_lib_arg.empty() && dir == std_sgi_dir)
+      continue;
+    auto slash = imp_path.rfind('/');
+    std::string pname = slash != std::string::npos
+                            ? imp_path.substr(slash + 1)
+                            : imp_path;
+    std::string dep_obj = dir + "/" + pname + ".o";
+    if (fs::is_regular_file(dep_obj))
+      dep_objects += " " + dep_obj;
+  }
+
+  std::string link_cmd = std::format("cc {} {} {}{} -o {} -no-pie",
+                                     obj_path, runtime_lib, std_lib_arg,
+                                     dep_objects, binary_path);
+  int status = std::system(link_cmd.c_str());
+  fs::remove(obj_path);
+  if (status != 0) { std::cerr << "Error: linking failed\n"; return 1; }
+  return 0;
+}

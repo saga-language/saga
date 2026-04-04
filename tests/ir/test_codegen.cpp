@@ -45,7 +45,28 @@ struct CG {
   llvm::Module &mod() { return *codegen->module; }
 
   llvm::Function *func(const std::string &name) {
-    return codegen->module->getFunction(name);
+    // Try exact name first (e.g. "main", runtime functions).
+    if (auto *fn = codegen->module->getFunction(name))
+      return fn;
+    // Try mangled name.
+    return codegen->module->getFunction(mangled(name));
+  }
+
+  /// Mangle a name the same way CodeGen does for package "test".
+  static std::string mangled(const std::string &name) {
+    std::string m = "test__" + name;
+    // Replace '.' with '__' for struct methods like "Dog.Speak" → "test__Dog__Speak".
+    for (size_t pos = 0; (pos = m.find('.', pos)) != std::string::npos; )
+      m.replace(pos, 1, "__");
+    return m;
+  }
+
+  /// Check if a call instruction calls a function with the given (unmangled) name.
+  static bool calls_func(llvm::CallInst *call, const std::string &name) {
+    if (!call || !call->getCalledFunction())
+      return false;
+    auto called = call->getCalledFunction()->getName();
+    return called == name || called == mangled(name);
   }
 };
 
@@ -751,7 +772,7 @@ TEST(CodeGen, CallUserFunction) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "Add") {
+            CG::calls_func(call, "Add")) {
           found = true;
           EXPECT_EQ(call->arg_size(), 2u);
         }
@@ -772,7 +793,7 @@ TEST(CodeGen, NestedCalls) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "Mul")
+            CG::calls_func(call, "Mul"))
           found_mul = true;
   EXPECT_TRUE(found_mul) << "Square should call Mul";
 }
@@ -791,7 +812,7 @@ TEST(CodeGen, ForwardReference) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "Double")
+            CG::calls_func(call, "Double"))
           found = true;
   EXPECT_TRUE(found) << "Main should call Double via forward reference";
   // Double should also be fully defined.
@@ -862,8 +883,8 @@ TEST(CodeGen, CallChainResult) {
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
-        if (call->getCalledFunction()->getName() == "Square") found_sq = true;
-        if (call->getCalledFunction()->getName() == "Add") found_add = true;
+        if (CG::calls_func(call, "Square")) found_sq = true;
+        if (CG::calls_func(call, "Add")) found_add = true;
       }
   EXPECT_TRUE(found_sq);
   EXPECT_TRUE(found_add);
@@ -1169,7 +1190,7 @@ TEST(CodeGen, LoopWithFunctionCall) {
       for (auto &inst : bb)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
           if (call->getCalledFunction() &&
-              call->getCalledFunction()->getName() == "Inc")
+              CG::calls_func(call, "Inc"))
             found_inc = true;
   EXPECT_TRUE(found_inc);
 }
@@ -2177,7 +2198,7 @@ TEST(CodeGen, MultiReturnStructName) {
       "pub fn Main() Void {}");
   // Should have a named struct type for multi-return.
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.ret.Pair");
+      r.mod().getContext(), "mc.ret." + CG::mangled("Pair"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
 }
@@ -2283,7 +2304,7 @@ TEST(CodeGen, MultiReturnCallAndUse) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "Pair")
+            CG::calls_func(call, "Pair"))
           found_pair = true;
   EXPECT_TRUE(found_pair);
   // Should have an add for z := x + y.
@@ -2296,8 +2317,8 @@ TEST(CodeGen, MultiReturnRegistered) {
       "  return 1, 2\n"
       "}\n"
       "pub fn Main() Void {}");
-  EXPECT_TRUE(r.codegen->multi_return_types.count("Pair"));
-  EXPECT_EQ(r.codegen->multi_return_counts["Pair"], 2u);
+  EXPECT_TRUE(r.codegen->multi_return_types.count(CG::mangled("Pair")));
+  EXPECT_EQ(r.codegen->multi_return_counts[CG::mangled("Pair")], 2u);
 }
 
 TEST(CodeGen, MultiReturnDoesNotAffectSingleReturn) {
@@ -2312,7 +2333,7 @@ TEST(CodeGen, MultiReturnDoesNotAffectSingleReturn) {
   ASSERT_NE(single, nullptr);
   EXPECT_TRUE(single->getReturnType()->isIntegerTy(64))
       << "Single-return should still return i64";
-  EXPECT_FALSE(r.codegen->multi_return_types.count("Single"));
+  EXPECT_FALSE(r.codegen->multi_return_types.count(CG::mangled("Single")));
 }
 
 TEST(CodeGen, MultiReturnRetInstEmitted) {
@@ -2454,7 +2475,7 @@ TEST(CodeGen, StructMethodCall) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "Counter.Value")
+            CG::calls_func(call, "Counter.Value"))
           found = true;
   EXPECT_TRUE(found) << "Should call Counter.Value";
 }
@@ -2557,7 +2578,7 @@ TEST(CodeGen, StructMethodRegisteredInLinks) {
   auto it = r.codegen->struct_method_links.find("Cat");
   ASSERT_NE(it, r.codegen->struct_method_links.end());
   ASSERT_EQ(it->second.size(), 1u);
-  EXPECT_EQ(it->second[0].first, "Cat.Meow");
+  EXPECT_EQ(it->second[0].first, CG::mangled("Cat__Meow"));
   EXPECT_EQ(it->second[0].second, "Meow");
 }
 
@@ -3773,6 +3794,111 @@ TEST(CodeGen, NoReductionTickOutsideSpawn) {
       "}");
   // Loop outside spawn should NOT emit mc_reduction_tick.
   EXPECT_FALSE(module_has_call_to(r.mod(), "mc_reduction_tick"));
+}
+
+// ===========================================================================
+// Cross-package codegen (module function calls)
+// ===========================================================================
+
+TEST(CodeGen, ModuleFuncCallDeclared) {
+  // When calling a module function, declare_import should create an
+  // external declaration with the mangled name.
+  FileSet fs;
+  fs.add_file(File::from_source("test.sg",
+      "import \"mathlib\"\n"
+      "pub fn Main() Void {\n"
+      "  x := mathlib.Add(1, 2)\n"
+      "}"));
+
+  Parser parser(fs);
+  auto ast = parser.parse();
+  ASSERT_NE(ast, nullptr);
+  EXPECT_TRUE(parser.errors.errors.empty());
+
+  Analyzer analyzer(fs);
+  // Mock the module so we don't need real files.
+  auto mod_type = make_module_type("mathlib", "mathlib", {
+      {"Add", make_func_type({make_int_type(), make_int_type()},
+                              {make_int_type()})},
+  });
+  analyzer.package_resolver->mock_packages["mathlib"] = mod_type;
+  analyzer.analyze(*ast);
+  EXPECT_TRUE(analyzer.errors.errors.empty())
+      << "Analyzer errors";
+  for (auto &e : analyzer.errors.errors)
+    std::cerr << "  " << e.message << "\n";
+
+  CodeGen codegen("testpkg", analyzer);
+  codegen.emit(*ast);
+
+  // The external function should be declared with mangled name.
+  auto *ext = codegen.module->getFunction("mathlib__Add");
+  ASSERT_NE(ext, nullptr) << "Should have extern decl for mathlib__Add";
+  EXPECT_TRUE(ext->isDeclaration()) << "Should be a declaration, not definition";
+  EXPECT_EQ(ext->arg_size(), 2u);
+  EXPECT_TRUE(ext->getReturnType()->isIntegerTy(64));
+
+  // main() should contain a call to mathlib__Add.
+  auto *main_fn = codegen.module->getFunction("main");
+  ASSERT_NE(main_fn, nullptr);
+  bool found = false;
+  for (auto &bb : *main_fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "mathlib__Add")
+          found = true;
+  EXPECT_TRUE(found) << "Main should call mathlib__Add";
+}
+
+TEST(CodeGen, ModuleFuncCallVoid) {
+  FileSet fs;
+  fs.add_file(File::from_source("test.sg",
+      "import \"printer\"\n"
+      "pub fn Main() Void {\n"
+      "  printer.Print(\"hello\")\n"
+      "}"));
+
+  Parser parser(fs);
+  auto ast = parser.parse();
+  ASSERT_NE(ast, nullptr);
+
+  Analyzer analyzer(fs);
+  auto mod_type = make_module_type("printer", "printer", {
+      {"Print", make_func_type({make_string_type()}, {make_void_type()})},
+  });
+  analyzer.package_resolver->mock_packages["printer"] = mod_type;
+  analyzer.analyze(*ast);
+  EXPECT_TRUE(analyzer.errors.errors.empty());
+
+  CodeGen codegen("testpkg", analyzer);
+  codegen.emit(*ast);
+
+  auto *ext = codegen.module->getFunction("printer__Print");
+  ASSERT_NE(ext, nullptr);
+  EXPECT_TRUE(ext->getReturnType()->isVoidTy());
+}
+
+TEST(CodeGen, MangleNames) {
+  // Test the mangle static method directly.
+  EXPECT_EQ(CodeGen::mangle("io", "Println"), "io__Println");
+  EXPECT_EQ(CodeGen::mangle("os", "File__Write"), "os__File__Write");
+  EXPECT_EQ(CodeGen::mangle("mylib", "Add"), "mylib__Add");
+}
+
+TEST(CodeGen, LocalFuncsMangledWithPackage) {
+  // Local functions should use the package name in their mangled link name.
+  auto r = CG::from(
+      "fn Helper() Int { 42 }\n"
+      "pub fn Main() Void {\n"
+      "  x := Helper()\n"
+      "}");
+  // "test" is the package name in CG::from.
+  auto *helper = r.codegen->module->getFunction("test__Helper");
+  ASSERT_NE(helper, nullptr) << "Helper should be mangled as test__Helper";
+  // Main should still be 'main' (not mangled).
+  auto *main_fn = r.func("main");
+  ASSERT_NE(main_fn, nullptr);
 }
 
 } // namespace mc

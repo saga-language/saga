@@ -1,0 +1,3 @@
+pub fn Write(fd Int, s String) Void {
+  intrinsic_print(s) // temporary
+}

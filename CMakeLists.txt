@@ -18,8 +18,10 @@ include_directories(include)
 
 # Gather source files
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
+    src/build/*.cpp
     src/frontend/*.cpp
     src/ir/*.cpp
+    src/pkg/*.cpp
     src/semantic/*.cpp
 )
 
@@ -51,14 +53,43 @@ set_target_properties(saga_runtime PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${SAGA_RUNTIME_DIR}"
 )
 
-# Compiler CLI
-add_executable(compiler src/main.cpp)
+# Compiler CLI — main.cpp dispatcher + subcommand implementations
+file(GLOB CMD_SOURCES CONFIGURE_DEPENDS src/cmd/*.cpp)
+add_executable(compiler src/main.cpp ${CMD_SOURCES})
 
 target_link_libraries(compiler PRIVATE LLVM compiler_core)
 
-# Pass the runtime library path to the compiler binary as a compile definition.
+# Standard library must be processed before wiring its paths into the compiler,
+# because std/CMakeLists.txt exports SAGA_STD_SGI_DIR and SAGA_STD_LIB.
+add_subdirectory(std)
+
+# Pass library paths to the compiler binary as compile-time definitions so it
+# can auto-find the runtime, stdlib objects, and interface files without flags.
 target_compile_definitions(compiler PRIVATE
     SAGA_RUNTIME_LIB="${SAGA_RUNTIME_DIR}/libsaga_runtime.a"
+    SAGA_STD_LIB="${SAGA_STD_LIB}"
+    SAGA_STD_SGI_DIR="${SAGA_STD_SGI_DIR}"
+)
+
+# Install targets ─────────────────────────────────────────────────────────────
+include(GNUInstallDirs)
+
+# Compiler binary
+install(TARGETS compiler
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# Runtime and std archives
+install(FILES
+    "${SAGA_RUNTIME_DIR}/libsaga_runtime.a"
+    "${SAGA_STD_LIB}"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/saga"
+)
+
+# Std interface files (.sgi)
+install(DIRECTORY "${SAGA_STD_SGI_DIR}/"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/saga/std"
+    FILES_MATCHING PATTERN "*.sgi"
 )
 
 enable_testing()

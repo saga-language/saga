@@ -24,6 +24,10 @@ struct PackageResolver {
   /// Directories to search for packages (e.g. std library, project root).
   std::vector<std::string> search_paths;
 
+  /// Directories to search for pre-compiled .sgi interface files.
+  /// Checked before source compilation for faster import resolution.
+  std::vector<std::string> sgi_search_paths;
+
   /// Cache of already-resolved packages: import_path → module type.
   std::unordered_map<std::string, TypePtr> cache;
 
@@ -33,9 +37,17 @@ struct PackageResolver {
   /// For testing: pre-registered mock packages that bypass filesystem.
   std::unordered_map<std::string, TypePtr> mock_packages;
 
+  /// Maps import_path → directory where .sgi (and presumably .o) was found.
+  /// Populated when a package is resolved via .sgi.
+  std::unordered_map<std::string, std::string> sgi_resolved_dirs;
+
   /// Find the filesystem directory for the given import path.
   /// Returns empty string if not found.
   std::string find_package_dir(const std::string &import_path) const;
+
+  /// Find a .sgi file for the given import path in sgi_search_paths.
+  /// Returns empty string if not found.
+  std::string find_sgi_file(const std::string &import_path) const;
 
   /// List all .sg source files in the given directory.
   std::vector<std::string> list_source_files(const std::string &dir) const;
