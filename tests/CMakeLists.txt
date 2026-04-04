@@ -21,21 +21,21 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/semantic/*.cpp
 )
 
-add_executable(compiler_tests ${TEST_SOURCES})
+add_executable(saga_tests ${TEST_SOURCES})
 
-target_link_libraries(compiler_tests
+target_link_libraries(saga_tests
     PRIVATE
-    compiler_core
+    saga_core
     GTest::gtest_main
 )
 
-target_include_directories(compiler_tests
+target_include_directories(saga_tests
     PRIVATE
     ${PROJECT_SOURCE_DIR}/include
 )
 
 include(GoogleTest)
-gtest_discover_tests(compiler_tests)
+gtest_discover_tests(saga_tests)
 
 # Runtime tests (C runtime linked into C++ GTest harness)
 file(GLOB_RECURSE RUNTIME_TEST_SOURCES CONFIGURE_DEPENDS
