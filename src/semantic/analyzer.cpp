@@ -714,6 +714,9 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const UnionTypeNode &n) -> TypePtr {
             return resolve_union_type(n);
           },
+          [&](const GenericTypeAppNode &n) -> TypePtr {
+            return resolve_generic_type_app(n);
+          },
           [&](const auto &) -> TypePtr {
             error(node.span, "expected type expression");
             return builtins.error_type;
@@ -777,6 +780,60 @@ TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
   for (auto &t : node.types)
     alts.push_back(resolve_type(*t));
   return make_union_type(std::move(alts));
+}
+
+TypePtr
+Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
+  auto base = resolve_type(*node.base_type);
+  if (is_error_type(base))
+    return builtins.error_type;
+
+  // Resolve concrete type arguments.
+  std::vector<TypePtr> args;
+  for (auto &ta : node.type_args)
+    args.push_back(resolve_type(*ta));
+
+  // The base must be a generic struct (Task, etc.).
+  if (base->kind != TypeKind::Struct) {
+    error(node.span,
+          std::format("type {} is not generic", type_to_string(base)));
+    return builtins.error_type;
+  }
+
+  auto &info = std::get<StructTypeInfo>(base->detail);
+  if (info.type_params.empty()) {
+    error(node.span,
+          std::format("type {} is not generic", type_to_string(base)));
+    return builtins.error_type;
+  }
+
+  if (args.size() != info.type_params.size()) {
+    error(node.span,
+          std::format("expected {} type argument(s), got {}",
+                      info.type_params.size(), args.size()));
+    return builtins.error_type;
+  }
+
+  // Build bindings and instantiate.
+  std::unordered_map<uint32_t, TypePtr> bindings;
+  for (size_t i = 0; i < info.type_params.size(); ++i)
+    bindings[info.type_params[i].id] = args[i];
+
+  std::vector<FieldInfo> new_fields;
+  for (auto &f : info.fields)
+    new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
+  std::vector<MethodInfo> new_methods;
+  for (auto &m : info.methods)
+    new_methods.push_back(
+        {m.name, substitute(m.signature, bindings), m.is_public});
+
+  auto result =
+      make_struct_type(info.name, std::move(new_fields), std::move(new_methods));
+  auto &ri = std::get<StructTypeInfo>(result->detail);
+  ri.type_params = info.type_params;
+  ri.type_args = std::move(args);
+  ri.embeds = info.embeds;
+  return result;
 }
 
 // ===========================================================================
@@ -2425,6 +2482,53 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                        case TypeKind::String:
                          elem_type = builtins.string_type;
                          break;
+                       case TypeKind::Struct: {
+                         // Task<T> is iterable — yields T from its channel.
+                         auto &si = std::get<StructTypeInfo>(iter_type->detail);
+                         if (si.name == "Task" && !si.type_params.empty()) {
+                           // If T has been substituted, use the concrete
+                           // element type; otherwise fall back to the param.
+                           auto tp_id = si.type_params[0].id;
+                           // Look for a concrete binding in fields/methods;
+                           // for an instantiated Task the type_params list
+                           // still contains the original TypeParam, but the
+                           // methods have been substituted.  The Wait()
+                           // method returns T|Error — grab T from there.
+                           bool found = false;
+                           for (auto &m : si.methods) {
+                             if (m.name == "Wait" && m.signature &&
+                                 m.signature->kind == TypeKind::Func) {
+                               auto &fi = std::get<FuncTypeInfo>(
+                                   m.signature->detail);
+                               if (!fi.returns.empty()) {
+                                 auto &ret = fi.returns[0];
+                                 if (ret->kind == TypeKind::Union) {
+                                   auto &ui = std::get<UnionTypeInfo>(
+                                       ret->detail);
+                                   for (auto &alt : ui.alternatives) {
+                                     if (alt->kind != TypeKind::Interface) {
+                                       elem_type = alt;
+                                       found = true;
+                                       break;
+                                     }
+                                   }
+                                 } else {
+                                   elem_type = ret;
+                                   found = true;
+                                 }
+                               }
+                               break;
+                             }
+                           }
+                           if (!found)
+                             elem_type = builtins.error_type;
+                         } else {
+                           error(range.iterable->span,
+                                 std::format("type {} is not iterable",
+                                             type_to_string(iter_type)));
+                         }
+                         break;
+                       }
                        default:
                          error(range.iterable->span,
                                std::format("type {} is not iterable",
@@ -2547,6 +2651,32 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
   }
 
   pop_scope();
+
+  // Instantiate Task<T> with the explicit generic argument if provided,
+  // e.g. |Int| spawn { ... } → Task<Int>.
+  if (node.generic && !node.generic->type_params.empty()) {
+    auto chan_type = resolve_type(*node.generic->type_params[0]);
+    if (chan_type && !is_error_type(chan_type)) {
+      std::unordered_map<uint32_t, TypePtr> bindings;
+      bindings[0] = chan_type; // T (id 0) in Task<T>
+
+      auto &info = std::get<StructTypeInfo>(builtins.task_type->detail);
+      std::vector<FieldInfo> new_fields;
+      for (auto &f : info.fields)
+        new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
+      std::vector<MethodInfo> new_methods;
+      for (auto &m : info.methods)
+        new_methods.push_back({m.name, substitute(m.signature, bindings), m.is_public});
+
+      auto result = make_struct_type(info.name, std::move(new_fields),
+                                     std::move(new_methods));
+      auto &ri = std::get<StructTypeInfo>(result->detail);
+      ri.type_params = info.type_params;
+      ri.type_args.push_back(chan_type);
+      ri.embeds = info.embeds;
+      return result;
+    }
+  }
   return builtins.task_type;
 }
 

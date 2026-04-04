@@ -196,6 +196,7 @@ constexpr bool is_type_start(Token::Kind kind) {
   case Token::Kind::Fn:              // FuncType    "fn" Signature
   case Token::Kind::LeftParenthesis: // RangeType   "(" Type ")"
   case Token::Kind::Struct:          // StructType  "struct" "{" … "}"
+  case Token::Kind::BitwiseOr:       // GenericType  "|" TypeList "|" Type
     return true;
   default:
     return false;
@@ -631,6 +632,23 @@ NodePtr Parser::parse_single_type() {
     return parse_range_type();
   case Token::Kind::Struct: // "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
     return parse_struct_type();
+
+  // ── Generic type application: |Int| Task, |K, V| Map ───────────────
+  // parse_single_type() is used for each type arg to avoid the closing
+  // "|" being consumed as a union-type separator.
+  case Token::Kind::BitwiseOr: {
+    advance(); // consume opening "|"
+    std::vector<NodePtr> type_args;
+    type_args.push_back(parse_single_type());
+    while (check(Token::Kind::Comma)) {
+      advance(); // consume ","
+      type_args.push_back(parse_single_type());
+    }
+    expect(Token::Kind::BitwiseOr); // closing "|"
+    NodePtr base = parse_single_type();
+    return make_node<GenericTypeAppNode>(
+        span_from(start), std::move(type_args), std::move(base));
+  }
 
   // ── Named types: plain or qualified (Selector) ───────────────────────
   case Token::Kind::Identifier: {
