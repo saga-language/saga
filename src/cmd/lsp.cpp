@@ -115,8 +115,9 @@ struct DocumentState {
   std::string uri;
   std::string content;
 
-  // Populated after analysis (null AST means parse failed).
+  // Populated after analysis.
   mc::FileSet fileset;
+  mc::ErrorList parse_errors;
   std::unique_ptr<mc::Node> ast;
   std::unique_ptr<mc::Analyzer> analyzer;
 };
@@ -178,6 +179,7 @@ static std::pair<int, int> offset_to_lsp(const mc::File &file, size_t offset) {
 
 static void run_analysis(DocumentState &doc, const char *prog) {
   doc.fileset = mc::FileSet{};
+  doc.parse_errors = mc::ErrorList{};
   doc.ast.reset();
   doc.analyzer.reset();
 
@@ -187,7 +189,8 @@ static void run_analysis(DocumentState &doc, const char *prog) {
 
   mc::Parser parser(doc.fileset);
   doc.ast = parser.parse();
-  if (!doc.ast) return;
+  doc.parse_errors = std::move(parser.errors);
+  if (!doc.ast || !doc.parse_errors.errors.empty()) return;
 
   doc.analyzer = std::make_unique<mc::Analyzer>(doc.fileset);
 
@@ -205,7 +208,13 @@ static void run_analysis(DocumentState &doc, const char *prog) {
   if (fs::is_directory(std_sgi))
     doc.analyzer->package_resolver->sgi_search_paths.push_back(std_sgi);
 
-  doc.analyzer->analyze(*doc.ast);
+  try {
+    doc.analyzer->analyze(*doc.ast);
+  } catch (...) {
+    // Gracefully handle unexpected analyzer crashes so the LSP server
+    // stays alive.  Diagnostics from the partial run (if any) will
+    // still be published below.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,21 +293,10 @@ struct LspServer {
 
   void publish_diagnostics(const std::string &uri, const DocumentState &doc) {
     json::Value diags = json::make_array();
-    if (doc.analyzer) {
-      diags = errors_to_diagnostics(doc.fileset,
-                                     doc.analyzer->errors);
-    } else if (doc.ast == nullptr) {
-      // Parse failed — emit a generic error.
-      json::Value d = json::obj({
-          {"range", json::obj({
-              {"start", json::obj({{"line", 0}, {"character", 0}})},
-              {"end",   json::obj({{"line", 0}, {"character", 1}})},
-          })},
-          {"severity", 1},
-          {"source",  "saga"},
-          {"message", "parse error"},
-      });
-      diags.push(std::move(d));
+    if (!doc.parse_errors.errors.empty()) {
+      diags = errors_to_diagnostics(doc.fileset, doc.parse_errors);
+    } else if (doc.analyzer) {
+      diags = errors_to_diagnostics(doc.fileset, doc.analyzer->errors);
     }
 
     send_notification("textDocument/publishDiagnostics", json::obj({
