@@ -1219,4 +1219,88 @@ TEST(TypeCheck, StructOperatorMethodTablePopulated) {
   EXPECT_EQ(it->second, "Add");
 }
 
+// ===========================================================================
+// Iterable protocol — user structs implementing Next() T | Error
+// ===========================================================================
+
+TEST(TypeCheck, IterableStructBasic) {
+  // A counter that yields Int values until exhausted.
+  auto r = TC::from(
+      "struct Counter {\n"
+      "  n, limit Int\n"
+      "  pub fn Next() Int | Error {\n"
+      "    if n >= limit { return Missing{} }\n"
+      "    n++\n"
+      "    n - 1\n"
+      "  }\n"
+      "}\n"
+      "fn f(c Counter) Void {\n"
+      "  for v : c { intrinsic_print(v.String()) }\n"
+      "}\n");
+  EXPECT_TRUE(r.ok())
+      << "Struct with Next() T | Error should be usable in a for loop";
+}
+
+TEST(TypeCheck, IterableStructElemTypeInferred) {
+  // The loop variable type must be inferred as T from Next() T | Error.
+  auto r = TC::from(
+      "struct Src {\n"
+      "  val Int\n"
+      "  pub fn Next() String | Error { \"hi\" }\n"
+      "}\n"
+      "fn f(s Src) String {\n"
+      "  for v : s { return v }\n"
+      "  \"\"\n"
+      "}\n");
+  EXPECT_TRUE(r.ok())
+      << "Loop variable should have type String (from Next() String | Error)";
+}
+
+TEST(TypeCheck, IterableStructElemTypeUsable) {
+  // The loop variable should be usable as its inferred type (Int here).
+  auto r = TC::from(
+      "struct Src {\n"
+      "  pub fn Next() Int | Error { 0 }\n"
+      "}\n"
+      "fn g(n Int) Void { }\n"
+      "fn f(s Src) Void {\n"
+      "  for v : s { g(v) }\n"
+      "}\n");
+  EXPECT_TRUE(r.ok())
+      << "Loop variable has element type; passing to fn(Int) should work";
+}
+
+TEST(TypeCheck, NonIterableStructInForLoop) {
+  // A plain struct with no Next() method should produce an error.
+  auto r = TC::from(
+      "struct Bare { n Int }\n"
+      "fn f(b Bare) Void { for v : b { } }\n");
+  EXPECT_TRUE(r.has_err("is not iterable"));
+}
+
+TEST(TypeCheck, IterableNextReturnsWrongType) {
+  // Next() must return T | Error; returning plain T should NOT make it iterable.
+  auto r = TC::from(
+      "struct Src {\n"
+      "  pub fn Next() Int { 0 }\n"
+      "}\n"
+      "fn f(s Src) Void { for v : s { } }\n");
+  EXPECT_TRUE(r.has_err("is not iterable"));
+}
+
+TEST(TypeCheck, IterableStructRecordedInAnalyzer) {
+  // The iterable_next_elem_type map must be populated for the codegen.
+  auto r = TC::from(
+      "struct Counter {\n"
+      "  n Int\n"
+      "  pub fn Next() Int | Error { n }\n"
+      "}\n"
+      "fn f(c Counter) Void { for v : c { } }\n");
+  ASSERT_TRUE(r.ok());
+  EXPECT_EQ(r.analyzer->iterable_next_elem_type.size(), 1u);
+  auto it = r.analyzer->iterable_next_elem_type.begin();
+  ASSERT_TRUE(it->second != nullptr);
+  EXPECT_EQ(it->second->kind, TypeKind::Int);
+}
+
 } // namespace mc

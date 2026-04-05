@@ -150,6 +150,13 @@ struct Analyzer {
   /// lowered directly to IR.
   std::unordered_map<const Node *, std::string> struct_operator_methods;
 
+  // ── Iterable struct tracking ───────────────────────────────────────────
+
+  /// Maps the iterable Node* inside a ForRangeClauseNode to the inferred
+  /// element type T when the iterable is a struct implementing
+  /// `Next() T | Error`.  Codegen reads this to emit the protocol-based loop.
+  std::unordered_map<const Node *, TypePtr> iterable_next_elem_type;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
 

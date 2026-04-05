@@ -2648,9 +2648,45 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                            if (!found)
                              elem_type = builtins.error_type;
                          } else {
-                           error(range.iterable->span,
-                                 std::format("type {} is not iterable",
-                                             type_to_string(iter_type)));
+                           // Not a Task — check for the Iterable protocol:
+                           // a Next() method returning T | Error.
+                           bool found_iterable = false;
+                           for (auto &m : si.methods) {
+                             if (m.name != "Next" || !m.signature ||
+                                 m.signature->kind != TypeKind::Func)
+                               continue;
+                             auto &fi =
+                                 std::get<FuncTypeInfo>(m.signature->detail);
+                             // Next() takes no explicit params (just self).
+                             if (!fi.params.empty())
+                               break;
+                             if (fi.returns.size() != 1 ||
+                                 fi.returns[0]->kind != TypeKind::Union)
+                               break;
+                             // Extract T from T | Error.
+                             auto &ui = std::get<UnionTypeInfo>(
+                                 fi.returns[0]->detail);
+                             for (auto &alt : ui.alternatives) {
+                               if (alt->kind == TypeKind::Interface)
+                                 continue; // skip Error
+                               elem_type = alt;
+                               found_iterable = true;
+                               // Record for codegen so it knows which
+                               // element type to extract.
+                               iterable_next_elem_type[range.iterable.get()] =
+                                   elem_type;
+                               break;
+                             }
+                             break; // found Next(), stop method search
+                           }
+                           if (!found_iterable) {
+                             error(
+                                 range.iterable->span,
+                                 std::format(
+                                     "type {} is not iterable (no "
+                                     "Next() T | Error method)",
+                                     type_to_string(iter_type)));
+                           }
                          }
                          break;
                        }

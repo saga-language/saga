@@ -3357,8 +3357,171 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               builder.CreateBr(exit_bb);
             }
           } else {
-            // Non-Task struct iterable — not yet supported.
-            builder.CreateBr(exit_bb);
+            // ── Iterable struct: for v : iter { ... } via Next() ────────
+            // Requires the struct to implement: Next() T | Error
+            // where T is the element type.
+            auto elem_it = analyzer.iterable_next_elem_type.find(
+                range->iterable.get());
+            if (elem_it == analyzer.iterable_next_elem_type.end()) {
+              // Analyzer reported the error — just skip the loop.
+              builder.CreateBr(exit_bb);
+            } else {
+              auto elem_sem = elem_it->second;
+              auto *elem_ll = llvm_type(elem_sem);
+              auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+              // ── Find the Next() method's mangled link name ───────────
+              std::string next_link_name;
+              {
+                auto ml_it = struct_method_links.find(st_info.name);
+                if (ml_it != struct_method_links.end()) {
+                  for (auto &[lname, mname] : ml_it->second) {
+                    if (mname == "Next") {
+                      next_link_name = lname;
+                      break;
+                    }
+                  }
+                }
+                if (next_link_name.empty())
+                  next_link_name = mangle(st_info.name + "__Next");
+              }
+
+              // ── Build the return union type: T | Error ──────────────
+              // Prefer the type recorded in the method signature so the
+              // union llvm type cache hits consistently.
+              TypePtr next_ret_sem;
+              for (auto &m : st_info.methods) {
+                if (m.name == "Next" && m.signature &&
+                    m.signature->kind == TypeKind::Func) {
+                  auto &fi =
+                      std::get<FuncTypeInfo>(m.signature->detail);
+                  if (!fi.returns.empty())
+                    next_ret_sem = fi.returns[0];
+                  break;
+                }
+              }
+              if (!next_ret_sem)
+                next_ret_sem = make_union_type(
+                    {elem_sem, analyzer.builtins.error_iface});
+
+              auto *union_st = get_union_llvm_type(next_ret_sem);
+
+              // Find the error tag index (the Error interface alternative).
+              int error_tag = 1; // default: tag 1 for T | Error
+              if (next_ret_sem->kind == TypeKind::Union) {
+                auto &ui =
+                    std::get<UnionTypeInfo>(next_ret_sem->detail);
+                for (size_t i = 0; i < ui.alternatives.size(); ++i) {
+                  if (ui.alternatives[i]->kind == TypeKind::Interface)
+                    error_tag = static_cast<int>(i);
+                }
+              }
+
+              // ── Find or forward-declare Next() ───────────────────
+              auto *next_fn = module->getFunction(next_link_name);
+              if (!next_fn && union_st) {
+                auto *ret_ll = static_cast<llvm::Type *>(union_st);
+                auto *fn_type =
+                    llvm::FunctionType::get(ret_ll, {ptr_type}, false);
+                next_fn = llvm::Function::Create(
+                    fn_type, llvm::Function::ExternalLinkage,
+                    next_link_name, module.get());
+              }
+
+              // ── Get self_ptr for the iterable ────────────────────
+              // Prefer the local alloca so Next() can mutate cursor state.
+              llvm::Value *self_ptr = nullptr;
+              if (auto *id = std::get_if<IdentifierNode>(
+                      &range->iterable->data)) {
+                auto local_it =
+                    locals.find(std::string(id->name));
+                if (local_it != locals.end()) {
+                  auto *alloca = local_it->second;
+                  auto st_it2 = struct_types.find(st_info.name);
+                  if (st_it2 != struct_types.end() &&
+                      alloca->getAllocatedType() == st_it2->second)
+                    self_ptr = alloca;
+                }
+              }
+              if (!self_ptr) {
+                // Spill the already-loaded value to a temp alloca.
+                auto st_it2 = struct_types.find(st_info.name);
+                if (st_it2 != struct_types.end() &&
+                    iterable->getType() == st_it2->second) {
+                  auto *tmp = create_entry_alloca(
+                      func, "iter.self", st_it2->second);
+                  builder.CreateStore(iterable, tmp);
+                  self_ptr = tmp;
+                } else {
+                  self_ptr = iterable;
+                }
+              }
+
+              // ── Allocas for loop variable and Next() result ───────
+              llvm::AllocaInst *val_alloca = nullptr;
+              if (!range->vars.empty()) {
+                std::string vname(range->vars[0].name);
+                val_alloca = create_entry_alloca(func, vname, elem_ll);
+                locals[vname] = val_alloca;
+              }
+
+              llvm::AllocaInst *result_alloca = nullptr;
+              if (union_st)
+                result_alloca =
+                    create_entry_alloca(func, "next.result", union_st);
+
+              // ── Loop structure ──────────────────────────────────
+              if (!next_fn || !result_alloca || !self_ptr) {
+                builder.CreateBr(exit_bb);
+              } else {
+                // Branch to condition.
+                builder.CreateBr(cond_bb);
+
+                // Condition: call Next(), check tag.
+                builder.SetInsertPoint(cond_bb);
+                auto *next_val =
+                    builder.CreateCall(next_fn, {self_ptr}, "next.val");
+                builder.CreateStore(next_val, result_alloca);
+
+                auto *tag_gep = builder.CreateStructGEP(
+                    union_st, result_alloca, 0, "next.tag.ptr");
+                auto *tag = builder.CreateLoad(
+                    llvm::Type::getInt8Ty(context), tag_gep, "next.tag");
+                auto *is_err = builder.CreateICmpEQ(
+                    tag,
+                    llvm::ConstantInt::get(
+                        llvm::Type::getInt8Ty(context), error_tag),
+                    "next.is_err");
+                builder.CreateCondBr(is_err, exit_bb, body_bb);
+
+                // Body: extract element and run user code.
+                func->insert(func->end(), body_bb);
+                builder.SetInsertPoint(body_bb);
+                if (current_actor)
+                  builder.CreateCall(
+                      module->getFunction("mc_reduction_tick"),
+                      {current_actor});
+
+                if (val_alloca) {
+                  auto *val = emit_union_extract(
+                      result_alloca, elem_sem, next_ret_sem);
+                  if (val)
+                    builder.CreateStore(val, val_alloca);
+                }
+
+                auto &body_block =
+                    std::get<BlockNode>(node.body->data);
+                emit_block(body_block);
+                if (!builder.GetInsertBlock()->getTerminator())
+                  builder.CreateBr(update_bb);
+
+                // Update: unconditional back-edge to cond (Next() does
+                // the advancing).
+                func->insert(func->end(), update_bb);
+                builder.SetInsertPoint(update_bb);
+                builder.CreateBr(cond_bb);
+              }
+            }
           }
         } else {
           // Non-array/map/task iterable — not yet supported.
