@@ -95,6 +95,13 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
       TypeParamInfo{TypeParam{id, name}, std::move(bound)});
 }
 
+TypePtr make_alias_type(const std::string &name, TypePtr underlying,
+                       std::vector<MethodInfo> methods) {
+  return std::make_shared<Type>(
+      TypeKind::Alias,
+      AliasTypeInfo{name, std::move(underlying), std::move(methods)});
+}
+
 TypePtr make_module_type(const std::string &name,
                          const std::string &import_path,
                          std::vector<ModuleExport> exports) {
@@ -107,23 +114,40 @@ TypePtr make_module_type(const std::string &name,
 // Type queries
 // ===========================================================================
 
+TypePtr unwrap_alias(const TypePtr &t) {
+  if (!t) return t;
+  auto curr = t;
+  while (curr && curr->kind == TypeKind::Alias) {
+    curr = std::get<AliasTypeInfo>(curr->detail).underlying;
+  }
+  return curr;
+}
+
+TypeKind underlying_kind(const TypePtr &t) {
+  auto unwrapped = unwrap_alias(t);
+  return unwrapped ? unwrapped->kind : TypeKind::Error;
+}
+
 bool is_error_type(const TypePtr &t) {
   return t && t->kind == TypeKind::Error;
 }
 
 bool is_numeric(const TypePtr &t) {
-  return t && (t->kind == TypeKind::Int || t->kind == TypeKind::Float);
+  auto u = unwrap_alias(t);
+  return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float);
 }
 
 bool is_ordered(const TypePtr &t) {
-  return t && (t->kind == TypeKind::Int || t->kind == TypeKind::Float ||
-               t->kind == TypeKind::String);
+  auto u = unwrap_alias(t);
+  return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float ||
+               u->kind == TypeKind::String);
 }
 
 bool is_equatable(const TypePtr &t) {
-  if (!t)
+  auto u = unwrap_alias(t);
+  if (!u)
     return false;
-  switch (t->kind) {
+  switch (u->kind) {
   case TypeKind::Bool:
   case TypeKind::Int:
   case TypeKind::Float:
@@ -136,13 +160,15 @@ bool is_equatable(const TypePtr &t) {
 }
 
 bool is_callable(const TypePtr &t) {
-  return t && t->kind == TypeKind::Func;
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Func;
 }
 
 bool is_iterable(const TypePtr &t) {
-  if (!t)
+  auto u = unwrap_alias(t);
+  if (!u)
     return false;
-  switch (t->kind) {
+  switch (u->kind) {
   case TypeKind::Array:
   case TypeKind::Map:
   case TypeKind::Range:
@@ -259,6 +285,11 @@ std::string type_to_string(const TypePtr &t) {
   case TypeKind::TypeParam: {
     auto &info = std::get<TypeParamInfo>(t->detail);
     return info.param.name;
+  }
+
+  case TypeKind::Alias: {
+    auto &info = std::get<AliasTypeInfo>(t->detail);
+    return info.name;
   }
 
   case TypeKind::Module: {
@@ -385,6 +416,13 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     auto &ai = std::get<TypeParamInfo>(a->detail);
     auto &bi = std::get<TypeParamInfo>(b->detail);
     return ai.param.id == bi.param.id;
+  }
+
+  case TypeKind::Alias: {
+    // Nominal — alias types are unique by name.
+    auto &ai = std::get<AliasTypeInfo>(a->detail);
+    auto &bi = std::get<AliasTypeInfo>(b->detail);
+    return ai.name == bi.name;
   }
 
   case TypeKind::Module: {
@@ -587,6 +625,14 @@ TypePtr substitute(const TypePtr &t,
     return make_union_type(std::move(alts));
   }
 
+  case TypeKind::Alias: {
+    auto &info = std::get<AliasTypeInfo>(t->detail);
+    auto u = substitute(info.underlying, bindings);
+    if (u == info.underlying)
+      return t;
+    return make_alias_type(info.name, std::move(u), info.methods);
+  }
+
   default:
     return t; // primitive / nominal — no type params inside
   }
@@ -621,6 +667,8 @@ bool has_type_params(const TypePtr &t) {
         return true;
     return false;
   }
+  case TypeKind::Alias:
+    return has_type_params(std::get<AliasTypeInfo>(t->detail).underlying);
   case TypeKind::Union: {
     auto &u = std::get<UnionTypeInfo>(t->detail);
     for (auto &a : u.alternatives)

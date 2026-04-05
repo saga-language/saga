@@ -144,6 +144,12 @@ struct Analyzer {
 
   // ── Operator overloading ─────────────────────────────────────────────
 
+  // ── User-bound methods for non-struct types ────────────────────────
+
+  /// Methods bound to types via receiver syntax that don't have their own
+  /// methods vector (e.g. enums). Keyed by raw Type pointer.
+  std::unordered_map<const Type *, std::vector<MethodInfo>> type_methods_;
+
   /// Maps a BinaryExprNode (by its containing Node*) to the method name that
   /// should be called to implement the operator (e.g. "Add", "Compare").
   /// Only populated for struct-typed operands; primitive operators are still

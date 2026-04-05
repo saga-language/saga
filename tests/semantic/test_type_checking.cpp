@@ -1303,4 +1303,99 @@ TEST(TypeCheck, IterableStructRecordedInAnalyzer) {
   EXPECT_EQ(it->second->kind, TypeKind::Int);
 }
 
+// ===========================================================================
+// Type alias methods — binding methods to any type via receiver syntax
+// ===========================================================================
+
+TEST(TypeCheck, TypeAliasMethodOnInt) {
+  auto r = TC::from(
+      "const UserID = Int\n"
+      "pub fn (u UserID) Validate() Bool { true }\n"
+      "fn f() Bool {\n"
+      "  id UserID\n"
+      "  id.Validate()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasInheritsBuiltinMethods) {
+  auto r = TC::from(
+      "const Name = String\n"
+      "fn f() String {\n"
+      "  n Name\n"
+      "  n.Upper()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasOnStructInheritsFields) {
+  auto r = TC::from(
+      "struct Point { pub x, y Int }\n"
+      "const MyPoint = Point\n"
+      "pub fn (p MyPoint) Sum() Int { p.x }\n"
+      "fn f() Int {\n"
+      "  p := MyPoint{x: 1, y: 2}\n"
+      "  p.Sum()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasMethodAndBuiltinCoexist) {
+  auto r = TC::from(
+      "const UserID = Int\n"
+      "pub fn (u UserID) Label() String { \"user\" }\n"
+      "fn f() {\n"
+      "  id UserID\n"
+      "  id.Label()\n"
+      "  id.String()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasIsResolvedAsType) {
+  // A type alias should be resolved as a Type symbol, so it can be used
+  // in variable declarations.
+  auto r = TC::from(
+      "const UserID = Int\n"
+      "fn f() {\n"
+      "  id UserID\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasMethodOnFloat) {
+  auto r = TC::from(
+      "const Temperature = Float\n"
+      "pub fn (t Temperature) Celsius() Temperature { t }\n"
+      "fn f() Temperature {\n"
+      "  temp Temperature\n"
+      "  temp.Celsius()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasMethodOnBool) {
+  auto r = TC::from(
+      "const Flag = Bool\n"
+      "pub fn (fl Flag) IsSet() Bool { true }\n"
+      "fn test() Bool {\n"
+      "  active Flag\n"
+      "  active.IsSet()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeAliasMultipleMethods) {
+  auto r = TC::from(
+      "const ID = Int\n"
+      "pub fn (i ID) IsValid() Bool { true }\n"
+      "pub fn (i ID) Label() String { \"id\" }\n"
+      "fn f() {\n"
+      "  id ID\n"
+      "  id.IsValid()\n"
+      "  id.Label()\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
 } // namespace mc
