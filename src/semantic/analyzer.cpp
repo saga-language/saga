@@ -904,16 +904,26 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   if (has_generics)
     pop_scope();
 
-  // If this is a receiver method, attach it to the receiver's struct type.
+  // If this is a receiver method, attach it to the receiver type.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
     if (auto *ident = std::get_if<IdentifierNode>(&recv_type_node->data)) {
       auto recv_sym = lookup(std::string(ident->name));
-      if (recv_sym && recv_sym->type &&
-          recv_sym->type->kind == TypeKind::Struct) {
-        auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
-        struct_info.methods.push_back(
-            {std::string(fn.name.name), fn_type, fn.is_public});
+      if (recv_sym && recv_sym->type) {
+        if (recv_sym->type->kind == TypeKind::Struct) {
+          auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
+          struct_info.methods.push_back(
+              {std::string(fn.name.name), fn_type, fn.is_public});
+        } else if (recv_sym->type->kind == TypeKind::Alias) {
+          auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
+          alias_info.methods.push_back(
+              {std::string(fn.name.name), fn_type, fn.is_public});
+        } else if (recv_sym->type->kind == TypeKind::Enum) {
+          // Enums can also have methods bound to them.
+          // Store in the type_methods side table.
+          type_methods_[recv_sym->type.get()].push_back(
+              {std::string(fn.name.name), fn_type, fn.is_public});
+        }
       }
     }
   }
@@ -1048,6 +1058,54 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   if (c.type) {
     const_type = resolve_type(**c.type);
   }
+
+  // Detect type alias pattern: const Name = TypeIdentifier
+  // If the value is an identifier (or selector) that refers to a type,
+  // create an alias type so methods can be bound to it.
+  if (!const_type && c.value) {
+    TypePtr alias_underlying = nullptr;
+    if (auto *ident = std::get_if<IdentifierNode>(&c.value->data)) {
+      auto sym = lookup(std::string(ident->name));
+      if (sym && sym->kind == SymbolKind::Type && sym->type) {
+        alias_underlying = sym->type;
+      }
+    } else if (auto *sel = std::get_if<SelectorNode>(&c.value->data)) {
+      // Handle math.Point style type aliases.
+      if (auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data)) {
+        auto obj_sym = lookup(std::string(obj_ident->name));
+        if (obj_sym && obj_sym->kind == SymbolKind::Module && obj_sym->type &&
+            obj_sym->type->kind == TypeKind::Module) {
+          auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
+          std::string field_name(sel->field.name);
+          for (auto &exp : mod.exports) {
+            if (exp.name == field_name && exp.type) {
+              // Check if the export is a type (struct, enum, interface, alias).
+              if (exp.type->kind == TypeKind::Struct ||
+                  exp.type->kind == TypeKind::Enum ||
+                  exp.type->kind == TypeKind::Interface ||
+                  exp.type->kind == TypeKind::Alias) {
+                alias_underlying = exp.type;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (alias_underlying) {
+      // Create a unique alias type that inherits the underlying type's methods.
+      auto alias_type = make_alias_type(
+          std::string(c.name.name), alias_underlying);
+      auto sym_it = current_scope->symbols.find(std::string(c.name.name));
+      if (sym_it != current_scope->symbols.end()) {
+        sym_it->second.type = alias_type;
+        sym_it->second.kind = SymbolKind::Type;
+      }
+      return;
+    }
+  }
+
   // The initializer expression will be type-checked later; for now we just
   // record the declared type if present.
   auto sym_it = current_scope->symbols.find(std::string(c.name.name));
@@ -1849,7 +1907,14 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   if (is_error_type(type_expr_type))
     return builtins.error_type;
 
-  if (type_expr_type->kind != TypeKind::Struct) {
+  // For alias types, unwrap to get the underlying struct type for validation,
+  // but return the alias type so the variable retains its alias identity.
+  auto struct_type = type_expr_type;
+  if (struct_type->kind == TypeKind::Alias) {
+    struct_type = unwrap_alias(struct_type);
+  }
+
+  if (!struct_type || struct_type->kind != TypeKind::Struct) {
     error(node.type_expr->span, std::format("'{}' is not a struct type",
                                             type_to_string(type_expr_type)));
     return builtins.error_type;
@@ -1863,11 +1928,11 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   }
 
   // If the struct is generic, instantiate it by inferring type params.
-  auto &raw_info = std::get<StructTypeInfo>(type_expr_type->detail);
-  auto effective_type = type_expr_type;
+  auto &raw_info = std::get<StructTypeInfo>(struct_type->detail);
+  auto effective_type = struct_type;
   if (!raw_info.type_params.empty()) {
     effective_type =
-        instantiate_generic_struct(type_expr_type, field_vals, node.span);
+        instantiate_generic_struct(struct_type, field_vals, node.span);
     if (is_error_type(effective_type))
       return builtins.error_type;
   }
@@ -1908,6 +1973,11 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
             std::format("struct '{}' has no field '{}'", info.name, fname));
     }
   }
+
+  // If the original type was an alias, return the alias type so the
+  // variable retains its alias identity.
+  if (type_expr_type->kind == TypeKind::Alias)
+    return type_expr_type;
 
   return effective_type;
 }
@@ -2391,22 +2461,73 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
     }
   }
 
-  // Check built-in methods for the type kind.
-  auto methods = builtin_methods(obj_type->kind, builtins);
+  // Alias types: check alias's own methods, then fall through to the
+  // underlying type's methods.
+  if (obj_type->kind == TypeKind::Alias) {
+    auto &alias_info = std::get<AliasTypeInfo>(obj_type->detail);
+    // Check alias's own user-bound methods.
+    for (auto &m : alias_info.methods) {
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+    }
+    // Check the underlying type's struct fields/methods if it's a struct.
+    auto underlying = unwrap_alias(obj_type);
+    if (underlying && underlying->kind == TypeKind::Struct) {
+      auto &info = std::get<StructTypeInfo>(underlying->detail);
+      for (auto &f : info.fields) {
+        if (f.name == field_name)
+          return f.type ? f.type : builtins.error_type;
+      }
+      for (auto &m : info.methods) {
+        if (m.name == field_name)
+          return m.signature ? m.signature : builtins.error_type;
+      }
+      for (auto &embed : info.embeds) {
+        if (embed && embed->kind == TypeKind::Struct) {
+          auto &embed_info = std::get<StructTypeInfo>(embed->detail);
+          for (auto &f : embed_info.fields) {
+            if (f.name == field_name)
+              return f.type ? f.type : builtins.error_type;
+          }
+          for (auto &m : embed_info.methods) {
+            if (m.name == field_name)
+              return m.signature ? m.signature : builtins.error_type;
+          }
+        }
+      }
+    }
+    // Fall through to builtin methods on the underlying type.
+  }
+
+  // Check user-bound methods in the type_methods_ side table.
+  {
+    auto it = type_methods_.find(obj_type.get());
+    if (it != type_methods_.end()) {
+      for (auto &m : it->second) {
+        if (m.name == field_name)
+          return m.signature ? m.signature : builtins.error_type;
+      }
+    }
+  }
+
+  // Check built-in methods for the type kind (unwrapping aliases).
+  auto effective_kind = underlying_kind(obj_type);
+  auto methods = builtin_methods(effective_kind, builtins);
   for (auto &m : methods) {
     if (m.name == field_name) {
       if (!m.signature)
         return builtins.error_type;
       // For Map and Array methods, substitute concrete type params.
-      if (obj_type->kind == TypeKind::Map && has_type_params(m.signature)) {
-        auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
+      auto effective_type = unwrap_alias(obj_type);
+      if (effective_kind == TypeKind::Map && has_type_params(m.signature)) {
+        auto &map_info = std::get<MapTypeInfo>(effective_type->detail);
         std::unordered_map<uint32_t, TypePtr> bindings;
         bindings[9991] = map_info.key;   // K
         bindings[9992] = map_info.value; // V
         return substitute(m.signature, bindings);
       }
-      if (obj_type->kind == TypeKind::Array && has_type_params(m.signature)) {
-        auto &arr_info = std::get<ArrayTypeInfo>(obj_type->detail);
+      if (effective_kind == TypeKind::Array && has_type_params(m.signature)) {
+        auto &arr_info = std::get<ArrayTypeInfo>(effective_type->detail);
         std::unordered_map<uint32_t, TypePtr> bindings;
         bindings[9990] = arr_info.element; // T
         return substitute(m.signature, bindings);
@@ -3281,6 +3402,15 @@ bool Analyzer::always_returns(const Node &node) const {
 // ===========================================================================
 
 void Analyzer::check_const_decl(const ConstDeclNode &c) {
+  // If this const was already resolved as a type alias in Phase 2,
+  // don't overwrite the alias type.
+  auto sym_it = current_scope->symbols.find(std::string(c.name.name));
+  if (sym_it != current_scope->symbols.end() &&
+      sym_it->second.kind == SymbolKind::Type &&
+      sym_it->second.type && sym_it->second.type->kind == TypeKind::Alias) {
+    return;
+  }
+
   TypePtr declared_type = nullptr;
   if (c.type)
     declared_type = resolve_type(**c.type);
@@ -3293,7 +3423,6 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
   }
 
   // Update symbol type.
-  auto sym_it = current_scope->symbols.find(std::string(c.name.name));
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = declared_type ? declared_type : init_type;
   }

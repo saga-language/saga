@@ -495,7 +495,10 @@ are defined with the `const` keyword.
 
 Aliases are not shadows of the original type, they are unique types, but they 
 inherit all the methods from the aliased type. This can make for a powerful
-tool where all types are open for extension but closed for modification.
+tool where all types are open for extension but closed for modification. Like 
+structs, methods can be bound to any type provided it is within the same file
+scope. You can't, for instance, bind methods to types declared in other files
+(called monkey-patching).
 
 ```
 const UserID = Int  // UserID is a unique type

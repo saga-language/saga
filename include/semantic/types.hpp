@@ -39,6 +39,7 @@ enum class TypeKind : uint8_t {
   Interface,
   Union,
   TypeParam,   // unresolved generic parameter, e.g. T
+  Alias,       // type alias (const MyType = Int)
   Module,      // package/module (from import)
   Error,       // sentinel for error-recovery (propagates silently)
 };
@@ -139,6 +140,12 @@ struct TypeParamInfo {
   std::optional<TypePtr> bound;               // upper-bound constraint, if any
 };
 
+struct AliasTypeInfo {
+  std::string name;
+  TypePtr underlying;                      // the aliased type
+  std::vector<MethodInfo> methods;         // user-bound methods on this alias
+};
+
 struct ModuleExport {
   std::string name;
   TypePtr type;
@@ -175,6 +182,7 @@ struct Type {
     InterfaceTypeInfo,
     UnionTypeInfo,
     TypeParamInfo,
+    AliasTypeInfo,
     ModuleTypeInfo,
     ErrorType
   >;
@@ -215,6 +223,8 @@ TypePtr make_interface_type(const std::string &name,
 TypePtr make_union_type(std::vector<TypePtr> alternatives);
 TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound = std::nullopt);
+TypePtr make_alias_type(const std::string &name, TypePtr underlying,
+                       std::vector<MethodInfo> methods = {});
 TypePtr make_module_type(const std::string &name,
                          const std::string &import_path,
                          std::vector<ModuleExport> exports = {});
@@ -243,6 +253,13 @@ bool is_iterable(const TypePtr &t);
 
 /// Human-readable type name for error messages.
 std::string type_to_string(const TypePtr &t);
+
+/// Unwrap alias types to get the underlying concrete type.
+/// Returns the input if it is not an alias.
+TypePtr unwrap_alias(const TypePtr &t);
+
+/// Get the TypeKind of the underlying type, unwrapping aliases.
+TypeKind underlying_kind(const TypePtr &t);
 
 // ---------------------------------------------------------------------------
 // Type compatibility
