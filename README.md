@@ -6,11 +6,14 @@ Saga is more than a name; it refers to the resilience of the execution, invoking
 
 - [Language specification](docs/language.md)
 - [Standard Library](docs/stdlib.md)
+
+## Additional Links
+- [Concurrency and memory model](docs/concurrency.md)
+- [Editor Support](#editors)
+- [Formal grammar](docs/grammar.md)
+- [Influences](docs/influences.md)
 - [Runtime](docs/runtime.md)
 - [Tools](docs/tools.md)
-- [Formal grammar](docs/grammar.md)
-- [Concurrency and memory model](docs/concurrency.md)
-- [Influences](docs/influences.md)
 
 ## Key Features
 
@@ -35,6 +38,10 @@ pub fn Main() Void {
   io.Println("Hello, world!")
 }
 ```
+
+# Editors
+
+Basic support for [(Neo)Vim](../editors/vim/README.md) and [VS Code](../editors/vscode/README.md) are available. They should both feature syntax highlighting and LSP support.
 
 ## Contributing
 

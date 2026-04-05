@@ -1,0 +1,30 @@
+// This agent is isolated to a single responsibility: processing metrics
+pub fn SpawnMetricsAgent() |Int| Task {
+    // 'spawn' takes a generic type for the channel data and a pipe '|ctx|' for the task context
+    return |Int| spawn |ctx| {
+        for {
+            // The context task provides lifecycle methods to check for graceful shutdown
+            if ctx.Cancelled?() {
+                break
+            }
+
+            metric := fetch_system_load() // fictious method
+
+            // Send() pushes data non-blockingly to the implicit channel returned by spawn
+            ctx.Send(metric)
+        }
+    }
+}
+
+pub fn Main() Void {
+    agent := SpawnMetricsAgent()
+
+    // Tasks satisfy the Iterable interface, allowing a for-range loop to stream the channel directly
+    for msg : agent {
+        if msg > 90 {
+            log.Warn("High load detected!")
+            // Calling Cancel() on the Task struct signals the thread's context to stop
+            agent.Cancel()
+        }
+    }
+}

@@ -1,0 +1,28 @@
+struct AuditTrail {
+    updated_at Int
+    updated_by String
+
+    pub fn RecordUpdate(user String) Void {
+        // Implicit scope access: this acts strictly on AuditTrail's isolated memory
+        updated_at = time.Now()
+        updated_by = user
+    }
+}
+
+// The '<' operator merges AuditTrail's fields and methods into Configuration's symbol table
+struct Configuration < AuditTrail {
+    pub host String
+    pub port Int
+
+    pub fn Apply(user String) Void {
+        // We call the embedded method using the struct name to disambiguate ownership
+        AuditTrail.RecordUpdate(user)
+        io.Println("Applied config for {host}:{port}")
+    }
+}
+
+pub fn Main() Void {
+    // AuditTrail's fields are zero-initialized automatically
+    config := Configuration{host: "localhost", port: 8080}
+    config.Apply("admin")
+}

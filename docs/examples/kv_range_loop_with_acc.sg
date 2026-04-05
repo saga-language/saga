@@ -1,0 +1,16 @@
+pub fn ProcessInvoices(invoices {String: Float}) Float {
+    // The explicit type 'Float' initializes the internal accumulator to 0.0.
+    // The pipe '|acc|' exposes this accumulator to the block.
+    // The 'id, amount' syntax destructures the map into keys and values per iteration.
+    total Float = for id, amount : invoices |acc| {
+        if amount < 0.0 {
+            log.Error("Negative invoice found: {id}")
+            // 'next' skips further processing and advances the loop
+            next
+        }
+
+        acc += amount
+    }
+
+    return total
+}
