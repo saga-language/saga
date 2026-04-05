@@ -101,7 +101,7 @@ struct CodeGen {
   std::unordered_map<std::string, llvm::AllocaInst *> locals;
 
   /// Tracks which locals need release at scope exit and their kind.
-  enum class ManagedKind { String, Array, Map, Task };
+  enum class ManagedKind { String, Array, Map, Task, Closeable };
   struct ManagedLocal {
     std::string name;
     ManagedKind kind;

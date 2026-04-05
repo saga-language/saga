@@ -1402,6 +1402,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
+        track_managed(name, sem);
         return;
       }
     }
@@ -1576,6 +1577,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
                   sem->kind == TypeKind::Union)) {
         alloca->setName(name);
         locals[name] = alloca;
+        track_managed(name, sem);
         continue;
       }
       // Closure fat pointer — alias directly.
@@ -5440,8 +5442,21 @@ void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
     managed_locals.push_back({name, ManagedKind::Map});
   else if (sem->kind == TypeKind::Struct) {
     auto &info = std::get<StructTypeInfo>(sem->detail);
-    if (info.name == "Task")
+    if (info.name == "Task") {
       managed_locals.push_back({name, ManagedKind::Task});
+    } else {
+      // Check if the struct implements the Closer protocol (has Close() Void).
+      for (auto &m : info.methods) {
+        if (m.name == "Close" && m.signature &&
+            m.signature->kind == TypeKind::Func) {
+          auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+          if (fi.params.empty()) {
+            managed_locals.push_back({name, ManagedKind::Closeable});
+            break;
+          }
+        }
+      }
+    }
   }
 }
 
@@ -5481,6 +5496,50 @@ void CodeGen::emit_release_locals() {
       builder.CreateCall(module->getFunction("mc_release_map"), {val});
     else if (ml.kind == ManagedKind::Task)
       builder.CreateCall(module->getFunction("mc_task_drop"), {val});
+    else if (ml.kind == ManagedKind::Closeable) {
+      // Call the struct's Close() method.  The alloca is the self ptr.
+      auto *alloca = it->second;
+
+      // Look up the struct's semantic type to resolve the Close() link name.
+      // We scan the analyzer's node_types to find the type, but it's
+      // simpler to check struct_method_links directly.
+      // Find the struct name from the alloca's allocated type.
+      std::string struct_name;
+      for (auto &[sname, st] : struct_types) {
+        if (st == alloca->getAllocatedType()) {
+          struct_name = sname;
+          break;
+        }
+      }
+      if (!struct_name.empty()) {
+        // Resolve the Close() link name.
+        std::string close_link;
+        auto ml_it = struct_method_links.find(struct_name);
+        if (ml_it != struct_method_links.end()) {
+          for (auto &[lname, mname] : ml_it->second) {
+            if (mname == "Close") {
+              close_link = lname;
+              break;
+            }
+          }
+        }
+        if (close_link.empty())
+          close_link = mangle(struct_name + "__Close");
+
+        auto *close_fn = module->getFunction(close_link);
+        if (!close_fn) {
+          // Forward-declare: fn Close(self *Struct) Void
+          auto *ptr_type = llvm::PointerType::getUnqual(context);
+          auto *fn_type =
+              llvm::FunctionType::get(void_ll_type, {ptr_type}, false);
+          close_fn = llvm::Function::Create(
+              fn_type, llvm::Function::ExternalLinkage,
+              close_link, module.get());
+        }
+        if (close_fn)
+          builder.CreateCall(close_fn, {alloca});
+      }
+    }
   }
 }
 
