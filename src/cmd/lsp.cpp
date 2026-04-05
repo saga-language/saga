@@ -8,6 +8,7 @@
 //
 // Supported capabilities:
 //   textDocument/hover        — type at cursor from node_types table
+//   textDocument/definition   — go-to-definition via node_symbols table
 //   textDocument/completion   — package-scope symbols + module members
 //   textDocument/publishDiagnostics — analyzer errors (server-initiated)
 //
@@ -329,7 +330,8 @@ struct LspServer {
     send_response(id, json::obj({
         {"capabilities", json::obj({
             {"textDocumentSync", 1},            // Full sync
-            {"hoverProvider",    true},
+            {"hoverProvider",      true},
+            {"definitionProvider", true},
             {"completionProvider", json::obj({
                 {"triggerCharacters", json::arr({"."})},
             })},
@@ -420,6 +422,49 @@ struct LspServer {
             {"kind",  "markdown"},
             {"value", hover_text},
         })},
+        {"range", json::obj({
+            {"start", json::obj({{"line", sl}, {"character", sc}})},
+            {"end",   json::obj({{"line", el}, {"character", ec}})},
+        })},
+    }));
+  }
+
+  void handle_definition(const json::Value &id, const json::Value &params) {
+    auto *td  = params.get("textDocument");
+    auto *pos = params.get("position");
+    if (!td || !pos) { send_response(id, json::Value{}); return; }
+
+    std::string uri = td->str("uri");
+    int line = static_cast<int>(pos->integer("line"));
+    int col  = static_cast<int>(pos->integer("character"));
+
+    auto it = documents.find(uri);
+    if (it == documents.end() || !it->second.analyzer) {
+      send_response(id, json::Value{}); return;
+    }
+    auto &doc = it->second;
+    auto &file = *doc.fileset.files[0];
+
+    size_t offset = lsp_to_offset(file, line, col);
+    const mc::Node *node = find_node_at(*doc.analyzer, offset);
+    if (!node) { send_response(id, json::Value{}); return; }
+
+    auto sym_it = doc.analyzer->node_symbols.find(node);
+    if (sym_it == doc.analyzer->node_symbols.end()) {
+      send_response(id, json::Value{}); return;
+    }
+    auto &sym = sym_it->second;
+
+    // decl_span of {0,0} means the symbol is a builtin with no source location.
+    if (sym.decl_span.start == 0 && sym.decl_span.end == 0) {
+      send_response(id, json::Value{}); return;
+    }
+
+    auto [sl, sc] = offset_to_lsp(file, sym.decl_span.start);
+    auto [el, ec] = offset_to_lsp(file, sym.decl_span.end);
+
+    send_response(id, json::obj({
+        {"uri", uri},
         {"range", json::obj({
             {"start", json::obj({{"line", sl}, {"character", sc}})},
             {"end",   json::obj({{"line", el}, {"character", ec}})},
@@ -530,7 +575,8 @@ struct LspServer {
     else if (method == "exit")               { /* handled in run() */ }
     else if (method == "textDocument/didOpen")   handle_did_open(params);
     else if (method == "textDocument/didChange") handle_did_change(params);
-    else if (method == "textDocument/hover")     handle_hover(id, params);
+    else if (method == "textDocument/hover")       handle_hover(id, params);
+    else if (method == "textDocument/definition")   handle_definition(id, params);
     else if (method == "textDocument/completion") handle_completion(id, params);
     else if (!id.is_null()) {
       // Unknown request — return method-not-found error.
