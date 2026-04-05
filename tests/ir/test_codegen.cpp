@@ -3901,6 +3901,94 @@ TEST(CodeGen, LocalFuncsMangledWithPackage) {
   ASSERT_NE(main_fn, nullptr);
 }
 
+// ===========================================================================
+// Automatic closing — structs implementing Closer (Close() Void)
+// ===========================================================================
+
+TEST(CodeGen, AutoCloseCalledAtFuncExit) {
+  auto r = CG::from(
+      "struct Res {\n"
+      "  n Int\n"
+      "  pub fn Close() Void { }\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  r := Res{n: 1}\n"
+      "}\n");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName().contains("Res__Close"))
+          found = true;
+  EXPECT_TRUE(found)
+      << "Struct with Close() should have Close called at function exit";
+}
+
+TEST(CodeGen, AutoCloseCalledBeforeReturn) {
+  auto r = CG::from(
+      "struct Handle {\n"
+      "  x Int\n"
+      "  pub fn Close() Void { }\n"
+      "}\n"
+      "fn f() Int {\n"
+      "  h := Handle{x: 42}\n"
+      "  return 1\n"
+      "}\n");
+  auto *fn = r.func("f");
+  ASSERT_NE(fn, nullptr);
+  bool found = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName().contains("Handle__Close"))
+          found = true;
+  EXPECT_TRUE(found)
+      << "Close should be called before explicit return";
+}
+
+TEST(CodeGen, NonCloseableStructNotClosed) {
+  auto r = CG::from(
+      "struct Plain { n Int }\n"
+      "pub fn Main() Void {\n"
+      "  p := Plain{n: 1}\n"
+      "}\n");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool found = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName().contains("Close"))
+          found = true;
+  EXPECT_FALSE(found)
+      << "Struct without Close() should NOT have auto-close calls";
+}
+
+TEST(CodeGen, AutoCloseMethodDeclared) {
+  auto r = CG::from(
+      "struct Res {\n"
+      "  n Int\n"
+      "  pub fn Close() Void { }\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  r := Res{n: 1}\n"
+      "}\n");
+  // The Close function should exist (either declared or defined) in the module.
+  bool found = false;
+  for (auto &fn : r.mod()) {
+    if (fn.getName().contains("Res__Close")) {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found) << "Close method should be declared in the module";
+}
+
 } // namespace mc
 
 

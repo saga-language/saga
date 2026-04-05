@@ -101,7 +101,7 @@ struct CodeGen {
   std::unordered_map<std::string, llvm::AllocaInst *> locals;
 
   /// Tracks which locals need release at scope exit and their kind.
-  enum class ManagedKind { String, Array, Map, Task };
+  enum class ManagedKind { String, Array, Map, Task, Closeable };
   struct ManagedLocal {
     std::string name;
     ManagedKind kind;
@@ -257,6 +257,13 @@ private:
   llvm::Value *emit_identifier(const IdentifierNode &node);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
+
+  /// Emit a binary operator that was resolved to a struct method call
+  /// (operator overloading). `method` is e.g. "Add", "Compare", "Equals".
+  llvm::Value *emit_struct_binary_op(const BinaryExprNode &node,
+                                     const Node &parent,
+                                     const TypePtr &lhs_sem,
+                                     const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);

@@ -1402,6 +1402,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
+        track_managed(name, sem);
         return;
       }
     }
@@ -1576,6 +1577,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
                   sem->kind == TypeKind::Union)) {
         alloca->setName(name);
         locals[name] = alloca;
+        track_managed(name, sem);
         continue;
       }
       // Closure fat pointer — alias directly.
@@ -2173,11 +2175,184 @@ TypePtr CodeGen::semantic_type(const Node &node) const {
 // Binary expressions
 // ===========================================================================
 
+// ===========================================================================
+// Struct operator overloading
+// ===========================================================================
+
+llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
+                                             const Node &parent,
+                                             const TypePtr &lhs_sem,
+                                             const std::string &method) {
+  auto &info = std::get<StructTypeInfo>(lhs_sem->detail);
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+  // ── Resolve the mangled link name for the method ──────────────────────────
+  std::string link_name;
+  {
+    auto ml_it = struct_method_links.find(info.name);
+    if (ml_it != struct_method_links.end()) {
+      for (auto &[lname, mname] : ml_it->second) {
+        if (mname == method) {
+          link_name = lname;
+          break;
+        }
+      }
+    }
+    // If not found in links (e.g. cross-package), fall back to current-package
+    // mangling so the linker can resolve it.
+    if (link_name.empty())
+      link_name = mangle(info.name + "__" + method);
+  }
+
+  // ── Find or forward-declare the LLVM function ─────────────────────────────
+  auto *callee = module->getFunction(link_name);
+  if (!callee) {
+    // Determine the return LLVM type from the method name.
+    llvm::Type *ret_ll;
+    if (method == "Compare") {
+      ret_ll = i64_type; // Comparison enum
+    } else if (method == "Equals" || method == "Equal") {
+      ret_ll = i1_type; // Bool
+    } else if (method == "Div") {
+      // Div returns T | Error; we return the union struct ptr.
+      auto union_sem =
+          make_union_type({lhs_sem, analyzer.builtins.error_iface});
+      auto *union_st = get_union_llvm_type(union_sem);
+      ret_ll = union_st ? static_cast<llvm::Type *>(union_st) : ptr_type;
+    } else {
+      // Add, Sub, Mul: returns same struct type as self.
+      auto st_it = struct_types.find(info.name);
+      ret_ll = (st_it != struct_types.end())
+                   ? static_cast<llvm::Type *>(st_it->second)
+                   : ptr_type;
+    }
+
+    // Determine the RHS parameter type.
+    auto rhs_sem = semantic_type(*node.rhs);
+    llvm::Type *rhs_ll;
+    if (rhs_sem && rhs_sem->kind == TypeKind::Struct) {
+      auto rhs_st_it = struct_types.find(
+          std::get<StructTypeInfo>(rhs_sem->detail).name);
+      rhs_ll = (rhs_st_it != struct_types.end())
+                   ? static_cast<llvm::Type *>(rhs_st_it->second)
+                   : ptr_type;
+    } else {
+      rhs_ll = rhs_sem ? llvm_type(rhs_sem) : ptr_type;
+    }
+
+    auto *fn_type =
+        llvm::FunctionType::get(ret_ll, {ptr_type, rhs_ll}, false);
+    callee = llvm::Function::Create(
+        fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+  }
+  if (!callee)
+    return nullptr;
+
+  // ── Build self_ptr for the LHS ─────────────────────────────────────────────
+  // Prefer passing the alloca directly so the method gets a mutable ptr.
+  llvm::Value *self_ptr = nullptr;
+  if (auto *id = std::get_if<IdentifierNode>(&node.lhs->data)) {
+    auto local_it = locals.find(std::string(id->name));
+    if (local_it != locals.end()) {
+      auto *alloca = local_it->second;
+      auto st_it = struct_types.find(info.name);
+      if (st_it != struct_types.end() &&
+          alloca->getAllocatedType() == st_it->second) {
+        self_ptr = alloca; // direct struct alloca — ideal
+      }
+    }
+  }
+  if (!self_ptr) {
+    // Emit the expression and spill to a temp alloca.
+    auto *lhs_val = emit_expr(*node.lhs);
+    if (!lhs_val)
+      return nullptr;
+    auto st_it = struct_types.find(info.name);
+    if (st_it != struct_types.end() &&
+        lhs_val->getType() == st_it->second) {
+      auto *func = builder.GetInsertBlock()->getParent();
+      auto *tmp =
+          create_entry_alloca(func, "op.self.tmp", st_it->second);
+      builder.CreateStore(lhs_val, tmp);
+      self_ptr = tmp;
+    } else {
+      self_ptr = lhs_val; // already a pointer
+    }
+  }
+
+  // ── Emit the RHS argument ────────────────────────────────────────────────
+  auto *rhs_val = emit_expr(*node.rhs);
+  if (!rhs_val)
+    return nullptr;
+
+  // If the RHS is a struct value (not a pointer), spill it too.
+  {
+    auto rhs_sem = semantic_type(*node.rhs);
+    if (rhs_sem && rhs_sem->kind == TypeKind::Struct) {
+      auto &rinfo = std::get<StructTypeInfo>(rhs_sem->detail);
+      auto st_it = struct_types.find(rinfo.name);
+      if (st_it != struct_types.end() &&
+          rhs_val->getType() == st_it->second) {
+        auto *func = builder.GetInsertBlock()->getParent();
+        auto *tmp =
+            create_entry_alloca(func, "op.rhs.tmp", st_it->second);
+        builder.CreateStore(rhs_val, tmp);
+        rhs_val = tmp;
+      }
+    }
+  }
+
+  // ── Call the method ─────────────────────────────────────────────────────────
+  auto *result = builder.CreateCall(callee, {self_ptr, rhs_val}, "op.res");
+
+  // ── Post-process result based on the operator and method ────────────────
+  using K = Token::Kind;
+
+  if (method == "Compare") {
+    // Compare returns Comparison enum: Less=0, Equal=1, Greater=2.
+    auto *zero = llvm::ConstantInt::get(i64_type, 0); // Less
+    auto *one  = llvm::ConstantInt::get(i64_type, 1); // Equal
+    auto *two  = llvm::ConstantInt::get(i64_type, 2); // Greater
+    switch (node.op) {
+    case K::LessThan:
+      return builder.CreateICmpEQ(result, zero, "lt");
+    case K::LessThanEqual:
+      // Less or Equal ⇔ result != Greater
+      return builder.CreateICmpNE(result, two, "le");
+    case K::GreaterThan:
+      return builder.CreateICmpEQ(result, two, "gt");
+    case K::GreaterThanEqual:
+      // Greater or Equal ⇔ result != Less
+      return builder.CreateICmpNE(result, zero, "ge");
+    case K::Equal:
+      return builder.CreateICmpEQ(result, one, "eq");
+    case K::NotEqual:
+      return builder.CreateICmpNE(result, one, "ne");
+    default:
+      return result;
+    }
+  }
+
+  // Equals / Equal return Bool (i1). Negate for !=.
+  if ((method == "Equals" || method == "Equal") && node.op == K::NotEqual)
+    return builder.CreateNot(result, "ne");
+
+  // Add, Sub, Mul, Div: result is already the correct type.
+  return result;
+}
+
 llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
                                         const Node &parent) {
   // Check semantic types to detect string operations.
   auto lhs_sem = semantic_type(*node.lhs);
   bool is_string = lhs_sem && lhs_sem->kind == TypeKind::String;
+
+  // ── Struct operator overloading ────────────────────────────────────────────
+  if (lhs_sem && lhs_sem->kind == TypeKind::Struct) {
+    auto it = analyzer.struct_operator_methods.find(&parent);
+    if (it != analyzer.struct_operator_methods.end())
+      return emit_struct_binary_op(node, parent, lhs_sem, it->second);
+  }
 
   // ── Type matching on union types ─────────────────────────────────────
   // Pattern: `union_value == TypeName` → compare the tag byte.
@@ -3184,8 +3359,171 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               builder.CreateBr(exit_bb);
             }
           } else {
-            // Non-Task struct iterable — not yet supported.
-            builder.CreateBr(exit_bb);
+            // ── Iterable struct: for v : iter { ... } via Next() ────────
+            // Requires the struct to implement: Next() T | Error
+            // where T is the element type.
+            auto elem_it = analyzer.iterable_next_elem_type.find(
+                range->iterable.get());
+            if (elem_it == analyzer.iterable_next_elem_type.end()) {
+              // Analyzer reported the error — just skip the loop.
+              builder.CreateBr(exit_bb);
+            } else {
+              auto elem_sem = elem_it->second;
+              auto *elem_ll = llvm_type(elem_sem);
+              auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+              // ── Find the Next() method's mangled link name ───────────
+              std::string next_link_name;
+              {
+                auto ml_it = struct_method_links.find(st_info.name);
+                if (ml_it != struct_method_links.end()) {
+                  for (auto &[lname, mname] : ml_it->second) {
+                    if (mname == "Next") {
+                      next_link_name = lname;
+                      break;
+                    }
+                  }
+                }
+                if (next_link_name.empty())
+                  next_link_name = mangle(st_info.name + "__Next");
+              }
+
+              // ── Build the return union type: T | Error ──────────────
+              // Prefer the type recorded in the method signature so the
+              // union llvm type cache hits consistently.
+              TypePtr next_ret_sem;
+              for (auto &m : st_info.methods) {
+                if (m.name == "Next" && m.signature &&
+                    m.signature->kind == TypeKind::Func) {
+                  auto &fi =
+                      std::get<FuncTypeInfo>(m.signature->detail);
+                  if (!fi.returns.empty())
+                    next_ret_sem = fi.returns[0];
+                  break;
+                }
+              }
+              if (!next_ret_sem)
+                next_ret_sem = make_union_type(
+                    {elem_sem, analyzer.builtins.error_iface});
+
+              auto *union_st = get_union_llvm_type(next_ret_sem);
+
+              // Find the error tag index (the Error interface alternative).
+              int error_tag = 1; // default: tag 1 for T | Error
+              if (next_ret_sem->kind == TypeKind::Union) {
+                auto &ui =
+                    std::get<UnionTypeInfo>(next_ret_sem->detail);
+                for (size_t i = 0; i < ui.alternatives.size(); ++i) {
+                  if (ui.alternatives[i]->kind == TypeKind::Interface)
+                    error_tag = static_cast<int>(i);
+                }
+              }
+
+              // ── Find or forward-declare Next() ───────────────────
+              auto *next_fn = module->getFunction(next_link_name);
+              if (!next_fn && union_st) {
+                auto *ret_ll = static_cast<llvm::Type *>(union_st);
+                auto *fn_type =
+                    llvm::FunctionType::get(ret_ll, {ptr_type}, false);
+                next_fn = llvm::Function::Create(
+                    fn_type, llvm::Function::ExternalLinkage,
+                    next_link_name, module.get());
+              }
+
+              // ── Get self_ptr for the iterable ────────────────────
+              // Prefer the local alloca so Next() can mutate cursor state.
+              llvm::Value *self_ptr = nullptr;
+              if (auto *id = std::get_if<IdentifierNode>(
+                      &range->iterable->data)) {
+                auto local_it =
+                    locals.find(std::string(id->name));
+                if (local_it != locals.end()) {
+                  auto *alloca = local_it->second;
+                  auto st_it2 = struct_types.find(st_info.name);
+                  if (st_it2 != struct_types.end() &&
+                      alloca->getAllocatedType() == st_it2->second)
+                    self_ptr = alloca;
+                }
+              }
+              if (!self_ptr) {
+                // Spill the already-loaded value to a temp alloca.
+                auto st_it2 = struct_types.find(st_info.name);
+                if (st_it2 != struct_types.end() &&
+                    iterable->getType() == st_it2->second) {
+                  auto *tmp = create_entry_alloca(
+                      func, "iter.self", st_it2->second);
+                  builder.CreateStore(iterable, tmp);
+                  self_ptr = tmp;
+                } else {
+                  self_ptr = iterable;
+                }
+              }
+
+              // ── Allocas for loop variable and Next() result ───────
+              llvm::AllocaInst *val_alloca = nullptr;
+              if (!range->vars.empty()) {
+                std::string vname(range->vars[0].name);
+                val_alloca = create_entry_alloca(func, vname, elem_ll);
+                locals[vname] = val_alloca;
+              }
+
+              llvm::AllocaInst *result_alloca = nullptr;
+              if (union_st)
+                result_alloca =
+                    create_entry_alloca(func, "next.result", union_st);
+
+              // ── Loop structure ──────────────────────────────────
+              if (!next_fn || !result_alloca || !self_ptr) {
+                builder.CreateBr(exit_bb);
+              } else {
+                // Branch to condition.
+                builder.CreateBr(cond_bb);
+
+                // Condition: call Next(), check tag.
+                builder.SetInsertPoint(cond_bb);
+                auto *next_val =
+                    builder.CreateCall(next_fn, {self_ptr}, "next.val");
+                builder.CreateStore(next_val, result_alloca);
+
+                auto *tag_gep = builder.CreateStructGEP(
+                    union_st, result_alloca, 0, "next.tag.ptr");
+                auto *tag = builder.CreateLoad(
+                    llvm::Type::getInt8Ty(context), tag_gep, "next.tag");
+                auto *is_err = builder.CreateICmpEQ(
+                    tag,
+                    llvm::ConstantInt::get(
+                        llvm::Type::getInt8Ty(context), error_tag),
+                    "next.is_err");
+                builder.CreateCondBr(is_err, exit_bb, body_bb);
+
+                // Body: extract element and run user code.
+                func->insert(func->end(), body_bb);
+                builder.SetInsertPoint(body_bb);
+                if (current_actor)
+                  builder.CreateCall(
+                      module->getFunction("mc_reduction_tick"),
+                      {current_actor});
+
+                if (val_alloca) {
+                  auto *val = emit_union_extract(
+                      result_alloca, elem_sem, next_ret_sem);
+                  if (val)
+                    builder.CreateStore(val, val_alloca);
+                }
+
+                auto &body_block =
+                    std::get<BlockNode>(node.body->data);
+                emit_block(body_block);
+                if (!builder.GetInsertBlock()->getTerminator())
+                  builder.CreateBr(update_bb);
+
+                // Update: unconditional back-edge to cond (Next() does
+                // the advancing).
+                func->insert(func->end(), update_bb);
+                builder.SetInsertPoint(update_bb);
+                builder.CreateBr(cond_bb);
+              }
+            }
           }
         } else {
           // Non-array/map/task iterable — not yet supported.
@@ -5104,8 +5442,21 @@ void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
     managed_locals.push_back({name, ManagedKind::Map});
   else if (sem->kind == TypeKind::Struct) {
     auto &info = std::get<StructTypeInfo>(sem->detail);
-    if (info.name == "Task")
+    if (info.name == "Task") {
       managed_locals.push_back({name, ManagedKind::Task});
+    } else {
+      // Check if the struct implements the Closer protocol (has Close() Void).
+      for (auto &m : info.methods) {
+        if (m.name == "Close" && m.signature &&
+            m.signature->kind == TypeKind::Func) {
+          auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+          if (fi.params.empty()) {
+            managed_locals.push_back({name, ManagedKind::Closeable});
+            break;
+          }
+        }
+      }
+    }
   }
 }
 
@@ -5145,6 +5496,50 @@ void CodeGen::emit_release_locals() {
       builder.CreateCall(module->getFunction("mc_release_map"), {val});
     else if (ml.kind == ManagedKind::Task)
       builder.CreateCall(module->getFunction("mc_task_drop"), {val});
+    else if (ml.kind == ManagedKind::Closeable) {
+      // Call the struct's Close() method.  The alloca is the self ptr.
+      auto *alloca = it->second;
+
+      // Look up the struct's semantic type to resolve the Close() link name.
+      // We scan the analyzer's node_types to find the type, but it's
+      // simpler to check struct_method_links directly.
+      // Find the struct name from the alloca's allocated type.
+      std::string struct_name;
+      for (auto &[sname, st] : struct_types) {
+        if (st == alloca->getAllocatedType()) {
+          struct_name = sname;
+          break;
+        }
+      }
+      if (!struct_name.empty()) {
+        // Resolve the Close() link name.
+        std::string close_link;
+        auto ml_it = struct_method_links.find(struct_name);
+        if (ml_it != struct_method_links.end()) {
+          for (auto &[lname, mname] : ml_it->second) {
+            if (mname == "Close") {
+              close_link = lname;
+              break;
+            }
+          }
+        }
+        if (close_link.empty())
+          close_link = mangle(struct_name + "__Close");
+
+        auto *close_fn = module->getFunction(close_link);
+        if (!close_fn) {
+          // Forward-declare: fn Close(self *Struct) Void
+          auto *ptr_type = llvm::PointerType::getUnqual(context);
+          auto *fn_type =
+              llvm::FunctionType::get(void_ll_type, {ptr_type}, false);
+          close_fn = llvm::Function::Create(
+              fn_type, llvm::Function::ExternalLinkage,
+              close_link, module.get());
+        }
+        if (close_fn)
+          builder.CreateCall(close_fn, {alloca});
+      }
+    }
   }
 }
 

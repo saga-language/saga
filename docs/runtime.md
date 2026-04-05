@@ -212,3 +212,63 @@ Strings can be sliced but they're immutable.
 ### Compare
 
 An enum with the types: Less, Equal, Greater.
+
+## Automatic and special use
+
+There are special considerations with certain interfaces. While strictly speaking, not an interface at the runtime/intrinsic level, users implementing these interfaces from the standard library gain the same benefits.
+
+_Note: From an implementation point of view, the compiler does not check the interface itself. Rather, it merely looks for the presence of these methods, which happen to meet the interfaces, at the specified time._
+
+### Automatic closing
+
+When a type that implements the Closer interface goes out of scope, the runtime automatically calls `Close()` on it. This allows File types or Database types to safely close these resources to clean up after themselves with their reference count drops to zero. Users can still call Close() manually if they need to control the behaviour directly. Close methods must be idempotent.
+
+```
+pub interface Closer {
+  fn Close() Void
+}
+```
+
+### Iteration
+
+When a type wants to allow being looped over it can implement the [Iterator iterface](#iteration). The type is responsible for handling its own cursor and reset mechanics.
+
+### Operator overloading
+
+Any type, including intrinsic types, can implement a compliment of iterfaces that map to operators.
+
+```
+// Operator: +
+pub interface Adder {
+  fn |T| Add(T) T
+}
+
+// Operator: /
+pub interface Divisable {
+  fn |T| Div(T) T | Error
+}
+
+// Operator: *
+pub interface Multiplier {
+  fn |T| Mul(T) T
+}
+
+// Operator: -
+pub interface Subber {
+  fn |T| Sub(T) T
+}
+
+// Operators: ==, !=
+pub interface Equality {
+  fn |T| Equal(T) Bool
+}
+
+// Operators: <, >, <=, >=
+pub interface Comparable {
+  fn |T| Compare(T) Comparison
+}
+```
+
+Equality and Comparble have overlap. Since the Comparison enumeration has Equals, if a type does not implement `Equals` the compiler will fall back to calling `Compare` instead when performing comparison.
+
+_Note: Intrinsic types are optimized to remove call expressions and replace them with direct IR operations. To maintain speed and efficiency. User types may not always benefit from these enhancements._
