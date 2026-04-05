@@ -1064,4 +1064,159 @@ TEST(TypeCheck, IntrinsicTrapInsideSpawn) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// Operator overloading — struct types implementing operator interfaces
+// ===========================================================================
+
+// Minimal structs used per-test to avoid cascading analysis errors.
+// Each source string is self-contained.
+
+TEST(TypeCheck, StructOperatorAdd) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Add(other V) V { V{n: n + other.n} }\n"
+      "}\n"
+      "fn f(a V, b V) V { a + b }\n");
+  EXPECT_TRUE(r.ok()) << "V + V should resolve to Add method";
+}
+
+TEST(TypeCheck, StructOperatorSub) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Sub(other V) V { V{n: n - other.n} }\n"
+      "}\n"
+      "fn f(a V, b V) V { a - b }\n");
+  EXPECT_TRUE(r.ok()) << "V - V should resolve to Sub method";
+}
+
+TEST(TypeCheck, StructOperatorMul) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Mul(other V) V { V{n: n * other.n} }\n"
+      "}\n"
+      "fn f(a V, b V) V { a * b }\n");
+  EXPECT_TRUE(r.ok()) << "V * V should resolve to Mul method";
+}
+
+TEST(TypeCheck, StructOperatorDiv) {
+  // Div returns V | Error per the Divisable interface.
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Div(other V) V | Error { V{n: n} }\n"
+      "}\n"
+      "fn f(a V, b V) V | Error { a / b }\n");
+  EXPECT_TRUE(r.ok()) << "V / V should resolve to Div method (returns T|Error)";
+}
+
+TEST(TypeCheck, StructOperatorEqual) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Equals(other V) Bool { n == other.n }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a == b }\n");
+  EXPECT_TRUE(r.ok()) << "V == V should resolve to Equals method";
+}
+
+TEST(TypeCheck, StructOperatorNotEqual) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Equals(other V) Bool { n == other.n }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a != b }\n");
+  EXPECT_TRUE(r.ok()) << "V != V should resolve to Equals method (negated)";
+}
+
+TEST(TypeCheck, StructOperatorLessThan) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a < b }\n");
+  EXPECT_TRUE(r.ok()) << "V < V should resolve to Compare method";
+}
+
+TEST(TypeCheck, StructOperatorGreaterThan) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a > b }\n");
+  EXPECT_TRUE(r.ok()) << "V > V should resolve to Compare method";
+}
+
+TEST(TypeCheck, StructOperatorLessThanEqual) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a <= b }\n");
+  EXPECT_TRUE(r.ok()) << "V <= V should resolve to Compare method";
+}
+
+TEST(TypeCheck, StructOperatorGreaterThanEqual) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a >= b }\n");
+  EXPECT_TRUE(r.ok()) << "V >= V should resolve to Compare method";
+}
+
+// Fallback: type has only Compare, no Equals — == and != fall back via Compare.
+TEST(TypeCheck, StructEqualFallsBackToCompare) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a == b }\n");
+  EXPECT_TRUE(r.ok())
+      << "== should fall back to Compare when Equals is absent";
+}
+
+TEST(TypeCheck, StructNotEqualFallsBackToCompare) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
+      "}\n"
+      "fn f(a V, b V) Bool { a != b }\n");
+  EXPECT_TRUE(r.ok())
+      << "!= should fall back to Compare when Equals is absent";
+}
+
+// Error cases: struct with no operator methods.
+TEST(TypeCheck, StructAddMissingMethod) {
+  auto r = TC::from(
+      "struct Bare { n Int }\n"
+      "fn f(a Bare, b Bare) Bare { a + b }\n");
+  EXPECT_TRUE(r.has_err("does not implement Adder"));
+}
+
+TEST(TypeCheck, StructCompareMissingMethod) {
+  auto r = TC::from(
+      "struct Bare { n Int }\n"
+      "fn f(a Bare, b Bare) Bool { a < b }\n");
+  EXPECT_TRUE(r.has_err("does not implement Comparable"));
+}
+
+TEST(TypeCheck, StructEqualityMissingMethod) {
+  auto r = TC::from(
+      "struct Bare { n Int }\n"
+      "fn f(a Bare, b Bare) Bool { a == b }\n");
+  EXPECT_TRUE(r.has_err("does not support equality"));
+}
+
+// struct_operator_methods table must be populated so codegen can use it.
+TEST(TypeCheck, StructOperatorMethodTablePopulated) {
+  auto r = TC::from(
+      "struct V { n Int\n"
+      "  pub fn Add(other V) V { V{n: n + other.n} }\n"
+      "}\n"
+      "fn f(a V, b V) V { a + b }\n");
+  ASSERT_TRUE(r.ok());
+  // Exactly one binary expression was resolved to a struct method.
+  EXPECT_EQ(r.analyzer->struct_operator_methods.size(), 1u);
+  auto it = r.analyzer->struct_operator_methods.begin();
+  EXPECT_EQ(it->second, "Add");
+}
+
 } // namespace mc

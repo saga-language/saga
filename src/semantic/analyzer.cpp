@@ -1691,7 +1691,7 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_struct_literal(n);
           },
           [&](const BinaryExprNode &n) -> TypePtr {
-            return check_binary_expr(n);
+            return check_binary_expr(n, node);
           },
           [&](const UnaryExprNode &n) -> TypePtr {
             return check_unary_expr(n);
@@ -1912,12 +1912,137 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   return effective_type;
 }
 
-TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node) {
+// ===========================================================================
+// Struct operator overloading
+// ===========================================================================
+
+TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
+                                            const Node &parent,
+                                            const TypePtr &lhs,
+                                            const TypePtr &rhs) {
+  auto &info = std::get<StructTypeInfo>(lhs->detail);
+
+  // Helper: returns true if the struct declares a method with the given name.
+  auto has_method = [&](const std::string &name) -> bool {
+    for (auto &m : info.methods)
+      if (m.name == name)
+        return true;
+    return false;
+  };
+
+  // Helper: record the resolved method and return the result type.
+  auto resolve = [&](const std::string &method, TypePtr result) -> TypePtr {
+    struct_operator_methods[&parent] = method;
+    return result;
+  };
+
+  using K = Token::Kind;
+
+  switch (node.op) {
+  // ── Additive ───────────────────────────────────────────────────────────────
+  case K::Add:
+    if (has_method("Add")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Add argument");
+      return resolve("Add", lhs);
+    }
+    error(node.span,
+          std::format("type {} does not implement Adder (no Add method)",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+
+  case K::Sub:
+    if (has_method("Sub")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Sub argument");
+      return resolve("Sub", lhs);
+    }
+    error(node.span,
+          std::format("type {} does not implement Subber (no Sub method)",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+
+  // ── Multiplicative ───────────────────────────────────────────────────────
+  case K::Multiply:
+    if (has_method("Mul")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Mul argument");
+      return resolve("Mul", lhs);
+    }
+    error(node.span,
+          std::format("type {} does not implement Multiplier (no Mul method)",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+
+  case K::Divide:
+    if (has_method("Div")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Div argument");
+      // Divisable returns T | Error (can fail, e.g. divide by zero).
+      return resolve("Div", make_union_type({lhs, builtins.error_iface}));
+    }
+    error(node.span,
+          std::format("type {} does not implement Divisable (no Div method)",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+
+  // ── Equality ──────────────────────────────────────────────────────────────
+  case K::Equal:
+  case K::NotEqual:
+    // Prefer Equals (runtime convention), then Equal (interface name),
+    // then Compare as a fallback (Comparison.Equal == 1).
+    if (has_method("Equals")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Equals argument");
+      return resolve("Equals", builtins.bool_type);
+    }
+    if (has_method("Equal")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Equal argument");
+      return resolve("Equal", builtins.bool_type);
+    }
+    if (has_method("Compare")) {
+      // Fall back: Compare() == Comparison.Equal (1) → Bool.
+      expect_assignable(node.rhs->span, lhs, rhs, "Compare argument");
+      return resolve("Compare", builtins.bool_type);
+    }
+    error(node.span,
+          std::format("type {} does not support equality (no Equals, Equal, "
+                      "or Compare method)",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+
+  // ── Ordering ──────────────────────────────────────────────────────────────
+  case K::LessThan:
+  case K::LessThanEqual:
+  case K::GreaterThan:
+  case K::GreaterThanEqual:
+    if (has_method("Compare")) {
+      expect_assignable(node.rhs->span, lhs, rhs, "Compare argument");
+      return resolve("Compare", builtins.bool_type);
+    }
+    error(node.span,
+          std::format("type {} does not implement Comparable (no Compare "
+                      "method)",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+
+  default:
+    error(node.span,
+          std::format("operator not supported for type {}",
+                      type_to_string(lhs)));
+    return builtins.error_type;
+  }
+}
+
+TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
+                                    const Node &parent) {
   auto lhs = check_expr(*node.lhs);
   auto rhs = check_expr(*node.rhs);
 
   if (is_error_type(lhs) || is_error_type(rhs))
     return builtins.error_type;
+
+  // ── Struct operator overloading ──────────────────────────────────────────
+  // Dispatch to method-based overloading before the built-in numeric/string
+  // paths, so user types can override operators on structs.
+  if (lhs->kind == TypeKind::Struct) {
+    return check_struct_binary_expr(node, parent, lhs, rhs);
+  }
 
   using K = Token::Kind;
   switch (node.op) {

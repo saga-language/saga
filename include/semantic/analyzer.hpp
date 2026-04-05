@@ -142,6 +142,14 @@ struct Analyzer {
   std::unordered_map<const Node *, std::vector<SpawnCaptureInfo>>
       spawn_captures;
 
+  // ── Operator overloading ─────────────────────────────────────────────
+
+  /// Maps a BinaryExprNode (by its containing Node*) to the method name that
+  /// should be called to implement the operator (e.g. "Add", "Compare").
+  /// Only populated for struct-typed operands; primitive operators are still
+  /// lowered directly to IR.
+  std::unordered_map<const Node *, std::string> struct_operator_methods;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
 
@@ -336,7 +344,7 @@ private:
   TypePtr check_array_literal(const ArrayLiteralNode &node);
   TypePtr check_map_literal(const MapLiteralNode &node);
   TypePtr check_struct_literal(const StructLiteralNode &node);
-  TypePtr check_binary_expr(const BinaryExprNode &node);
+  TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);
   TypePtr check_unary_expr(const UnaryExprNode &node);
   TypePtr check_call_expr(const CallExprNode &node);
   TypePtr check_index_expr(const IndexExprNode &node);
@@ -365,6 +373,11 @@ private:
 
   // Phase 7: Top-level declaration checking.
   void check_const_decl(const ConstDeclNode &node);
+
+  // Struct operator overloading helper.
+  TypePtr check_struct_binary_expr(const BinaryExprNode &node,
+                                    const Node &parent, const TypePtr &lhs,
+                                    const TypePtr &rhs);
   void check_enum_decl(const EnumDeclNode &node);
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
