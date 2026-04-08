@@ -198,8 +198,8 @@ static int build_graph_mode(const char *prog,
       fs::is_regular_file(std_lib_path) ? " " + std_lib_path : "";
 
   std::string link_cmd =
-      std::format("cc {} {}{} {} -o {} -no-pie", root_obj,
-                  std_lib_arg, dep_objs, runtime_lib, binary_path);
+      std::format("cc {} -Wl,--start-group{} {} {} -Wl,--end-group -o {} -no-pie",
+                  root_obj, std_lib_arg, dep_objs, runtime_lib, binary_path);
   if (verbose)
     std::cerr << std::format("  link: {}\n", link_cmd);
 
@@ -396,7 +396,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
       dep_objects += " " + dep_obj;
   }
 
-  std::string link_cmd = std::format("cc {} {}{} {} -o {} -no-pie",
+  std::string link_cmd = std::format("cc {} -Wl,--start-group{} {} {} -Wl,--end-group -o {} -no-pie",
                                      obj_path, std_lib_arg, dep_objects,
                                      runtime_lib, binary_path);
   int status = std::system(link_cmd.c_str());

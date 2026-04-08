@@ -117,6 +117,7 @@ struct StructTypeInfo {
 struct EnumVariant {
   std::string name;
   std::vector<FieldInfo> fields;               // associated data
+  int64_t index = -1;                          // discriminant value (-1 = auto)
 };
 
 struct EnumTypeInfo {

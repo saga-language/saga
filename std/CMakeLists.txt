@@ -4,10 +4,11 @@ set(SAGA_STD_LIBS_DIR "${CMAKE_BINARY_DIR}/lib")
 set(SAGA_STD_SGI_DIR_LOCAL "${CMAKE_BINARY_DIR}/lib/std")
 
 # Each stdlib package compiles to an object + interface file.
-# Build order matters: sys has no deps, os needs sys, io needs os.
-set(SAGA_STD_PACKAGES sys os io)
+# Build order matters: unsafe and sys have no deps, os needs sys+unsafe, io needs os.
+set(SAGA_STD_PACKAGES unsafe sys os io)
+set(unsafe_SGI_DEPS "")
 set(sys_SGI_DEPS "")
-set(os_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/sys.sgi")
+set(os_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/sys.sgi" "${SAGA_STD_SGI_DIR_LOCAL}/unsafe.sgi")
 set(io_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/os.sgi")
 
 foreach(pkg ${SAGA_STD_PACKAGES})
