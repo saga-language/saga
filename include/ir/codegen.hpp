@@ -176,6 +176,9 @@ private:
   void init_types();
   void declare_runtime();
 
+  /// True if a semantic type represents string keys (for mc_map).
+  static bool is_string_key_type(const TypePtr &t);
+
   /// Get the LLVM type corresponding to a semantic TypePtr.
   llvm::Type *llvm_type(const TypePtr &t);
 
