@@ -254,6 +254,13 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
         {"Equals", make_func_type({t.bool_type}, {t.bool_type}), true});
     break;
 
+  case TypeKind::Enum:
+    methods.push_back(
+        {"Int", make_func_type({}, {t.int_type}), true});
+    methods.push_back(
+        {"String", make_func_type({}, {t.string_type}), true});
+    break;
+
   case TypeKind::Range:
     methods.push_back(
         {"Array", make_func_type({}, {}), true}); // returns [T], generic
@@ -343,6 +350,21 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   global_scope->declare(Symbol::builtin(
       "intrinsic_trap", SymbolKind::Function,
       make_func_type({types.string_type}, {types.void_type})));
+
+  // intrinsic_syscall(num: Int, args: [Int]) -> Int | Error
+  // Raw syscall invocation used by std/sys.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_syscall", SymbolKind::Function,
+      make_func_type({types.int_type, make_array_type(types.int_type)},
+                     {make_union_type({types.int_type, types.error_iface})})));
+
+  // intrinsic_ptr(value: String | [Byte]) -> Int
+  // Returns the raw memory address of the backing buffer.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_ptr", SymbolKind::Function,
+      make_func_type(
+          {make_union_type({types.string_type, make_array_type(types.byte_type)})},
+          {types.int_type})));
 }
 
 } // namespace mc

@@ -1,1 +1,3 @@
+pub const Stdin File = File{ fd: 0 }
 pub const Stdout File = File{ fd: 1 }
+pub const Stderr File = File{ fd: 2 }

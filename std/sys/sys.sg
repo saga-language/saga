@@ -1,3 +1,35 @@
-pub fn Write(fd Int, s String) Void {
-  intrinsic_print(s) // temporary
+// Package sys provides low-level syscall access.
+//
+// Importing this package requires the --unsafe compiler flag. For safe
+// file and process operations, use "std/os" instead.
+//
+// Usage:
+//   import "std/sys"
+//   import "std/unsafe"
+//
+//   bytes := sys.Call(sys.Number.Write, fd, unsafe.Ptr(buf), buf.Size()) or |err| {
+//     log.Error(err) // err is sys.Errno with a human-readable message
+//     0
+//   }
+//
+// The Number enum is platform-specific. Attempting to use a syscall that
+// does not exist on the current platform is a compile-time error.
+
+// Errno represents a syscall error. The kernel returns a negative value
+// which is converted to its positive errno equivalent with a human-readable
+// message. The errnoMessage() lookup is defined per-platform.
+pub struct Errno {
+  code Int
+
+  pub fn Code() Int { code }
+  pub fn Message() String { "({code}) {errnoMessage(code)}" }
+}
+
+// Call invokes a raw syscall identified by num with up to 6 integer arguments.
+// Returns the non-negative result on success, or an Errno on failure.
+//
+// The caller is responsible for passing the correct number and types of
+// arguments. Buffer pointers must be obtained via unsafe.Ptr().
+pub fn Call(num Number, args ...Int) Int | Error {
+  intrinsic_syscall(num.Int(), args)
 }

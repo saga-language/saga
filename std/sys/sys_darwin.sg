@@ -1,0 +1,235 @@
+// Syscall numbers for macOS (Darwin) x86_64 / arm64.
+//
+// Darwin BSD syscalls use a 0x2000000 class prefix at the instruction level.
+// The values here are the base numbers; the compiler applies the prefix.
+//
+// Reference: xnu/bsd/kern/syscalls.master
+
+pub enum Number {
+  // File I/O
+  Read            {index: 3}
+  Write           {index: 4}
+  Open            {index: 5}
+  Close           {index: 6}
+  Lseek           {index: 199}
+  Pread64         {index: 153}
+  Pwrite64        {index: 154}
+  Readv           {index: 120}
+  Writev          {index: 121}
+
+  // File metadata
+  Stat            {index: 338}   // stat64
+  Fstat           {index: 339}   // fstat64
+  Lstat           {index: 340}   // lstat64
+  Access          {index: 33}
+  Chmod           {index: 15}
+  Fchmod          {index: 124}
+  Chown           {index: 16}
+  Fchown          {index: 123}
+  Lchown          {index: 364}
+  Umask           {index: 60}
+
+  // File system
+  Link            {index: 9}
+  Unlink          {index: 10}
+  Symlink         {index: 57}
+  Readlink        {index: 58}
+  Rename          {index: 128}
+  Mkdir           {index: 136}
+  Rmdir           {index: 137}
+  Truncate        {index: 200}
+  Ftruncate       {index: 201}
+
+  // Directory-relative operations (*at family)
+  Openat          {index: 463}
+  Mkdirat         {index: 475}
+  Fchownat        {index: 468}
+  Fstatat         {index: 469}   // fstatat64
+  Unlinkat        {index: 472}
+  Renameat        {index: 465}
+  Linkat          {index: 471}
+  Symlinkat       {index: 474}
+  Readlinkat      {index: 473}
+  Fchmodat        {index: 467}
+
+  // Directory
+  Getcwd          {index: 304}
+  Chdir           {index: 12}
+  Fchdir          {index: 13}
+  Getdents        {index: 344}   // getdirentries64
+
+  // File descriptor
+  Dup             {index: 41}
+  Dup2            {index: 90}
+  Pipe            {index: 42}
+  Fcntl           {index: 92}
+  Flock           {index: 131}
+  Fsync           {index: 95}
+  Fdatasync       {index: 187}
+  Ioctl           {index: 54}
+
+  // Memory
+  Mmap            {index: 197}
+  Mprotect        {index: 74}
+  Munmap          {index: 73}
+  Madvise         {index: 75}
+
+  // Process
+  Fork            {index: 2}
+  Vfork           {index: 66}
+  Execve          {index: 59}
+  Exit            {index: 1}
+  Getpid          {index: 20}
+  Getppid         {index: 39}
+  Getuid          {index: 24}
+  Geteuid         {index: 25}
+  Getgid          {index: 47}
+  Getegid         {index: 43}
+  Wait4           {index: 7}
+
+  // Signals
+  Kill            {index: 37}
+  Sigaction       {index: 46}
+  Sigprocmask     {index: 48}
+
+  // Network
+  Socket          {index: 97}
+  Connect         {index: 98}
+  Accept          {index: 30}
+  Bind            {index: 104}
+  Listen          {index: 106}
+  Sendto          {index: 133}
+  Recvfrom        {index: 29}
+  Sendmsg         {index: 28}
+  Recvmsg         {index: 27}
+  Shutdown        {index: 134}
+  Setsockopt      {index: 105}
+  Getsockopt      {index: 118}
+  Getsockname     {index: 32}
+  Getpeername     {index: 31}
+
+  // I/O multiplexing (Darwin uses kqueue, not epoll)
+  Poll            {index: 230}
+  Select          {index: 93}
+  Kqueue          {index: 362}
+  Kevent          {index: 363}
+  Kevent64        {index: 369}
+
+  // Time
+  Gettimeofday    {index: 116}
+
+  // Misc
+  Getentropy      {index: 500}
+}
+
+// Darwin errno messages (sys/errno.h)
+fn errnoMessage(code Int) String {
+  switch code {
+    case 1:   "Operation not permitted"
+    case 2:   "No such file or directory"
+    case 3:   "No such process"
+    case 4:   "Interrupted system call"
+    case 5:   "Input/output error"
+    case 6:   "Device not configured"
+    case 7:   "Argument list too long"
+    case 8:   "Exec format error"
+    case 9:   "Bad file descriptor"
+    case 10:  "No child processes"
+    case 11:  "Resource deadlock avoided"
+    case 12:  "Cannot allocate memory"
+    case 13:  "Permission denied"
+    case 14:  "Bad address"
+    case 15:  "Block device required"
+    case 16:  "Resource busy"
+    case 17:  "File exists"
+    case 18:  "Cross-device link"
+    case 19:  "Operation not supported by device"
+    case 20:  "Not a directory"
+    case 21:  "Is a directory"
+    case 22:  "Invalid argument"
+    case 23:  "Too many open files in system"
+    case 24:  "Too many open files"
+    case 25:  "Inappropriate ioctl for device"
+    case 26:  "Text file busy"
+    case 27:  "File too large"
+    case 28:  "No space left on device"
+    case 29:  "Illegal seek"
+    case 30:  "Read-only file system"
+    case 31:  "Too many links"
+    case 32:  "Broken pipe"
+    case 33:  "Numerical argument out of domain"
+    case 34:  "Result too large"
+    case 35:  "Resource temporarily unavailable"
+    case 36:  "Operation now in progress"
+    case 37:  "Operation already in progress"
+    case 38:  "Socket operation on non-socket"
+    case 39:  "Destination address required"
+    case 40:  "Message too long"
+    case 41:  "Protocol wrong type for socket"
+    case 42:  "Protocol not available"
+    case 43:  "Protocol not supported"
+    case 44:  "Socket type not supported"
+    case 45:  "Operation not supported"
+    case 46:  "Protocol family not supported"
+    case 47:  "Address family not supported by protocol family"
+    case 48:  "Address already in use"
+    case 49:  "Can't assign requested address"
+    case 50:  "Network is down"
+    case 51:  "Network is unreachable"
+    case 52:  "Network dropped connection on reset"
+    case 53:  "Software caused connection abort"
+    case 54:  "Connection reset by peer"
+    case 55:  "No buffer space available"
+    case 56:  "Socket is already connected"
+    case 57:  "Socket is not connected"
+    case 58:  "Can't send after socket shutdown"
+    case 59:  "Too many references: can't splice"
+    case 60:  "Operation timed out"
+    case 61:  "Connection refused"
+    case 62:  "Too many levels of symbolic links"
+    case 63:  "File name too long"
+    case 64:  "Host is down"
+    case 65:  "No route to host"
+    case 66:  "Directory not empty"
+    case 67:  "Too many processes"
+    case 68:  "Too many users"
+    case 69:  "Disc quota exceeded"
+    case 70:  "Stale NFS file handle"
+    case 71:  "Too many levels of remote in path"
+    case 72:  "RPC struct is bad"
+    case 73:  "RPC version wrong"
+    case 74:  "RPC program not available"
+    case 75:  "Program version wrong"
+    case 76:  "Bad procedure for program"
+    case 77:  "No locks available"
+    case 78:  "Function not implemented"
+    case 79:  "Inappropriate file type or format"
+    case 80:  "Authentication error"
+    case 81:  "Need authenticator"
+    case 82:  "Device power is off"
+    case 83:  "Device error"
+    case 84:  "Value too large to be stored in data type"
+    case 85:  "Bad executable"
+    case 86:  "Bad CPU type in executable"
+    case 87:  "Shared library version mismatch"
+    case 88:  "Malformed Mach-o file"
+    case 89:  "Operation canceled"
+    case 90:  "Identifier removed"
+    case 91:  "No message of desired type"
+    case 92:  "Illegal byte sequence"
+    case 93:  "Attribute not found"
+    case 94:  "Bad message"
+    case 95:  "Multihop attempted"
+    case 96:  "No message available on STREAM"
+    case 97:  "STREAM ioctl timeout"
+    case 98:  "No STREAM resources"
+    case 99:  "Not a STREAM"
+    case 100: "Protocol error"
+    case 101: "Operation not supported on socket"
+    case 102: "No such policy registered"
+    case 103: "State not recoverable"
+    case 104: "Previous owner died"
+    case 105: "Interface output queue is full"
+    else:     "Unknown error"
+  }
+}

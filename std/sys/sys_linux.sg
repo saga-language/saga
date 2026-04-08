@@ -1,0 +1,269 @@
+// Syscall numbers for Linux x86_64.
+// Reference: arch/x86/entry/syscalls/syscall_64.tbl
+
+pub enum Number {
+  // File I/O
+  Read            {index: 0}
+  Write           {index: 1}
+  Open            {index: 2}
+  Close           {index: 3}
+  Lseek           {index: 8}
+  Pread64         {index: 17}
+  Pwrite64        {index: 18}
+  Readv           {index: 19}
+  Writev          {index: 20}
+
+  // File metadata
+  Stat            {index: 4}
+  Fstat           {index: 5}
+  Lstat           {index: 6}
+  Access          {index: 21}
+  Chmod           {index: 90}
+  Fchmod          {index: 91}
+  Chown           {index: 92}
+  Fchown          {index: 93}
+  Lchown          {index: 94}
+  Umask           {index: 95}
+
+  // File system
+  Link            {index: 86}
+  Unlink          {index: 87}
+  Symlink         {index: 88}
+  Readlink        {index: 89}
+  Rename          {index: 82}
+  Mkdir           {index: 83}
+  Rmdir           {index: 84}
+  Truncate        {index: 76}
+  Ftruncate       {index: 77}
+
+  // Directory-relative operations (*at family)
+  Openat          {index: 257}
+  Mkdirat         {index: 258}
+  Fchownat        {index: 260}
+  Fstatat         {index: 262}
+  Unlinkat        {index: 263}
+  Renameat        {index: 264}
+  Linkat          {index: 265}
+  Symlinkat       {index: 266}
+  Readlinkat      {index: 267}
+  Fchmodat        {index: 268}
+
+  // Directory
+  Getcwd          {index: 79}
+  Chdir           {index: 80}
+  Fchdir          {index: 81}
+  Getdents        {index: 217}
+
+  // File descriptor
+  Dup             {index: 32}
+  Dup2            {index: 33}
+  Dup3            {index: 292}
+  Pipe            {index: 22}
+  Pipe2           {index: 293}
+  Fcntl           {index: 72}
+  Flock           {index: 73}
+  Fsync           {index: 74}
+  Fdatasync       {index: 75}
+  Ioctl           {index: 16}
+
+  // Memory
+  Mmap            {index: 9}
+  Mprotect        {index: 10}
+  Munmap          {index: 11}
+  Brk             {index: 12}
+  Mremap          {index: 25}
+  Madvise         {index: 28}
+
+  // Process
+  Fork            {index: 57}
+  Vfork           {index: 58}
+  Clone           {index: 56}
+  Execve          {index: 59}
+  Exit            {index: 60}
+  Exit_group      {index: 231}
+  Getpid          {index: 39}
+  Getppid         {index: 110}
+  Getuid          {index: 102}
+  Geteuid         {index: 107}
+  Getgid          {index: 104}
+  Getegid         {index: 108}
+  Wait4           {index: 61}
+
+  // Signals
+  Kill            {index: 62}
+  Sigaction       {index: 13}
+  Sigprocmask     {index: 14}
+  Sigreturn       {index: 15}
+
+  // Network
+  Socket          {index: 41}
+  Connect         {index: 42}
+  Accept          {index: 43}
+  Accept4         {index: 288}
+  Bind            {index: 49}
+  Listen          {index: 50}
+  Sendto          {index: 44}
+  Recvfrom        {index: 45}
+  Sendmsg         {index: 46}
+  Recvmsg         {index: 47}
+  Shutdown        {index: 48}
+  Setsockopt      {index: 54}
+  Getsockopt      {index: 55}
+  Getsockname     {index: 51}
+  Getpeername     {index: 52}
+
+  // I/O multiplexing
+  Poll            {index: 7}
+  Select          {index: 23}
+  Epoll_create1   {index: 291}
+  Epoll_ctl       {index: 233}
+  Epoll_wait      {index: 232}
+
+  // Time
+  Clock_gettime   {index: 228}
+  Clock_nanosleep {index: 230}
+  Gettimeofday    {index: 96}
+  Nanosleep       {index: 35}
+
+  // Misc
+  Getrandom       {index: 318}
+  Prlimit64       {index: 302}
+}
+
+// Linux errno messages (errno-base.h, errno.h)
+fn errnoMessage(code Int) String {
+  switch code {
+    case 1:   "Operation not permitted"
+    case 2:   "No such file or directory"
+    case 3:   "No such process"
+    case 4:   "Interrupted system call"
+    case 5:   "Input/output error"
+    case 6:   "No such device or address"
+    case 7:   "Argument list too long"
+    case 8:   "Exec format error"
+    case 9:   "Bad file descriptor"
+    case 10:  "No child processes"
+    case 11:  "Resource temporarily unavailable"
+    case 12:  "Cannot allocate memory"
+    case 13:  "Permission denied"
+    case 14:  "Bad address"
+    case 15:  "Block device required"
+    case 16:  "Device or resource busy"
+    case 17:  "File exists"
+    case 18:  "Invalid cross-device link"
+    case 19:  "No such device"
+    case 20:  "Not a directory"
+    case 21:  "Is a directory"
+    case 22:  "Invalid argument"
+    case 23:  "Too many open files in system"
+    case 24:  "Too many open files"
+    case 25:  "Inappropriate ioctl for device"
+    case 26:  "Text file busy"
+    case 27:  "File too large"
+    case 28:  "No space left on device"
+    case 29:  "Illegal seek"
+    case 30:  "Read-only file system"
+    case 31:  "Too many links"
+    case 32:  "Broken pipe"
+    case 33:  "Numerical argument out of domain"
+    case 34:  "Numerical result out of range"
+    case 35:  "Resource deadlock avoided"
+    case 36:  "File name too long"
+    case 37:  "No locks available"
+    case 38:  "Function not implemented"
+    case 39:  "Directory not empty"
+    case 40:  "Too many levels of symbolic links"
+    case 42:  "No message of desired type"
+    case 43:  "Identifier removed"
+    case 44:  "Channel number out of range"
+    case 45:  "Level 2 not synchronized"
+    case 46:  "Level 3 halted"
+    case 47:  "Level 3 reset"
+    case 48:  "Link number out of range"
+    case 49:  "Protocol driver not attached"
+    case 50:  "No CSI structure available"
+    case 51:  "Level 2 halted"
+    case 52:  "Invalid exchange"
+    case 53:  "Invalid request descriptor"
+    case 54:  "Exchange full"
+    case 55:  "No anode"
+    case 56:  "Invalid request code"
+    case 57:  "Invalid slot"
+    case 59:  "Bad font file format"
+    case 60:  "Device not a stream"
+    case 61:  "No data available"
+    case 62:  "Timer expired"
+    case 63:  "Out of streams resources"
+    case 64:  "Machine is not on the network"
+    case 65:  "Package not installed"
+    case 66:  "Object is remote"
+    case 67:  "Link has been severed"
+    case 68:  "Advertise error"
+    case 69:  "Srmount error"
+    case 70:  "Communication error on send"
+    case 71:  "Protocol error"
+    case 72:  "Multihop attempted"
+    case 73:  "RFS specific error"
+    case 74:  "Bad message"
+    case 75:  "Value too large for defined data type"
+    case 76:  "Name not unique on network"
+    case 77:  "File descriptor in bad state"
+    case 78:  "Remote address changed"
+    case 79:  "Can not access a needed shared library"
+    case 80:  "Accessing a corrupted shared library"
+    case 81:  ".lib section in a.out corrupted"
+    case 82:  "Attempting to link in too many shared libraries"
+    case 83:  "Cannot exec a shared library directly"
+    case 84:  "Invalid or incomplete multibyte or wide character"
+    case 85:  "Interrupted system call should be restarted"
+    case 86:  "Streams pipe error"
+    case 87:  "Too many users"
+    case 88:  "Socket operation on non-socket"
+    case 89:  "Destination address required"
+    case 90:  "Message too long"
+    case 91:  "Protocol wrong type for socket"
+    case 92:  "Protocol not available"
+    case 93:  "Protocol not supported"
+    case 94:  "Socket type not supported"
+    case 95:  "Operation not supported"
+    case 96:  "Protocol family not supported"
+    case 97:  "Address family not supported by protocol"
+    case 98:  "Address already in use"
+    case 99:  "Cannot assign requested address"
+    case 100: "Network is down"
+    case 101: "Network is unreachable"
+    case 102: "Network dropped connection on reset"
+    case 103: "Software caused connection abort"
+    case 104: "Connection reset by peer"
+    case 105: "No buffer space available"
+    case 106: "Transport endpoint is already connected"
+    case 107: "Transport endpoint is not connected"
+    case 108: "Cannot send after transport endpoint shutdown"
+    case 109: "Too many references: cannot splice"
+    case 110: "Connection timed out"
+    case 111: "Connection refused"
+    case 112: "Host is down"
+    case 113: "No route to host"
+    case 114: "Operation already in progress"
+    case 115: "Operation now in progress"
+    case 116: "Stale file handle"
+    case 117: "Structure needs cleaning"
+    case 118: "Not a XENIX named type file"
+    case 119: "No XENIX semaphores available"
+    case 120: "Is a named type file"
+    case 121: "Remote I/O error"
+    case 122: "Disk quota exceeded"
+    case 123: "No medium found"
+    case 124: "Wrong medium type"
+    case 125: "Operation canceled"
+    case 126: "Required key not available"
+    case 127: "Key has expired"
+    case 128: "Key has been revoked"
+    case 129: "Key was rejected by service"
+    case 130: "Owner died"
+    case 131: "State not recoverable"
+    case 132: "Operation not possible due to RF-kill"
+    case 133: "Memory page has hardware error"
+    else:     "Unknown error"
+  }
+}

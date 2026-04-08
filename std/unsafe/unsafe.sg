@@ -1,0 +1,24 @@
+// Package unsafe provides operations that bypass the language's safety
+// guarantees. Importing this package requires the --unsafe compiler flag.
+//
+// This package is intended for authors of low-level libraries (e.g. std/os,
+// std/sys) that must interact with raw memory. End users should not need
+// this package. The standard library uses it internally but exposes safe
+// interfaces.
+//
+// Usage:
+//   import "std/unsafe"
+//
+//   addr := unsafe.Ptr(myString)   // raw address of the backing byte buffer
+//   addr := unsafe.Ptr(myBytes)    // raw address of the backing byte array
+
+// Ptr returns the memory address of the backing data for a String or [Byte]
+// as a plain integer. This is the address of the raw byte buffer, not the
+// fat pointer metadata.
+//
+// The returned address is only valid for the lifetime of the value. If the
+// value is garbage collected or its backing storage is reallocated (e.g. by
+// appending to a [Byte]), the address becomes invalid.
+pub fn Ptr(value String | [Byte]) Int {
+  intrinsic_ptr(value)
+}

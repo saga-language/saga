@@ -145,9 +145,19 @@ static void write_func_export(std::ostringstream &os, const std::string &name,
   for (size_t i = 0; i < info.params.size(); ++i) {
     if (i > 0)
       os << ", ";
-    if (info.is_variadic && i == info.params.size() - 1)
+    if (info.is_variadic && i == info.params.size() - 1) {
       os << "...";
-    os << type_to_sgi(info.params[i]);
+      // The variadic param is already array-wrapped internally;
+      // unwrap it for the .sgi since "..." implies the array.
+      if (info.params[i]->kind == TypeKind::Array) {
+        auto &arr = std::get<ArrayTypeInfo>(info.params[i]->detail);
+        os << type_to_sgi(arr.element);
+      } else {
+        os << type_to_sgi(info.params[i]);
+      }
+    } else {
+      os << type_to_sgi(info.params[i]);
+    }
   }
   os << ")";
   if (!info.returns.empty()) {
@@ -188,11 +198,13 @@ static void write_struct_export(std::ostringstream &os,
 
   os << " {\n";
 
-  // Public fields
+  // Fields (both public and private, for layout compatibility)
   for (auto &field : info.fields) {
-    if (field.is_public) {
-      os << "  pub " << field.name << " " << type_to_sgi(field.type) << "\n";
-    }
+    if (field.is_public)
+      os << "  pub ";
+    else
+      os << "  ";
+    os << field.name << " " << type_to_sgi(field.type) << "\n";
   }
 
   // Embeds
@@ -245,15 +257,26 @@ static void write_enum_export(std::ostringstream &os, const std::string &name,
     if (i > 0)
       os << ";";
     os << " " << info.variants[i].name;
-    if (!info.variants[i].fields.empty()) {
+    // Emit variant data: index and/or associated fields.
+    bool has_data_fields = false;
+    for (auto &f : info.variants[i].fields) {
+      if (f.name != "index") { has_data_fields = true; break; }
+    }
+    if (has_data_fields || info.variants[i].index >= 0) {
       os << "(";
-      for (size_t j = 0; j < info.variants[i].fields.size(); ++j) {
-        if (j > 0)
-          os << ", ";
-        auto &f = info.variants[i].fields[j];
-        if (!f.name.empty())
-          os << f.name << " ";
+      bool first = true;
+      // Emit explicit index if present.
+      if (info.variants[i].index >= 0) {
+        os << "#" << info.variants[i].index;
+        first = false;
+      }
+      // Emit associated data fields (skip "index" metadata fields).
+      for (auto &f : info.variants[i].fields) {
+        if (f.name == "index") continue;
+        if (!first) os << ", ";
+        if (!f.name.empty()) os << f.name << " ";
         os << type_to_sgi(f.type);
+        first = false;
       }
       os << ")";
     }
@@ -725,13 +748,18 @@ struct SgiParser {
           pos += 3;
           is_variadic = true;
         }
-        auto pt = parse_single_type();
-        if (pt)
+        auto pt = parse_type();
+        if (pt) {
+          // Variadic params are stored array-wrapped internally.
+          if (is_variadic && pt->kind != TypeKind::Array)
+            pt = make_array_type(std::move(pt));
           params.push_back(pt);
+        }
         skip_whitespace();
-        if (at_end() || content[pos] != ',')
+        if (at_end() || content[pos] == ')')
           break;
-        ++pos; // skip comma
+        if (content[pos] == ',')
+          ++pos; // skip comma
       }
     }
 
@@ -850,8 +878,19 @@ struct SgiParser {
         skip_line();
         if (etype)
           embeds.push_back(etype);
+      } else if (kw == "fn") {
+        // Private method — skip
+        read_word(); // method name
+        skip_whitespace();
+        parse_func_type();
+        skip_line();
+      } else if (!kw.empty() && kw != "}") {
+        // Private field: "<name> <type>"
+        std::string fname = kw;
+        auto ftype = parse_type();
+        skip_line();
+        fields.push_back({fname, ftype, false});
       } else {
-        // Skip unknown line
         skip_line();
       }
     }
@@ -892,25 +931,37 @@ struct SgiParser {
         break;
       }
 
+      int64_t variant_index = -1;
       std::vector<FieldInfo> vfields;
       skip_whitespace();
       if (!at_end() && content[pos] == '(') {
         ++pos;
+        skip_whitespace();
+        // Check for #N index prefix.
+        if (!at_end() && content[pos] == '#') {
+          ++pos;
+          size_t start = pos;
+          if (!at_end() && content[pos] == '-') ++pos;
+          while (!at_end() && std::isdigit(content[pos])) ++pos;
+          variant_index = std::stoll(content.substr(start, pos - start));
+          skip_whitespace();
+          // Skip comma after index if fields follow.
+          if (!at_end() && content[pos] == ',')
+            ++pos;
+        }
+        // Parse remaining field declarations.
         while (true) {
           skip_whitespace();
           if (at_end() || content[pos] == ')')
             break;
-          // Try name + type or just type
           size_t saved = pos;
           std::string maybe_name = read_word();
           skip_whitespace();
           if (!at_end() && content[pos] != ')' && content[pos] != ',' &&
               !maybe_name.empty() && std::isupper(maybe_name[0]) == false) {
-            // It's "name Type"
             auto ft = parse_type();
             vfields.push_back({maybe_name, ft, false});
           } else {
-            // Backtrack — it was just a type name
             pos = saved;
             auto ft = parse_type();
             vfields.push_back({"", ft, false});
@@ -924,7 +975,7 @@ struct SgiParser {
           ++pos;
       }
 
-      variants.push_back({vname, std::move(vfields)});
+      variants.push_back({vname, std::move(vfields), variant_index});
     }
 
     auto t = make_enum_type(name, std::move(variants));

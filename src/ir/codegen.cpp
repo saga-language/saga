@@ -6,6 +6,7 @@
 #include <charconv>
 
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Verifier.h>
@@ -94,7 +95,7 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
     }
   }
 
-  auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, fi.is_variadic);
+  auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, /*isVarArg=*/false);
   auto *func = llvm::Function::Create(
       fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
   return func;
@@ -430,6 +431,17 @@ void CodeGen::emit(const Node &root) {
 // ===========================================================================
 
 void CodeGen::emit_package(const PackageNode &pkg) {
+  // Pass 1: register all type declarations (structs, enums, interfaces)
+  // across every source file before emitting any function bodies. This
+  // ensures cross-file references within the same package resolve correctly.
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    declare_structs(s);
+    declare_enums(s);
+    declare_interfaces(s);
+  }
+
+  // Pass 2: emit each source file (functions, methods, etc.).
   for (auto &src : pkg.sources)
     emit_source(std::get<SourceNode>(src->data));
 }
@@ -1177,6 +1189,9 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   if (!is_main) {
     for (auto &param : fn.signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
+      // Variadic params are arrays at the LLVM level (ptr to mc_array).
+      if (param.is_variadic)
+        ll_type = llvm::PointerType::getUnqual(context);
       for (size_t i = 0; i < param.names.identifiers.size(); ++i)
         param_types.push_back(ll_type);
     }
@@ -1216,6 +1231,9 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   size_t arg_idx = 0;
   for (auto &param : fn.signature.params) {
     auto *ll_type = resolve_type_node(*param.type);
+    // Variadic params are arrays at the LLVM level (ptr to mc_array).
+    if (param.is_variadic)
+      ll_type = llvm::PointerType::getUnqual(context);
     for (auto &ident : param.names.identifiers) {
       std::string pname(ident.name);
       auto *alloca = create_entry_alloca(func, pname, ll_type);
@@ -4105,10 +4123,20 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
         // For enum variants from an imported module, look up the tag.
         if (exp.type && exp.type->kind == TypeKind::Enum) {
           auto &einfo = std::get<EnumTypeInfo>(exp.type->detail);
-          // The field might be accessing a variant of the enum.
-          // This would be mod.EnumName which is the type, not a value.
-          // Variant access would be mod.EnumName.Variant — handled elsewhere.
-          break;
+          // Register enum type and variants from the import if not
+          // already known, so variant selectors can resolve them.
+          if (!enum_types.count(einfo.name)) {
+            enum_types[einfo.name] = true;
+            int64_t next_index = 0;
+            for (auto &v : einfo.variants) {
+              if (v.index >= 0)
+                next_index = v.index;
+              enum_variants[einfo.name + "." + v.name] = next_index++;
+            }
+          }
+          // Return a sentinel so chained selectors (.Write) can
+          // look up the variant in the enum_variants map.
+          return llvm::ConstantInt::get(i64_type, 0);
         }
 
         // Non-function, non-enum export: a module-level constant.
@@ -4239,11 +4267,53 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       if (!callee)
         return nullptr;
 
+      auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
       std::vector<llvm::Value *> args;
-      for (auto &arg_node : node.args) {
-        auto *val = emit_expr(*arg_node);
-        if (val)
+
+      if (fn_info.is_variadic && !fn_info.params.empty()) {
+        // Pack variadic arguments: non-variadic params are emitted
+        // normally, then the remaining args are packed into an mc_array.
+        size_t fixed_count = fn_info.params.size() - 1;
+        for (size_t i = 0; i < fixed_count && i < node.args.size(); ++i) {
+          auto *val = emit_expr(*node.args[i]);
+          if (val) args.push_back(val);
+        }
+        // Build the variadic array.
+        size_t var_count = node.args.size() > fixed_count
+                               ? node.args.size() - fixed_count : 0;
+        auto *arr = builder.CreateCall(
+            module->getFunction("mc_array_new"),
+            {llvm::ConstantInt::get(i64_type, 8),
+             llvm::ConstantInt::get(i64_type, var_count)}, "varargs");
+        auto *func = builder.GetInsertBlock()->getParent();
+        for (size_t i = 0; i < var_count; ++i) {
+          auto *val = emit_expr(*node.args[fixed_count + i]);
+          if (!val) continue;
+          auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
+          builder.CreateStore(val, tmp);
+          builder.CreateCall(module->getFunction("mc_array_push"),
+                             {arr, tmp});
+        }
+        args.push_back(arr);
+      } else {
+        for (size_t i = 0; i < node.args.size(); ++i) {
+          auto *val = emit_expr(*node.args[i]);
+          if (!val) continue;
+          // If the parameter type is a union but the argument is
+          // concrete, wrap the value into the union struct.
+          if (i < fn_info.params.size() &&
+              fn_info.params[i]->kind == TypeKind::Union) {
+            auto arg_sem = semantic_type(*node.args[i]);
+            if (arg_sem && arg_sem->kind != TypeKind::Union) {
+              auto *wrapped = emit_union_wrap(val, arg_sem, fn_info.params[i]);
+              if (wrapped) {
+                auto *union_st = get_union_llvm_type(fn_info.params[i]);
+                val = builder.CreateLoad(union_st, wrapped, "arg.union");
+              }
+            }
+          }
           args.push_back(val);
+        }
       }
 
       if (callee->getReturnType()->isVoidTy()) {
@@ -4338,6 +4408,17 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
         auto *len_gep = builder.CreateStructGEP(string_type, obj, 1, "len.ptr");
         return builder.CreateLoad(i64_type, len_gep, "len");
       }
+    }
+
+    // Enum .Int() — enums are already i64 index values in LLVM IR.
+    if (method == "Int" && obj_sem && obj_sem->kind == TypeKind::Enum) {
+      return obj;
+    }
+
+    // Enum .String() — convert the enum's integer index to a string.
+    if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
+      return builder.CreateCall(
+          module->getFunction("mc_int_to_string"), {obj}, "str");
     }
 
     // Int/Float/Bool .String() method — convert to string.
@@ -4703,6 +4784,78 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     }
     return llvm::Constant::getNullValue(
         llvm::PointerType::getUnqual(context));
+  }
+
+  if (name == "intrinsic_syscall") {
+    // intrinsic_syscall(num, args_array) → inline syscall instruction.
+    // num is the syscall number (i64), args_array is an [Int] with up to
+    // 6 elements.
+    // On Linux x86_64 the syscall convention is:
+    //   rax = syscall number
+    //   rdi, rsi, rdx, r10, r8, r9 = arguments
+    //   rax = return value (negative = -errno)
+    auto *num = emit_expr(*node.args[0]);
+    auto *arr = emit_expr(*node.args[1]);
+
+    // Load up to 6 elements from the array. mc_array is { i64*, i64, i64 }
+    // where field 0 = data ptr, field 1 = length.
+    auto *arr_struct = llvm::StructType::getTypeByName(context, "mc_array");
+    if (!arr_struct)
+      arr_struct = llvm::StructType::create(
+          context,
+          {llvm::PointerType::getUnqual(context), i64_type, i64_type},
+          "mc_array");
+    auto *data_gep = builder.CreateStructGEP(arr_struct, arr, 0, "arr.data.ptr");
+    auto *data_ptr = builder.CreateLoad(
+        llvm::PointerType::getUnqual(context), data_gep, "arr.data");
+    auto *len_gep = builder.CreateStructGEP(arr_struct, arr, 1, "arr.len.ptr");
+    auto *len = builder.CreateLoad(i64_type, len_gep, "arr.len");
+
+    // Load each argument with a bounds check, defaulting to 0.
+    auto *zero = llvm::ConstantInt::get(i64_type, 0);
+    llvm::Value *syscall_args[6];
+    for (int i = 0; i < 6; ++i) {
+      auto *idx = llvm::ConstantInt::get(i64_type, i);
+      auto *in_bounds = builder.CreateICmpSGT(len, idx, "inb");
+      auto *elem_ptr = builder.CreateGEP(i64_type, data_ptr, {idx}, "elem.ptr");
+      auto *elem = builder.CreateLoad(i64_type, elem_ptr, "elem");
+      syscall_args[i] = builder.CreateSelect(in_bounds, elem, zero, "arg");
+    }
+
+    // Build the inline asm for syscall.
+    auto *fn_type = llvm::FunctionType::get(
+        i64_type,
+        {i64_type, i64_type, i64_type, i64_type, i64_type, i64_type, i64_type},
+        false);
+    auto *ia = llvm::InlineAsm::get(
+        fn_type, "syscall",
+        "={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}",
+        /*hasSideEffects=*/true);
+    return builder.CreateCall(
+        ia, {num, syscall_args[0], syscall_args[1], syscall_args[2],
+             syscall_args[3], syscall_args[4], syscall_args[5]});
+  }
+
+  if (name == "intrinsic_ptr") {
+    // intrinsic_ptr(value) → load the data pointer from the backing
+    // buffer.  The argument is String | [Byte] (a union). We need
+    // to extract the payload pointer and then load field 0 of
+    // mc_string (the data pointer).
+    auto *val = emit_expr(*node.args[0]);
+    auto arg_sem = semantic_type(*node.args[0]);
+    llvm::Value *str_ptr = val;
+    // If the arg is a union, val is a ptr to the union struct alloca.
+    // Extract the payload (which is the string/array pointer).
+    if (arg_sem && arg_sem->kind == TypeKind::Union) {
+      auto *union_st = get_union_llvm_type(arg_sem);
+      auto *payload = builder.CreateStructGEP(union_st, val, 1, "ptr.payload");
+      str_ptr = builder.CreateLoad(
+          llvm::PointerType::getUnqual(context), payload, "ptr.str");
+    }
+    auto *data_ptr = builder.CreateStructGEP(string_type, str_ptr, 0, "str.data.ptr");
+    auto *ptr = builder.CreateLoad(
+        llvm::PointerType::getUnqual(context), data_ptr, "str.data");
+    return builder.CreatePtrToInt(ptr, i64_type, "ptr.int");
   }
 
   // ── Regular function dispatch ───────────────────────────────────────

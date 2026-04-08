@@ -134,8 +134,9 @@ int cmd_run(const char *prog, int argc, char **argv) {
   }
 
   std::string link_cmd =
-      std::format("cc {} {} {}{} -o {} -no-pie", tmp_obj.string(), runtime_lib,
-                  std_lib_arg, dep_objects, tmp_bin.string());
+      std::format("cc {} -Wl,--start-group {}{} {} -Wl,--end-group -o {} -no-pie",
+                  tmp_obj.string(), std_lib_arg, dep_objects, runtime_lib,
+                  tmp_bin.string());
   if (verbose)
     std::cerr << std::format("  link: {}\n", link_cmd);
 

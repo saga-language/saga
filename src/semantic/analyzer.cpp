@@ -294,12 +294,36 @@ void Analyzer::visit_package(const PackageNode &pkg) {
     process_imports(src_node.declarations);
   }
 
-  // Phase 2: resolve declaration types (struct fields, signatures, etc.) from
-  // ALL files.
+  // Phase 2a: resolve type declarations (struct, enum, interface) from ALL
+  // files first, so that function signatures can reference them.
   for (auto &src : pkg.sources) {
     auto &src_node = std::get<SourceNode>(src->data);
     for (auto &decl : src_node.declarations) {
-      resolve_declaration(*decl);
+      std::visit(overloaded{
+                     [&](const StructDeclNode &s) { resolve_struct_decl(s); },
+                     [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
+                     [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
+                     [&](const auto &) { /* handled in phase 2b */ },
+                 },
+                 decl->data);
+    }
+  }
+
+  // Phase 2b: resolve remaining declarations (functions, constants, etc.)
+  // from ALL files.
+  for (auto &src : pkg.sources) {
+    auto &src_node = std::get<SourceNode>(src->data);
+    for (auto &decl : src_node.declarations) {
+      std::visit(overloaded{
+                     [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
+                     [&](const ConstDeclNode &c) { resolve_const_decl(c); },
+                     [&](const StructDeclNode &) { /* done in phase 2a */ },
+                     [&](const EnumDeclNode &) { /* done in phase 2a */ },
+                     [&](const InterfaceDeclNode &) { /* done in phase 2a */ },
+                     [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
+                     [&](const auto &) { /* already reported in collect */ },
+                 },
+                 decl->data);
     }
   }
 
@@ -1004,15 +1028,28 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
 
 void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
   std::vector<EnumVariant> variants;
+  int64_t next_index = 0;
   for (auto &field : e.fields) {
     std::vector<FieldInfo> variant_fields;
+    int64_t explicit_index = -1;
     for (auto &fa : field.initializer) {
-      // Enum field initializers are constant expressions; for now we just
-      // record the name. Type-checking of values is deferred.
-      variant_fields.push_back({std::string(fa.name.name), nullptr, false});
+      auto field_type = check_expr(*fa.value);
+      variant_fields.push_back({std::string(fa.name.name), field_type, false});
+      // Extract explicit index value.
+      if (std::string(fa.name.name) == "index") {
+        if (auto *lit = std::get_if<IntegerLiteralNode>(&fa.value->data)) {
+          std::string clean;
+          for (char c : lit->literal)
+            if (c != '_') clean += c;
+          explicit_index = std::stoll(clean);
+        }
+      }
     }
+    if (explicit_index >= 0)
+      next_index = explicit_index;
     variants.push_back(
-        {std::string(field.name.name), std::move(variant_fields)});
+        {std::string(field.name.name), std::move(variant_fields), next_index});
+    next_index++;
   }
 
   auto enum_type =
@@ -2319,16 +2356,20 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
 
   // Check argument types against the (possibly instantiated) signature.
   for (size_t i = 0; i < arg_types.size(); ++i) {
-    if (i < fn_info.params.size()) {
-      expect_assignable(node.args[i]->span, fn_info.params[i], arg_types[i],
-                        std::format("argument {}", i + 1));
-    } else if (fn_info.is_variadic && !fn_info.params.empty()) {
+    bool is_variadic_param = fn_info.is_variadic && !fn_info.params.empty() &&
+                             i >= fn_info.params.size() - 1;
+    if (is_variadic_param) {
+      // Variadic args are checked against the element type of the
+      // array-wrapped last parameter.
       auto &last = fn_info.params.back();
       if (last->kind == TypeKind::Array) {
         auto &arr = std::get<ArrayTypeInfo>(last->detail);
         expect_assignable(node.args[i]->span, arr.element, arg_types[i],
                           std::format("variadic argument {}", i + 1));
       }
+    } else if (i < fn_info.params.size()) {
+      expect_assignable(node.args[i]->span, fn_info.params[i], arg_types[i],
+                        std::format("argument {}", i + 1));
     }
   }
 
