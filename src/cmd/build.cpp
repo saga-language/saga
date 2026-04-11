@@ -220,6 +220,7 @@ static void usage_build() {
                "\n"
                "Options:\n"
                "  --lib             Build as library (.o + .sgi, no link)\n"
+               "  --stdlib          Mark package as stdlib (enables intrinsics)\n"
                "  --build           Build using the dependency graph (incremental)\n"
                "  --emit-obj        Write package to object file only\n"
                "  --emit-ir         Write LLVM IR to <name>.ll\n"
@@ -240,6 +241,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
   bool emit_obj = false;
   bool lib_mode = false;
   bool dag_mode = false;
+  bool stdlib_mode = false;
   bool verbose = false;
   std::vector<std::string> search_paths;
   std::vector<std::string> sgi_search_paths;
@@ -251,6 +253,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
     else if (arg == "--dump-ir")     { dump_ir = true; }
     else if (arg == "--emit-obj")    { emit_obj = true; }
     else if (arg == "--lib")         { lib_mode = true; }
+    else if (arg == "--stdlib")      { stdlib_mode = true; }
     else if (arg == "--build")       { dag_mode = true; }
     else if (arg == "-v")            { verbose = true; }
     else if (arg == "--sgi-path" && i + 1 < argc)
@@ -317,6 +320,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
   if (!parser.errors.errors.empty()) { parser.errors.print_errors(); return 1; }
 
   mc::Analyzer analyzer(fileset);
+  analyzer.is_stdlib = stdlib_mode;
   setup_analyzer_paths(analyzer, package_dir, search_paths, sgi_search_paths,
                        prog);
   analyzer.analyze(*ast);

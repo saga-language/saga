@@ -436,6 +436,87 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       }
     }
 
+    // Stdlib-defined receiver method on an intrinsic type.
+    // Check the analyzer's type_methods_ side table; if the method was
+    // registered there, call the mangled function (pkg__Type__Method).
+    if (obj_sem) {
+      const Type *raw = obj_sem.get();
+      auto tm_it = analyzer.type_methods_.find(raw);
+      if (tm_it != analyzer.type_methods_.end()) {
+        for (auto &m : tm_it->second) {
+          if (m.name != method)
+            continue;
+          // Determine the origin package from intrinsic_method_links,
+          // or fall back to a well-known package name from the TypeKind.
+          const char *type_name = nullptr;
+          switch (obj_sem->kind) {
+          case TypeKind::Int:    type_name = "Int"; break;
+          case TypeKind::Float:  type_name = "Float"; break;
+          case TypeKind::Bool:   type_name = "Bool"; break;
+          case TypeKind::String: type_name = "String"; break;
+          default: break;
+          }
+          if (!type_name)
+            break;
+
+          // Look for the function in intrinsic_method_links (same module)
+          // or declare it as external.
+          std::string local_link =
+              mangle(std::string(type_name) + "__" + method);
+          auto *callee = module->getFunction(local_link);
+          if (!callee && m.signature &&
+              m.signature->kind == TypeKind::Func) {
+            // Cross-package: find the origin package that defines this
+            // method.  Scan all known intrinsic_method_links.
+            std::string origin_pkg;
+            for (auto &[tname, links] : intrinsic_method_links) {
+              if (tname == type_name) {
+                for (auto &[ln, mn] : links) {
+                  if (mn == method) {
+                    origin_pkg = package_name; // same package
+                    break;
+                  }
+                }
+              }
+              if (!origin_pkg.empty())
+                break;
+            }
+            // If not found locally, the method must come from a stdlib
+            // package compiled separately. Declare an external function.
+            auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+            auto *self_ll = llvm_type(obj_sem);
+            std::vector<llvm::Type *> param_ll;
+            param_ll.push_back(self_ll); // self
+            for (auto &p : fi.params)
+              param_ll.push_back(llvm_type(p));
+            llvm::Type *ret_ll = fi.returns.empty()
+                                     ? void_ll_type
+                                     : llvm_type(fi.returns[0]);
+            auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
+            callee = llvm::Function::Create(
+                ft, llvm::Function::ExternalLinkage, local_link,
+                module.get());
+          }
+
+          if (callee) {
+            std::vector<llvm::Value *> args;
+            args.push_back(obj); // self (value, not pointer)
+            for (auto &arg_node : node.args) {
+              auto *val = emit_expr(*arg_node);
+              if (val)
+                args.push_back(val);
+            }
+            if (callee->getReturnType()->isVoidTy()) {
+              builder.CreateCall(callee, args);
+              return nullptr;
+            }
+            return builder.CreateCall(callee, args, "mcall");
+          }
+          break;
+        }
+      }
+    }
+
     // Struct method call: obj.Method(args) → StructName.Method(obj, args).
     if (obj_sem && obj_sem->kind == TypeKind::Struct) {
       auto &info = std::get<StructTypeInfo>(obj_sem->detail);

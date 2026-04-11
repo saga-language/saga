@@ -86,6 +86,10 @@ struct CodeGen {
   std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
       struct_method_links;
 
+  /// Maps intrinsic type name (e.g. "String") → list of {link_name, method_name}.
+  std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
+      intrinsic_method_links;
+
   // ── Union type registry ──────────────────────────────────────────────
 
   /// Maps canonical union type string → LLVM struct type { i8 tag, [N x i8] }.
@@ -215,6 +219,12 @@ private:
 
   /// Emit struct method bodies.
   void emit_struct_methods(const SourceNode &src);
+
+  /// Declare receiver methods on intrinsic types (Int, Float, Bool, String).
+  void declare_intrinsic_methods(const SourceNode &src);
+
+  /// Emit bodies of receiver methods on intrinsic types.
+  void emit_intrinsic_methods(const SourceNode &src);
 
   /// Get or create a vtable for a concrete struct implementing an interface.
   llvm::GlobalVariable *get_or_create_vtable(const std::string &struct_name,

@@ -263,9 +263,11 @@ void CodeGen::emit_source(const SourceNode &src) {
   declare_enums(src);
   declare_interfaces(src);
 
-  // Pass 2: forward-declare all functions and struct methods.
+  // Pass 2: forward-declare all functions, struct methods, and intrinsic
+  // type methods.
   declare_functions(src);
   declare_struct_methods(src);
+  declare_intrinsic_methods(src);
 
   // Pass 2b: emit package-level constants as globals.
   for (auto &decl : src.declarations) {
@@ -287,6 +289,7 @@ void CodeGen::emit_source(const SourceNode &src) {
         decl->data);
   }
   emit_struct_methods(src);
+  emit_intrinsic_methods(src);
 }
 
 // ===========================================================================

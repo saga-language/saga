@@ -105,6 +105,10 @@ struct Analyzer {
   /// The directory of the package currently being analyzed (for relative imports).
   std::string current_package_dir;
 
+  /// True when compiling a stdlib package (permits intrinsic_* calls and
+  /// receiver methods on intrinsic types).
+  bool is_stdlib = false;
+
   /// The package-level scope (saved after analysis for import extraction).
   Scope::Ptr package_scope_;
 

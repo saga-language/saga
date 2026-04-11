@@ -18,7 +18,7 @@ foreach(pkg ${SAGA_STD_PACKAGES})
                 "${SAGA_STD_SGI_DIR_LOCAL}/${pkg}.sgi"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${SAGA_STD_SGI_DIR_LOCAL}"
         COMMAND saga
-                --lib
+                --lib --stdlib
                 -o "${SAGA_STD_SGI_DIR_LOCAL}/${pkg}.o"
                 --sgi-path "${SAGA_STD_SGI_DIR_LOCAL}"
                 "${SAGA_STD_DIR}/${pkg}"

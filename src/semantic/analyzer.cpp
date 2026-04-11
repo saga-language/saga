@@ -947,6 +947,19 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
           // Store in the type_methods side table.
           type_methods_[recv_sym->type.get()].push_back(
               {std::string(fn.name.name), fn_type, fn.is_public});
+        } else if (recv_sym->type->kind == TypeKind::Int ||
+                   recv_sym->type->kind == TypeKind::Float ||
+                   recv_sym->type->kind == TypeKind::Bool ||
+                   recv_sym->type->kind == TypeKind::String) {
+          // Receiver methods on intrinsic types — stdlib only.
+          if (!is_stdlib) {
+            error(fn.receiver->name.span,
+                  "receiver methods on intrinsic types can only be "
+                  "defined in stdlib packages");
+          } else {
+            type_methods_[recv_sym->type.get()].push_back(
+                {std::string(fn.name.name), fn_type, fn.is_public});
+          }
         }
       }
     }

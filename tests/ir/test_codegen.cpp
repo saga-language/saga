@@ -25,7 +25,7 @@ struct CG {
   std::unique_ptr<Analyzer> analyzer;
   std::unique_ptr<CodeGen> codegen;
 
-  static CG from(const std::string &source) {
+  static CG from(const std::string &source, bool stdlib = false) {
     CG r;
     r.fileset.add_file(File::from_source("test.sg", source));
     Parser parser(r.fileset);
@@ -34,6 +34,7 @@ struct CG {
     EXPECT_TRUE(parser.errors.errors.empty());
 
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
+    r.analyzer->is_stdlib = stdlib;
     r.analyzer->analyze(*r.ast);
     EXPECT_TRUE(r.analyzer->errors.errors.empty());
 
@@ -3989,11 +3990,84 @@ TEST(CodeGen, AutoCloseMethodDeclared) {
   EXPECT_TRUE(found) << "Close method should be declared in the module";
 }
 
+// ===========================================================================
+// Intrinsic type receiver methods
+// ===========================================================================
+
+TEST(CodeGen, IntrinsicMethodDeclared) {
+  auto r = CG::from(
+      "fn (self Int) Double() Int { self * 2 }\n"
+      "pub fn Main() Void {}", true);
+  // The method should be declared with mangled name test__Int__Double.
+  auto *func = r.mod().getFunction("test__Int__Double");
+  ASSERT_NE(func, nullptr);
+  // First param is i64 (self), return type is i64.
+  EXPECT_EQ(func->arg_size(), 1u);
+  EXPECT_TRUE(func->getArg(0)->getType()->isIntegerTy(64));
+  EXPECT_TRUE(func->getReturnType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, IntrinsicMethodHasBody) {
+  auto r = CG::from(
+      "fn (self Int) Double() Int { self * 2 }\n"
+      "pub fn Main() Void {}", true);
+  auto *func = r.mod().getFunction("test__Int__Double");
+  ASSERT_NE(func, nullptr);
+  EXPECT_FALSE(func->empty()) << "Method should have a body";
+}
+
+TEST(CodeGen, IntrinsicMethodCalledCorrectly) {
+  auto r = CG::from(
+      "fn (self Int) Double() Int { self * 2 }\n"
+      "pub fn Main() Void {\n"
+      "  x := 5\n"
+      "  y := x.Double()\n"
+      "}", true);
+  // Verify Main exists and the method function exists.
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  auto *method = r.mod().getFunction("test__Int__Double");
+  ASSERT_NE(method, nullptr);
+
+  // Find a call to Int__Double in main's body.
+  bool found_call = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (call->getCalledFunction() == method) {
+          found_call = true;
+          break;
+        }
+      }
+    }
+    if (found_call) break;
+  }
+  EXPECT_TRUE(found_call) << "Main should call Int__Double";
+}
+
+TEST(CodeGen, StringIntrinsicMethodDeclared) {
+  auto r = CG::from(
+      "fn (self String) TestSize() Int { 0 }\n"
+      "pub fn Main() Void {}", true);
+  auto *func = r.mod().getFunction("test__String__TestSize");
+  ASSERT_NE(func, nullptr);
+  // First param is ptr (String = mc_string*), return type is i64.
+  EXPECT_EQ(func->arg_size(), 1u);
+  EXPECT_TRUE(func->getArg(0)->getType()->isPointerTy());
+  EXPECT_TRUE(func->getReturnType()->isIntegerTy(64));
+}
+
+TEST(CodeGen, IntrinsicMethodNotDeclaredAsRegularFunc) {
+  auto r = CG::from(
+      "fn (self Int) Double() Int { self * 2 }\n"
+      "pub fn Main() Void {}", true);
+  // Should NOT be declared as a regular function (test__Double).
+  auto *regular = r.mod().getFunction("test__Double");
+  EXPECT_EQ(regular, nullptr)
+      << "Intrinsic receiver method should not be declared as a regular function";
+}
+
 } // namespace mc
-
-
-
-
 
 
 
