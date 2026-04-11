@@ -25,7 +25,7 @@ struct CG {
   std::unique_ptr<Analyzer> analyzer;
   std::unique_ptr<CodeGen> codegen;
 
-  static CG from(const std::string &source, bool stdlib = false) {
+  static CG from(const std::string &source, bool stdlib = true) {
     CG r;
     r.fileset.add_file(File::from_source("test.sg", source));
     Parser parser(r.fileset);
@@ -4065,6 +4065,147 @@ TEST(CodeGen, IntrinsicMethodNotDeclaredAsRegularFunc) {
   auto *regular = r.mod().getFunction("test__Double");
   EXPECT_EQ(regular, nullptr)
       << "Intrinsic receiver method should not be declared as a regular function";
+}
+
+// ===========================================================================
+// Phase 2: New stdlib intrinsics
+// ===========================================================================
+
+// Helper to find a call to a named function inside a given function.
+static llvm::CallInst *find_call(llvm::Function *fn, const std::string &callee_name) {
+  if (!fn) return nullptr;
+  for (auto &bb : *fn) {
+    for (auto &inst : bb) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (auto *cf = call->getCalledFunction()) {
+          if (cf->getName() == callee_name)
+            return call;
+        }
+      }
+    }
+  }
+  return nullptr;
+}
+
+// Helper to find the first instruction of a given opcode inside a function.
+template <typename InstTy>
+static InstTy *find_inst(llvm::Function *fn) {
+  if (!fn) return nullptr;
+  for (auto &bb : *fn) {
+    for (auto &inst : bb) {
+      if (auto *t = llvm::dyn_cast<InstTy>(&inst))
+        return t;
+    }
+  }
+  return nullptr;
+}
+
+TEST(CodeGen, IntrinsicSitofpProducesSIToFP) {
+  auto r = CG::from(
+      "fn f(x Int) Float { intrinsic_sitofp(x) }\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  // Should contain an sitofp instruction.
+  auto *conv = find_inst<llvm::SIToFPInst>(func);
+  EXPECT_NE(conv, nullptr) << "Expected sitofp instruction";
+  if (conv) {
+    EXPECT_TRUE(conv->getType()->isDoubleTy());
+  }
+}
+
+TEST(CodeGen, IntrinsicFptosiProducesFPToSI) {
+  auto r = CG::from(
+      "fn f(x Float) Int { intrinsic_fptosi(x) }\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  auto *conv = find_inst<llvm::FPToSIInst>(func);
+  EXPECT_NE(conv, nullptr) << "Expected fptosi instruction";
+  if (conv) {
+    EXPECT_TRUE(conv->getType()->isIntegerTy(64));
+  }
+}
+
+TEST(CodeGen, IntrinsicZextWidens) {
+  auto r = CG::from(
+      "fn f(x Int) Int { intrinsic_zext(x, 32) }\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  // Should contain a trunc (64→32) instruction since we're narrowing.
+  auto *trunc = find_inst<llvm::TruncInst>(func);
+  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for zext(i64, 32)";
+}
+
+TEST(CodeGen, IntrinsicSextWidens) {
+  auto r = CG::from(
+      "fn f(x Int) Int { intrinsic_sext(x, 32) }\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  auto *trunc = find_inst<llvm::TruncInst>(func);
+  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for sext(i64, 32)";
+}
+
+TEST(CodeGen, IntrinsicRuntimeCallsNamedFunction) {
+  auto r = CG::from(
+      "fn f(x Int) String { intrinsic_runtime(\"mc_int_to_string\", x) }\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  auto *call = find_call(func, "mc_int_to_string");
+  EXPECT_NE(call, nullptr) << "Expected call to mc_int_to_string";
+}
+
+TEST(CodeGen, IntrinsicRuntimeAutoPromotesScalar) {
+  // mc_array_push expects (ptr, ptr) — the second ptr needs auto-promotion.
+  auto r = CG::from(
+      "fn f(arr [Int], val Int) Void {\n"
+      "  intrinsic_runtime(\"mc_array_push\", arr, val)\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  auto *call = find_call(func, "mc_array_push");
+  EXPECT_NE(call, nullptr) << "Expected call to mc_array_push";
+  if (call) {
+    // Both args should be pointers (second was auto-promoted from i64).
+    EXPECT_TRUE(call->getArgOperand(1)->getType()->isPointerTy())
+        << "Second arg should be auto-promoted to pointer";
+  }
+}
+
+TEST(CodeGen, IntrinsicFieldLoadsFromStruct) {
+  auto r = CG::from(
+      "fn f(s String) Int { intrinsic_field(s, 1) }\n"
+      "pub fn Main() Void {}");
+  auto *func = r.func("f");
+  ASSERT_NE(func, nullptr);
+  // Should contain a GEP + load.
+  auto *load = find_inst<llvm::LoadInst>(func);
+  EXPECT_NE(load, nullptr) << "Expected load instruction from field access";
+}
+
+TEST(CodeGen, IntrinsicCallGateRejectsNonStdlib) {
+  // When is_stdlib = false, intrinsic_* calls should be rejected by the analyzer.
+  CG r;
+  r.fileset.add_file(File::from_source("test.sg",
+      "fn f(x Int) Float { intrinsic_sitofp(x) }\n"
+      "pub fn Main() Void {}"));
+  Parser parser(r.fileset);
+  r.ast = parser.parse();
+  ASSERT_NE(r.ast, nullptr);
+  r.analyzer = std::make_unique<Analyzer>(r.fileset);
+  r.analyzer->is_stdlib = false;
+  r.analyzer->analyze(*r.ast);
+  EXPECT_FALSE(r.analyzer->errors.errors.empty())
+      << "Non-stdlib intrinsic call should be rejected";
+  bool found = false;
+  for (auto &e : r.analyzer->errors.errors)
+    if (e.message.find("only be called from stdlib") != std::string::npos)
+      found = true;
+  EXPECT_TRUE(found) << "Should have a 'stdlib only' error message";
 }
 
 } // namespace mc

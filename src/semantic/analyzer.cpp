@@ -2323,6 +2323,16 @@ TypePtr Analyzer::check_group_expr(const GroupExprNode &node) {
 }
 
 TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
+  // Gate all intrinsic_* calls to stdlib packages only.
+  if (auto *ident = std::get_if<IdentifierNode>(&node.callee->data)) {
+    if (ident->name.starts_with("intrinsic_") && !is_stdlib) {
+      error(node.callee->span,
+            std::format("'{}' can only be called from stdlib packages",
+                        ident->name));
+      return builtins.error_type;
+    }
+  }
+
   auto callee_type = check_expr(*node.callee);
   if (is_error_type(callee_type))
     return builtins.error_type;

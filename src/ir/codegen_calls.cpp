@@ -10,6 +10,15 @@
 
 namespace mc {
 
+// Parse an integer literal (decimal only; for intrinsic argument indices).
+static int64_t parse_int_literal(std::string_view lit) {
+  int64_t val = 0;
+  for (char c : lit)
+    if (c != '_')
+      val = val * 10 + (c - '0');
+  return val;
+}
+
 llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
                                     const Node &parent) {
   std::string field_name(node.field.name);
@@ -728,6 +737,139 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   // ── Concurrency intrinsics ──────────────────────────────────────────
   // These need special handling because they inject the current_actor
   // pointer or emit inline LLVM instructions.
+
+  // ── New stdlib intrinsics ────────────────────────────────────────────
+
+  if (name == "intrinsic_sitofp") {
+    // intrinsic_sitofp(value: Int) -> Float
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    return builder.CreateSIToFP(val, f64_type, "sitofp");
+  }
+
+  if (name == "intrinsic_fptosi") {
+    // intrinsic_fptosi(value: Float) -> Int
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    return builder.CreateFPToSI(val, i64_type, "fptosi");
+  }
+
+  if (name == "intrinsic_zext") {
+    // intrinsic_zext(value: Int, bits: Int) -> Int
+    // bits must be an integer literal.
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
+    if (!bits_node) return nullptr;
+    int64_t bits = parse_int_literal(bits_node->literal);
+    auto *dst_type = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
+    unsigned src_bits = val->getType()->getIntegerBitWidth();
+    if (bits < static_cast<int64_t>(src_bits))
+      return builder.CreateTrunc(val, dst_type, "ztrunc");
+    if (bits > static_cast<int64_t>(src_bits))
+      return builder.CreateZExt(val, dst_type, "zext");
+    return val;
+  }
+
+  if (name == "intrinsic_sext") {
+    // intrinsic_sext(value: Int, bits: Int) -> Int
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
+    if (!bits_node) return nullptr;
+    int64_t bits = parse_int_literal(bits_node->literal);
+    auto *dst_type = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
+    unsigned src_bits = val->getType()->getIntegerBitWidth();
+    if (bits < static_cast<int64_t>(src_bits))
+      return builder.CreateTrunc(val, dst_type, "strunc");
+    if (bits > static_cast<int64_t>(src_bits))
+      return builder.CreateSExt(val, dst_type, "sext");
+    return val;
+  }
+
+  if (name == "intrinsic_field") {
+    // intrinsic_field(value: Any, index: Int) -> Any
+    // Second arg must be an integer literal (field index).
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    auto *idx_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
+    if (!idx_node) return nullptr;
+    unsigned field_idx = static_cast<unsigned>(parse_int_literal(idx_node->literal));
+
+    // The value must be a pointer; determine the backing struct type.
+    // For String (mc_string*), use the string_type struct.
+    auto arg_sem = semantic_type(*node.args[0]);
+    llvm::StructType *backing_st = nullptr;
+    if (arg_sem && arg_sem->kind == TypeKind::String) {
+      backing_st = string_type;
+    } else {
+      // Try to find a struct type matching the value's pointee.
+      // Walk struct_types looking for a match.
+      for (auto &[sname, st] : struct_types) {
+        (void)sname;
+        if (val->getType() == llvm::PointerType::getUnqual(context)) {
+          backing_st = st;
+          break;
+        }
+      }
+    }
+    if (!backing_st) return nullptr;
+
+    auto *gep = builder.CreateStructGEP(backing_st, val, field_idx, "field.ptr");
+    // Return type: load the field. We return i64 for most fields.
+    auto *field_type = backing_st->getElementType(field_idx);
+    return builder.CreateLoad(field_type, gep, "field.val");
+  }
+
+  if (name == "intrinsic_runtime") {
+    // intrinsic_runtime("func_name", args...) -> result
+    // First arg must be a plain string literal naming a declared C runtime
+    // function.  Extract the name from the first fragment of the string.
+    if (node.args.empty()) return nullptr;
+    auto *name_node = std::get_if<StringLiteralNode>(&node.args[0]->data);
+    if (!name_node || name_node->fragments.empty()) return nullptr;
+    auto *frag = std::get_if<StringFragmentNode>(&name_node->fragments[0]->data);
+    if (!frag) return nullptr;
+    // Strip surrounding quotes from the raw fragment text.
+    std::string_view raw = frag->text;
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
+      raw = raw.substr(1, raw.size() - 2);
+    std::string func_name(raw);
+    auto *callee = module->getFunction(func_name);
+    if (!callee) {
+      // The function isn't in the module — this is a compile-time error.
+      // Return null to signal failure; semantic analysis gates this.
+      return nullptr;
+    }
+
+    // Build argument list: skip args[0] (the name literal), emit the rest.
+    std::vector<llvm::Value *> args;
+    auto *fn_type = callee->getFunctionType();
+    for (size_t i = 1; i < node.args.size(); ++i) {
+      auto *val = emit_expr(*node.args[i]);
+      if (!val) continue;
+
+      // Auto-promote scalar to pointer if the C param expects a pointer.
+      size_t param_idx = i - 1;
+      if (param_idx < fn_type->getNumParams()) {
+        auto *expected = fn_type->getParamType(param_idx);
+        if (expected->isPointerTy() && !val->getType()->isPointerTy()) {
+          auto *func = builder.GetInsertBlock()->getParent();
+          auto *tmp = create_entry_alloca(func, "rt.tmp", val->getType());
+          builder.CreateStore(val, tmp);
+          val = tmp;
+        }
+      }
+      args.push_back(val);
+    }
+
+    auto *ret_type = fn_type->getReturnType();
+    if (ret_type->isVoidTy()) {
+      builder.CreateCall(callee, args);
+      return nullptr;
+    }
+    return builder.CreateCall(callee, args, "rt.call");
+  }
 
   if (name == "intrinsic_yield") {
     // intrinsic_yield() → mc_actor_yield(current_actor)

@@ -19,7 +19,7 @@ struct AnalysisResult {
   NodePtr ast;
   std::unique_ptr<Analyzer> analyzer;
 
-  static AnalysisResult from(const std::string &source) {
+  static AnalysisResult from(const std::string &source, bool stdlib = true) {
     AnalysisResult r;
     auto file = File::from_source("test.sg", source);
     r.fileset.add_file(std::move(file));
@@ -28,6 +28,7 @@ struct AnalysisResult {
     r.ast = parser.parse();
 
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
+    r.analyzer->is_stdlib = stdlib;
     if (r.ast) {
       r.analyzer->analyze(*r.ast);
     }

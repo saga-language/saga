@@ -365,6 +365,48 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       make_func_type(
           {make_union_type({types.string_type, make_array_type(types.byte_type)})},
           {types.int_type})));
+
+  // intrinsic_runtime(name: String, args...: Any) -> Any
+  // Calls the named C runtime function; scalar args are auto-promoted to
+  // stack pointers when the C function expects void*.  The return type is
+  // Any; codegen uses the actual C function's return type.
+  {
+    auto variadic_any = make_array_type(types.any_type);
+    auto fn = make_func_type({types.string_type, variadic_any}, {types.any_type});
+    std::get<FuncTypeInfo>(fn->detail).is_variadic = true;
+    global_scope->declare(Symbol::builtin("intrinsic_runtime",
+                                          SymbolKind::Function, fn));
+  }
+
+  // intrinsic_field(value: Any, index: Int) -> Any
+  // GEP + load on the value's backing struct at the given field index.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_field", SymbolKind::Function,
+      make_func_type({types.any_type, types.int_type}, {types.any_type})));
+
+  // intrinsic_sitofp(value: Int) -> Float
+  // LLVM sitofp i64 → double.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sitofp", SymbolKind::Function,
+      make_func_type({types.int_type}, {types.float_type})));
+
+  // intrinsic_fptosi(value: Float) -> Int
+  // LLVM fptosi double → i64.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_fptosi", SymbolKind::Function,
+      make_func_type({types.float_type}, {types.int_type})));
+
+  // intrinsic_zext(value: Int, bits: Int) -> Int
+  // LLVM zext/trunc to the target bit width.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_zext", SymbolKind::Function,
+      make_func_type({types.int_type, types.int_type}, {types.int_type})));
+
+  // intrinsic_sext(value: Int, bits: Int) -> Int
+  // LLVM sext/trunc to the target bit width (sign-extending).
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sext", SymbolKind::Function,
+      make_func_type({types.int_type, types.int_type}, {types.int_type})));
 }
 
 } // namespace mc

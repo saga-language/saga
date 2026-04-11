@@ -450,6 +450,15 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (is_error_type(source) || is_error_type(target))
     return true;
 
+  // Any is a top type — any value is assignable to Any, and Any is assignable
+  // to any type.  Used by intrinsic_runtime / intrinsic_field signatures.
+  auto is_any = [](const TypePtr &t) {
+    if (t->kind != TypeKind::Struct) return false;
+    return std::get<StructTypeInfo>(t->detail).name == "Any";
+  };
+  if (is_any(source) || is_any(target))
+    return true;
+
   // Exact match.
   if (types_equal(source, target))
     return true;

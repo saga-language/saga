@@ -19,12 +19,13 @@ struct TC {
   NodePtr ast;
   std::unique_ptr<Analyzer> analyzer;
 
-  static TC from(const std::string &source) {
+  static TC from(const std::string &source, bool stdlib = true) {
     TC r;
     r.fileset.add_file(File::from_source("test.sg", source));
     Parser parser(r.fileset);
     r.ast = parser.parse();
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
+    r.analyzer->is_stdlib = stdlib;
     if (r.ast)
       r.analyzer->analyze(*r.ast);
     return r;
