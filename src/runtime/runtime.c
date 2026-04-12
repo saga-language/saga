@@ -5,6 +5,7 @@
  * Compiled into a static library and linked into every Saga binary.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1323,11 +1324,10 @@ mc_string *saga_string_upper(const mc_string *s) {
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
-/* Array                                                                    */
-/*                                                                          */
-/* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount }   */
+/* String: Bytes, Count, Runes                                              */
 /* ───────────────────────────────────────────────────────────────────────── */
 
+/* mc_array typedef needed here for forward declarations below. */
 typedef struct {
   void *data;
   int64_t len;
@@ -1335,6 +1335,213 @@ typedef struct {
   int64_t elem_size;
   int64_t refcount;
 } mc_array;
+
+/* Forward declarations for array ops (defined below). */
+static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap);
+static void saga_array_push_internal(mc_array *arr, const void *elem);
+
+mc_array *saga_string_bytes(const mc_string *s) {
+  int64_t len = (s && s->data) ? s->len : 0;
+  mc_array *arr = saga_array_new_internal(1, len > 4 ? len : 4);
+  for (int64_t i = 0; i < len; i++) {
+    uint8_t b = (uint8_t)s->data[i];
+    saga_array_push_internal(arr, &b);
+  }
+  return arr;
+}
+
+int64_t saga_string_count(const mc_string *s) {
+  if (!s || !s->data || s->len == 0) return 0;
+  int64_t count = 0;
+  for (int64_t i = 0; i < s->len; ) {
+    unsigned char c = (unsigned char)s->data[i];
+    if      (c < 0x80) i += 1;
+    else if (c < 0xE0) i += 2;
+    else if (c < 0xF0) i += 3;
+    else               i += 4;
+    count++;
+  }
+  return count;
+}
+
+mc_array *saga_string_runes(const mc_string *s) {
+  int64_t len = (s && s->data) ? s->len : 0;
+  mc_array *arr = saga_array_new_internal(4, len > 4 ? len : 4);
+  for (int64_t i = 0; i < len; ) {
+    unsigned char c = (unsigned char)s->data[i];
+    int32_t cp = 0;
+    if (c < 0x80) {
+      cp = c; i += 1;
+    } else if (c < 0xE0 && i + 1 < len) {
+      cp = ((c & 0x1F) << 6) | (s->data[i+1] & 0x3F);
+      i += 2;
+    } else if (c < 0xF0 && i + 2 < len) {
+      cp = ((c & 0x0F) << 12) | ((s->data[i+1] & 0x3F) << 6)
+           | (s->data[i+2] & 0x3F);
+      i += 3;
+    } else if (i + 3 < len) {
+      cp = ((c & 0x07) << 18) | ((s->data[i+1] & 0x3F) << 12)
+           | ((s->data[i+2] & 0x3F) << 6) | (s->data[i+3] & 0x3F);
+      i += 4;
+    } else {
+      cp = 0xFFFD; /* replacement character */
+      i++;
+    }
+    saga_array_push_internal(arr, &cp);
+  }
+  return arr;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: parsing (try-style: returns 0 on success, non-zero on failure)   */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+int64_t saga_string_to_int(const mc_string *s, int64_t *out) {
+  if (!s || !s->data || s->len == 0) return 1;
+  /* Copy to null-terminated buffer for strtoll. */
+  char buf[64];
+  int64_t copy_len = s->len < 63 ? s->len : 63;
+  memcpy(buf, s->data, (size_t)copy_len);
+  buf[copy_len] = '\0';
+  char *end = NULL;
+  errno = 0;
+  long long v = strtoll(buf, &end, 10);
+  if (errno != 0 || end == buf || *end != '\0') return 1;
+  *out = (int64_t)v;
+  return 0;
+}
+
+int64_t saga_string_to_float(const mc_string *s, double *out) {
+  if (!s || !s->data || s->len == 0) return 1;
+  char buf[256];
+  int64_t copy_len = s->len < 255 ? s->len : 255;
+  memcpy(buf, s->data, (size_t)copy_len);
+  buf[copy_len] = '\0';
+  char *end = NULL;
+  errno = 0;
+  double v = strtod(buf, &end);
+  if (errno != 0 || end == buf || *end != '\0') return 1;
+  *out = v;
+  return 0;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Formatting helpers                                                       */
+/*                                                                          */
+/* Format specifier: [sign][fill][width][.precision][e]                     */
+/*   sign:  '+'  — always show sign                                        */
+/*   fill:  '0' or ' '  — padding character (default space)                */
+/*   width: integer  — minimum width                                        */
+/*   .precision: integer  — decimal places (floats) or ignored (ints)       */
+/*   e:  — scientific notation (floats only)                                */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+  int show_sign;   /* 1 if '+' present */
+  char fill;       /* '0' or ' ' */
+  int width;       /* minimum width, 0 if unset */
+  int precision;   /* -1 if unset */
+  int scientific;  /* 1 if 'e' present */
+} fmt_spec;
+
+static fmt_spec parse_fmt(const mc_string *fmt) {
+  fmt_spec f = {0, ' ', 0, -1, 0};
+  if (!fmt || !fmt->data || fmt->len == 0) return f;
+  const char *p = fmt->data;
+  const char *end = p + fmt->len;
+
+  if (p < end && *p == '+') { f.show_sign = 1; p++; }
+  if (p < end && (*p == '0' || *p == ' ')) { f.fill = *p; p++; }
+  /* width */
+  while (p < end && *p >= '0' && *p <= '9') {
+    f.width = f.width * 10 + (*p - '0');
+    p++;
+  }
+  /* .precision */
+  if (p < end && *p == '.') {
+    p++;
+    f.precision = 0;
+    while (p < end && *p >= '0' && *p <= '9') {
+      f.precision = f.precision * 10 + (*p - '0');
+      p++;
+    }
+  }
+  if (p < end && (*p == 'e' || *p == 'E')) { f.scientific = 1; }
+  return f;
+}
+
+static mc_string *apply_padding(const char *raw, int raw_len, fmt_spec *f) {
+  if (raw_len >= f->width) return mc_alloc_string(raw, raw_len);
+  int pad = f->width - raw_len;
+  char *buf = (char *)malloc((size_t)f->width);
+  if (f->fill == '0' && (raw[0] == '+' || raw[0] == '-')) {
+    /* sign before zero-fill: +000042 */
+    buf[0] = raw[0];
+    memset(buf + 1, '0', (size_t)pad);
+    memcpy(buf + 1 + pad, raw + 1, (size_t)(raw_len - 1));
+  } else {
+    memset(buf, f->fill, (size_t)pad);
+    memcpy(buf + pad, raw, (size_t)raw_len);
+  }
+  mc_string *result = mc_alloc_string(buf, f->width);
+  free(buf);
+  return result;
+}
+
+mc_string *saga_int_format(int64_t val, const mc_string *fmt) {
+  fmt_spec f = parse_fmt(fmt);
+  char raw[64];
+  int n;
+  if (f.show_sign)
+    n = snprintf(raw, sizeof(raw), "%+" PRId64, val);
+  else
+    n = snprintf(raw, sizeof(raw), "%" PRId64, val);
+  return apply_padding(raw, n, &f);
+}
+
+mc_string *saga_float_format(double val, const mc_string *fmt) {
+  fmt_spec f = parse_fmt(fmt);
+  char raw[128];
+  int n;
+  if (f.scientific) {
+    if (f.precision >= 0) {
+      if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+.*e", f.precision, val);
+      else             n = snprintf(raw, sizeof(raw), "%.*e", f.precision, val);
+    } else {
+      if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+e", val);
+      else             n = snprintf(raw, sizeof(raw), "%e", val);
+    }
+  } else if (f.precision >= 0) {
+    if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+.*f", f.precision, val);
+    else             n = snprintf(raw, sizeof(raw), "%.*f", f.precision, val);
+  } else {
+    if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+g", val);
+    else             n = snprintf(raw, sizeof(raw), "%g", val);
+  }
+  return apply_padding(raw, n, &f);
+}
+
+mc_string *saga_string_format(const mc_string *self, const mc_string *fmt) {
+  fmt_spec f = parse_fmt(fmt);
+  int slen = self ? (int)self->len : 0;
+  const char *sdata = (self && self->data) ? self->data : "";
+  if (slen >= f.width) return mc_alloc_string(sdata, slen);
+  int pad = f.width - slen;
+  char *buf = (char *)malloc((size_t)f.width);
+  /* Strings are right-aligned with padding on the left by default. */
+  memset(buf, f.fill, (size_t)pad);
+  memcpy(buf + pad, sdata, (size_t)slen);
+  mc_string *result = mc_alloc_string(buf, f.width);
+  free(buf);
+  return result;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Array                                                                    */
+/*                                                                          */
+/* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount }   */
+/* (mc_array typedef is above, before string helpers that use it.)          */
+/* ───────────────────────────────────────────────────────────────────────── */
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array refcounting                                                        */
@@ -1357,6 +1564,29 @@ void saga_release_array(mc_array *arr) {
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array operations                                                         */
 /* ───────────────────────────────────────────────────────────────────────── */
+
+/* Internal versions used by string helpers (defined above via forward decl). */
+static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap) {
+  if (initial_cap < 4) initial_cap = 4;
+  mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
+  arr->data = malloc((size_t)(elem_size * initial_cap));
+  arr->len = 0;
+  arr->cap = initial_cap;
+  arr->elem_size = elem_size;
+  arr->refcount = 1;
+  return arr;
+}
+
+static void saga_array_push_internal(mc_array *arr, const void *elem) {
+  if (!arr) return;
+  if (arr->len >= arr->cap) {
+    arr->cap = arr->cap * 2;
+    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
+  }
+  memcpy((char *)arr->data + arr->elem_size * arr->len, elem,
+         (size_t)arr->elem_size);
+  arr->len++;
+}
 
 mc_array *saga_array_new(int64_t elem_size, int64_t initial_cap) {
   if (initial_cap < 4) initial_cap = 4;
@@ -1387,6 +1617,50 @@ void *saga_array_at(mc_array *arr, int64_t index) {
 
 int64_t saga_array_size(mc_array *arr) {
   return arr ? arr->len : 0;
+}
+
+int64_t saga_array_find(mc_array *arr, const void *elem, int64_t *out) {
+  if (!arr || !elem) return 1;
+  for (int64_t i = 0; i < arr->len; i++) {
+    void *cur = (char *)arr->data + arr->elem_size * i;
+    if (memcmp(cur, elem, (size_t)arr->elem_size) == 0) {
+      *out = i;
+      return 0;
+    }
+  }
+  return 1; /* not found */
+}
+
+void saga_array_insert(mc_array *arr, const void *elem, int64_t index) {
+  if (!arr || !elem) return;
+  if (index < 0) index = 0;
+  if (index > arr->len) index = arr->len;
+  /* Ensure capacity. */
+  if (arr->len >= arr->cap) {
+    arr->cap = arr->cap * 2;
+    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
+  }
+  /* Shift elements right. */
+  char *base = (char *)arr->data;
+  int64_t es = arr->elem_size;
+  if (index < arr->len) {
+    memmove(base + es * (index + 1), base + es * index,
+            (size_t)(es * (arr->len - index)));
+  }
+  memcpy(base + es * index, elem, (size_t)es);
+  arr->len++;
+}
+
+void *saga_array_pop(mc_array *arr) {
+  if (!arr || arr->len == 0) return NULL;
+  arr->len--;
+  return (char *)arr->data + arr->elem_size * arr->len;
+}
+
+void saga_array_set(mc_array *arr, int64_t index, const void *elem) {
+  if (!arr || !elem || index < 0 || index >= arr->len) return;
+  memcpy((char *)arr->data + arr->elem_size * index, elem,
+         (size_t)arr->elem_size);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -1760,6 +2034,16 @@ void *saga_map_key_at(mc_map *m, int64_t index) {
 void *saga_map_value_at(mc_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].value;
+}
+
+mc_array *saga_map_keys(mc_map *m) {
+  int64_t key_size = m ? m->key_size : 8;
+  int64_t len = m ? m->len : 0;
+  mc_array *arr = saga_array_new_internal(key_size, len > 4 ? len : 4);
+  for (int64_t i = 0; i < len; i++) {
+    saga_array_push_internal(arr, m->entries[i].key);
+  }
+  return arr;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
