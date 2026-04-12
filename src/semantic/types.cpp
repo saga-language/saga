@@ -139,14 +139,25 @@ bool is_numeric(const TypePtr &t) {
 
 bool is_ordered(const TypePtr &t) {
   auto u = unwrap_alias(t);
-  return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float ||
-               u->kind == TypeKind::String);
+  if (!u) return false;
+  // Any is the top/bottom type used by intrinsics; treat as orderable.
+  if (u->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(u->detail);
+    if (info.name == "Any") return true;
+  }
+  return u->kind == TypeKind::Int || u->kind == TypeKind::Float ||
+         u->kind == TypeKind::String;
 }
 
 bool is_equatable(const TypePtr &t) {
   auto u = unwrap_alias(t);
   if (!u)
     return false;
+  // Any is the top/bottom type used by intrinsics; treat as equatable.
+  if (u->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(u->detail);
+    if (info.name == "Any") return true;
+  }
   switch (u->kind) {
   case TypeKind::Bool:
   case TypeKind::Int:

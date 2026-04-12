@@ -1,0 +1,22 @@
+// Package map provides methods on the Map intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn |K, V| (self {K:V}) Size() Int {
+  intrinsic_runtime("saga_map_size", self)
+}
+
+pub fn |K, V| (self {K:V}) Set(key K, value V) Void {
+  intrinsic_runtime("saga_map_set", self, key, value)
+}
+
+pub fn |K, V| (self {K:V}) At(key K) V {
+  intrinsic_runtime("saga_map_get", self, key)
+}
+
+pub fn |K, V| (self {K:V}) Key?(key K) Bool {
+  intrinsic_runtime("saga_map_has", self, key)
+}
+
+pub fn |K, V| (self {K:V}) Remove(key K) Void {
+  intrinsic_runtime("saga_map_remove", self, key)
+}

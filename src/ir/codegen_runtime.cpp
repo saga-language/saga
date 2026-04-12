@@ -41,6 +41,16 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "mc_bool_to_string", module.get());
 
+  // mc_string* mc_string_lower(mc_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_string_lower", module.get());
+
+  // mc_string* mc_string_upper(mc_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "mc_string_upper", module.get());
+
   // mc_array* mc_array_new(i64 elem_size, i64 initial_cap)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
@@ -81,45 +91,45 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "mc_release_array", module.get());
 
-  // mc_map* mc_map_new(i64 key_size, i64 val_size)
+  // mc_map* saga_map_new(i64 key_size, i64 val_size, i64 is_string_key)
   llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_new", module.get());
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_new", module.get());
 
-  // void mc_map_set(mc_map* m, void* key, void* value, i64 is_string_key)
+  // void saga_map_set(mc_map* m, void* key, void* value)
   llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, ptr_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_set", module.get());
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_set", module.get());
 
-  // void* mc_map_get(mc_map* m, void* key, i64 is_string_key)
+  // void* saga_map_get(mc_map* m, void* key)
   llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_get", module.get());
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_get", module.get());
 
-  // i64 mc_map_has(mc_map* m, void* key, i64 is_string_key)
+  // i64 saga_map_has(mc_map* m, void* key)
   llvm::Function::Create(
-      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_has", module.get());
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_has", module.get());
 
-  // void mc_map_remove(mc_map* m, void* key, i64 is_string_key)
+  // void saga_map_remove(mc_map* m, void* key)
   llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_remove", module.get());
+      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_remove", module.get());
 
-  // i64 mc_map_size(mc_map* m)
+  // i64 saga_map_size(mc_map* m)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_size", module.get());
+      llvm::Function::ExternalLinkage, "saga_map_size", module.get());
 
-  // void* mc_map_key_at(mc_map* m, i64 index)
+  // void* saga_map_key_at(mc_map* m, i64 index)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_key_at", module.get());
+      llvm::Function::ExternalLinkage, "saga_map_key_at", module.get());
 
-  // void* mc_map_value_at(mc_map* m, i64 index)
+  // void* saga_map_value_at(mc_map* m, i64 index)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
-      llvm::Function::ExternalLinkage, "mc_map_value_at", module.get());
+      llvm::Function::ExternalLinkage, "saga_map_value_at", module.get());
 
   // void mc_retain_map(mc_map* m)
   llvm::Function::Create(

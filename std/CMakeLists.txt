@@ -4,8 +4,15 @@ set(SAGA_STD_LIBS_DIR "${CMAKE_BINARY_DIR}/lib")
 set(SAGA_STD_SGI_DIR_LOCAL "${CMAKE_BINARY_DIR}/lib/std")
 
 # Each stdlib package compiles to an object + interface file.
-# Build order matters: unsafe and sys have no deps, os needs sys+unsafe, io needs os.
-set(SAGA_STD_PACKAGES unsafe sys os io)
+# Type packages (int, float, bool, string) are leaf packages with no deps.
+# Build order: type packages first, then unsafe, sys, os, io.
+set(SAGA_STD_PACKAGES int float bool string array map unsafe sys os io)
+set(int_SGI_DEPS    "")
+set(float_SGI_DEPS  "")
+set(bool_SGI_DEPS   "")
+set(string_SGI_DEPS "")
+set(array_SGI_DEPS  "")
+set(map_SGI_DEPS    "")
 set(unsafe_SGI_DEPS "")
 set(sys_SGI_DEPS "")
 set(os_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/sys.sgi" "${SAGA_STD_SGI_DIR_LOCAL}/unsafe.sgi")

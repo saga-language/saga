@@ -101,6 +101,79 @@ PackageResolver::list_source_files(const std::string &dir) const {
 }
 
 // ===========================================================================
+// Generic receiver method helpers
+// ===========================================================================
+
+/// Replace SGI stub types (Struct("T"), Struct("K"), Struct("V")) with the
+/// sentinel TypeParam placeholders that check_selector's substitution expects.
+/// Called when loading Array/Map receiver methods from a pre-compiled SGI file.
+static TypePtr normalize_generic_receiver_sig(const TypePtr &t,
+                                              TypeKind recv_kind) {
+  if (!t)
+    return t;
+
+  // Replace a top-level stub.
+  if (t->kind == TypeKind::Struct) {
+    auto &sinfo = std::get<StructTypeInfo>(t->detail);
+    if (sinfo.fields.empty() && sinfo.methods.empty()) {
+      if (recv_kind == TypeKind::Array && sinfo.name == "T")
+        return make_type_param(9990, "T");
+      if (recv_kind == TypeKind::Map) {
+        if (sinfo.name == "K") return make_type_param(9991, "K");
+        if (sinfo.name == "V") return make_type_param(9992, "V");
+      }
+    }
+  }
+
+  // Recurse into compound types.
+  switch (t->kind) {
+  case TypeKind::Array: {
+    auto &info = std::get<ArrayTypeInfo>(t->detail);
+    auto elem = normalize_generic_receiver_sig(info.element, recv_kind);
+    return (elem == info.element) ? t : make_array_type(std::move(elem));
+  }
+  case TypeKind::Map: {
+    auto &info = std::get<MapTypeInfo>(t->detail);
+    auto k = normalize_generic_receiver_sig(info.key, recv_kind);
+    auto v = normalize_generic_receiver_sig(info.value, recv_kind);
+    return (k == info.key && v == info.value) ? t
+                                              : make_map_type(std::move(k), std::move(v));
+  }
+  case TypeKind::Func: {
+    auto &info = std::get<FuncTypeInfo>(t->detail);
+    bool changed = false;
+    std::vector<TypePtr> params, rets;
+    for (auto &p : info.params) {
+      auto np = normalize_generic_receiver_sig(p, recv_kind);
+      if (np != p) changed = true;
+      params.push_back(std::move(np));
+    }
+    for (auto &r : info.returns) {
+      auto nr = normalize_generic_receiver_sig(r, recv_kind);
+      if (nr != r) changed = true;
+      rets.push_back(std::move(nr));
+    }
+    if (!changed) return t;
+    auto result = make_func_type(std::move(params), std::move(rets));
+    std::get<FuncTypeInfo>(result->detail).is_variadic = info.is_variadic;
+    return result;
+  }
+  case TypeKind::Union: {
+    auto &info = std::get<UnionTypeInfo>(t->detail);
+    bool changed = false;
+    std::vector<TypePtr> alts;
+    for (auto &a : info.alternatives) {
+      auto na = normalize_generic_receiver_sig(a, recv_kind);
+      if (na != a) changed = true;
+      alts.push_back(std::move(na));
+    }
+    return changed ? make_union_type(std::move(alts)) : t;
+  }
+  default: return t;
+  }
+}
+
+// ===========================================================================
 // Entry point
 // ===========================================================================
 
@@ -113,6 +186,83 @@ void Analyzer::analyze(const Node &root) {
                  },
              },
              root.data);
+}
+
+void Analyzer::load_prelude() {
+  // Only load prelude for non-stdlib packages.
+  // stdlib packages define their own receiver methods; loading prelude
+  // there would cause duplicates before 3A.4 removes builtin_methods().
+  if (is_stdlib || !package_resolver)
+    return;
+
+  // --- Scalar types (Int, Float, Bool, String) ---
+  static const std::string scalar_pkgs[] = {
+    "std/int", "std/float", "std/bool", "std/string"
+  };
+  auto get_canonical = [this](const std::string &type_name) -> const Type * {
+    if (type_name == "Int")    return builtins.int_type.get();
+    if (type_name == "Float")  return builtins.float_type.get();
+    if (type_name == "Bool")   return builtins.bool_type.get();
+    if (type_name == "String") return builtins.string_type.get();
+    return nullptr;
+  };
+
+  for (auto &pkg : scalar_pkgs) {
+    std::string sgi_path = package_resolver->find_sgi_file(pkg);
+    if (sgi_path.empty())
+      continue;
+    auto sgi = load_sgi(sgi_path);
+    if (!sgi)
+      continue;
+    for (auto &rm : sgi->receiver_methods) {
+      const Type *canonical = get_canonical(rm.type_name);
+      if (!canonical)
+        continue;
+      for (auto &method : rm.methods) {
+        // Avoid duplicate methods (idempotent if load_prelude called twice).
+        auto &vec = type_methods_[canonical];
+        bool dup = false;
+        for (auto &existing : vec) {
+          if (existing.name == method.name) { dup = true; break; }
+        }
+        if (!dup)
+          vec.push_back(method);
+      }
+    }
+  }
+
+  // --- Generic types (Array, Map) ---
+  static const std::string generic_pkgs[] = {"std/array", "std/map"};
+  auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
+    if (tn == "Array") return TypeKind::Array;
+    if (tn == "Map")   return TypeKind::Map;
+    return std::nullopt;
+  };
+
+  for (auto &pkg : generic_pkgs) {
+    std::string sgi_path = package_resolver->find_sgi_file(pkg);
+    if (sgi_path.empty())
+      continue;
+    auto sgi = load_sgi(sgi_path);
+    if (!sgi)
+      continue;
+    for (auto &rm : sgi->receiver_methods) {
+      auto kind_opt = get_recv_kind(rm.type_name);
+      if (!kind_opt)
+        continue;
+      auto kind = *kind_opt;
+      for (auto &method : rm.methods) {
+        // Normalize stub type params to sentinels (T→9990, K→9991, V→9992).
+        auto sig = normalize_generic_receiver_sig(method.signature, kind);
+        auto &vec = kind_methods_[kind];
+        bool dup = false;
+        for (auto &e : vec)
+          if (e.name == method.name) { dup = true; break; }
+        if (!dup)
+          vec.push_back({method.name, sig, method.is_public});
+      }
+    }
+  }
 }
 
 // ===========================================================================
@@ -275,6 +425,9 @@ void Analyzer::expect_bool(Span span, const TypePtr &type,
 // ===========================================================================
 
 void Analyzer::visit_package(const PackageNode &pkg) {
+  // Load stdlib type packages' receiver methods before analyzing user code.
+  load_prelude();
+
   push_scope(ScopeKind::Module);
 
   // Save the package scope so import resolution can extract exports later.
@@ -462,8 +615,13 @@ void Analyzer::visit_source(const SourceNode &src) {
 void Analyzer::collect_declaration(const Node &node) {
   std::visit(overloaded{
                  [&](const FuncDeclNode &fn) {
-                   declare(Symbol::function(std::string(fn.name.name), nullptr,
-                                            fn.name.span, fn.is_public));
+                   // Receiver methods are bound to a type; they're not
+                   // callable as free functions and must not shadow types
+                   // (e.g. Bool.String() must not shadow the String type).
+                   if (!fn.receiver)
+                     declare(Symbol::function(std::string(fn.name.name),
+                                              nullptr, fn.name.span,
+                                              fn.is_public));
                  },
                  [&](const StructDeclNode &s) {
                    declare(Symbol::type_sym(std::string(s.name.name), nullptr,
@@ -603,6 +761,49 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
         // Record the directory so the linker can find the .o file.
         package_resolver->sgi_resolved_dirs[import_path] =
             fs::path(sgi_path).parent_path().string();
+
+        // Populate type_methods_ / kind_methods_ from stdlib receiver methods.
+        auto get_canonical = [this](const std::string &tn) -> const Type * {
+          if (tn == "Int")    return builtins.int_type.get();
+          if (tn == "Float")  return builtins.float_type.get();
+          if (tn == "Bool")   return builtins.bool_type.get();
+          if (tn == "String") return builtins.string_type.get();
+          return nullptr;
+        };
+        auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
+          if (tn == "Array") return TypeKind::Array;
+          if (tn == "Map")   return TypeKind::Map;
+          return std::nullopt;
+        };
+        for (auto &rm : sgi->receiver_methods) {
+          // Scalar types → type_methods_
+          if (const Type *canonical = get_canonical(rm.type_name)) {
+            for (auto &method : rm.methods) {
+              auto &vec = type_methods_[canonical];
+              bool dup = false;
+              for (auto &e : vec) {
+                if (e.name == method.name) { dup = true; break; }
+              }
+              if (!dup)
+                vec.push_back(method);
+            }
+            continue;
+          }
+          // Generic types → kind_methods_ (with sentinel normalization)
+          if (auto kind_opt = get_recv_kind(rm.type_name)) {
+            auto kind = *kind_opt;
+            for (auto &method : rm.methods) {
+              auto sig = normalize_generic_receiver_sig(method.signature, kind);
+              auto &vec = kind_methods_[kind];
+              bool dup = false;
+              for (auto &e : vec)
+                if (e.name == method.name) { dup = true; break; }
+              if (!dup)
+                vec.push_back({method.name, sig, method.is_public});
+            }
+          }
+        }
+
         return module_type;
       }
     }
@@ -685,6 +886,42 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
     }
     package_resolver->in_progress.erase(import_path);
     return builtins.error_type;
+  }
+
+  // Merge receiver methods from stdlib sub-packages into this analyzer.
+  // The sub-analyzer's type pointers differ from ours; map by TypeKind.
+  for (auto &[sub_type_ptr, methods] : sub_analyzer.type_methods_) {
+    const Type *our_type = nullptr;
+    switch (sub_type_ptr->kind) {
+    case TypeKind::Int:    our_type = builtins.int_type.get();    break;
+    case TypeKind::Float:  our_type = builtins.float_type.get();  break;
+    case TypeKind::Bool:   our_type = builtins.bool_type.get();   break;
+    case TypeKind::String: our_type = builtins.string_type.get(); break;
+    default: break;
+    }
+    if (!our_type)
+      continue;
+    for (auto &method : methods) {
+      auto &vec = type_methods_[our_type];
+      bool dup = false;
+      for (auto &e : vec) {
+        if (e.name == method.name) { dup = true; break; }
+      }
+      if (!dup)
+        vec.push_back(method);
+    }
+  }
+
+  // Merge generic receiver methods (Array, Map) from sub-analyzer.
+  for (auto &[kind, methods] : sub_analyzer.kind_methods_) {
+    for (auto &method : methods) {
+      auto &vec = kind_methods_[kind];
+      bool dup = false;
+      for (auto &e : vec)
+        if (e.name == method.name) { dup = true; break; }
+      if (!dup)
+        vec.push_back(method);
+    }
   }
 
   // Extract public symbols from the sub-package's module scope.
@@ -910,7 +1147,9 @@ void Analyzer::resolve_declaration(const Node &node) {
 
 void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // If the function is generic, push a temporary scope to hold type params
-  // so the signature can reference them.
+  // so the signature can reference them.  The scope must also be active
+  // while resolving the receiver type, so we defer pop_scope() until after
+  // the receiver binding below.
   bool has_generics = fn.generic.has_value();
   if (has_generics) {
     push_scope(ScopeKind::Block);
@@ -925,10 +1164,9 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
     fi.is_variadic = true;
   }
 
-  if (has_generics)
-    pop_scope();
-
   // If this is a receiver method, attach it to the receiver type.
+  // NOTE: generics scope (if any) is still active here so that non-identifier
+  // receiver types like [T] can resolve T as the function's type parameter.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
     if (auto *ident = std::get_if<IdentifierNode>(&recv_type_node->data)) {
@@ -962,8 +1200,64 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
           }
         }
       }
+    } else if (auto *arr_tn =
+                   std::get_if<ArrayTypeNode>(&recv_type_node->data)) {
+      // Generic array receiver: pub fn (self [T]) Method(...) ...
+      // Stdlib only. Normalize the T type-param ID to the sentinel 9990 so
+      // that check_selector's existing substitution logic handles it.
+      if (!is_stdlib) {
+        error(fn.receiver->name.span,
+              "receiver methods on generic types can only be "
+              "defined in stdlib packages");
+      } else {
+        auto elem_type = resolve_type(*arr_tn->element_type);
+        TypePtr normalized = fn_type;
+        if (elem_type && elem_type->kind == TypeKind::TypeParam) {
+          auto &tp = std::get<TypeParamInfo>(elem_type->detail);
+          std::unordered_map<uint32_t, TypePtr> subst;
+          subst[tp.param.id] = make_type_param(9990, "T");
+          normalized = substitute(fn_type, subst);
+        }
+        auto &vec = kind_methods_[TypeKind::Array];
+        bool dup = false;
+        for (auto &e : vec)
+          if (e.name == std::string(fn.name.name)) { dup = true; break; }
+        if (!dup)
+          vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
+      }
+    } else if (auto *map_tn =
+                   std::get_if<MapTypeNode>(&recv_type_node->data)) {
+      // Generic map receiver: pub fn (self {K:V}) Method(...) ...
+      // Stdlib only. Normalize K→9991, V→9992.
+      if (!is_stdlib) {
+        error(fn.receiver->name.span,
+              "receiver methods on generic types can only be "
+              "defined in stdlib packages");
+      } else {
+        auto key_type = resolve_type(*map_tn->key_type);
+        auto val_type = resolve_type(*map_tn->value_type);
+        TypePtr normalized = fn_type;
+        std::unordered_map<uint32_t, TypePtr> subst;
+        if (key_type && key_type->kind == TypeKind::TypeParam)
+          subst[std::get<TypeParamInfo>(key_type->detail).param.id] =
+              make_type_param(9991, "K");
+        if (val_type && val_type->kind == TypeKind::TypeParam)
+          subst[std::get<TypeParamInfo>(val_type->detail).param.id] =
+              make_type_param(9992, "V");
+        if (!subst.empty())
+          normalized = substitute(fn_type, subst);
+        auto &vec = kind_methods_[TypeKind::Map];
+        bool dup = false;
+        for (auto &e : vec)
+          if (e.name == std::string(fn.name.name)) { dup = true; break; }
+        if (!dup)
+          vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
+      }
     }
   }
+
+  if (has_generics)
+    pop_scope();
 
   // Update the function symbol.
   auto sym_it = current_scope->symbols.find(std::string(fn.name.name));
@@ -2160,7 +2454,13 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
-  if (lhs->kind == TypeKind::Struct) {
+  // Exception: Any is the stdlib top/bottom type — skip method dispatch and
+  // fall through to the built-in operator paths below.
+  auto is_any_type = [](const TypePtr &t) {
+    if (!t || t->kind != TypeKind::Struct) return false;
+    return std::get<StructTypeInfo>(t->detail).name == "Any";
+  };
+  if (lhs->kind == TypeKind::Struct && !is_any_type(lhs)) {
     return check_struct_binary_expr(node, parent, lhs, rhs);
   }
 
@@ -2576,6 +2876,37 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
 
   // Check built-in methods for the type kind (unwrapping aliases).
   auto effective_kind = underlying_kind(obj_type);
+
+  // Check stdlib-defined generic receiver methods (Array, Map).
+  // These use the same sentinel type-param IDs as builtin_methods (9990=T,
+  // 9991=K, 9992=V), so the same substitution logic applies.
+  {
+    auto it = kind_methods_.find(effective_kind);
+    if (it != kind_methods_.end()) {
+      auto effective_type = unwrap_alias(obj_type);
+      for (auto &m : it->second) {
+        if (m.name == field_name) {
+          if (!m.signature)
+            return builtins.error_type;
+          if (effective_kind == TypeKind::Map && has_type_params(m.signature)) {
+            auto &map_info = std::get<MapTypeInfo>(effective_type->detail);
+            std::unordered_map<uint32_t, TypePtr> bindings;
+            bindings[9991] = map_info.key;
+            bindings[9992] = map_info.value;
+            return substitute(m.signature, bindings);
+          }
+          if (effective_kind == TypeKind::Array &&
+              has_type_params(m.signature)) {
+            auto &arr_info = std::get<ArrayTypeInfo>(effective_type->detail);
+            std::unordered_map<uint32_t, TypePtr> bindings;
+            bindings[9990] = arr_info.element;
+            return substitute(m.signature, bindings);
+          }
+          return m.signature;
+        }
+      }
+    }
+  }
   auto methods = builtin_methods(effective_kind, builtins);
   for (auto &m : methods) {
     if (m.name == field_name) {

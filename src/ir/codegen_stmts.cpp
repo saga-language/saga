@@ -125,6 +125,18 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
       builder.CreateRetVoid();
     } else if (tail_val && tail_val->getType() == ret_type) {
       builder.CreateRet(tail_val);
+    } else if (tail_val && ret_type->isIntegerTy() &&
+               tail_val->getType()->isIntegerTy() &&
+               tail_val->getType() != ret_type) {
+      // Integer width mismatch (e.g. runtime returns i64, function returns i1).
+      unsigned src_bits = tail_val->getType()->getIntegerBitWidth();
+      unsigned dst_bits = ret_type->getIntegerBitWidth();
+      llvm::Value *conv;
+      if (src_bits > dst_bits)
+        conv = builder.CreateTrunc(tail_val, ret_type, "ret.trunc");
+      else
+        conv = builder.CreateZExt(tail_val, ret_type, "ret.zext");
+      builder.CreateRet(conv);
     } else if (tail_val && ret_type->isStructTy() &&
                tail_val->getType()->isPointerTy()) {
       // Union tail: pointer to union struct — load and return.
@@ -364,12 +376,12 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         if (val_ll->isIntegerTy(1))
           val_size = 1;
       }
-      auto *new_fn = module->getFunction("mc_map_new");
-      int64_t key_size_arg = string_keys ? -1 : key_size;
+      auto *new_fn = module->getFunction("saga_map_new");
       auto *map = builder.CreateCall(
           new_fn,
-          {llvm::ConstantInt::get(i64_type, key_size_arg),
-           llvm::ConstantInt::get(i64_type, val_size)},
+          {llvm::ConstantInt::get(i64_type, key_size),
+           llvm::ConstantInt::get(i64_type, val_size),
+           llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0)},
           "map");
       auto *alloca = create_entry_alloca(func, name, var_type);
       locals[name] = alloca;
@@ -507,18 +519,14 @@ void CodeGen::emit_assign(const AssignNode &node) {
 
       auto obj_sem = semantic_type(*idx_expr->object);
       if (obj_sem && obj_sem->kind == TypeKind::Map) {
-        auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
-        bool string_keys = is_string_key_type(map_info.key);
-        auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
-
         auto *func = builder.GetInsertBlock()->getParent();
         auto *key_tmp = create_entry_alloca(func, "map.asgn.key", key->getType());
         builder.CreateStore(key, key_tmp);
         auto *val_tmp = create_entry_alloca(func, "map.asgn.val", rhs->getType());
         builder.CreateStore(rhs, val_tmp);
 
-        auto *set_fn = module->getFunction("mc_map_set");
-        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp, is_str_key});
+        auto *set_fn = module->getFunction("saga_map_set");
+        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp});
       } else if (obj_sem && obj_sem->kind == TypeKind::Array) {
         // Array index assignment: arr[idx] = rhs
         // TODO: implement mc_array_set when available

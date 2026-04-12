@@ -59,12 +59,19 @@ struct SgiImport {
   std::string import_path; // full path (e.g. "std/os")
 };
 
+/// Receiver methods bound to an intrinsic type in a stdlib package.
+struct SgiReceiverMethod {
+  std::string type_name; // "Int", "Float", "Bool", "String"
+  std::vector<MethodInfo> methods;
+};
+
 /// Parsed contents of a .sgi file.
 struct SgiFile {
   int version = 1;
   std::string package_name;
   std::vector<SgiImport> imports;
   std::vector<SgiExport> exports;
+  std::vector<SgiReceiverMethod> receiver_methods; // stdlib intrinsic methods
 };
 
 // ---------------------------------------------------------------------------
@@ -75,15 +82,18 @@ struct SgiFile {
 /// `package_name` is the short name (e.g. "io").
 /// `imports` records which packages this package depends on.
 /// `exports` is the list of public symbols to serialize.
+/// `receiver_methods` is the list of intrinsic receiver methods (stdlib only).
 std::string generate_sgi(const std::string &package_name,
                           const std::vector<SgiImport> &imports,
-                          const std::vector<SgiExport> &exports);
+                          const std::vector<SgiExport> &exports,
+                          const std::vector<SgiReceiverMethod> &receiver_methods = {});
 
 /// Write a .sgi file to disk. Returns true on success.
 bool write_sgi(const std::string &path,
                const std::string &package_name,
                const std::vector<SgiImport> &imports,
-               const std::vector<SgiExport> &exports);
+               const std::vector<SgiExport> &exports,
+               const std::vector<SgiReceiverMethod> &receiver_methods = {});
 
 // ---------------------------------------------------------------------------
 // Reader — parse a .sgi file back into a ModuleType.

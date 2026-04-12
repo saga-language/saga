@@ -384,29 +384,32 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_field", SymbolKind::Function,
       make_func_type({types.any_type, types.int_type}, {types.any_type})));
 
-  // intrinsic_sitofp(value: Int) -> Float
-  // LLVM sitofp i64 → double.
+  // intrinsic_sitofp(value: Int) -> Any
+  // LLVM sitofp i64 → double. Returns Any so the stdlib can cast to Float,
+  // Float32, Float64, etc.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sitofp", SymbolKind::Function,
-      make_func_type({types.int_type}, {types.float_type})));
+      make_func_type({types.int_type}, {types.any_type})));
 
-  // intrinsic_fptosi(value: Float) -> Int
-  // LLVM fptosi double → i64.
+  // intrinsic_fptosi(value: Float) -> Any
+  // LLVM fptosi double → i64. Returns Any so the stdlib can cast to Int,
+  // Int32, etc.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fptosi", SymbolKind::Function,
-      make_func_type({types.float_type}, {types.int_type})));
+      make_func_type({types.float_type}, {types.any_type})));
 
-  // intrinsic_zext(value: Int, bits: Int) -> Int
-  // LLVM zext/trunc to the target bit width.
+  // intrinsic_zext(value: Int, bits: Int) -> Any
+  // LLVM zext/trunc to the target bit width. Returns Any so the stdlib can
+  // cast to Uint8, Int32, Char, etc.
   global_scope->declare(Symbol::builtin(
       "intrinsic_zext", SymbolKind::Function,
-      make_func_type({types.int_type, types.int_type}, {types.int_type})));
+      make_func_type({types.int_type, types.int_type}, {types.any_type})));
 
-  // intrinsic_sext(value: Int, bits: Int) -> Int
-  // LLVM sext/trunc to the target bit width (sign-extending).
+  // intrinsic_sext(value: Int, bits: Int) -> Any
+  // LLVM sext/trunc to the target bit width (sign-extending). Returns Any.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sext", SymbolKind::Function,
-      make_func_type({types.int_type, types.int_type}, {types.int_type})));
+      make_func_type({types.int_type, types.int_type}, {types.any_type})));
 }
 
 } // namespace mc

@@ -1,0 +1,11 @@
+// Package array provides methods on the Array intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn |T| (self [T]) Size() Int {
+  intrinsic_runtime("mc_array_size", self)
+}
+
+pub fn |T| (self [T]) Push(elem T) T {
+  intrinsic_runtime("mc_array_push", self, elem)
+  elem
+}

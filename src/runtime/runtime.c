@@ -1296,6 +1296,32 @@ mc_string *mc_bool_to_string(int64_t val) {
   return mc_alloc_string("false", 5);
 }
 
+mc_string *mc_string_lower(const mc_string *s) {
+  if (!s || s->len == 0) return mc_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  if (!buf) return mc_alloc_string("", 0);
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+  }
+  mc_string *result = mc_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
+mc_string *mc_string_upper(const mc_string *s) {
+  if (!s || s->len == 0) return mc_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  if (!buf) return mc_alloc_string("", 0);
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+  }
+  mc_string *result = mc_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array                                                                    */
 /*                                                                          */
@@ -1390,6 +1416,7 @@ typedef struct {
   int64_t key_size;
   int64_t val_size;
   int64_t refcount;
+  int     is_string_key;    /* 1 if keys are mc_string pointers            */
 } mc_map;
 
 #define MC_MAP_EMPTY    (-1)
@@ -1493,9 +1520,8 @@ static uint64_t mc_siphash(const uint8_t *data, int64_t len) {
 
 /* ── Key hashing / comparison helpers ──────────────────────────────────── */
 
-static uint64_t mc_map_hash_key(const mc_map *m, const void *key,
-                                int is_string_key) {
-  if (is_string_key) {
+static uint64_t mc_map_hash_key(const mc_map *m, const void *key) {
+  if (m->is_string_key) {
     const mc_string *s = *(const mc_string *const *)key;
     if (!s || !s->data || s->len <= 0)
       return mc_siphash((const uint8_t *)"", 0);
@@ -1504,9 +1530,8 @@ static uint64_t mc_map_hash_key(const mc_map *m, const void *key,
   return mc_siphash((const uint8_t *)key, m->key_size);
 }
 
-static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b,
-                             int is_string_key) {
-  if (is_string_key) {
+static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b) {
+  if (m->is_string_key) {
     const mc_string *sa = *(const mc_string *const *)a;
     const mc_string *sb = *(const mc_string *const *)b;
     if (sa == sb) return 1;
@@ -1526,8 +1551,8 @@ static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b,
 /* On empty/deleted, *out_entry_idx is set to -1.                           */
 
 static int64_t mc_map_probe(const mc_map *m, const void *key,
-                            int is_string_key, int64_t *out_entry_idx) {
-  uint64_t h = mc_map_hash_key(m, key, is_string_key);
+                            int64_t *out_entry_idx) {
+  uint64_t h = mc_map_hash_key(m, key);
   int64_t mask = m->index_cap - 1; /* index_cap is always a power of 2 */
   int64_t slot = (int64_t)(h & (uint64_t)mask);
   int64_t first_deleted = -1;
@@ -1545,7 +1570,7 @@ static int64_t mc_map_probe(const mc_map *m, const void *key,
       continue;
     }
     /* Occupied — compare keys. */
-    if (mc_map_keys_equal(m, m->entries[eidx].key, key, is_string_key)) {
+    if (mc_map_keys_equal(m, m->entries[eidx].key, key)) {
       *out_entry_idx = eidx;
       return s;
     }
@@ -1557,14 +1582,14 @@ static int64_t mc_map_probe(const mc_map *m, const void *key,
 
 /* ── Rebuild / resize ──────────────────────────────────────────────────── */
 
-static void mc_map_rebuild_index(mc_map *m, int is_string_key) {
+static void mc_map_rebuild_index(mc_map *m) {
   /* Reset index table. */
   for (int64_t i = 0; i < m->index_cap; i++)
     m->indices[i] = MC_MAP_EMPTY;
 
   int64_t mask = m->index_cap - 1;
   for (int64_t ei = 0; ei < m->len; ei++) {
-    uint64_t h = mc_map_hash_key(m, m->entries[ei].key, is_string_key);
+    uint64_t h = mc_map_hash_key(m, m->entries[ei].key);
     int64_t slot = (int64_t)(h & (uint64_t)mask);
     while (m->indices[slot] >= 0)
       slot = (slot + 1) & mask;
@@ -1572,7 +1597,7 @@ static void mc_map_rebuild_index(mc_map *m, int is_string_key) {
   }
 }
 
-static void mc_map_grow(mc_map *m, int is_string_key) {
+static void mc_map_grow(mc_map *m) {
   /* Double the entries capacity. */
   int64_t new_ecap = m->entries_cap * 2;
   if (new_ecap < 16) new_ecap = 16;
@@ -1589,7 +1614,7 @@ static void mc_map_grow(mc_map *m, int is_string_key) {
         (size_t)new_icap * sizeof(int64_t));
     m->index_cap = new_icap;
   }
-  mc_map_rebuild_index(m, is_string_key);
+  mc_map_rebuild_index(m);
 }
 
 /* ── Refcounting ───────────────────────────────────────────────────────── */
@@ -1615,7 +1640,8 @@ void mc_release_map(mc_map *m) {
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-mc_map *mc_map_new(int64_t key_size, int64_t val_size) {
+mc_map *saga_map_new(int64_t key_size, int64_t val_size,
+                     int64_t is_string_key) {
   int64_t initial_ecap = 8;
   int64_t initial_icap = 16; /* power of 2, ≥ 2 * initial_ecap */
 
@@ -1628,18 +1654,18 @@ mc_map *mc_map_new(int64_t key_size, int64_t val_size) {
   m->len = 0;
   m->entries_cap = initial_ecap;
   m->index_cap = initial_icap;
-  m->key_size = (key_size < 0) ? (int64_t)sizeof(void *) : key_size;
+  m->key_size = key_size;
   m->val_size = val_size;
   m->refcount = 1;
+  m->is_string_key = (int)is_string_key;
   return m;
 }
 
-void mc_map_set(mc_map *m, const void *key, const void *value,
-                int64_t is_string_key) {
+void saga_map_set(mc_map *m, const void *key, const void *value) {
   if (!m) return;
 
   int64_t entry_idx;
-  int64_t slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+  int64_t slot = mc_map_probe(m, key, &entry_idx);
 
   if (entry_idx >= 0) {
     /* Key exists — update value in place (preserves insertion order). */
@@ -1649,14 +1675,14 @@ void mc_map_set(mc_map *m, const void *key, const void *value,
 
   /* New key — grow if entries array is full. */
   if (m->len >= m->entries_cap) {
-    mc_map_grow(m, (int)is_string_key);
+    mc_map_grow(m);
     /* Slot may have moved; re-probe. */
-    slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+    slot = mc_map_probe(m, key, &entry_idx);
   }
   /* Also check index load factor (> 2/3). */
   if ((m->len + 1) * 3 > m->index_cap * 2) {
-    mc_map_grow(m, (int)is_string_key);
-    slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+    mc_map_grow(m);
+    slot = mc_map_probe(m, key, &entry_idx);
   }
 
   /* Append to the dense entries array. */
@@ -1670,24 +1696,24 @@ void mc_map_set(mc_map *m, const void *key, const void *value,
   m->len++;
 }
 
-void *mc_map_get(mc_map *m, const void *key, int64_t is_string_key) {
+void *saga_map_get(mc_map *m, const void *key) {
   if (!m || m->len == 0) return NULL;
 
   int64_t entry_idx;
-  mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+  mc_map_probe(m, key, &entry_idx);
   if (entry_idx < 0) return NULL;
   return m->entries[entry_idx].value;
 }
 
-int64_t mc_map_has(mc_map *m, const void *key, int64_t is_string_key) {
-  return mc_map_get(m, key, is_string_key) != NULL ? 1 : 0;
+int64_t saga_map_has(mc_map *m, const void *key) {
+  return saga_map_get(m, key) != NULL ? 1 : 0;
 }
 
-void mc_map_remove(mc_map *m, const void *key, int64_t is_string_key) {
+void saga_map_remove(mc_map *m, const void *key) {
   if (!m || m->len == 0) return;
 
   int64_t entry_idx;
-  int64_t slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+  int64_t slot = mc_map_probe(m, key, &entry_idx);
   if (entry_idx < 0) return;
 
   /* Free the key/value being removed. */
@@ -1705,7 +1731,7 @@ void mc_map_remove(mc_map *m, const void *key, int64_t is_string_key) {
     /* position.                                                           */
     int64_t moved_eidx;
     int64_t moved_slot = mc_map_probe(m, m->entries[entry_idx].key,
-                                      (int)is_string_key, &moved_eidx);
+                                      &moved_eidx);
     /* moved_eidx should still be `last`; fix it. */
     (void)moved_slot;
     /* Scan the index for the entry pointing at `last` and rewrite it. */
@@ -1721,17 +1747,17 @@ void mc_map_remove(mc_map *m, const void *key, int64_t is_string_key) {
   m->len--;
 }
 
-int64_t mc_map_size(mc_map *m) {
+int64_t saga_map_size(mc_map *m) {
   return m ? m->len : 0;
 }
 
 /* O(1) access by insertion index — the dense array IS the order. */
-void *mc_map_key_at(mc_map *m, int64_t index) {
+void *saga_map_key_at(mc_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].key;
 }
 
-void *mc_map_value_at(mc_map *m, int64_t index) {
+void *saga_map_value_at(mc_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].value;
 }
@@ -1791,7 +1817,8 @@ mc_array *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
   return arr;
 }
 
-mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
+mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size,
+                          int64_t is_string_key) {
   if (!a) return NULL;
 
   int64_t initial_ecap = 8;
@@ -1816,9 +1843,10 @@ mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
   m->len         = 0;
   m->entries_cap = initial_ecap;
   m->index_cap   = initial_icap;
-  m->key_size    = (key_size < 0) ? (int64_t)sizeof(void *) : key_size;
+  m->key_size    = key_size;
   m->val_size    = val_size;
   m->refcount    = -1; /* arena-owned */
+  m->is_string_key = (int)is_string_key;
   return m;
 }
 

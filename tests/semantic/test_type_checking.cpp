@@ -571,6 +571,37 @@ TEST(TypeCheck, ReceiverMethodAccess) {
   EXPECT_TRUE(r.ok());
 }
 
+TEST(TypeCheck, ArrayGenericReceiverMethod) {
+  // stdlib-mode array receiver with generic T; Len() returns Int.
+  auto r = TC::from(
+      "fn |T| (self [T]) Len() Int { 0 }\n"
+      "fn f() Int {\n  arr := [1, 2, 3]\n  arr.Len()\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, ArrayGenericReceiverMethodSubstitution) {
+  // Return type [T] should substitute T→Int for [Int] receiver.
+  auto r = TC::from(
+      "fn |T| (self [T]) Clone() [T] { self }\n"
+      "fn f() [Int] {\n  arr := [1, 2, 3]\n  arr.Clone()\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, ArrayGenericReceiverMethodNonStdlibRejected) {
+  auto r = TC::from("fn |T| (self [T]) Len() Int { 0 }",
+                     /*stdlib=*/false);
+  EXPECT_TRUE(r.has_err("receiver methods on generic types can only be "
+                         "defined in stdlib packages"));
+}
+
+TEST(TypeCheck, MapGenericReceiverMethod) {
+  // stdlib-mode map receiver with generic K, V; Size() returns Int.
+  auto r = TC::from(
+      "fn |K, V| (self {K:V}) Size() Int { 0 }\n"
+      "fn f() Int {\n  m := {\"a\": 1}\n  m.Size()\n}");
+  EXPECT_TRUE(r.ok());
+}
+
 // ===========================================================================
 // Bitwise NOT (~)
 // ===========================================================================

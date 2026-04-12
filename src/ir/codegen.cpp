@@ -168,6 +168,10 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to mc_map
   case TypeKind::Func:
     return llvm::PointerType::getUnqual(context); // ptr to mc_closure
+  case TypeKind::TypeParam:
+    // Unresolved generic type parameter (e.g. T in stdlib [T] methods).
+    // At runtime, generic values are passed as opaque pointers.
+    return llvm::PointerType::getUnqual(context);
   default:
     return void_ll_type;
   }

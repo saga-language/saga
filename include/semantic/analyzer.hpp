@@ -154,6 +154,12 @@ struct Analyzer {
   /// methods vector (e.g. enums). Keyed by raw Type pointer.
   std::unordered_map<const Type *, std::vector<MethodInfo>> type_methods_;
 
+  /// Stdlib-defined receiver methods on generic types (Array, Map).
+  /// Keyed by TypeKind; signatures use sentinel type-param IDs (9990=T,
+  /// 9991=K, 9992=V) matching the builtin_methods convention so that the
+  /// same substitution logic in check_selector handles both.
+  std::unordered_map<TypeKind, std::vector<MethodInfo>> kind_methods_;
+
   /// Maps a BinaryExprNode (by its containing Node*) to the method name that
   /// should be called to implement the operator (e.g. "Add", "Compare").
   /// Only populated for struct-typed operands; primitive operators are still
@@ -191,6 +197,11 @@ struct Analyzer {
 
   /// Analyze an entire package (PackageNode at root).
   void analyze(const Node &root);
+
+  /// Load stdlib type packages (int, float, bool, string) from pre-compiled
+  /// .sgi files and populate type_methods_.  Called automatically at the start
+  /// of analysis when not in stdlib mode.
+  void load_prelude();
 
   // ── Import resolution ────────────────────────────────────────────────
 

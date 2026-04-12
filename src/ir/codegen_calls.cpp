@@ -3,6 +3,7 @@
 
 #include "ir/codegen.hpp"
 
+#include <algorithm>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/InlineAsm.h>
@@ -243,88 +244,136 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     if (!obj)
       return nullptr;
 
-    // Array methods.
-    if (obj_sem && obj_sem->kind == TypeKind::Array) {
-      if (method == "Size") {
-        auto *size_fn = module->getFunction("mc_array_size");
-        return builder.CreateCall(size_fn, {obj}, "size");
-      }
-      if (method == "Push" && !node.args.empty()) {
-        auto *val = emit_expr(*node.args[0]);
-        if (!val) return nullptr;
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *tmp = create_entry_alloca(func, "push.tmp", val->getType());
-        builder.CreateStore(val, tmp);
-        auto *push_fn = module->getFunction("mc_array_push");
-        builder.CreateCall(push_fn, {obj, tmp});
-        return obj; // Push returns the array.
+    // Stdlib-defined receiver methods on generic intrinsic types (Array, Map).
+    // These are compiled from stdlib source (e.g. std/array/array.sg) and use
+    // opaque ptr for TypeParam parameters.  At the call site we box/unbox
+    // concrete scalar values to match the generic ABI.
+    if (obj_sem) {
+      auto km_it = analyzer.kind_methods_.find(obj_sem->kind);
+      if (km_it != analyzer.kind_methods_.end()) {
+        for (auto &m : km_it->second) {
+          if (m.name != method)
+            continue;
+
+          // Determine the type name for the mangled link name.
+          const char *km_type_name = nullptr;
+          switch (obj_sem->kind) {
+          case TypeKind::Array: km_type_name = "Array"; break;
+          case TypeKind::Map:   km_type_name = "Map"; break;
+          default: break;
+          }
+          if (!km_type_name)
+            break;
+
+          // Look up or forward-declare the stdlib function.
+          std::string same_pkg_link =
+              mangle(std::string(km_type_name) + "__" + method);
+          auto *callee = module->getFunction(same_pkg_link);
+
+          if (!callee && m.signature &&
+              m.signature->kind == TypeKind::Func) {
+            // Cross-package call: forward-declare the external function.
+            std::string stdlib_pkg = std::string(km_type_name);
+            std::transform(stdlib_pkg.begin(), stdlib_pkg.end(),
+                           stdlib_pkg.begin(), ::tolower);
+            std::string cross_link = mangle(stdlib_pkg,
+                std::string(km_type_name) + "__" + method);
+
+            callee = module->getFunction(cross_link);
+            if (!callee) {
+              auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+              auto *self_ll = llvm_type(obj_sem);
+              std::vector<llvm::Type *> param_ll;
+              param_ll.push_back(self_ll); // self
+              for (auto &p : fi.params)
+                param_ll.push_back(llvm_type(p));
+              llvm::Type *ret_ll = fi.returns.empty()
+                                       ? void_ll_type
+                                       : llvm_type(fi.returns[0]);
+              auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
+              callee = llvm::Function::Create(
+                  ft, llvm::Function::ExternalLinkage, cross_link,
+                  module.get());
+            }
+          }
+
+          if (callee) {
+            auto *parent_fn = builder.GetInsertBlock()->getParent();
+            auto *callee_ft = callee->getFunctionType();
+
+            std::vector<llvm::Value *> args;
+            args.push_back(obj); // self
+
+            // Check which params are TypeParam (generic) in the signature.
+            std::vector<bool> param_is_generic;
+            if (m.signature) {
+              auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+              for (auto &pt : fi.params)
+                param_is_generic.push_back(
+                    pt && pt->kind == TypeKind::TypeParam);
+            }
+
+            for (size_t ai = 0; ai < node.args.size(); ++ai) {
+              auto *val = emit_expr(*node.args[ai]);
+              if (!val) continue;
+              // Box → ptr if callee param is a generic TypeParam.
+              // All values (including pointers like strings) must be
+              // boxed so the callee receives void* → actual value.
+              size_t pi = ai + 1; // +1 for self
+              bool is_generic = ai < param_is_generic.size() &&
+                                param_is_generic[ai];
+              if (is_generic && pi < callee_ft->getNumParams()) {
+                auto *tmp = create_entry_alloca(parent_fn, "box.tmp",
+                                                val->getType());
+                builder.CreateStore(val, tmp);
+                val = tmp;
+              }
+              args.push_back(val);
+            }
+
+            if (callee_ft->getReturnType()->isVoidTy()) {
+              builder.CreateCall(callee, args);
+              return nullptr;
+            }
+
+            llvm::Value *result = builder.CreateCall(callee, args, "kmcall");
+
+            // Unbox: if callee returns ptr but the concrete return type
+            // (after substituting type params) is a scalar, load it.
+            if (result->getType()->isPointerTy() && m.signature) {
+              auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+              if (!fi.returns.empty() &&
+                  fi.returns[0]->kind == TypeKind::TypeParam) {
+                // Resolve the concrete type from the receiver.
+                TypePtr concrete_ret;
+                if (obj_sem->kind == TypeKind::Array) {
+                  auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
+                  concrete_ret = arr_info.element;
+                } else if (obj_sem->kind == TypeKind::Map) {
+                  auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
+                  auto &tp = std::get<TypeParamInfo>(fi.returns[0]->detail);
+                  if (tp.param.id == 9991)
+                    concrete_ret = map_info.key;
+                  else
+                    concrete_ret = map_info.value;
+                }
+                if (concrete_ret) {
+                  auto *concrete_ll = llvm_type(concrete_ret);
+                  if (!concrete_ll->isPointerTy() &&
+                      !concrete_ll->isVoidTy()) {
+                    result = builder.CreateLoad(concrete_ll, result, "unbox");
+                  }
+                }
+              }
+            }
+
+            return result;
+          }
+          break;
+        }
       }
     }
 
-    // Map methods.
-    if (obj_sem && obj_sem->kind == TypeKind::Map) {
-      auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
-      bool string_keys = is_string_key_type(map_info.key);
-      auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
-
-      if (method == "Size") {
-        auto *size_fn = module->getFunction("mc_map_size");
-        return builder.CreateCall(size_fn, {obj}, "map.size");
-      }
-      if (method == "Set" && node.args.size() >= 2) {
-        auto *key_val = emit_expr(*node.args[0]);
-        auto *val_val = emit_expr(*node.args[1]);
-        if (!key_val || !val_val) return nullptr;
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *key_tmp = create_entry_alloca(func, "map.set.key", key_val->getType());
-        builder.CreateStore(key_val, key_tmp);
-        auto *val_tmp = create_entry_alloca(func, "map.set.val", val_val->getType());
-        builder.CreateStore(val_val, val_tmp);
-        auto *set_fn = module->getFunction("mc_map_set");
-        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp, is_str_key});
-        return nullptr;
-      }
-      if (method == "At" && node.args.size() >= 1) {
-        auto *key_val = emit_expr(*node.args[0]);
-        if (!key_val) return nullptr;
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *key_tmp = create_entry_alloca(func, "map.at.key", key_val->getType());
-        builder.CreateStore(key_val, key_tmp);
-        auto *get_fn = module->getFunction("mc_map_get");
-        auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp, is_str_key}, "map.at");
-        auto *val_ll = llvm_type(map_info.value);
-        return builder.CreateLoad(val_ll, val_ptr, "map.at.val");
-      }
-      if ((method == "Key?" || method == "Has") && node.args.size() >= 1) {
-        auto *key_val = emit_expr(*node.args[0]);
-        if (!key_val) return nullptr;
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *key_tmp = create_entry_alloca(func, "map.has.key", key_val->getType());
-        builder.CreateStore(key_val, key_tmp);
-        auto *has_fn = module->getFunction("mc_map_has");
-        auto *result = builder.CreateCall(has_fn, {obj, key_tmp, is_str_key}, "map.has");
-        return builder.CreateICmpNE(result, llvm::ConstantInt::get(i64_type, 0), "map.has.bool");
-      }
-      if (method == "Remove" && node.args.size() >= 1) {
-        auto *key_val = emit_expr(*node.args[0]);
-        if (!key_val) return nullptr;
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *key_tmp = create_entry_alloca(func, "map.rm.key", key_val->getType());
-        builder.CreateStore(key_val, key_tmp);
-        auto *rm_fn = module->getFunction("mc_map_remove");
-        builder.CreateCall(rm_fn, {obj, key_tmp, is_str_key});
-        return nullptr;
-      }
-    }
-
-    // String methods.
-    if (obj_sem && obj_sem->kind == TypeKind::String) {
-      if (method == "Size") {
-        // String size = load the len field from mc_string.
-        auto *len_gep = builder.CreateStructGEP(string_type, obj, 1, "len.ptr");
-        return builder.CreateLoad(i64_type, len_gep, "len");
-      }
-    }
 
     // Enum .Int() — enums are already i64 index values in LLVM IR.
     if (method == "Int" && obj_sem && obj_sem->kind == TypeKind::Enum) {
@@ -335,23 +384,6 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
       return builder.CreateCall(
           module->getFunction("mc_int_to_string"), {obj}, "str");
-    }
-
-    // Int/Float/Bool .String() method — convert to string.
-    if (method == "String" && obj_sem) {
-      if (obj_sem->kind == TypeKind::Int) {
-        return builder.CreateCall(
-            module->getFunction("mc_int_to_string"), {obj}, "str");
-      }
-      if (obj_sem->kind == TypeKind::Float) {
-        return builder.CreateCall(
-            module->getFunction("mc_float_to_string"), {obj}, "str");
-      }
-      if (obj_sem->kind == TypeKind::Bool) {
-        auto *ext = builder.CreateZExt(obj, i64_type, "bext");
-        return builder.CreateCall(
-            module->getFunction("mc_bool_to_string"), {ext}, "str");
-      }
     }
 
     // ── Task method calls ─────────────────────────────────────────────
@@ -449,8 +481,23 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     // Check the analyzer's type_methods_ side table; if the method was
     // registered there, call the mangled function (pkg__Type__Method).
     if (obj_sem) {
+      // Look up by raw pointer first, then fall back to the canonical
+      // builtin type pointer (node_types may hold a different shared_ptr
+      // than the one used to key type_methods_ during prelude loading).
       const Type *raw = obj_sem.get();
       auto tm_it = analyzer.type_methods_.find(raw);
+      if (tm_it == analyzer.type_methods_.end()) {
+        const Type *canonical = nullptr;
+        switch (obj_sem->kind) {
+        case TypeKind::Int:    canonical = analyzer.builtins.int_type.get(); break;
+        case TypeKind::Float:  canonical = analyzer.builtins.float_type.get(); break;
+        case TypeKind::Bool:   canonical = analyzer.builtins.bool_type.get(); break;
+        case TypeKind::String: canonical = analyzer.builtins.string_type.get(); break;
+        default: break;
+        }
+        if (canonical && canonical != raw)
+          tm_it = analyzer.type_methods_.find(canonical);
+      }
       if (tm_it != analyzer.type_methods_.end()) {
         for (auto &m : tm_it->second) {
           if (m.name != method)
@@ -468,43 +515,41 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           if (!type_name)
             break;
 
-          // Look for the function in intrinsic_method_links (same module)
-          // or declare it as external.
-          std::string local_link =
+          // The stdlib defines methods as `pkg__TypeName__Method` where
+          // pkg is the lowercase type name (e.g. "string__String__Lower").
+          // First check if the method is defined in the current module
+          // (happens when a stdlib package compiles its own methods).
+          std::string same_pkg_link =
               mangle(std::string(type_name) + "__" + method);
-          auto *callee = module->getFunction(local_link);
+          auto *callee = module->getFunction(same_pkg_link);
+
           if (!callee && m.signature &&
               m.signature->kind == TypeKind::Func) {
-            // Cross-package: find the origin package that defines this
-            // method.  Scan all known intrinsic_method_links.
-            std::string origin_pkg;
-            for (auto &[tname, links] : intrinsic_method_links) {
-              if (tname == type_name) {
-                for (auto &[ln, mn] : links) {
-                  if (mn == method) {
-                    origin_pkg = package_name; // same package
-                    break;
-                  }
-                }
-              }
-              if (!origin_pkg.empty())
-                break;
+            // Cross-package call: the method lives in the stdlib type package
+            // (e.g. "std/string" exports "string__String__Lower").
+            std::string stdlib_pkg = std::string(type_name);
+            std::transform(stdlib_pkg.begin(), stdlib_pkg.end(),
+                           stdlib_pkg.begin(), ::tolower);
+            std::string cross_link = mangle(stdlib_pkg,
+                std::string(type_name) + "__" + method);
+
+            callee = module->getFunction(cross_link);
+            if (!callee) {
+              // Forward-declare the external function so the linker resolves it.
+              auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+              auto *self_ll = llvm_type(obj_sem);
+              std::vector<llvm::Type *> param_ll;
+              param_ll.push_back(self_ll); // self
+              for (auto &p : fi.params)
+                param_ll.push_back(llvm_type(p));
+              llvm::Type *ret_ll = fi.returns.empty()
+                                       ? void_ll_type
+                                       : llvm_type(fi.returns[0]);
+              auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
+              callee = llvm::Function::Create(
+                  ft, llvm::Function::ExternalLinkage, cross_link,
+                  module.get());
             }
-            // If not found locally, the method must come from a stdlib
-            // package compiled separately. Declare an external function.
-            auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-            auto *self_ll = llvm_type(obj_sem);
-            std::vector<llvm::Type *> param_ll;
-            param_ll.push_back(self_ll); // self
-            for (auto &p : fi.params)
-              param_ll.push_back(llvm_type(p));
-            llvm::Type *ret_ll = fi.returns.empty()
-                                     ? void_ll_type
-                                     : llvm_type(fi.returns[0]);
-            auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
-            callee = llvm::Function::Create(
-                ft, llvm::Function::ExternalLinkage, local_link,
-                module.get());
           }
 
           if (callee) {
