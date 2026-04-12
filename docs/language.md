@@ -1,4 +1,4 @@
-# Language, Draft v0.3
+# Language, Draft v0.3.1
 
 This is the third major revision of the language prior to an offical 1.0. So
 far, it shows the most promise.
@@ -955,6 +955,25 @@ generic := fn |T| (value T) Void { io.Print(value) }
 |Int| generic(42)
 ```
 
+### Piped blocks
+
+Saga supports trailing closures. When a function expects a closure as its final
+argument, it can be omitted from the parentheses and a Piped Block appended
+instead.
+
+```
+fn WithFile(path String, action fn(io.File) Void) Void {
+  file := io.Open(path) or { return }
+  action(file) // standard closure call
+}
+
+// piped variables have their types inferred from callback parameters
+WithFile("data.txt") |file| {
+  data := file.Read()
+  io.Println(data)
+}
+```
+
 ## Range
 
 A range is an iterator type that represents a range of values. It takes two
@@ -1390,6 +1409,7 @@ the collection has no more records.
 
 # History
 
--  6 Mar, 2025: Draft v0.3 (current)
-- 25 Feb, 2025: Draft v0.2
--  7 Feb, 2025: Draft v0.1
+- 12 Apr, 2026: Draft v0.3.1 - added piped blocks
+-  6 Mar, 2026: Draft v0.3 - third, formal draft
+- 25 Feb, 2026: Draft v0.2 - second draft
+-  7 Feb, 2026: Draft v0.1 - initial draft
