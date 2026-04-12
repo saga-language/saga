@@ -786,10 +786,34 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   // ── New stdlib intrinsics ────────────────────────────────────────────
 
   if (name == "intrinsic_sitofp") {
-    // intrinsic_sitofp(value: Int) -> Float
+    // intrinsic_sitofp(value: Int) -> Float (f64)
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
     return builder.CreateSIToFP(val, f64_type, "sitofp");
+  }
+
+  if (name == "intrinsic_sitofp32") {
+    // intrinsic_sitofp32(value: Int) -> Float32 (f32)
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    return builder.CreateSIToFP(val, llvm::Type::getFloatTy(context), "sitofp32");
+  }
+
+  if (name == "intrinsic_fptrunc") {
+    // intrinsic_fptrunc(value: Float) -> Float32 (f64 → f32)
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    return builder.CreateFPTrunc(val, llvm::Type::getFloatTy(context), "fptrunc");
+  }
+
+  if (name == "intrinsic_fpext") {
+    // intrinsic_fpext(value: Float) -> Float64 (f32 → f64)
+    // On 64-bit targets this is a no-op since Float is already f64.
+    auto *val = emit_expr(*node.args[0]);
+    if (!val) return nullptr;
+    auto *dst = llvm::Type::getDoubleTy(context);
+    if (val->getType() == dst) return val; // already f64 — identity
+    return builder.CreateFPExt(val, dst, "fpext");
   }
 
   if (name == "intrinsic_fptosi") {
@@ -914,6 +938,94 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       return nullptr;
     }
     return builder.CreateCall(callee, args, "rt.call");
+  }
+
+  if (name == "intrinsic_runtime_try") {
+    // intrinsic_runtime_try("func_name", args...) -> union
+    // Calls a C function that writes its result to an auto-appended out-param
+    // and returns i64 status (0 = success, non-zero = failure).
+    // On success, wraps the out-param value as the success variant.
+    // On failure, wraps Missing as the error/missing variant.
+    if (node.args.empty()) return nullptr;
+    auto *name_node = std::get_if<StringLiteralNode>(&node.args[0]->data);
+    if (!name_node || name_node->fragments.empty()) return nullptr;
+    auto *frag = std::get_if<StringFragmentNode>(&name_node->fragments[0]->data);
+    if (!frag) return nullptr;
+    std::string_view raw = frag->text;
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
+      raw = raw.substr(1, raw.size() - 2);
+    std::string func_name(raw);
+    auto *callee = module->getFunction(func_name);
+    if (!callee) return nullptr;
+
+    // The enclosing function's semantic return type is the union we produce.
+    auto union_sem = current_func_return_sem;
+    if (!union_sem || union_sem->kind != TypeKind::Union) return nullptr;
+
+    // Determine the success type (non-error/non-missing alternative).
+    auto success_sem = strip_error_from_union(union_sem);
+    if (!success_sem) return nullptr;
+    auto *success_ll = llvm_type(success_sem);
+
+    // Build argument list (same as intrinsic_runtime).
+    std::vector<llvm::Value *> args;
+    auto *fn_type = callee->getFunctionType();
+    for (size_t i = 1; i < node.args.size(); ++i) {
+      auto *val = emit_expr(*node.args[i]);
+      if (!val) continue;
+      size_t param_idx = i - 1;
+      if (param_idx < fn_type->getNumParams()) {
+        auto *expected = fn_type->getParamType(param_idx);
+        if (expected->isPointerTy() && !val->getType()->isPointerTy()) {
+          auto *parent_fn = builder.GetInsertBlock()->getParent();
+          auto *tmp = create_entry_alloca(parent_fn, "rt.tmp", val->getType());
+          builder.CreateStore(val, tmp);
+          val = tmp;
+        }
+      }
+      args.push_back(val);
+    }
+
+    // Create out-param alloca and append to args.
+    auto *parent_fn = builder.GetInsertBlock()->getParent();
+    auto *out_alloca = create_entry_alloca(parent_fn, "try.out", success_ll);
+    builder.CreateStore(llvm::Constant::getNullValue(success_ll), out_alloca);
+    args.push_back(out_alloca);
+
+    // Call: returns i64 status.
+    auto *status = builder.CreateCall(callee, args, "try.status");
+
+    // Branch on status == 0.
+    auto *is_ok = builder.CreateICmpEQ(
+        status, llvm::ConstantInt::get(i64_type, 0), "try.ok");
+    auto *bb_success = llvm::BasicBlock::Create(context, "try.success", parent_fn);
+    auto *bb_fail = llvm::BasicBlock::Create(context, "try.fail", parent_fn);
+    auto *bb_merge = llvm::BasicBlock::Create(context, "try.merge", parent_fn);
+    builder.CreateCondBr(is_ok, bb_success, bb_fail);
+
+    // Success path: load result, wrap in union.
+    builder.SetInsertPoint(bb_success);
+    auto *result_val = builder.CreateLoad(success_ll, out_alloca, "try.val");
+    auto *wrapped_ok = emit_union_wrap(result_val, success_sem, union_sem);
+    auto *bb_success_end = builder.GetInsertBlock(); // may have changed
+    builder.CreateBr(bb_merge);
+
+    // Failure path: wrap Missing in union.
+    builder.SetInsertPoint(bb_fail);
+    auto missing_sem = analyzer.builtins.missing_type;
+    auto *missing_val = llvm::Constant::getNullValue(
+        llvm::StructType::get(context)); // Missing is empty struct
+    auto *wrapped_err = emit_union_wrap(missing_val, missing_sem, union_sem);
+    auto *bb_fail_end = builder.GetInsertBlock();
+    builder.CreateBr(bb_merge);
+
+    // Merge with PHI.
+    builder.SetInsertPoint(bb_merge);
+    auto *union_st = get_union_llvm_type(union_sem);
+    auto *phi = builder.CreatePHI(llvm::PointerType::getUnqual(context), 2, "try.result");
+    phi->addIncoming(wrapped_ok, bb_success_end);
+    phi->addIncoming(wrapped_err, bb_fail_end);
+    return phi;
   }
 
   if (name == "intrinsic_yield") {

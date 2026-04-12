@@ -115,6 +115,9 @@ struct CodeGen {
   /// True when the current function is Main (return type is i32).
   bool current_func_is_main = false;
 
+  /// Semantic return type of the current function (used by intrinsic_runtime_try).
+  TypePtr current_func_return_sem = nullptr;
+
   // ── Closure support ──────────────────────────────────────────────────
 
   /// The fat pointer type for closures: { ptr fn, ptr env }.

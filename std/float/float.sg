@@ -21,3 +21,15 @@ pub fn (self Float) Compare(other Float) Comparison {
     else { Comparison.Greater }
   }
 }
+
+pub fn (self Float) Format(fmt String) String {
+  intrinsic_runtime("saga_float_format", self, fmt)
+}
+
+pub fn (self Float) Float32() Float32 {
+  intrinsic_fptrunc(self)
+}
+
+pub fn (self Float) Float64() Float64 {
+  intrinsic_fpext(self)
+}

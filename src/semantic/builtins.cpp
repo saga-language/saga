@@ -208,7 +208,7 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
     methods.push_back(
         {"Float64", make_func_type({}, {t.float64_type}), true});
     methods.push_back(
-        {"Format", make_func_type({}, {t.string_type}), true});
+        {"Format", make_func_type({t.string_type}, {t.string_type}), true});
     methods.push_back(
         {"Int", make_func_type({}, {t.int_type}), true});
     methods.push_back(
@@ -240,7 +240,7 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
     methods.push_back(
         {"Equals", make_func_type({t.float_type}, {t.bool_type}), true});
     methods.push_back(
-        {"Format", make_func_type({}, {t.string_type}), true});
+        {"Format", make_func_type({t.string_type}, {t.string_type}), true});
     methods.push_back(
         {"Float32", make_func_type({}, {t.float32_type}), true});
     methods.push_back(
@@ -410,6 +410,34 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   global_scope->declare(Symbol::builtin(
       "intrinsic_sext", SymbolKind::Function,
       make_func_type({types.int_type, types.int_type}, {types.any_type})));
+
+  // intrinsic_sitofp32(value: Int) -> Any
+  // LLVM sitofp i64 → float (32-bit). Returns Any so stdlib can cast.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sitofp32", SymbolKind::Function,
+      make_func_type({types.int_type}, {types.any_type})));
+
+  // intrinsic_fptrunc(value: Float) -> Any
+  // LLVM fptrunc double → float (64→32 bit). Returns Any so stdlib can cast.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_fptrunc", SymbolKind::Function,
+      make_func_type({types.float_type}, {types.any_type})));
+
+  // intrinsic_fpext(value: Float) -> Any
+  // LLVM fpext float → double (32→64 bit). On 64-bit targets where Float is
+  // already f64 this is a no-op, but needed for 32-bit targets where Float
+  // is f32 and Float64 is f64.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_fpext", SymbolKind::Function,
+      make_func_type({types.float_type}, {types.any_type})));
+
+  // intrinsic_runtime_try(name: String, args...) -> Any
+  // Like intrinsic_runtime but for C functions that return a status code
+  // and write the result to an auto-appended out-param. Status 0 = success,
+  // non-zero = failure (wraps Missing as error variant).
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_runtime_try", SymbolKind::Function,
+      make_func_type({types.string_type}, {types.any_type}, true)));
 }
 
 } // namespace mc

@@ -674,6 +674,9 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
     locals.clear();
     managed_locals.clear();
     current_func_is_main = false;
+    current_func_return_sem = fn->signature.returns.empty()
+        ? nullptr
+        : semantic_type(*fn->signature.returns[0]);
 
     // Collect generic param names for type resolution.
     auto gnames = collect_generic_names(*fn);

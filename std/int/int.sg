@@ -65,3 +65,11 @@ pub fn (self Int) Uint64() Uint64 {
 pub fn (self Int) Char() Char {
   intrinsic_zext(self, 32)
 }
+
+pub fn (self Int) Float32() Float32 {
+  intrinsic_sitofp32(self)
+}
+
+pub fn (self Int) Format(fmt String) String {
+  intrinsic_runtime("saga_int_format", self, fmt)
+}
