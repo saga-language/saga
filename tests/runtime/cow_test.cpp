@@ -33,7 +33,7 @@ static mc_array *heap_array(int64_t elem_size, int64_t cap) {
 TEST(CowTest, StringCopyIntoArena) {
   mc_arena *a = mc_arena_new(0);
   mc_string *src = heap_string("hello", 5);
-  mc_retain_string(src); // refcount = 2 (shared)
+  saga_retain_string(src); // refcount = 2 (shared)
 
   mc_string *copy = mc_cow_copy_string(a, src);
   ASSERT_NE(copy, nullptr);
@@ -45,7 +45,7 @@ TEST(CowTest, StringCopyIntoArena) {
   // src should have had its refcount decremented (from 2 → 1)
   EXPECT_EQ(src->refcount, 1);
 
-  mc_release_string(src); // free the original
+  saga_release_string(src); // free the original
   mc_arena_destroy(a);
 }
 
@@ -53,7 +53,7 @@ TEST(CowTest, StringCopyNullArena) {
   mc_string *src = heap_string("test", 4);
   mc_string *result = mc_cow_copy_string(nullptr, src);
   EXPECT_EQ(result, src); // returns original on null arena
-  mc_release_string(src);
+  saga_release_string(src);
 }
 
 TEST(CowTest, StringCopyNullSrc) {
@@ -66,14 +66,14 @@ TEST(CowTest, StringCopyNullSrc) {
 TEST(CowTest, StringCopyEmpty) {
   mc_arena *a = mc_arena_new(0);
   mc_string *src = heap_string("", 0);
-  mc_retain_string(src);
+  saga_retain_string(src);
 
   mc_string *copy = mc_cow_copy_string(a, src);
   ASSERT_NE(copy, nullptr);
   EXPECT_EQ(copy->len, 0);
   EXPECT_EQ(copy->refcount, -1);
 
-  mc_release_string(src);
+  saga_release_string(src);
   mc_arena_destroy(a);
 }
 
@@ -91,7 +91,7 @@ TEST(CowTest, ArrayCopyIntoArena) {
     src->len++;
   }
 
-  mc_retain_array(src); // refcount = 2
+  saga_retain_array(src); // refcount = 2
 
   mc_array *copy = mc_cow_copy_array(a, src);
   ASSERT_NE(copy, nullptr);
@@ -110,7 +110,7 @@ TEST(CowTest, ArrayCopyIntoArena) {
   // src refcount decremented (2 → 1)
   EXPECT_EQ(src->refcount, 1);
 
-  mc_release_array(src);
+  saga_release_array(src);
   mc_arena_destroy(a);
 }
 
@@ -118,7 +118,7 @@ TEST(CowTest, ArrayCopyNullArena) {
   mc_array *src = heap_array(sizeof(int64_t), 4);
   mc_array *result = mc_cow_copy_array(nullptr, src);
   EXPECT_EQ(result, src);
-  mc_release_array(src);
+  saga_release_array(src);
 }
 
 TEST(CowTest, ArrayCopyNullSrc) {
@@ -131,14 +131,14 @@ TEST(CowTest, ArrayCopyNullSrc) {
 TEST(CowTest, ArrayCopyEmpty) {
   mc_arena *a = mc_arena_new(0);
   mc_array *src = heap_array(sizeof(int64_t), 4);
-  mc_retain_array(src);
+  saga_retain_array(src);
 
   mc_array *copy = mc_cow_copy_array(a, src);
   ASSERT_NE(copy, nullptr);
   EXPECT_EQ(copy->len, 0);
   EXPECT_EQ(copy->refcount, -1);
 
-  mc_release_array(src);
+  saga_release_array(src);
   mc_arena_destroy(a);
 }
 
@@ -154,14 +154,14 @@ TEST(CowTest, BarrierSkipsWhenUnique) {
   EXPECT_EQ(src->refcount, 1);
   // Simulate: no copy needed, just use src directly.
   EXPECT_EQ(src->len, 6);
-  mc_release_string(src);
+  saga_release_string(src);
   mc_arena_destroy(a);
 }
 
 TEST(CowTest, BarrierCopiesWhenShared) {
   mc_arena *a = mc_arena_new(0);
   mc_string *src = heap_string("shared", 6);
-  mc_retain_string(src); // refcount = 2
+  saga_retain_string(src); // refcount = 2
 
   // Simulate the barrier: refcount > 1 → copy.
   EXPECT_GT(src->refcount, 1);
@@ -170,6 +170,6 @@ TEST(CowTest, BarrierCopiesWhenShared) {
   EXPECT_EQ(copy->refcount, -1);
   EXPECT_EQ(src->refcount, 1); // original now unique
 
-  mc_release_string(src);
+  saga_release_string(src);
   mc_arena_destroy(a);
 }

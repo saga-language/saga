@@ -133,7 +133,7 @@ TEST(CodeGen, StringTypeExists) {
 
 TEST(CodeGen, RuntimePrintDeclared) {
   auto r = CG::from("pub fn Main() Void {}");
-  auto *print_fn = r.func("mc_intrinsic_print");
+  auto *print_fn = r.func("saga_intrinsic_print");
   ASSERT_NE(print_fn, nullptr);
   EXPECT_TRUE(print_fn->isDeclaration()) << "Should be extern (no body)";
   EXPECT_TRUE(print_fn->getReturnType()->isVoidTy());
@@ -158,20 +158,20 @@ TEST(CodeGen, PrintCallEmitted) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Walk instructions to find a call to mc_intrinsic_print.
+  // Walk instructions to find a call to saga_intrinsic_print.
   bool found_call = false;
   for (auto &bb : *main) {
     for (auto &inst : bb) {
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
         auto *callee = call->getCalledFunction();
-        if (callee && callee->getName() == "mc_intrinsic_print") {
+        if (callee && callee->getName() == "saga_intrinsic_print") {
           found_call = true;
           EXPECT_EQ(call->arg_size(), 1u);
         }
       }
     }
   }
-  EXPECT_TRUE(found_call) << "Expected a call to mc_intrinsic_print";
+  EXPECT_TRUE(found_call) << "Expected a call to saga_intrinsic_print";
 }
 
 TEST(CodeGen, EscapeSequencesInString) {
@@ -215,7 +215,7 @@ TEST(CodeGen, MultiplePrintCalls) {
     for (auto &inst : bb) {
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+            call->getCalledFunction()->getName() == "saga_intrinsic_print")
           call_count++;
       }
     }
@@ -237,7 +237,7 @@ TEST(CodeGen, DuplicateStringsDeduplicated) {
     for (auto &inst : bb) {
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print") {
+            call->getCalledFunction()->getName() == "saga_intrinsic_print") {
           args.push_back(call->getArgOperand(0));
         }
       }
@@ -578,13 +578,13 @@ TEST(CodeGen, StringVariable) {
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
   EXPECT_TRUE(has_alloca_named(main, "s"));
-  // Should have a call to mc_intrinsic_print.
+  // Should have a call to saga_intrinsic_print.
   bool found = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+            call->getCalledFunction()->getName() == "saga_intrinsic_print")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -603,9 +603,9 @@ TEST(CodeGen, StringConcatEmitsCall) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_concat")
+            call->getCalledFunction()->getName() == "saga_string_concat")
           found_concat = true;
-  EXPECT_TRUE(found_concat) << "Expected call to mc_string_concat";
+  EXPECT_TRUE(found_concat) << "Expected call to saga_string_concat";
 }
 
 TEST(CodeGen, StringConcatAssignEmitsCall) {
@@ -621,9 +621,9 @@ TEST(CodeGen, StringConcatAssignEmitsCall) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_concat")
+            call->getCalledFunction()->getName() == "saga_string_concat")
           found_concat = true;
-  EXPECT_TRUE(found_concat) << "Expected call to mc_string_concat for +=";
+  EXPECT_TRUE(found_concat) << "Expected call to saga_string_concat for +=";
 }
 
 TEST(CodeGen, StringEqualityEmitsCompare) {
@@ -640,9 +640,9 @@ TEST(CodeGen, StringEqualityEmitsCompare) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_compare")
+            call->getCalledFunction()->getName() == "saga_string_compare")
           found_cmp = true;
-  EXPECT_TRUE(found_cmp) << "Expected call to mc_string_compare";
+  EXPECT_TRUE(found_cmp) << "Expected call to saga_string_compare";
 }
 
 TEST(CodeGen, StringLessThanEmitsCompare) {
@@ -659,18 +659,18 @@ TEST(CodeGen, StringLessThanEmitsCompare) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_compare")
+            call->getCalledFunction()->getName() == "saga_string_compare")
           found_cmp = true;
   EXPECT_TRUE(found_cmp);
 }
 
 TEST(CodeGen, RuntimeConversionsDeclared) {
   auto r = CG::from("pub fn Main() Void {}");
-  EXPECT_NE(r.func("mc_string_concat"), nullptr);
-  EXPECT_NE(r.func("mc_string_compare"), nullptr);
-  EXPECT_NE(r.func("mc_int_to_string"), nullptr);
-  EXPECT_NE(r.func("mc_float_to_string"), nullptr);
-  EXPECT_NE(r.func("mc_bool_to_string"), nullptr);
+  EXPECT_NE(r.func("saga_string_concat"), nullptr);
+  EXPECT_NE(r.func("saga_string_compare"), nullptr);
+  EXPECT_NE(r.func("saga_int_to_string"), nullptr);
+  EXPECT_NE(r.func("saga_float_to_string"), nullptr);
+  EXPECT_NE(r.func("saga_bool_to_string"), nullptr);
 }
 
 TEST(CodeGen, StringNotAddedAsInteger) {
@@ -703,7 +703,7 @@ TEST(CodeGen, MultipleConcatenations) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_concat")
+            call->getCalledFunction()->getName() == "saga_string_concat")
           concat_count++;
   EXPECT_EQ(concat_count, 2);
 }
@@ -1328,13 +1328,13 @@ TEST(CodeGen, ArrayLiteralCreated) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should call mc_array_new.
+  // Should call saga_array_new.
   bool found = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_array_new")
+            call->getCalledFunction()->getName() == "saga_array_new")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -1351,7 +1351,7 @@ TEST(CodeGen, ArrayPushCalled) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_array_push")
+            call->getCalledFunction()->getName() == "saga_array_push")
           push_count++;
   EXPECT_EQ(push_count, 2);
 }
@@ -1369,7 +1369,7 @@ TEST(CodeGen, ArrayIndexAccess) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_array_at")
+            call->getCalledFunction()->getName() == "saga_array_at")
           found_at = true;
   EXPECT_TRUE(found_at);
 }
@@ -1400,14 +1400,14 @@ TEST(CodeGen, ArrayPushMethod) {
       "}", false);
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // 2 mc_array_push from literal construction + 1 array__Array__Push from method call.
+  // 2 saga_array_push from literal construction + 1 array__Array__Push from method call.
   int literal_push = 0;
   int method_push = 0;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction()) {
-          if (call->getCalledFunction()->getName() == "mc_array_push")
+          if (call->getCalledFunction()->getName() == "saga_array_push")
             literal_push++;
           if (call->getCalledFunction()->getName() == "array__Array__Push")
             method_push++;
@@ -1449,10 +1449,10 @@ TEST(CodeGen, ForRangeKeyValue) {
 
 TEST(CodeGen, ArrayRuntimeDeclared) {
   auto r = CG::from("pub fn Main() Void {}");
-  EXPECT_NE(r.func("mc_array_new"), nullptr);
-  EXPECT_NE(r.func("mc_array_push"), nullptr);
-  EXPECT_NE(r.func("mc_array_at"), nullptr);
-  EXPECT_NE(r.func("mc_array_size"), nullptr);
+  EXPECT_NE(r.func("saga_array_new"), nullptr);
+  EXPECT_NE(r.func("saga_array_push"), nullptr);
+  EXPECT_NE(r.func("saga_array_at"), nullptr);
+  EXPECT_NE(r.func("saga_array_size"), nullptr);
 }
 
 // ===========================================================================
@@ -1460,7 +1460,7 @@ TEST(CodeGen, ArrayRuntimeDeclared) {
 // ===========================================================================
 
 TEST(CodeGen, PlainStringNoInterp) {
-  // A plain string should NOT call mc_string_concat.
+  // A plain string should NOT call saga_string_concat.
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  intrinsic_print(\"hello\")\n"
@@ -1472,7 +1472,7 @@ TEST(CodeGen, PlainStringNoInterp) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_concat")
+            call->getCalledFunction()->getName() == "saga_string_concat")
           concat_count++;
   EXPECT_EQ(concat_count, 0);
 }
@@ -1485,13 +1485,13 @@ TEST(CodeGen, InterpStringConcat) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should have at least one mc_string_concat for the interpolation.
+  // Should have at least one saga_string_concat for the interpolation.
   int concat_count = 0;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_concat")
+            call->getCalledFunction()->getName() == "saga_string_concat")
           concat_count++;
   EXPECT_GE(concat_count, 1);
 }
@@ -1504,13 +1504,13 @@ TEST(CodeGen, InterpIntConversion) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should call mc_int_to_string for the int interpolation.
+  // Should call saga_int_to_string for the int interpolation.
   bool found = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_int_to_string")
+            call->getCalledFunction()->getName() == "saga_int_to_string")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -1528,7 +1528,7 @@ TEST(CodeGen, InterpFloatConversion) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_float_to_string")
+            call->getCalledFunction()->getName() == "saga_float_to_string")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -1546,7 +1546,7 @@ TEST(CodeGen, InterpBoolConversion) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_bool_to_string")
+            call->getCalledFunction()->getName() == "saga_bool_to_string")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -1566,7 +1566,7 @@ TEST(CodeGen, InterpExpressionInBraces) {
       if (inst.getOpcode() == llvm::Instruction::Add) found_add = true;
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_int_to_string")
+            call->getCalledFunction()->getName() == "saga_int_to_string")
           found_conv = true;
     }
   EXPECT_TRUE(found_add);
@@ -1588,7 +1588,7 @@ TEST(CodeGen, InterpMultipleParts) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_concat")
+            call->getCalledFunction()->getName() == "saga_string_concat")
           concat_count++;
   EXPECT_GE(concat_count, 2);
 }
@@ -1607,9 +1607,9 @@ TEST(CodeGen, InterpStringVariable) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            (call->getCalledFunction()->getName() == "mc_int_to_string" ||
-             call->getCalledFunction()->getName() == "mc_float_to_string" ||
-             call->getCalledFunction()->getName() == "mc_bool_to_string"))
+            (call->getCalledFunction()->getName() == "saga_int_to_string" ||
+             call->getCalledFunction()->getName() == "saga_float_to_string" ||
+             call->getCalledFunction()->getName() == "saga_bool_to_string"))
           found_conv = true;
   EXPECT_FALSE(found_conv) << "String interp should not convert strings";
 }
@@ -1657,7 +1657,7 @@ TEST(CodeGen, ReleaseStringAtFuncExit) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_string")
+            call->getCalledFunction()->getName() == "saga_release_string")
           found = true;
   EXPECT_TRUE(found) << "String locals should be released at function exit";
 }
@@ -1674,7 +1674,7 @@ TEST(CodeGen, ReleaseArrayAtFuncExit) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_array")
+            call->getCalledFunction()->getName() == "saga_release_array")
           found = true;
   EXPECT_TRUE(found) << "Array locals should be released at function exit";
 }
@@ -1693,7 +1693,7 @@ TEST(CodeGen, ReleaseOnReassignment) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_string")
+            call->getCalledFunction()->getName() == "saga_release_string")
           release_count++;
   EXPECT_GE(release_count, 2);
 }
@@ -1712,17 +1712,17 @@ TEST(CodeGen, ReleaseOnStringConcat) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_string")
+            call->getCalledFunction()->getName() == "saga_release_string")
           release_count++;
   EXPECT_GE(release_count, 2) << "Old string released on +=, final at exit";
 }
 
 TEST(CodeGen, RetainReleaseDeclared) {
   auto r = CG::from("pub fn Main() Void {}");
-  EXPECT_NE(r.func("mc_retain_string"), nullptr);
-  EXPECT_NE(r.func("mc_release_string"), nullptr);
-  EXPECT_NE(r.func("mc_retain_array"), nullptr);
-  EXPECT_NE(r.func("mc_release_array"), nullptr);
+  EXPECT_NE(r.func("saga_retain_string"), nullptr);
+  EXPECT_NE(r.func("saga_release_string"), nullptr);
+  EXPECT_NE(r.func("saga_retain_array"), nullptr);
+  EXPECT_NE(r.func("saga_release_array"), nullptr);
 }
 
 TEST(CodeGen, ReleaseBeforeReturn) {
@@ -1739,7 +1739,7 @@ TEST(CodeGen, ReleaseBeforeReturn) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_string")
+            call->getCalledFunction()->getName() == "saga_release_string")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -1756,8 +1756,8 @@ TEST(CodeGen, IntLocalNotReleased) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            (call->getCalledFunction()->getName() == "mc_release_string" ||
-             call->getCalledFunction()->getName() == "mc_release_array"))
+            (call->getCalledFunction()->getName() == "saga_release_string" ||
+             call->getCalledFunction()->getName() == "saga_release_array"))
           FAIL() << "Int locals should not be released";
 }
 
@@ -2032,7 +2032,7 @@ TEST(CodeGen, SwitchWithBlockBody) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+            call->getCalledFunction()->getName() == "saga_intrinsic_print")
           print_count++;
   EXPECT_EQ(print_count, 2);
 }
@@ -2056,13 +2056,13 @@ TEST(CodeGen, SwitchStringUsesChainedCompare) {
         found_switch = true;
   EXPECT_FALSE(found_switch)
       << "String switch should use chained compare, not switch inst";
-  // Should have calls to mc_string_compare.
+  // Should have calls to saga_string_compare.
   int cmp_count = 0;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_string_compare")
+            call->getCalledFunction()->getName() == "saga_string_compare")
           cmp_count++;
   EXPECT_GE(cmp_count, 2) << "Should compare against each case pattern";
 }
@@ -2172,7 +2172,7 @@ TEST(CodeGen, SwitchCallsInCases) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+            call->getCalledFunction()->getName() == "saga_intrinsic_print")
           print_count++;
   EXPECT_EQ(print_count, 3);
 }
@@ -2954,8 +2954,8 @@ TEST(CodeGen, MapRuntimeDeclared) {
   EXPECT_NE(r.func("saga_map_size"), nullptr);
   EXPECT_NE(r.func("saga_map_key_at"), nullptr);
   EXPECT_NE(r.func("saga_map_value_at"), nullptr);
-  EXPECT_NE(r.func("mc_retain_map"), nullptr);
-  EXPECT_NE(r.func("mc_release_map"), nullptr);
+  EXPECT_NE(r.func("saga_retain_map"), nullptr);
+  EXPECT_NE(r.func("saga_release_map"), nullptr);
 }
 
 TEST(CodeGen, MapLiteralCreated) {
@@ -3137,7 +3137,7 @@ TEST(CodeGen, MapReleaseAtFuncExit) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_map")
+            call->getCalledFunction()->getName() == "saga_release_map")
           found = true;
   EXPECT_TRUE(found) << "Map locals should be released at function exit";
 }
@@ -3452,7 +3452,7 @@ TEST(CodeGen, ClosureStringCapture) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // The trampoline should call mc_intrinsic_print.
+  // The trampoline should call saga_intrinsic_print.
   llvm::Function *tramp = nullptr;
   for (auto &fn : r.mod())
     if (fn.getName().starts_with("mc.closure."))
@@ -3463,7 +3463,7 @@ TEST(CodeGen, ClosureStringCapture) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+            call->getCalledFunction()->getName() == "saga_intrinsic_print")
           found_print = true;
   EXPECT_TRUE(found_print)
       << "Closure trampoline should call intrinsic_print with captured string";
@@ -3569,7 +3569,7 @@ TEST(CodeGen, VarDeclZeroInitStringUsable) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_intrinsic_print")
+            call->getCalledFunction()->getName() == "saga_intrinsic_print")
           found_print = true;
   EXPECT_TRUE(found_print);
 }
@@ -3587,7 +3587,7 @@ TEST(CodeGen, VarDeclZeroInitStringReleased) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "mc_release_string")
+            call->getCalledFunction()->getName() == "saga_release_string")
           found_release = true;
   EXPECT_TRUE(found_release)
       << "Zero-initialized string should be released at scope exit";
@@ -3689,8 +3689,8 @@ TEST(CodeGen, IntrinsicYieldInsideSpawn) {
       "    42\n"
       "  }\n"
       "}");
-  // The outlined spawn body should call mc_actor_yield.
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_actor_yield"));
+  // The outlined spawn body should call saga_actor_yield.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_yield"));
 }
 
 TEST(CodeGen, IntrinsicYieldOutsideSpawnIsNoop) {
@@ -3699,7 +3699,7 @@ TEST(CodeGen, IntrinsicYieldOutsideSpawnIsNoop) {
       "  intrinsic_yield()\n"
       "}");
   // Outside a spawn block, yield is a no-op — no call emitted.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "mc_actor_yield"));
+  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_actor_yield"));
 }
 
 TEST(CodeGen, IntrinsicTrapInsideSpawn) {
@@ -3710,7 +3710,7 @@ TEST(CodeGen, IntrinsicTrapInsideSpawn) {
       "    42\n"
       "  }\n"
       "}");
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_actor_trap"));
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_trap"));
 }
 
 TEST(CodeGen, IntrinsicTrapOutsideSpawnIsNoop) {
@@ -3719,7 +3719,7 @@ TEST(CodeGen, IntrinsicTrapOutsideSpawnIsNoop) {
       "  intrinsic_trap(\"oops\")\n"
       "}");
   // Outside a spawn block, trap is a no-op.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "mc_actor_trap"));
+  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_actor_trap"));
 }
 
 TEST(CodeGen, IntrinsicAtomicAdd) {
@@ -3743,9 +3743,9 @@ TEST(CodeGen, SpawnBasicEmitsExecutorInit) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Main should call mc_executor_init and mc_executor_shutdown.
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_executor_init"));
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_executor_shutdown"));
+  // Main should call saga_executor_init and saga_executor_shutdown.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_executor_init"));
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_executor_shutdown"));
 }
 
 TEST(CodeGen, SpawnEmitsOutlinedFunction) {
@@ -3767,7 +3767,7 @@ TEST(CodeGen, SpawnEmitsExecutorSpawnCall) {
       "pub fn Main() Void {\n"
       "  t := spawn { 42 }\n"
       "}");
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_executor_spawn"));
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_executor_spawn"));
 }
 
 TEST(CodeGen, SpawnWithPipeVariable) {
@@ -3778,8 +3778,8 @@ TEST(CodeGen, SpawnWithPipeVariable) {
       "    42\n"
       "  }\n"
       "}");
-  // Should call mc_context_cancelled in the outlined function.
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_context_cancelled"));
+  // Should call saga_context_cancelled in the outlined function.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_context_cancelled"));
 }
 
 TEST(CodeGen, SpawnReductionTickInLoop) {
@@ -3793,8 +3793,8 @@ TEST(CodeGen, SpawnReductionTickInLoop) {
       "    i\n"
       "  }\n"
       "}");
-  // Loop inside spawn should emit mc_reduction_tick calls.
-  EXPECT_TRUE(module_has_call_to(r.mod(), "mc_reduction_tick"));
+  // Loop inside spawn should emit saga_reduction_tick calls.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_reduction_tick"));
 }
 
 TEST(CodeGen, NoReductionTickOutsideSpawn) {
@@ -3805,8 +3805,8 @@ TEST(CodeGen, NoReductionTickOutsideSpawn) {
       "    i = i + 1\n"
       "  }\n"
       "}");
-  // Loop outside spawn should NOT emit mc_reduction_tick.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "mc_reduction_tick"));
+  // Loop outside spawn should NOT emit saga_reduction_tick.
+  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_reduction_tick"));
 }
 
 // ===========================================================================
@@ -4162,25 +4162,25 @@ TEST(CodeGen, IntrinsicSextWidens) {
 
 TEST(CodeGen, IntrinsicRuntimeCallsNamedFunction) {
   auto r = CG::from(
-      "fn f(x Int) String { intrinsic_runtime(\"mc_int_to_string\", x) }\n"
+      "fn f(x Int) String { intrinsic_runtime(\"saga_int_to_string\", x) }\n"
       "pub fn Main() Void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
-  auto *call = find_call(func, "mc_int_to_string");
-  EXPECT_NE(call, nullptr) << "Expected call to mc_int_to_string";
+  auto *call = find_call(func, "saga_int_to_string");
+  EXPECT_NE(call, nullptr) << "Expected call to saga_int_to_string";
 }
 
 TEST(CodeGen, IntrinsicRuntimeAutoPromotesScalar) {
-  // mc_array_push expects (ptr, ptr) — the second ptr needs auto-promotion.
+  // saga_array_push expects (ptr, ptr) — the second ptr needs auto-promotion.
   auto r = CG::from(
       "fn f(arr [Int], val Int) Void {\n"
-      "  intrinsic_runtime(\"mc_array_push\", arr, val)\n"
+      "  intrinsic_runtime(\"saga_array_push\", arr, val)\n"
       "}\n"
       "pub fn Main() Void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
-  auto *call = find_call(func, "mc_array_push");
-  EXPECT_NE(call, nullptr) << "Expected call to mc_array_push";
+  auto *call = find_call(func, "saga_array_push");
+  EXPECT_NE(call, nullptr) << "Expected call to saga_array_push";
   if (call) {
     // Both args should be pointers (second was auto-promoted from i64).
     EXPECT_TRUE(call->getArgOperand(1)->getType()->isPointerTy())

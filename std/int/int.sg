@@ -2,7 +2,7 @@
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
 pub fn (self Int) String() String {
-  intrinsic_runtime("mc_int_to_string", self)
+  intrinsic_runtime("saga_int_to_string", self)
 }
 
 pub fn (self Int) Float() Float {

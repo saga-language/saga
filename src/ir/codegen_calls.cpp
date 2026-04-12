@@ -199,7 +199,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
         size_t var_count = node.args.size() > fixed_count
                                ? node.args.size() - fixed_count : 0;
         auto *arr = builder.CreateCall(
-            module->getFunction("mc_array_new"),
+            module->getFunction("saga_array_new"),
             {llvm::ConstantInt::get(i64_type, 8),
              llvm::ConstantInt::get(i64_type, var_count)}, "varargs");
         auto *func = builder.GetInsertBlock()->getParent();
@@ -208,7 +208,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           if (!val) continue;
           auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
           builder.CreateStore(val, tmp);
-          builder.CreateCall(module->getFunction("mc_array_push"),
+          builder.CreateCall(module->getFunction("saga_array_push"),
                              {arr, tmp});
         }
         args.push_back(arr);
@@ -383,7 +383,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
     // Enum .String() — convert the enum's integer index to a string.
     if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
       return builder.CreateCall(
-          module->getFunction("mc_int_to_string"), {obj}, "str");
+          module->getFunction("saga_int_to_string"), {obj}, "str");
     }
 
     // ── Task method calls ─────────────────────────────────────────────
@@ -392,17 +392,17 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
       if (sinfo.name == "Task") {
         if (method == "Alive?") {
-          auto *fn = module->getFunction("mc_task_alive");
+          auto *fn = module->getFunction("saga_task_alive");
           auto *result = builder.CreateCall(fn, {obj}, "alive");
           return builder.CreateICmpNE(result,
               llvm::ConstantInt::get(i64_type, 0), "alive.bool");
         }
         if (method == "Cancel") {
-          builder.CreateCall(module->getFunction("mc_task_cancel"), {obj});
+          builder.CreateCall(module->getFunction("saga_task_cancel"), {obj});
           return nullptr;
         }
         if (method == "Term") {
-          builder.CreateCall(module->getFunction("mc_task_term"), {obj});
+          builder.CreateCall(module->getFunction("saga_task_term"), {obj});
           return nullptr;
         }
         if (method == "Wait") {
@@ -412,7 +412,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           builder.CreateStore(llvm::ConstantInt::get(i64_type, 0),
                               status_alloca);
           auto *result_ptr = builder.CreateCall(
-              module->getFunction("mc_task_wait"),
+              module->getFunction("saga_task_wait"),
               {obj, status_alloca}, "wait.result");
           // Load the status to check for error.
           auto *status = builder.CreateLoad(i64_type, status_alloca,
@@ -434,7 +434,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       // ── Context method calls (inside spawn body) ─────────────────
       if (sinfo.name == "Context") {
         if (method == "Cancelled?") {
-          auto *fn = module->getFunction("mc_context_cancelled");
+          auto *fn = module->getFunction("saga_context_cancelled");
           auto *result = builder.CreateCall(fn, {obj}, "cancelled");
           return builder.CreateICmpNE(result,
               llvm::ConstantInt::get(i64_type, 0), "cancelled.bool");
@@ -445,7 +445,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           auto *func = builder.GetInsertBlock()->getParent();
           auto *tmp = create_entry_alloca(func, "send.tmp", val->getType());
           builder.CreateStore(val, tmp);
-          builder.CreateCall(module->getFunction("mc_context_send"),
+          builder.CreateCall(module->getFunction("saga_context_send"),
                              {obj, tmp});
           return nullptr;
         }
@@ -460,7 +460,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
               auto &dl = module->getDataLayout();
               uint64_t sz = dl.getTypeAllocSize(val->getType());
               builder.CreateCall(
-                  module->getFunction("mc_context_exit"),
+                  module->getFunction("saga_context_exit"),
                   {obj, tmp,
                    llvm::ConstantInt::get(i64_type, sz)});
             }
@@ -468,7 +468,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
             auto *null_ptr = llvm::ConstantPointerNull::get(
                 llvm::PointerType::getUnqual(context));
             builder.CreateCall(
-                module->getFunction("mc_context_exit"),
+                module->getFunction("saga_context_exit"),
                 {obj, null_ptr, llvm::ConstantInt::get(i64_type, 0)});
           }
           return nullptr;
@@ -917,9 +917,9 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   }
 
   if (name == "intrinsic_yield") {
-    // intrinsic_yield() → mc_actor_yield(current_actor)
+    // intrinsic_yield() → saga_actor_yield(current_actor)
     if (current_actor) {
-      builder.CreateCall(module->getFunction("mc_actor_yield"),
+      builder.CreateCall(module->getFunction("saga_actor_yield"),
                          {current_actor});
     }
     // Outside a spawn block this is a no-op.
@@ -951,10 +951,10 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   }
 
   if (name == "intrinsic_trap") {
-    // intrinsic_trap(reason) → mc_actor_trap(current_actor, reason)
+    // intrinsic_trap(reason) → saga_actor_trap(current_actor, reason)
     auto *reason = emit_expr(*node.args[0]);
     if (current_actor) {
-      builder.CreateCall(module->getFunction("mc_actor_trap"),
+      builder.CreateCall(module->getFunction("saga_actor_trap"),
                          {current_actor, reason});
     }
     return llvm::Constant::getNullValue(
@@ -1036,7 +1036,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   // ── Regular function dispatch ───────────────────────────────────────
   std::string link_name;
   if (name == "intrinsic_print")
-    link_name = "mc_intrinsic_print";
+    link_name = "saga_intrinsic_print";
   else
     link_name = mangle(name);
 
@@ -1493,7 +1493,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
         module->getDataLayout().getTypeAllocSize(chan_elem_ll));
 
     auto *ch = builder.CreateCall(
-        module->getFunction("mc_channel_new"),
+        module->getFunction("saga_channel_new"),
         {llvm::ConstantInt::get(i64_type, channel_elem_size),
          llvm::ConstantInt::get(i64_type, 0)}, // 0 = default capacity
         "channel");
@@ -1502,7 +1502,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
 
   // ── Spawn the actor ────────────────────────────────────────────────
   auto *actor = builder.CreateCall(
-      module->getFunction("mc_executor_spawn"),
+      module->getFunction("saga_executor_spawn"),
       {outlined_fn,
        closure_ptr_val,
        llvm::ConstantInt::get(i64_type, static_cast<int64_t>(closure_size)),

@@ -103,10 +103,10 @@ mc_array   *mc_cow_copy_array(mc_arena *a, mc_array *src);
 
 /* ── Refcount helpers (for COW tests) ──────────────────────────────────── */
 
-void        mc_retain_string(mc_string *s);
-void        mc_release_string(mc_string *s);
-void        mc_retain_array(mc_array *arr);
-void        mc_release_array(mc_array *arr);
+void        saga_retain_string(mc_string *s);
+void        saga_release_string(mc_string *s);
+void        saga_retain_array(mc_array *arr);
+void        saga_release_array(mc_array *arr);
 
 /* ── Actor API ─────────────────────────────────────────────────────────── */
 
@@ -114,9 +114,9 @@ mc_actor   *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
                          int64_t closure_size, int64_t arena_max);
 void        mc_actor_retain(mc_actor *a);
 void        mc_actor_release(mc_actor *a);
-void        mc_reduction_tick(mc_actor *a);
-void        mc_actor_yield(mc_actor *a);
-void        mc_actor_trap(mc_actor *a, mc_string *reason);
+void        saga_reduction_tick(mc_actor *a);
+void        saga_actor_yield(mc_actor *a);
+void        saga_actor_trap(mc_actor *a, mc_string *reason);
 
 /* ── Deque API ─────────────────────────────────────────────────────────── */
 
@@ -127,34 +127,34 @@ void        mc_deque_drain(mc_deque *src, mc_deque *dst);
 
 /* ── Executor API ──────────────────────────────────────────────────────── */
 
-void        mc_executor_init(int64_t num_workers);
-mc_actor   *mc_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
+void        saga_executor_init(int64_t num_workers);
+mc_actor   *saga_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
                               int64_t closure_size, int64_t arena_max);
-void        mc_executor_schedule(mc_actor *actor);
-void        mc_executor_shutdown(void);
+void        saga_executor_schedule(mc_actor *actor);
+void        saga_executor_shutdown(void);
 void        mc_executor_replace_worker(int64_t worker_id);
 
 /* ── Task API ──────────────────────────────────────────────────────────── */
 
-int64_t     mc_task_alive(mc_actor *a);
-void        mc_task_cancel(mc_actor *a);
-void        mc_task_term(mc_actor *a);
-void       *mc_task_wait(mc_actor *a, int64_t *out_status);
-void        mc_task_drop(mc_actor *a);
+int64_t     saga_task_alive(mc_actor *a);
+void        saga_task_cancel(mc_actor *a);
+void        saga_task_term(mc_actor *a);
+void       *saga_task_wait(mc_actor *a, int64_t *out_status);
+void        saga_task_drop(mc_actor *a);
 
 /* ── Context API ───────────────────────────────────────────────────────── */
 
-int64_t     mc_context_cancelled(mc_actor *a);
-void        mc_context_exit(mc_actor *a, void *value, int64_t size);
-int         mc_context_send(mc_actor *a, const void *data);
+int64_t     saga_context_cancelled(mc_actor *a);
+void        saga_context_exit(mc_actor *a, void *value, int64_t size);
+int         saga_context_send(mc_actor *a, const void *data);
 
 /* ── Channel API ───────────────────────────────────────────────────────── */
 
-mc_channel *mc_channel_new(int64_t elem_size, int64_t capacity);
+mc_channel *saga_channel_new(int64_t elem_size, int64_t capacity);
 int         mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor);
-int         mc_channel_recv(mc_channel *ch, void *out_buf);
-void        mc_channel_close(mc_channel *ch);
-void        mc_channel_destroy(mc_channel *ch);
+int         saga_channel_recv(mc_channel *ch, void *out_buf);
+void        saga_channel_close(mc_channel *ch);
+void        saga_channel_destroy(mc_channel *ch);
 
 } // extern "C"
 

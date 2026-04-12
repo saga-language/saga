@@ -89,7 +89,7 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
 
   // If this is Main and we have spawn expressions, init the executor.
   if (is_main && has_spawn) {
-    builder.CreateCall(module->getFunction("mc_executor_init"),
+    builder.CreateCall(module->getFunction("saga_executor_init"),
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
@@ -118,7 +118,7 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
     auto *ret_type = func->getReturnType();
     if (is_main) {
       if (has_spawn)
-        builder.CreateCall(module->getFunction("mc_executor_shutdown"), {});
+        builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
     } else if (ret_type->isVoidTy()) {
@@ -351,7 +351,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
                  elem_ll->isPointerTy())
           elem_size = 8;
       }
-      auto *new_fn = module->getFunction("mc_array_new");
+      auto *new_fn = module->getFunction("saga_array_new");
       auto *arr = builder.CreateCall(
           new_fn,
           {llvm::ConstantInt::get(i64_type, elem_size),
@@ -598,7 +598,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
       bool is_str = target_sem && target_sem->kind == TypeKind::String;
 
       if (is_str && node.op == K::AddAssignment) {
-        auto *concat_fn = module->getFunction("mc_string_concat");
+        auto *concat_fn = module->getFunction("saga_string_concat");
         result = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
         // Release the old string since concat created a new one.
         emit_release(cur, target_sem);
@@ -620,7 +620,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
   if (current_func_is_main) {
     emit_release_locals();
     if (has_spawn)
-      builder.CreateCall(module->getFunction("mc_executor_shutdown"), {});
+      builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
     if (node.values.empty()) {
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));

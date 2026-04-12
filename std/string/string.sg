@@ -10,15 +10,15 @@ pub fn (self String) Size() Int {
 }
 
 pub fn (self String) Lower() String {
-  intrinsic_runtime("mc_string_lower", self)
+  intrinsic_runtime("saga_string_lower", self)
 }
 
 pub fn (self String) Upper() String {
-  intrinsic_runtime("mc_string_upper", self)
+  intrinsic_runtime("saga_string_upper", self)
 }
 
 pub fn (self String) Compare(other String) Comparison {
-  v := intrinsic_runtime("mc_string_compare", self, other)
+  v := intrinsic_runtime("saga_string_compare", self, other)
   if v < 0 {
     Comparison.Less
   } else {
@@ -28,5 +28,5 @@ pub fn (self String) Compare(other String) Comparison {
 }
 
 pub fn (self String) Equals(other String) Bool {
-  intrinsic_runtime("mc_string_compare", self, other) == 0
+  intrinsic_runtime("saga_string_compare", self, other) == 0
 }

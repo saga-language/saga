@@ -299,7 +299,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 
   } else if (is_string) {
     // ── String matching: chained icmp + br ──────────────────────────
-    auto *cmp_fn = module->getFunction("mc_string_compare");
+    auto *cmp_fn = module->getFunction("saga_string_compare");
 
     for (size_t i = 0; i < node.arms.size(); ++i) {
       auto &arm = node.arms[i];
@@ -506,7 +506,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
     func->insert(func->end(), body_bb);
     builder.SetInsertPoint(body_bb);
     if (current_actor)
-      builder.CreateCall(module->getFunction("mc_reduction_tick"),
+      builder.CreateCall(module->getFunction("saga_reduction_tick"),
                          {current_actor});
     auto &body_block = std::get<BlockNode>(node.body->data);
     emit_block(body_block);
@@ -540,7 +540,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       func->insert(func->end(), body_bb);
       builder.SetInsertPoint(body_bb);
       if (current_actor)
-        builder.CreateCall(module->getFunction("mc_reduction_tick"),
+        builder.CreateCall(module->getFunction("saga_reduction_tick"),
                            {current_actor});
       auto &body_block = std::get<BlockNode>(node.body->data);
       emit_block(body_block);
@@ -564,7 +564,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
 
         if (is_array) {
           // Get array size.
-          auto *size_fn = module->getFunction("mc_array_size");
+          auto *size_fn = module->getFunction("saga_array_size");
           auto *arr_len = builder.CreateCall(size_fn, {iterable}, "arr.len");
 
           // Create index variable.
@@ -604,10 +604,10 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           func->insert(func->end(), body_bb);
           builder.SetInsertPoint(body_bb);
           if (current_actor)
-            builder.CreateCall(module->getFunction("mc_reduction_tick"),
+            builder.CreateCall(module->getFunction("saga_reduction_tick"),
                                {current_actor});
 
-          auto *at_fn = module->getFunction("mc_array_at");
+          auto *at_fn = module->getFunction("saga_array_at");
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
           auto *elem_ptr =
               builder.CreateCall(at_fn, {iterable, body_idx}, "at");
@@ -678,7 +678,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           func->insert(func->end(), body_bb);
           builder.SetInsertPoint(body_bb);
           if (current_actor)
-            builder.CreateCall(module->getFunction("mc_reduction_tick"),
+            builder.CreateCall(module->getFunction("saga_reduction_tick"),
                                {current_actor});
 
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
@@ -718,7 +718,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           if (st_info.name == "Task") {
             // Get the channel pointer from the actor:
             // actor->channel is at a known offset.  We pass the actor ptr
-            // to mc_channel_recv which expects (ch, buf).
+            // to saga_channel_recv which expects (ch, buf).
             // The actor struct layout has `channel` at a specific offset.
             // We use a helper: load actor->channel as a ptr.
             //
@@ -765,9 +765,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               // Branch to condition (recv loop).
               builder.CreateBr(cond_bb);
 
-              // Condition: call mc_channel_recv; break if -1.
+              // Condition: call saga_channel_recv; break if -1.
               builder.SetInsertPoint(cond_bb);
-              auto *recv_fn = module->getFunction("mc_channel_recv");
+              auto *recv_fn = module->getFunction("saga_channel_recv");
               auto *rc = builder.CreateCall(recv_fn, {ch_ptr, msg_alloca},
                                              "recv.rc");
               auto *eof = builder.CreateICmpEQ(
@@ -781,7 +781,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               builder.SetInsertPoint(body_bb);
               if (current_actor)
                 builder.CreateCall(
-                    module->getFunction("mc_reduction_tick"),
+                    module->getFunction("saga_reduction_tick"),
                     {current_actor});
               auto &body_block = std::get<BlockNode>(node.body->data);
               emit_block(body_block);
@@ -939,7 +939,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
                 builder.SetInsertPoint(body_bb);
                 if (current_actor)
                   builder.CreateCall(
-                      module->getFunction("mc_reduction_tick"),
+                      module->getFunction("saga_reduction_tick"),
                       {current_actor});
 
                 if (val_alloca) {
@@ -989,7 +989,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       func->insert(func->end(), body_bb);
       builder.SetInsertPoint(body_bb);
       if (current_actor)
-        builder.CreateCall(module->getFunction("mc_reduction_tick"),
+        builder.CreateCall(module->getFunction("saga_reduction_tick"),
                            {current_actor});
       auto &body_block = std::get<BlockNode>(node.body->data);
       emit_block(body_block);
@@ -1040,8 +1040,8 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     }
   }
 
-  // Create the array: mc_array_new(elem_size, initial_cap)
-  auto *new_fn = module->getFunction("mc_array_new");
+  // Create the array: saga_array_new(elem_size, initial_cap)
+  auto *new_fn = module->getFunction("saga_array_new");
   auto *arr = builder.CreateCall(
       new_fn,
       {llvm::ConstantInt::get(i64_type, elem_size),
@@ -1050,7 +1050,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
       "arr");
 
   // Push each element.
-  auto *push_fn = module->getFunction("mc_array_push");
+  auto *push_fn = module->getFunction("saga_array_push");
   auto *func = builder.GetInsertBlock()->getParent();
 
   for (auto &elem_node : node.elements) {
@@ -1058,7 +1058,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (!val)
       continue;
 
-    // mc_array_push takes a void* to the element.  We need to store the
+    // saga_array_push takes a void* to the element.  We need to store the
     // value to a temporary alloca and pass its address.
     auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
     builder.CreateStore(val, tmp);
@@ -1157,7 +1157,7 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     if (!idx)
       return nullptr;
 
-    auto *at_fn = module->getFunction("mc_array_at");
+    auto *at_fn = module->getFunction("saga_array_at");
     auto *elem_ptr = builder.CreateCall(at_fn, {obj, idx}, "at");
 
     // Determine the element type to load.
