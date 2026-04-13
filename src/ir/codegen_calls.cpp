@@ -406,7 +406,27 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           return nullptr;
         }
         if (method == "Wait") {
+          // task.Wait() lowers to: call saga_task_wait; branch on status.
+          //   COMPLETED → wrap the loaded T value as the T branch.
+          //   anything else → call saga_error_from_trap, wrap the returned
+          //     Error interface fat pointer as the Error branch.
+          // Returns a pointer to the mc.union.T|Error struct.
           auto *func = builder.GetInsertBlock()->getParent();
+          auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+          // Derive the union type (T | Error) for this call.  The
+          // concrete T is the Task struct's first type argument.
+          TypePtr t_sem;
+          if (!sinfo.type_args.empty())
+            t_sem = sinfo.type_args[0];
+          if (!t_sem) {
+            // No concrete T — semantic analysis should have bound it.
+            return nullptr;
+          }
+          auto error_iface_sem_pre = analyzer.builtins.error_iface;
+          auto union_sem = make_union_type({t_sem, error_iface_sem_pre});
+          auto *union_st = get_union_llvm_type(union_sem);
+
           auto *status_alloca = create_entry_alloca(func, "wait.status",
                                                      i64_type);
           builder.CreateStore(llvm::ConstantInt::get(i64_type, 0),
@@ -414,19 +434,62 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           auto *result_ptr = builder.CreateCall(
               module->getFunction("saga_task_wait"),
               {obj, status_alloca}, "wait.result");
-          // Load the status to check for error.
           auto *status = builder.CreateLoad(i64_type, status_alloca,
-                                             "wait.status");
-          // MC_ACTOR_COMPLETED == 2
+                                             "wait.status.val");
           auto *is_ok = builder.CreateICmpEQ(status,
-              llvm::ConstantInt::get(i64_type, 2), "wait.ok");
+              llvm::ConstantInt::get(i64_type, /*MC_ACTOR_COMPLETED=*/2),
+              "wait.ok");
 
-          // The result type depends on the generic type parameter.
-          // For now return the raw pointer — the or-expr handler will
-          // wrap it into a union if needed.  If the parent expects a
-          // specific type, the result_ptr points to a copy of it.
-          // We return result_ptr as an opaque ptr.
-          return result_ptr;
+          auto *bb_ok = llvm::BasicBlock::Create(context, "wait.ok.bb", func);
+          auto *bb_err = llvm::BasicBlock::Create(context, "wait.err.bb");
+          auto *bb_merge = llvm::BasicBlock::Create(context, "wait.merge");
+          builder.CreateCondBr(is_ok, bb_ok, bb_err);
+
+          // ── Success path: load T from result_ptr, wrap as T branch. ───
+          builder.SetInsertPoint(bb_ok);
+          llvm::Value *wrapped_ok = nullptr;
+          if (t_sem) {
+            auto *t_ll = llvm_type(t_sem);
+            llvm::Value *t_val = nullptr;
+            if (t_ll->isVoidTy()) {
+              // Void T — no payload to load; wrap a zero.
+              t_val = llvm::ConstantInt::get(
+                  llvm::Type::getInt8Ty(context), 0);
+              wrapped_ok = emit_union_wrap(t_val, t_sem, union_sem);
+            } else {
+              t_val = builder.CreateLoad(t_ll, result_ptr, "wait.t.val");
+              wrapped_ok = emit_union_wrap(t_val, t_sem, union_sem);
+            }
+          }
+          if (!wrapped_ok)
+            wrapped_ok = llvm::ConstantPointerNull::get(ptr_type);
+          auto *bb_ok_end = builder.GetInsertBlock();
+          builder.CreateBr(bb_merge);
+
+          // ── Error path: build TrapError fat pointer, wrap as Error. ──
+          func->insert(func->end(), bb_err);
+          builder.SetInsertPoint(bb_err);
+          auto *err_fat = builder.CreateCall(
+              module->getFunction("saga_error_from_trap"),
+              {obj}, "wait.err.fat");
+          // error_iface has kind Interface; emit_union_wrap finds its tag
+          // via the interface-satisfaction path in union_tag_for_type.
+          auto error_iface_sem = analyzer.builtins.error_iface;
+          auto *wrapped_err = emit_union_wrap(err_fat, error_iface_sem,
+                                               union_sem);
+          if (!wrapped_err)
+            wrapped_err = llvm::ConstantPointerNull::get(ptr_type);
+          auto *bb_err_end = builder.GetInsertBlock();
+          builder.CreateBr(bb_merge);
+
+          // ── Merge: PHI the two union pointers. ──────────────────────
+          func->insert(func->end(), bb_merge);
+          builder.SetInsertPoint(bb_merge);
+          auto *phi = builder.CreatePHI(ptr_type, 2, "wait.union");
+          phi->addIncoming(wrapped_ok, bb_ok_end);
+          phi->addIncoming(wrapped_err, bb_err_end);
+          (void)union_st; // silence unused if opaque
+          return phi;
         }
         // Fall through to generic struct method handling if not matched.
       }
@@ -1029,12 +1092,11 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   }
 
   if (name == "intrinsic_yield") {
-    // intrinsic_yield() → saga_actor_yield(current_actor)
-    if (current_actor) {
-      builder.CreateCall(module->getFunction("saga_actor_yield"),
-                         {current_actor});
-    }
-    // Outside a spawn block this is a no-op.
+    // intrinsic_yield() → saga_actor_yield()
+    // The runtime reads the current actor from a thread-local so this
+    // call is safe from any depth inside a spawned execution context.
+    // Outside an actor context the runtime itself no-ops on NULL.
+    builder.CreateCall(module->getFunction("saga_actor_yield"), {});
     return llvm::Constant::getNullValue(
         llvm::PointerType::getUnqual(context));
   }
@@ -1063,12 +1125,12 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
   }
 
   if (name == "intrinsic_trap") {
-    // intrinsic_trap(reason) → saga_actor_trap(current_actor, reason)
+    // intrinsic_trap(reason) → saga_actor_trap(reason)
+    // The runtime pulls the current actor from a thread-local so the
+    // intrinsic works from any call depth.  If there is no current
+    // actor (illegal use outside a spawn body), the runtime no-ops.
     auto *reason = emit_expr(*node.args[0]);
-    if (current_actor) {
-      builder.CreateCall(module->getFunction("saga_actor_trap"),
-                         {current_actor, reason});
-    }
+    builder.CreateCall(module->getFunction("saga_actor_trap"), {reason});
     return llvm::Constant::getNullValue(
         llvm::PointerType::getUnqual(context));
   }

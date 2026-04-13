@@ -21,7 +21,9 @@ TEST(YieldTest, ResetsReductionCount) {
   a->status = MC_ACTOR_RUNNING;
   a->reduction_count = 500;
 
-  saga_actor_yield(a);
+  mc_set_current_actor_for_test(a);
+  saga_actor_yield();
+  mc_set_current_actor_for_test(nullptr);
 
   EXPECT_EQ(a->reduction_count, 0);
 
@@ -35,7 +37,9 @@ TEST(YieldTest, UpdatesLastCycle) {
   a->status = MC_ACTOR_RUNNING;
   a->last_cycle = 0;
 
-  saga_actor_yield(a);
+  mc_set_current_actor_for_test(a);
+  saga_actor_yield();
+  mc_set_current_actor_for_test(nullptr);
 
   EXPECT_GT(a->last_cycle, 0);
 
@@ -44,7 +48,9 @@ TEST(YieldTest, UpdatesLastCycle) {
 }
 
 TEST(YieldTest, NullActorIsSafe) {
-  saga_actor_yield(nullptr); // must not crash
+  /* No current actor published → yield is a safe no-op. */
+  mc_set_current_actor_for_test(nullptr);
+  saga_actor_yield();
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -59,7 +65,8 @@ protected:
 
 /* An actor that yields, then completes. */
 static void yield_then_complete(mc_actor *a) {
-  saga_actor_yield(a);
+  (void)a;
+  saga_actor_yield();
   /* Return normally → COMPLETED. */
 }
 
@@ -82,7 +89,7 @@ static void yield_prevents_quota_kill(mc_actor *a) {
     for (int j = 0; j < 100000; j++)
       saga_reduction_tick(a);
     /* Yield resets the counter. */
-    saga_actor_yield(a);
+    saga_actor_yield();
   }
 }
 
@@ -145,12 +152,14 @@ TEST(TrapTest, SetsZombieStatusAndLongjmps) {
   mc_string *reason = make_test_string("test trap", 9);
 
   bool jumped = false;
+  mc_set_current_actor_for_test(a);
   if (setjmp(a->trap) == 0) {
-    saga_actor_trap(a, reason);
+    saga_actor_trap(reason);
     FAIL() << "Should have longjmp'd";
   } else {
     jumped = true;
   }
+  mc_set_current_actor_for_test(nullptr);
 
   EXPECT_TRUE(jumped);
   EXPECT_EQ(a->status, MC_ACTOR_ZOMBIE);
@@ -175,12 +184,14 @@ TEST(TrapTest, NullReasonStillSetsZombie) {
   a->status = MC_ACTOR_RUNNING;
 
   bool jumped = false;
+  mc_set_current_actor_for_test(a);
   if (setjmp(a->trap) == 0) {
-    saga_actor_trap(a, nullptr);
+    saga_actor_trap(nullptr);
     FAIL() << "Should have longjmp'd";
   } else {
     jumped = true;
   }
+  mc_set_current_actor_for_test(nullptr);
 
   EXPECT_TRUE(jumped);
   EXPECT_EQ(a->status, MC_ACTOR_ZOMBIE);
@@ -191,7 +202,9 @@ TEST(TrapTest, NullReasonStillSetsZombie) {
 }
 
 TEST(TrapTest, NullActorIsSafe) {
-  saga_actor_trap(nullptr, nullptr); // must not crash
+  /* No current actor published → trap is a safe no-op. */
+  mc_set_current_actor_for_test(nullptr);
+  saga_actor_trap(nullptr);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -208,7 +221,7 @@ protected:
 static void trap_with_reason(mc_actor *a) {
   /* Allocate the reason string in the arena. */
   mc_string *reason = mc_arena_alloc_string(a->arena, "fatal error", 11);
-  saga_actor_trap(a, reason);
+  saga_actor_trap(reason);
   /* Should never reach here. */
 }
 
@@ -228,7 +241,8 @@ TEST_F(TrapExecutorTest, TrapSetsZombieStatus) {
 
 /* An actor that traps without a reason. */
 static void trap_no_reason(mc_actor *a) {
-  saga_actor_trap(a, nullptr);
+  (void)a;
+  saga_actor_trap(nullptr);
 }
 
 TEST_F(TrapExecutorTest, TrapWithoutReasonCompletes) {
@@ -239,5 +253,77 @@ TEST_F(TrapExecutorTest, TrapWithoutReasonCompletes) {
   saga_task_wait(a, &status);
 
   EXPECT_GE(status, MC_ACTOR_COMPLETED);
+  saga_task_drop(a);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/* P1 end-to-end: trap reason round-trips through Wait → Error interface.  */
+/* Mirrors the Saga-level `task.Wait() or |err| { err.Message() }` path.   */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+/* Nested call: the trap happens several frames below the actor's entry,
+   exercising the thread-local current-actor lookup (P1.1). */
+static void trap_deep_inner(void) {
+  mc_string *reason = mc_arena_alloc_string(
+      mc_get_current_actor()->arena, "boom", 4);
+  saga_actor_trap(reason);
+}
+static void trap_deep_mid(void)   { trap_deep_inner(); }
+static void trap_deep_entry(mc_actor *a) { (void)a; trap_deep_mid(); }
+
+typedef mc_string *(*msg_fn_t)(void *);
+
+TEST_F(TrapExecutorTest, WaitErrorBranchCarriesTrapReason) {
+  mc_actor *a = saga_executor_spawn(trap_deep_entry, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  int64_t status = 0;
+  saga_task_wait(a, &status);
+
+  /* Worker loop reclassifies ZOMBIE as-is (not COMPLETED).  The only
+     thing the Wait() lowering branches on is status != COMPLETED. */
+  EXPECT_EQ(status, MC_ACTOR_ZOMBIE);
+
+  /* Build the Error fat pointer the same way codegen does. */
+  mc_iface_fat_ptr *fat = (mc_iface_fat_ptr *)saga_error_from_trap(a);
+  ASSERT_NE(fat, nullptr);
+  ASSERT_NE(fat->data, nullptr);
+  ASSERT_NE(fat->vtable, nullptr);
+
+  /* Dispatch Message() through the vtable, just like the codegen'd
+     `err.Message()` call would. */
+  auto *vt = (mc_trap_error_vtable *)fat->vtable;
+  auto msg_fn = (msg_fn_t)vt->message_fn;
+  mc_string *msg = msg_fn(fat->data);
+  ASSERT_NE(msg, nullptr);
+  EXPECT_EQ(msg->len, 4);
+  EXPECT_EQ(std::memcmp(msg->data, "boom", 4), 0);
+
+  saga_release_string(msg);
+  free(fat->data);
+  free(fat);
+  saga_task_drop(a);
+}
+
+/* Success path: ctx.Exit copies the result onto the heap before longjmp,
+   so the returned pointer must contain the value we exited with.  This
+   regression-tests the bug where the worker loop's memcpy of
+   result_in_arena could read clobbered stack memory. */
+static void exit_with_forty_two(mc_actor *a) {
+  int64_t val = 42;
+  saga_context_exit(a, &val, sizeof(val));
+}
+
+TEST_F(TrapExecutorTest, ExitResultSurvivesLongjmp) {
+  mc_actor *a = saga_executor_spawn(exit_with_forty_two, nullptr, 0, 0);
+  ASSERT_NE(a, nullptr);
+
+  int64_t status = 0;
+  void *result = saga_task_wait(a, &status);
+
+  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  ASSERT_NE(result, nullptr);
+  EXPECT_EQ(*(int64_t *)result, 42);
+
   saga_task_drop(a);
 }

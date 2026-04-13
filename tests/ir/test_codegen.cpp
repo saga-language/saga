@@ -3693,13 +3693,14 @@ TEST(CodeGen, IntrinsicYieldInsideSpawn) {
   EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_yield"));
 }
 
-TEST(CodeGen, IntrinsicYieldOutsideSpawnIsNoop) {
+TEST(CodeGen, IntrinsicYieldOutsideSpawnEmitsCall) {
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  intrinsic_yield()\n"
       "}");
-  // Outside a spawn block, yield is a no-op — no call emitted.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_actor_yield"));
+  // The call is emitted unconditionally; the runtime reads the current
+  // actor from a thread-local and no-ops if there isn't one.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_yield"));
 }
 
 TEST(CodeGen, IntrinsicTrapInsideSpawn) {
@@ -3713,13 +3714,14 @@ TEST(CodeGen, IntrinsicTrapInsideSpawn) {
   EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_trap"));
 }
 
-TEST(CodeGen, IntrinsicTrapOutsideSpawnIsNoop) {
+TEST(CodeGen, IntrinsicTrapOutsideSpawnEmitsCall) {
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  intrinsic_trap(\"oops\")\n"
       "}");
-  // Outside a spawn block, trap is a no-op.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_actor_trap"));
+  // The call is emitted unconditionally; the runtime reads the current
+  // actor from a thread-local and no-ops if there isn't one.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_trap"));
 }
 
 TEST(CodeGen, IntrinsicAtomicAdd) {

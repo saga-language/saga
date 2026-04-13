@@ -1372,18 +1372,19 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   func->insert(func->end(), err_bb);
   builder.SetInsertPoint(err_bb);
 
-  // If the or-clause has a pipe variable, bind it.
-  // For now, we pass a null pointer as the error value (full error
-  // extraction would need interface boxing). This is enough for the
-  // fallback block to work.
+  // Bind the pipe variable to the Error payload extracted from the
+  // union.  The payload first 8 bytes hold the interface fat pointer
+  // produced by whichever path produced the Error (e.g. Task.Wait's
+  // saga_error_from_trap).
   if (node.pipe) {
     std::string pipe_name(node.pipe->name);
-    auto *err_alloca = create_entry_alloca(
-        func, pipe_name, llvm::PointerType::getUnqual(context));
-    builder.CreateStore(
-        llvm::ConstantPointerNull::get(
-            llvm::PointerType::getUnqual(context)),
-        err_alloca);
+    auto *ptr_type = llvm::PointerType::getUnqual(context);
+    auto *err_alloca = create_entry_alloca(func, pipe_name, ptr_type);
+    auto *payload_gep = builder.CreateStructGEP(union_st, union_ptr, 1,
+                                                 "err.payload.gep");
+    auto *err_val = builder.CreateLoad(ptr_type, payload_gep,
+                                        "err.payload.val");
+    builder.CreateStore(err_val, err_alloca);
     locals[pipe_name] = err_alloca;
   }
 

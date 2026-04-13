@@ -433,6 +433,22 @@ void mc_deque_drain(mc_deque *src, mc_deque *dst) {
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* Current-actor thread-local                                               */
+/*                                                                          */
+/* Each worker thread publishes the mc_actor* it is currently executing     */
+/* here so that intrinsics (trap, yield) can locate it from any call depth  */
+/* without a compile-time reference to the actor pointer.                   */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+static __thread mc_actor *mc_current_actor = NULL;
+
+mc_actor *mc_get_current_actor(void) { return mc_current_actor; }
+
+/* Test hook — lets unit tests bypass the worker loop and exercise
+   intrinsics that depend on the thread-local current actor. */
+void mc_set_current_actor_for_test(mc_actor *a) { mc_current_actor = a; }
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* Executor                                                                 */
 /*                                                                          */
 /* A fixed-size thread pool with per-worker deques and a global inject      */
@@ -588,6 +604,10 @@ static void *mc_worker_loop(void *arg) {
     /* Set status to RUNNING *before* setjmp so the actor can read it. */
     __atomic_store_n(&actor->status, MC_ACTOR_RUNNING, __ATOMIC_RELEASE);
 
+    /* Publish the actor as the thread-local current actor so that
+       intrinsics called from any depth can locate it. */
+    mc_current_actor = actor;
+
     if (setjmp(actor->trap) == 0) {
       /* Normal path: run the actor's entry function. */
       actor->entry(actor);
@@ -606,6 +626,10 @@ static void *mc_worker_loop(void *arg) {
                                               : MC_ACTOR_KILLED;
       }
     }
+
+    /* Clear the thread-local so stale reads from idle workers are a
+       visible NULL deref rather than a use-after-free on the actor. */
+    mc_current_actor = NULL;
 
     /* Copy result out of arena BEFORE destroying it. */
     if (actor->result_in_arena && actor->result_size > 0
@@ -968,13 +992,22 @@ int64_t saga_context_cancelled(mc_actor *a) {
  */
 void saga_context_exit(mc_actor *a, void *value, int64_t size) {
   if (!a) return;
+  /* Copy the bytes onto the heap BEFORE longjmp.  `value` typically points
+     into the actor's stack frame, which is abandoned after longjmp; the
+     worker loop runs intervening code (malloc, etc.) that can clobber it
+     before a later memcpy would have read it.  Copying here keeps the
+     bytes live.  We also set result_in_arena as a signal to the worker
+     loop that context_exit was called (so it promotes final_status to
+     COMPLETED on the longjmp path). */
+  if (value && size > 0) {
+    void *copy = malloc((size_t)size);
+    if (copy) {
+      memcpy(copy, value, (size_t)size);
+      a->result = copy;
+    }
+  }
   a->result_in_arena = value;
   a->result_size     = size;
-  /* Do NOT set status here — the worker loop publishes the final status
-     under the lock after arena cleanup.  We stash the desired status in
-     a field the worker reads.  For context_exit the desired status is
-     always COMPLETED; the worker detects this via result_in_arena being
-     set and final_status still being RUNNING → it promotes to COMPLETED. */
   longjmp(a->trap, 1);
 }
 
@@ -996,7 +1029,8 @@ int saga_context_send(mc_actor *a, const void *data) {
  */
 #include <sched.h>
 
-void saga_actor_yield(mc_actor *a) {
+void saga_actor_yield(void) {
+  mc_actor *a = mc_current_actor;
   if (!a) return;
   sched_yield();
   a->reduction_count = 0;
@@ -1187,7 +1221,8 @@ typedef struct {
 /* Called by the intrinsic_trap() Saga intrinsic from inside a spawn block.  */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void saga_actor_trap(mc_actor *a, mc_string *reason) {
+void saga_actor_trap(mc_string *reason) {
+  mc_actor *a = mc_current_actor;
   if (!a) return;
 
   __atomic_store_n(&a->status, MC_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
@@ -1208,6 +1243,73 @@ void saga_actor_trap(mc_actor *a, mc_string *reason) {
   }
 
   longjmp(a->trap, 1);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* TrapError — concrete type returned from Task.Wait()'s Error branch.      */
+/*                                                                          */
+/* Layout mirrors the compiler's iface_fat_ptr layout { data*, vtable* }.   */
+/* The vtable has one slot (Message) matching the Error interface.          */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+  mc_string *reason;
+} mc_trap_error;
+
+typedef struct {
+  void *message_fn;
+} mc_trap_error_vtable;
+
+typedef struct {
+  void *data;
+  void *vtable;
+} mc_iface_fat_ptr;
+
+/* Forward declaration for the vtable initializer. */
+static mc_string *saga_trap_error_message(void *self);
+
+static const mc_trap_error_vtable saga_trap_error_vtable_instance = {
+    .message_fn = (void *)saga_trap_error_message,
+};
+
+static mc_string *saga_trap_error_message(void *self) {
+  mc_trap_error *e = (mc_trap_error *)self;
+  if (e && e->reason) {
+    /* Hand out a retained reference — the caller owns it. */
+    if (e->reason->refcount > 0) e->reason->refcount++;
+    return e->reason;
+  }
+  /* Fall back to a fresh "killed" string. */
+  static const char kFallback[] = "killed";
+  char *heap = (char *)malloc(sizeof(kFallback));
+  memcpy(heap, kFallback, sizeof(kFallback));
+  mc_string *s = (mc_string *)malloc(sizeof(mc_string));
+  s->data = heap;
+  s->len = sizeof(kFallback) - 1;
+  s->refcount = 1;
+  return s;
+}
+
+/*
+ * saga_error_from_trap — build an Error interface fat pointer from the
+ * trapped actor's stashed reason string.  Returns a heap-allocated
+ * mc_iface_fat_ptr whose data points to a mc_trap_error and whose vtable
+ * points to saga_trap_error_vtable_instance.
+ *
+ * Called by the Task.Wait() lowering on the error path.
+ */
+void *saga_error_from_trap(mc_actor *a) {
+  mc_trap_error *e = (mc_trap_error *)malloc(sizeof(mc_trap_error));
+  if (!e) return NULL;
+  mc_string *reason = (a && a->result) ? (mc_string *)a->result : NULL;
+  if (reason && reason->refcount > 0) reason->refcount++;
+  e->reason = reason;
+
+  mc_iface_fat_ptr *fat = (mc_iface_fat_ptr *)malloc(sizeof(mc_iface_fat_ptr));
+  if (!fat) { free(e); return NULL; }
+  fat->data = e;
+  fat->vtable = (void *)&saga_trap_error_vtable_instance;
+  return fat;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */

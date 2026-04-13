@@ -115,8 +115,14 @@ mc_actor   *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
 void        mc_actor_retain(mc_actor *a);
 void        mc_actor_release(mc_actor *a);
 void        saga_reduction_tick(mc_actor *a);
-void        saga_actor_yield(mc_actor *a);
-void        saga_actor_trap(mc_actor *a, mc_string *reason);
+void        saga_actor_yield(void);
+void        saga_actor_trap(mc_string *reason);
+mc_actor   *mc_get_current_actor(void);
+
+/* Test-only: publish a thread's current actor so unit tests can exercise
+   intrinsics that read it via the thread-local. The production runtime
+   sets this internally from the worker loop. */
+void        mc_set_current_actor_for_test(mc_actor *a);
 
 /* ── Deque API ─────────────────────────────────────────────────────────── */
 
@@ -147,6 +153,19 @@ void        saga_task_drop(mc_actor *a);
 int64_t     saga_context_cancelled(mc_actor *a);
 void        saga_context_exit(mc_actor *a, void *value, int64_t size);
 int         saga_context_send(mc_actor *a, const void *data);
+
+/* ── Error interface plumbing (used by Task.Wait()'s error branch) ─────── */
+
+void       *saga_error_from_trap(mc_actor *a);
+
+typedef struct {
+  void *message_fn;
+} mc_trap_error_vtable;
+
+typedef struct {
+  void *data;
+  void *vtable;
+} mc_iface_fat_ptr;
 
 /* ── Channel API ───────────────────────────────────────────────────────── */
 
