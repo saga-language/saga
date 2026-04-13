@@ -208,15 +208,15 @@ static void wait_for_actor(mc_actor *a) {
 class ExecutorTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    mc_executor_init(2); /* 2 workers for determinism */
+    saga_executor_init(2); /* 2 workers for determinism */
   }
   void TearDown() override {
-    mc_executor_shutdown();
+    saga_executor_shutdown();
   }
 };
 
 TEST_F(ExecutorTest, SpawnNoopCompletes) {
-  mc_actor *a = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   wait_for_actor(a);
@@ -228,7 +228,7 @@ TEST_F(ExecutorTest, SpawnNoopCompletes) {
 }
 
 TEST_F(ExecutorTest, SpawnWithMarker) {
-  mc_actor *a = mc_executor_spawn(marker_entry, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(marker_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   wait_for_actor(a);
@@ -245,7 +245,7 @@ TEST_F(ExecutorTest, SpawnMultiple) {
   std::vector<mc_actor *> actors(N);
 
   for (int i = 0; i < N; i++) {
-    actors[i] = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+    actors[i] = saga_executor_spawn(noop_entry, nullptr, 0, 0);
     ASSERT_NE(actors[i], nullptr);
   }
 
@@ -258,7 +258,7 @@ TEST_F(ExecutorTest, SpawnMultiple) {
 
 TEST_F(ExecutorTest, SpawnWithClosureData) {
   int64_t payload = 99;
-  mc_actor *a = mc_executor_spawn(noop_entry, &payload, sizeof(payload), 0);
+  mc_actor *a = saga_executor_spawn(noop_entry, &payload, sizeof(payload), 0);
   ASSERT_NE(a, nullptr);
 
   wait_for_actor(a);
@@ -270,7 +270,7 @@ TEST_F(ExecutorTest, SpawnWithClosureData) {
 /* ── Cancellation ──────────────────────────────────────────────────────── */
 
 TEST_F(ExecutorTest, CancelFlag) {
-  mc_actor *a = mc_executor_spawn(wait_for_cancel_entry, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(wait_for_cancel_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   /* Give the actor a moment to start. */
@@ -296,7 +296,7 @@ static void self_kill_entry(mc_actor *a) {
 }
 
 TEST_F(ExecutorTest, LongjmpKillPath) {
-  mc_actor *a = mc_executor_spawn(self_kill_entry, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(self_kill_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   wait_for_actor(a);
@@ -313,7 +313,7 @@ TEST_F(ExecutorTest, ReplaceWorkerAndContinue) {
   mc_executor_replace_worker(0);
 
   /* Spawn work after the replacement and verify it completes. */
-  mc_actor *a = mc_executor_spawn(noop_entry, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   wait_for_actor(a);

@@ -620,4 +620,52 @@ const Stdout File
       << "Module export Stdout should expose File's Write method";
 }
 
+// ===========================================================================
+// Receiver methods — SGI round-trip
+// ===========================================================================
+
+TEST(Sgi, ReceiverMethodsSerialize) {
+  // generate_sgi with a receiver_methods block.
+  std::vector<SgiReceiverMethod> rms;
+  auto sig = make_func_type({}, {make_string_type()});
+  rms.push_back({"Int", {{"String", sig, true}}});
+
+  auto text = generate_sgi("int", {}, {}, rms);
+  EXPECT_NE(text.find("methods Int {"), std::string::npos);
+  EXPECT_NE(text.find("pub fn String() String"), std::string::npos);
+}
+
+TEST(Sgi, ReceiverMethodsParseRoundTrip) {
+  std::vector<SgiReceiverMethod> rms;
+  auto str_sig = make_func_type({}, {make_string_type()});
+  auto cmp_sig = make_func_type({make_int_type()}, {make_string_type()});
+  rms.push_back({"Int", {
+    {"String", str_sig, true},
+    {"Compare", cmp_sig, true},
+  }});
+
+  auto text = generate_sgi("int", {}, {}, rms);
+  auto parsed = parse_sgi(text);
+  ASSERT_TRUE(parsed.has_value());
+  ASSERT_EQ(parsed->receiver_methods.size(), 1u);
+  EXPECT_EQ(parsed->receiver_methods[0].type_name, "Int");
+  ASSERT_EQ(parsed->receiver_methods[0].methods.size(), 2u);
+  EXPECT_EQ(parsed->receiver_methods[0].methods[0].name, "String");
+  EXPECT_EQ(parsed->receiver_methods[0].methods[1].name, "Compare");
+}
+
+TEST(Sgi, ReceiverMethodsPrivateSkipped) {
+  // Private methods should not appear in the serialized output.
+  std::vector<SgiReceiverMethod> rms;
+  auto sig = make_func_type({}, {make_string_type()});
+  rms.push_back({"Bool", {
+    {"String", sig, true},
+    {"privateHelper", sig, false},
+  }});
+
+  auto text = generate_sgi("bool", {}, {}, rms);
+  EXPECT_NE(text.find("pub fn String()"), std::string::npos);
+  EXPECT_EQ(text.find("privateHelper"), std::string::npos);
+}
+
 } // namespace mc

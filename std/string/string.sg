@@ -1,0 +1,56 @@
+// Package string provides methods on the String intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn (self String) String() String {
+  self
+}
+
+pub fn (self String) Size() Int {
+  intrinsic_field(self, 1)
+}
+
+pub fn (self String) Lower() String {
+  intrinsic_runtime("saga_string_lower", self)
+}
+
+pub fn (self String) Upper() String {
+  intrinsic_runtime("saga_string_upper", self)
+}
+
+pub fn (self String) Compare(other String) Comparison {
+  v := intrinsic_runtime("saga_string_compare", self, other)
+  if v < 0 {
+    Comparison.Less
+  } else {
+    if v == 0 { Comparison.Equal }
+    else { Comparison.Greater }
+  }
+}
+
+pub fn (self String) Equals(other String) Bool {
+  intrinsic_runtime("saga_string_compare", self, other) == 0
+}
+
+pub fn (self String) Bytes() [Byte] {
+  intrinsic_runtime("saga_string_bytes", self)
+}
+
+pub fn (self String) Count() Int {
+  intrinsic_runtime("saga_string_count", self)
+}
+
+pub fn (self String) Runes() [Int32] {
+  intrinsic_runtime("saga_string_runes", self)
+}
+
+pub fn (self String) Format(fmt String) String {
+  intrinsic_runtime("saga_string_format", self, fmt)
+}
+
+pub fn (self String) Int() Int | Error {
+  intrinsic_runtime_try("saga_string_to_int", self)
+}
+
+pub fn (self String) Float() Float | Error {
+  intrinsic_runtime_try("saga_string_to_float", self)
+}

@@ -111,148 +111,23 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
   // These are added per-kind below alongside kind-specific methods.
 
   switch (kind) {
-  case TypeKind::String:
-    methods.push_back(
-        {"Bytes", make_func_type({}, {make_array_type(t.byte_type)}), true});
-    methods.push_back(
-        {"Count", make_func_type({}, {t.int_type}), true});
-    methods.push_back(
-        {"Float",
-         make_func_type({}, {make_union_type({t.float_type, t.error_iface})}),
-         true});
-    methods.push_back(
-        {"Format", make_func_type({t.string_type}, {t.string_type}), true});
-    methods.push_back(
-        {"Int",
-         make_func_type({}, {make_union_type({t.int_type, t.error_iface})}),
-         true});
-    methods.push_back(
-        {"Lower", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Runes", make_func_type({}, {make_array_type(t.int32_type)}), true});
-    methods.push_back(
-        {"Size", make_func_type({}, {t.int_type}), true});
-    methods.push_back(
-        {"Upper", make_func_type({}, {t.string_type}), true});
-    // Universal methods
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Compare", make_func_type({t.string_type}, {t.comparison_type}),
-         true});
-    methods.push_back(
-        {"Equals", make_func_type({t.string_type}, {t.bool_type}), true});
-    break;
+  // Bool, Int, Float, String methods are fully migrated to stdlib packages.
 
   case TypeKind::Array: {
-    // Array methods use a type-param placeholder for the element type.
-    // The analyzer's type-checker resolves the concrete element type at
-    // each call site; these signatures just need the right arity.
-    auto tp = make_type_param(9990, "T");
-    methods.push_back(
-        {"At", make_func_type({t.int_type}, {tp}), true});
-    methods.push_back(
-        {"Find", make_func_type({tp}, {make_union_type({t.int_type, t.error_iface})}), true});
-    methods.push_back(
-        {"Insert", make_func_type({tp, t.int_type}, {t.void_type}), true});
-    methods.push_back(
-        {"Push", make_func_type({tp}, {tp}), true});
-    methods.push_back(
-        {"Pop", make_func_type({}, {tp}), true});
-    methods.push_back(
-        {"Set", make_func_type({t.int_type, tp}, {t.void_type}), true});
-    methods.push_back(
-        {"Size", make_func_type({}, {t.int_type}), true});
-    // Universal methods
+    // Most Array methods are in std/array/array.sg.
+    // String() is deferred — requires TypeParam method dispatch.
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
   }
 
   case TypeKind::Map: {
-    // Map methods use type-param placeholders for key (K) and value (V).
-    // The analyzer's type-checker resolves concrete types at call sites.
-    auto kp = make_type_param(9991, "K");
-    auto vp = make_type_param(9992, "V");
-    methods.push_back(
-        {"At", make_func_type({kp}, {vp}), true});
-    methods.push_back(
-        {"Key?", make_func_type({kp}, {t.bool_type}), true});
-    methods.push_back(
-        {"Keys", make_func_type({}, {make_array_type(kp)}), true});
-    methods.push_back(
-        {"Remove", make_func_type({kp}, {t.void_type}), true});
-    methods.push_back(
-        {"Set", make_func_type({kp, vp}, {t.void_type}), true});
-    methods.push_back(
-        {"Size", make_func_type({}, {t.int_type}), true});
-    // Universal methods
+    // Most Map methods are in std/map/map.sg.
+    // String() is deferred — requires TypeParam method dispatch.
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
   }
-
-  case TypeKind::Int:
-    // Universal methods
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Compare", make_func_type({t.int_type}, {t.comparison_type}), true});
-    methods.push_back(
-        {"Equals", make_func_type({t.int_type}, {t.bool_type}), true});
-    // Converters — a subset; the full set is registered during init.
-    methods.push_back(
-        {"Float", make_func_type({}, {t.float_type}), true});
-    methods.push_back(
-        {"Float32", make_func_type({}, {t.float32_type}), true});
-    methods.push_back(
-        {"Float64", make_func_type({}, {t.float64_type}), true});
-    methods.push_back(
-        {"Format", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Int", make_func_type({}, {t.int_type}), true});
-    methods.push_back(
-        {"Int8", make_func_type({}, {t.int8_type}), true});
-    methods.push_back(
-        {"Int16", make_func_type({}, {t.int16_type}), true});
-    methods.push_back(
-        {"Int32", make_func_type({}, {t.int32_type}), true});
-    methods.push_back(
-        {"Int64", make_func_type({}, {t.int64_type}), true});
-    methods.push_back(
-        {"Uint8", make_func_type({}, {t.uint8_type}), true});
-    methods.push_back(
-        {"Uint16", make_func_type({}, {t.uint16_type}), true});
-    methods.push_back(
-        {"Uint32", make_func_type({}, {t.uint32_type}), true});
-    methods.push_back(
-        {"Uint64", make_func_type({}, {t.uint64_type}), true});
-    methods.push_back(
-        {"Char", make_func_type({}, {t.char_type}), true});
-    break;
-
-  case TypeKind::Float:
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Compare", make_func_type({t.float_type}, {t.comparison_type}),
-         true});
-    methods.push_back(
-        {"Equals", make_func_type({t.float_type}, {t.bool_type}), true});
-    methods.push_back(
-        {"Format", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Float32", make_func_type({}, {t.float32_type}), true});
-    methods.push_back(
-        {"Float64", make_func_type({}, {t.float64_type}), true});
-    break;
-
-  case TypeKind::Bool:
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Equals", make_func_type({t.bool_type}, {t.bool_type}), true});
-    break;
 
   case TypeKind::Enum:
     methods.push_back(
@@ -365,6 +240,79 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       make_func_type(
           {make_union_type({types.string_type, make_array_type(types.byte_type)})},
           {types.int_type})));
+
+  // intrinsic_runtime(name: String, args...: Any) -> Any
+  // Calls the named C runtime function; scalar args are auto-promoted to
+  // stack pointers when the C function expects void*.  The return type is
+  // Any; codegen uses the actual C function's return type.
+  {
+    auto variadic_any = make_array_type(types.any_type);
+    auto fn = make_func_type({types.string_type, variadic_any}, {types.any_type});
+    std::get<FuncTypeInfo>(fn->detail).is_variadic = true;
+    global_scope->declare(Symbol::builtin("intrinsic_runtime",
+                                          SymbolKind::Function, fn));
+  }
+
+  // intrinsic_field(value: Any, index: Int) -> Any
+  // GEP + load on the value's backing struct at the given field index.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_field", SymbolKind::Function,
+      make_func_type({types.any_type, types.int_type}, {types.any_type})));
+
+  // intrinsic_sitofp(value: Int) -> Any
+  // LLVM sitofp i64 → double. Returns Any so the stdlib can cast to Float,
+  // Float32, Float64, etc.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sitofp", SymbolKind::Function,
+      make_func_type({types.int_type}, {types.any_type})));
+
+  // intrinsic_fptosi(value: Float) -> Any
+  // LLVM fptosi double → i64. Returns Any so the stdlib can cast to Int,
+  // Int32, etc.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_fptosi", SymbolKind::Function,
+      make_func_type({types.float_type}, {types.any_type})));
+
+  // intrinsic_zext(value: Int, bits: Int) -> Any
+  // LLVM zext/trunc to the target bit width. Returns Any so the stdlib can
+  // cast to Uint8, Int32, Char, etc.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_zext", SymbolKind::Function,
+      make_func_type({types.int_type, types.int_type}, {types.any_type})));
+
+  // intrinsic_sext(value: Int, bits: Int) -> Any
+  // LLVM sext/trunc to the target bit width (sign-extending). Returns Any.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sext", SymbolKind::Function,
+      make_func_type({types.int_type, types.int_type}, {types.any_type})));
+
+  // intrinsic_sitofp32(value: Int) -> Any
+  // LLVM sitofp i64 → float (32-bit). Returns Any so stdlib can cast.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sitofp32", SymbolKind::Function,
+      make_func_type({types.int_type}, {types.any_type})));
+
+  // intrinsic_fptrunc(value: Float) -> Any
+  // LLVM fptrunc double → float (64→32 bit). Returns Any so stdlib can cast.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_fptrunc", SymbolKind::Function,
+      make_func_type({types.float_type}, {types.any_type})));
+
+  // intrinsic_fpext(value: Float) -> Any
+  // LLVM fpext float → double (32→64 bit). On 64-bit targets where Float is
+  // already f64 this is a no-op, but needed for 32-bit targets where Float
+  // is f32 and Float64 is f64.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_fpext", SymbolKind::Function,
+      make_func_type({types.float_type}, {types.any_type})));
+
+  // intrinsic_runtime_try(name: String, args...) -> Any
+  // Like intrinsic_runtime but for C functions that return a status code
+  // and write the result to an auto-appended out-param. Status 0 = success,
+  // non-zero = failure (wraps Missing as error variant).
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_runtime_try", SymbolKind::Function,
+      make_func_type({types.string_type}, {types.any_type}, true)));
 }
 
 } // namespace mc

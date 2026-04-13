@@ -11,9 +11,28 @@
 
 namespace mc {
 
+/// Return true if the name refers to a scalar intrinsic type.
+static bool is_intrinsic_type_name(std::string_view name) {
+  return name == "Int" || name == "Float" || name == "Bool" ||
+         name == "String";
+}
+
 void CodeGen::declare_functions(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     if (auto *fn = std::get_if<FuncDeclNode>(&decl->data)) {
+      // Skip receiver methods on intrinsic types — handled by
+      // declare_intrinsic_methods or hardcoded codegen.
+      if (fn->receiver) {
+        auto &rt = fn->receiver->type->data;
+        if (auto *ri = std::get_if<IdentifierNode>(&rt)) {
+          if (is_intrinsic_type_name(ri->name))
+            continue;
+        }
+        // Also skip generic receivers ([T], {K:V}) — these are dispatched
+        // through the hardcoded array/map codegen path, not as direct calls.
+        if (std::get_if<ArrayTypeNode>(&rt) || std::get_if<MapTypeNode>(&rt))
+          continue;
+      }
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
       std::string link_name = is_main ? "main" : mangle(name);
@@ -542,5 +561,179 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
   }
 }
 
+
+// ===========================================================================
+// Intrinsic type methods (receiver methods on Int, Float, Bool, String,
+// Array, Map)
+// ===========================================================================
+
+/// Determine the intrinsic type name for a receiver type node.
+/// Returns the type name ("Int", "Float", "Bool", "String", "Array", "Map")
+/// or empty string if not an intrinsic type receiver.
+static std::string intrinsic_receiver_type_name(const Node &type_node) {
+  if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
+    if (is_intrinsic_type_name(ident->name))
+      return std::string(ident->name);
+  }
+  if (std::get_if<ArrayTypeNode>(&type_node.data))
+    return "Array";
+  if (std::get_if<MapTypeNode>(&type_node.data))
+    return "Map";
+  return {};
+}
+
+/// Collect generic type parameter names from a FuncDeclNode.
+static std::unordered_set<std::string>
+collect_generic_names(const FuncDeclNode &fn) {
+  std::unordered_set<std::string> names;
+  if (fn.generic) {
+    for (auto &tp : fn.generic->type_params) {
+      if (auto *id = std::get_if<IdentifierNode>(&tp->data))
+        names.insert(std::string(id->name));
+    }
+  }
+  return names;
+}
+
+void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    auto *fn = std::get_if<FuncDeclNode>(&decl->data);
+    if (!fn || !fn->receiver)
+      continue;
+
+    std::string type_name = intrinsic_receiver_type_name(*fn->receiver->type);
+    if (type_name.empty())
+      continue;
+
+    std::string method_name(fn->name.name);
+    std::string link_name = mangle(type_name + "__" + method_name);
+
+    if (module->getFunction(link_name))
+      continue;
+
+    // Collect generic type param names so we can map them to opaque ptr.
+    auto gnames = collect_generic_names(*fn);
+    auto resolve_or_ptr = [&](const Node &type_node) -> llvm::Type * {
+      if (auto *id = std::get_if<IdentifierNode>(&type_node.data)) {
+        if (gnames.count(std::string(id->name)))
+          return llvm::PointerType::getUnqual(context);
+      }
+      return resolve_type_node(type_node);
+    };
+
+    // Build function type: first param is the value type of self.
+    auto *self_type = resolve_or_ptr(*fn->receiver->type);
+    std::vector<llvm::Type *> param_types;
+    param_types.push_back(self_type);
+
+    for (auto &param : fn->signature.params) {
+      auto *ll = resolve_or_ptr(*param.type);
+      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+        param_types.push_back(ll);
+    }
+
+    llvm::Type *ret_type = void_ll_type;
+    if (!fn->signature.returns.empty())
+      ret_type = resolve_or_ptr(*fn->signature.returns[0]);
+
+    auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
+    auto *func = llvm::Function::Create(
+        fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+
+    func->getArg(0)->setName(std::string(fn->receiver->name.name));
+    size_t arg_idx = 1;
+    for (auto &param : fn->signature.params)
+      for (auto &ident : param.names.identifiers)
+        if (arg_idx < func->arg_size())
+          func->getArg(arg_idx++)->setName(std::string(ident.name));
+
+    intrinsic_method_links[type_name].push_back({link_name, method_name});
+  }
+}
+
+void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
+  for (auto &decl : src.declarations) {
+    auto *fn = std::get_if<FuncDeclNode>(&decl->data);
+    if (!fn || !fn->receiver)
+      continue;
+
+    std::string type_name = intrinsic_receiver_type_name(*fn->receiver->type);
+    if (type_name.empty())
+      continue;
+
+    std::string method_name(fn->name.name);
+    std::string link_name = mangle(type_name + "__" + method_name);
+
+    auto *func = module->getFunction(link_name);
+    if (!func || !func->empty())
+      continue;
+
+    auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+    builder.SetInsertPoint(entry);
+
+    locals.clear();
+    managed_locals.clear();
+    current_func_is_main = false;
+    current_func_return_sem = fn->signature.returns.empty()
+        ? nullptr
+        : semantic_type(*fn->signature.returns[0]);
+
+    // Collect generic param names for type resolution.
+    auto gnames = collect_generic_names(*fn);
+    auto resolve_or_ptr = [&](const Node &type_node) -> llvm::Type * {
+      if (auto *id = std::get_if<IdentifierNode>(&type_node.data)) {
+        if (gnames.count(std::string(id->name)))
+          return llvm::PointerType::getUnqual(context);
+      }
+      return resolve_type_node(type_node);
+    };
+
+    // Receiver parameter — self is a value, not a pointer to a struct.
+    std::string recv_name(fn->receiver->name.name);
+    auto *self_type = func->getArg(0)->getType();
+    auto *recv_alloca = create_entry_alloca(func, recv_name, self_type);
+    builder.CreateStore(func->getArg(0), recv_alloca);
+    locals[recv_name] = recv_alloca;
+
+    // Regular parameters.
+    size_t arg_idx = 1;
+    for (auto &param : fn->signature.params) {
+      auto *ll_type = resolve_or_ptr(*param.type);
+      for (auto &ident : param.names.identifiers) {
+        std::string pname(ident.name);
+        auto *alloca = create_entry_alloca(func, pname, ll_type);
+        builder.CreateStore(func->getArg(arg_idx++), alloca);
+        locals[pname] = alloca;
+      }
+    }
+
+    // Emit body.
+    auto &block = std::get<BlockNode>(fn->body->data);
+    auto *tail_val = emit_block(block);
+
+    if (!builder.GetInsertBlock()->getTerminator()) {
+      emit_release_locals();
+      auto *ret_type = func->getReturnType();
+      if (ret_type->isVoidTy()) {
+        builder.CreateRetVoid();
+      } else if (tail_val && tail_val->getType() == ret_type) {
+        builder.CreateRet(tail_val);
+      } else if (tail_val && ret_type->isIntegerTy() &&
+                 tail_val->getType()->isIntegerTy() &&
+                 tail_val->getType() != ret_type) {
+        unsigned src = tail_val->getType()->getIntegerBitWidth();
+        unsigned dst = ret_type->getIntegerBitWidth();
+        auto *conv = (src > dst)
+            ? builder.CreateTrunc(tail_val, ret_type, "ret.trunc")
+            : builder.CreateZExt(tail_val, ret_type, "ret.zext");
+        builder.CreateRet(conv);
+      } else {
+        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+      }
+    }
+
+    llvm::verifyFunction(*func);
+  }
+}
 
 } // namespace mc

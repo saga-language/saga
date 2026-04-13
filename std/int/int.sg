@@ -1,0 +1,75 @@
+// Package int provides methods on the Int intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn (self Int) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Int) Float() Float {
+  intrinsic_sitofp(self)
+}
+
+pub fn (self Int) Float64() Float64 {
+  intrinsic_sitofp(self)
+}
+
+pub fn (self Int) Equals(other Int) Bool {
+  self == other
+}
+
+pub fn (self Int) Compare(other Int) Comparison {
+  if self < other {
+    Comparison.Less
+  } else {
+    if self == other { Comparison.Equal }
+    else { Comparison.Greater }
+  }
+}
+
+pub fn (self Int) Int() Int {
+  self
+}
+
+pub fn (self Int) Int8() Int8 {
+  intrinsic_sext(self, 8)
+}
+
+pub fn (self Int) Int16() Int16 {
+  intrinsic_sext(self, 16)
+}
+
+pub fn (self Int) Int32() Int32 {
+  intrinsic_sext(self, 32)
+}
+
+pub fn (self Int) Int64() Int64 {
+  intrinsic_sext(self, 64)
+}
+
+pub fn (self Int) Uint8() Uint8 {
+  intrinsic_zext(self, 8)
+}
+
+pub fn (self Int) Uint16() Uint16 {
+  intrinsic_zext(self, 16)
+}
+
+pub fn (self Int) Uint32() Uint32 {
+  intrinsic_zext(self, 32)
+}
+
+pub fn (self Int) Uint64() Uint64 {
+  intrinsic_zext(self, 64)
+}
+
+pub fn (self Int) Char() Char {
+  intrinsic_zext(self, 32)
+}
+
+pub fn (self Int) Float32() Float32 {
+  intrinsic_sitofp32(self)
+}
+
+pub fn (self Int) Format(fmt String) String {
+  intrinsic_runtime("saga_int_format", self, fmt)
+}

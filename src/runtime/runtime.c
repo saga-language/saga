@@ -5,6 +5,7 @@
  * Compiled into a static library and linked into every Saga binary.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -193,7 +194,7 @@ enum {
 /* Forward declarations — full definitions follow below. */
 typedef struct mc_actor   mc_actor;
 typedef struct mc_channel mc_channel;
-void mc_channel_close(mc_channel *ch);
+void saga_channel_close(mc_channel *ch);
 int  mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor);
 
 typedef struct mc_actor {
@@ -278,7 +279,7 @@ void *mc_actor_get_closure(mc_actor *a) {
 }
 
 /* Runtime setter for channel — used by codegen to attach a channel after
-   mc_executor_spawn() returns the actor. */
+   saga_executor_spawn() returns the actor. */
 void mc_actor_set_channel(mc_actor *a, mc_channel *ch) {
   if (a) a->channel = ch;
 }
@@ -302,15 +303,15 @@ void mc_actor_release(mc_actor *a) {
 }
 
 /*
- * mc_reduction_tick  —  called at the top of every loop iteration inside
+ * saga_reduction_tick  —  called at the top of every loop iteration inside
  *                       a spawned actor.  Checks status poisoning and
  *                       enforces the CPU quota.
  *
- * If the actor has been killed (e.g. by mc_task_term or heartbeat monitor),
+ * If the actor has been killed (e.g. by saga_task_term or heartbeat monitor),
  * it longjmps out immediately.  If the reduction counter exceeds the
  * compile-time limit, the actor is killed.
  */
-void mc_reduction_tick(mc_actor *a) {
+void saga_reduction_tick(mc_actor *a) {
   if (!a) return;
 
   /* Status poisoning — killed externally? */
@@ -510,7 +511,7 @@ typedef struct mc_executor {
   pthread_cond_t   monitor_cond;    /* woken on shutdown for fast exit      */
 } mc_executor;
 
-/* Singleton executor — initialised by mc_executor_init(). */
+/* Singleton executor — initialised by saga_executor_init(). */
 static mc_executor *g_executor = NULL;
 
 /* Random peer selection for stealing. */
@@ -624,10 +625,10 @@ static void *mc_worker_loop(void *arg) {
 
     /* Close the channel so any parent iterating via recv sees EOF. */
     if (actor->channel)
-      mc_channel_close(actor->channel);
+      saga_channel_close(actor->channel);
 
     /* Publish the final status and signal waiters under the lock.
-       This guarantees that anyone waking from mc_task_wait() sees
+       This guarantees that anyone waking from saga_task_wait() sees
        arena == NULL and result fully populated. */
     pthread_mutex_lock(&actor->lock);
     actor->status = final_status;
@@ -644,10 +645,10 @@ static void *mc_worker_loop(void *arg) {
 /* ── Public executor API ───────────────────────────────────────────────── */
 
 /*
- * mc_executor_init  —  create the global executor and spawn worker threads.
+ * saga_executor_init  —  create the global executor and spawn worker threads.
  *
  * `num_workers` = 0 means auto-detect (hardware concurrency).
- * Must be called once before any mc_executor_spawn().
+ * Must be called once before any saga_executor_spawn().
  */
 /* ── Heartbeat monitor ──────────────────────────────────────────────────── */
 /*                                                                          */
@@ -701,7 +702,7 @@ static void *mc_heartbeat_monitor(void *arg) {
         __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
         /* Also close the channel to unblock any waiting send. */
         if (a->channel)
-          mc_channel_close(a->channel);
+          saga_channel_close(a->channel);
       }
     }
     pthread_mutex_unlock(&ex->active.lock);
@@ -710,7 +711,7 @@ static void *mc_heartbeat_monitor(void *arg) {
   return NULL;
 }
 
-void mc_executor_init(int64_t num_workers) {
+void saga_executor_init(int64_t num_workers) {
   if (g_executor) return; /* already initialised */
 
   if (num_workers <= 0) {
@@ -753,12 +754,12 @@ void mc_executor_init(int64_t num_workers) {
 }
 
 /*
- * mc_executor_spawn  —  create a new actor and schedule it for execution.
+ * saga_executor_spawn  —  create a new actor and schedule it for execution.
  *
  * Returns a pointer to the actor (the parent's Task handle).  The caller
  * owns one reference; the worker holds the other.
  */
-mc_actor *mc_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
+mc_actor *saga_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
                             int64_t closure_size, int64_t arena_max) {
   if (!g_executor) return NULL;
 
@@ -776,13 +777,13 @@ mc_actor *mc_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
 }
 
 /*
- * mc_executor_schedule  —  push an already-created actor into the executor.
+ * saga_executor_schedule  —  push an already-created actor into the executor.
  *
  * Use this when you need to configure the actor (e.g. attach a channel)
  * between creation and scheduling.  The actor must have been created with
  * mc_actor_new().
  */
-void mc_executor_schedule(mc_actor *actor) {
+void saga_executor_schedule(mc_actor *actor) {
   if (!g_executor || !actor) return;
   mc_deque_push(&g_executor->inject_queue, actor);
   pthread_mutex_lock(&g_executor->work_avail_lock);
@@ -791,9 +792,9 @@ void mc_executor_schedule(mc_actor *actor) {
 }
 
 /*
- * mc_executor_shutdown  —  signal all workers to stop and join them.
+ * saga_executor_shutdown  —  signal all workers to stop and join them.
  */
-void mc_executor_shutdown(void) {
+void saga_executor_shutdown(void) {
   if (!g_executor) return;
   mc_executor *ex = g_executor;
 
@@ -868,13 +869,13 @@ void mc_executor_replace_worker(int64_t worker_id) {
 /* Task API                                                                 */
 /*                                                                          */
 /* Called from the parent / spawning thread.  These operate on the          */
-/* mc_actor* that mc_executor_spawn() returned (the "Task handle").         */
+/* mc_actor* that saga_executor_spawn() returned (the "Task handle").         */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /*
- * mc_task_alive  —  returns 1 if the actor is still running or pending.
+ * saga_task_alive  —  returns 1 if the actor is still running or pending.
  */
-int64_t mc_task_alive(mc_actor *a) {
+int64_t saga_task_alive(mc_actor *a) {
   if (!a) return 0;
   pthread_mutex_lock(&a->lock);
   int alive = (a->status == MC_ACTOR_PENDING ||
@@ -884,27 +885,27 @@ int64_t mc_task_alive(mc_actor *a) {
 }
 
 /*
- * mc_task_cancel  —  ask the actor to stop.  The actor must poll
- *                    mc_context_cancelled() to honour this.
+ * saga_task_cancel  —  ask the actor to stop.  The actor must poll
+ *                    saga_context_cancelled() to honour this.
  */
-void mc_task_cancel(mc_actor *a) {
+void saga_task_cancel(mc_actor *a) {
   if (!a) return;
   __atomic_store_n(&a->cancelled, 1, __ATOMIC_RELEASE);
 }
 
 /*
- * mc_task_term  —  immediately kill the actor.  If it is blocked on a
+ * saga_task_term  —  immediately kill the actor.  If it is blocked on a
  *                  channel the channel is closed to unblock it; on its
  *                  next reduction tick or blocking call it will longjmp
  *                  out (status poisoning).
  */
-void mc_task_term(mc_actor *a) {
+void saga_task_term(mc_actor *a) {
   if (!a) return;
   pthread_mutex_lock(&a->lock);
   if (a->status == MC_ACTOR_PENDING || a->status == MC_ACTOR_RUNNING) {
     a->status = MC_ACTOR_KILLED;
     if (a->channel)
-      mc_channel_close(a->channel);
+      saga_channel_close(a->channel);
   }
   /* If the actor already finished, term is a no-op. */
   pthread_cond_signal(&a->done_cond);
@@ -912,13 +913,13 @@ void mc_task_term(mc_actor *a) {
 }
 
 /*
- * mc_task_wait  —  block until the actor reaches a terminal status.
+ * saga_task_wait  —  block until the actor reaches a terminal status.
  *                  Returns a pointer to the result (malloc'd, outlives
  *                  the arena) or NULL if no result was set.
  *
  *                  `out_status` is set to the terminal status if non-NULL.
  */
-void *mc_task_wait(mc_actor *a, int64_t *out_status) {
+void *saga_task_wait(mc_actor *a, int64_t *out_status) {
   if (!a) {
     if (out_status) *out_status = MC_ACTOR_KILLED;
     return NULL;
@@ -934,10 +935,10 @@ void *mc_task_wait(mc_actor *a, int64_t *out_status) {
 }
 
 /*
- * mc_task_drop  —  release the parent's reference.  Called when the Task
+ * saga_task_drop  —  release the parent's reference.  Called when the Task
  *                  handle goes out of scope in generated code.
  */
-void mc_task_drop(mc_actor *a) {
+void saga_task_drop(mc_actor *a) {
   mc_actor_release(a);
 }
 
@@ -949,15 +950,15 @@ void mc_task_drop(mc_actor *a) {
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /*
- * mc_context_cancelled  —  returns 1 if the parent called mc_task_cancel.
+ * saga_context_cancelled  —  returns 1 if the parent called saga_task_cancel.
  */
-int64_t mc_context_cancelled(mc_actor *a) {
+int64_t saga_context_cancelled(mc_actor *a) {
   if (!a) return 0;
   return __atomic_load_n(&a->cancelled, __ATOMIC_ACQUIRE) ? 1 : 0;
 }
 
 /*
- * mc_context_exit  —  terminate the actor with a return value.
+ * saga_context_exit  —  terminate the actor with a return value.
  *
  * `value` must point to data inside the actor's arena (or stack).
  * The worker loop copies it to a malloc'd buffer before destroying
@@ -965,7 +966,7 @@ int64_t mc_context_cancelled(mc_actor *a) {
  *
  * Does not return — calls longjmp.
  */
-void mc_context_exit(mc_actor *a, void *value, int64_t size) {
+void saga_context_exit(mc_actor *a, void *value, int64_t size) {
   if (!a) return;
   a->result_in_arena = value;
   a->result_size     = size;
@@ -978,24 +979,24 @@ void mc_context_exit(mc_actor *a, void *value, int64_t size) {
 }
 
 /*
- * mc_context_send  —  push a value into the actor's channel.
+ * saga_context_send  —  push a value into the actor's channel.
  *
  * Non-blocking from the actor's perspective unless the channel buffer is
  * full, in which case it blocks until a consumer drains an element.
  * Resets the reduction counter (I/O counts as yielding).
  */
-int mc_context_send(mc_actor *a, const void *data) {
+int saga_context_send(mc_actor *a, const void *data) {
   if (!a || !a->channel) return -1;
   return mc_channel_send(a->channel, data, a);
 }
 
 /*
- * mc_actor_yield  —  voluntarily yield execution and reset the reduction
+ * saga_actor_yield  —  voluntarily yield execution and reset the reduction
  *                    counter.  Called by the yield intrinsic.
  */
 #include <sched.h>
 
-void mc_actor_yield(mc_actor *a) {
+void saga_actor_yield(mc_actor *a) {
   if (!a) return;
   sched_yield();
   a->reduction_count = 0;
@@ -1009,8 +1010,8 @@ void mc_actor_yield(mc_actor *a) {
 /* copied (ownership transfer) — the sender retains no reference.           */
 /*                                                                          */
 /* mc_channel_send blocks if the buffer is full.                            */
-/* mc_channel_recv blocks if the buffer is empty.                           */
-/* mc_channel_close wakes all waiters; subsequent recv returns -1 once the  */
+/* saga_channel_recv blocks if the buffer is empty.                           */
+/* saga_channel_close wakes all waiters; subsequent recv returns -1 once the  */
 /* buffer drains.                                                           */
 /* ───────────────────────────────────────────────────────────────────────── */
 
@@ -1032,12 +1033,12 @@ struct mc_channel {
 };
 
 /*
- * mc_channel_new  —  create a channel with a fixed ring buffer.
+ * saga_channel_new  —  create a channel with a fixed ring buffer.
  *
  * `elem_size` is the byte size of each element.
  * `capacity`  is the max number of elements; 0 → MC_CHANNEL_DEFAULT_CAP.
  */
-mc_channel *mc_channel_new(int64_t elem_size, int64_t capacity) {
+mc_channel *saga_channel_new(int64_t elem_size, int64_t capacity) {
   if (elem_size <= 0) return NULL;
   if (capacity <= 0) capacity = MC_CHANNEL_DEFAULT_CAP;
 
@@ -1104,12 +1105,12 @@ int mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor) {
 }
 
 /*
- * mc_channel_recv  —  read the next element into `out_buf` (blocking).
+ * saga_channel_recv  —  read the next element into `out_buf` (blocking).
  *
  * Returns  0 on success.
  * Returns -1 if the channel is closed AND the buffer is drained (EOF).
  */
-int mc_channel_recv(mc_channel *ch, void *out_buf) {
+int saga_channel_recv(mc_channel *ch, void *out_buf) {
   if (!ch || !out_buf) return -1;
 
   pthread_mutex_lock(&ch->lock);
@@ -1136,12 +1137,12 @@ int mc_channel_recv(mc_channel *ch, void *out_buf) {
 }
 
 /*
- * mc_channel_close  —  mark the channel closed, wake all waiters.
+ * saga_channel_close  —  mark the channel closed, wake all waiters.
  *
  * Safe to call multiple times.  After close, send returns -1.  recv
  * continues to drain buffered data, then returns -1.
  */
-void mc_channel_close(mc_channel *ch) {
+void saga_channel_close(mc_channel *ch) {
   if (!ch) return;
 
   pthread_mutex_lock(&ch->lock);
@@ -1152,11 +1153,11 @@ void mc_channel_close(mc_channel *ch) {
 }
 
 /*
- * mc_channel_destroy  —  free all channel resources.
+ * saga_channel_destroy  —  free all channel resources.
  *
  * The channel must already be closed and no threads may be blocked on it.
  */
-void mc_channel_destroy(mc_channel *ch) {
+void saga_channel_destroy(mc_channel *ch) {
   if (!ch) return;
   free(ch->buffer);
   pthread_mutex_destroy(&ch->lock);
@@ -1180,13 +1181,13 @@ typedef struct {
 } mc_string;
 
 /* ───────────────────────────────────────────────────────────────────────── */
-/* mc_actor_trap  —  transition actor to ZOMBIE state                       */
+/* saga_actor_trap  —  transition actor to ZOMBIE state                       */
 /*                                                                          */
 /* The actor's arena is NOT destroyed so a supervisor can inspect it.        */
 /* Called by the intrinsic_trap() Saga intrinsic from inside a spawn block.  */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void mc_actor_trap(mc_actor *a, mc_string *reason) {
+void saga_actor_trap(mc_actor *a, mc_string *reason) {
   if (!a) return;
 
   __atomic_store_n(&a->status, MC_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
@@ -1213,12 +1214,12 @@ void mc_actor_trap(mc_actor *a, mc_string *reason) {
 /* String refcounting                                                       */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void mc_retain_string(mc_string *s) {
+void saga_retain_string(mc_string *s) {
   if (s && s->refcount > 0)
     s->refcount++;
 }
 
-void mc_release_string(mc_string *s) {
+void saga_release_string(mc_string *s) {
   if (!s || s->refcount < 0) return;   /* static — never free */
   s->refcount--;
   if (s->refcount <= 0) {
@@ -1241,7 +1242,7 @@ static mc_string *mc_alloc_string(const char *buf, int64_t len) {
 /* String helpers                                                           */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-mc_string *mc_string_concat(const mc_string *a, const mc_string *b) {
+mc_string *saga_string_concat(const mc_string *a, const mc_string *b) {
   int64_t new_len = 0;
   if (a) new_len += a->len;
   if (b) new_len += b->len;
@@ -1263,7 +1264,7 @@ mc_string *mc_string_concat(const mc_string *a, const mc_string *b) {
   return result;
 }
 
-int64_t mc_string_compare(const mc_string *a, const mc_string *b) {
+int64_t saga_string_compare(const mc_string *a, const mc_string *b) {
   if (!a || !a->data) return (b && b->data && b->len > 0) ? -1 : 0;
   if (!b || !b->data) return (a->len > 0) ? 1 : 0;
 
@@ -1279,29 +1280,54 @@ int64_t mc_string_compare(const mc_string *a, const mc_string *b) {
 /* Type-to-string conversions                                               */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-mc_string *mc_int_to_string(int64_t val) {
+mc_string *saga_int_to_string(int64_t val) {
   char buf[32];
   int n = snprintf(buf, sizeof(buf), "%" PRId64, val);
   return mc_alloc_string(buf, n);
 }
 
-mc_string *mc_float_to_string(double val) {
+mc_string *saga_float_to_string(double val) {
   char buf[64];
   int n = snprintf(buf, sizeof(buf), "%g", val);
   return mc_alloc_string(buf, n);
 }
 
-mc_string *mc_bool_to_string(int64_t val) {
+mc_string *saga_bool_to_string(int64_t val) {
   if (val) return mc_alloc_string("true", 4);
   return mc_alloc_string("false", 5);
 }
 
+mc_string *saga_string_lower(const mc_string *s) {
+  if (!s || s->len == 0) return mc_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  if (!buf) return mc_alloc_string("", 0);
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+  }
+  mc_string *result = mc_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
+mc_string *saga_string_upper(const mc_string *s) {
+  if (!s || s->len == 0) return mc_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  if (!buf) return mc_alloc_string("", 0);
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+  }
+  mc_string *result = mc_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
 /* ───────────────────────────────────────────────────────────────────────── */
-/* Array                                                                    */
-/*                                                                          */
-/* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount }   */
+/* String: Bytes, Count, Runes                                              */
 /* ───────────────────────────────────────────────────────────────────────── */
 
+/* mc_array typedef needed here for forward declarations below. */
 typedef struct {
   void *data;
   int64_t len;
@@ -1310,16 +1336,223 @@ typedef struct {
   int64_t refcount;
 } mc_array;
 
+/* Forward declarations for array ops (defined below). */
+static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap);
+static void saga_array_push_internal(mc_array *arr, const void *elem);
+
+mc_array *saga_string_bytes(const mc_string *s) {
+  int64_t len = (s && s->data) ? s->len : 0;
+  mc_array *arr = saga_array_new_internal(1, len > 4 ? len : 4);
+  for (int64_t i = 0; i < len; i++) {
+    uint8_t b = (uint8_t)s->data[i];
+    saga_array_push_internal(arr, &b);
+  }
+  return arr;
+}
+
+int64_t saga_string_count(const mc_string *s) {
+  if (!s || !s->data || s->len == 0) return 0;
+  int64_t count = 0;
+  for (int64_t i = 0; i < s->len; ) {
+    unsigned char c = (unsigned char)s->data[i];
+    if      (c < 0x80) i += 1;
+    else if (c < 0xE0) i += 2;
+    else if (c < 0xF0) i += 3;
+    else               i += 4;
+    count++;
+  }
+  return count;
+}
+
+mc_array *saga_string_runes(const mc_string *s) {
+  int64_t len = (s && s->data) ? s->len : 0;
+  mc_array *arr = saga_array_new_internal(4, len > 4 ? len : 4);
+  for (int64_t i = 0; i < len; ) {
+    unsigned char c = (unsigned char)s->data[i];
+    int32_t cp = 0;
+    if (c < 0x80) {
+      cp = c; i += 1;
+    } else if (c < 0xE0 && i + 1 < len) {
+      cp = ((c & 0x1F) << 6) | (s->data[i+1] & 0x3F);
+      i += 2;
+    } else if (c < 0xF0 && i + 2 < len) {
+      cp = ((c & 0x0F) << 12) | ((s->data[i+1] & 0x3F) << 6)
+           | (s->data[i+2] & 0x3F);
+      i += 3;
+    } else if (i + 3 < len) {
+      cp = ((c & 0x07) << 18) | ((s->data[i+1] & 0x3F) << 12)
+           | ((s->data[i+2] & 0x3F) << 6) | (s->data[i+3] & 0x3F);
+      i += 4;
+    } else {
+      cp = 0xFFFD; /* replacement character */
+      i++;
+    }
+    saga_array_push_internal(arr, &cp);
+  }
+  return arr;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: parsing (try-style: returns 0 on success, non-zero on failure)   */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+int64_t saga_string_to_int(const mc_string *s, int64_t *out) {
+  if (!s || !s->data || s->len == 0) return 1;
+  /* Copy to null-terminated buffer for strtoll. */
+  char buf[64];
+  int64_t copy_len = s->len < 63 ? s->len : 63;
+  memcpy(buf, s->data, (size_t)copy_len);
+  buf[copy_len] = '\0';
+  char *end = NULL;
+  errno = 0;
+  long long v = strtoll(buf, &end, 10);
+  if (errno != 0 || end == buf || *end != '\0') return 1;
+  *out = (int64_t)v;
+  return 0;
+}
+
+int64_t saga_string_to_float(const mc_string *s, double *out) {
+  if (!s || !s->data || s->len == 0) return 1;
+  char buf[256];
+  int64_t copy_len = s->len < 255 ? s->len : 255;
+  memcpy(buf, s->data, (size_t)copy_len);
+  buf[copy_len] = '\0';
+  char *end = NULL;
+  errno = 0;
+  double v = strtod(buf, &end);
+  if (errno != 0 || end == buf || *end != '\0') return 1;
+  *out = v;
+  return 0;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Formatting helpers                                                       */
+/*                                                                          */
+/* Format specifier: [sign][fill][width][.precision][e]                     */
+/*   sign:  '+'  — always show sign                                        */
+/*   fill:  '0' or ' '  — padding character (default space)                */
+/*   width: integer  — minimum width                                        */
+/*   .precision: integer  — decimal places (floats) or ignored (ints)       */
+/*   e:  — scientific notation (floats only)                                */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+  int show_sign;   /* 1 if '+' present */
+  char fill;       /* '0' or ' ' */
+  int width;       /* minimum width, 0 if unset */
+  int precision;   /* -1 if unset */
+  int scientific;  /* 1 if 'e' present */
+} fmt_spec;
+
+static fmt_spec parse_fmt(const mc_string *fmt) {
+  fmt_spec f = {0, ' ', 0, -1, 0};
+  if (!fmt || !fmt->data || fmt->len == 0) return f;
+  const char *p = fmt->data;
+  const char *end = p + fmt->len;
+
+  if (p < end && *p == '+') { f.show_sign = 1; p++; }
+  if (p < end && (*p == '0' || *p == ' ')) { f.fill = *p; p++; }
+  /* width */
+  while (p < end && *p >= '0' && *p <= '9') {
+    f.width = f.width * 10 + (*p - '0');
+    p++;
+  }
+  /* .precision */
+  if (p < end && *p == '.') {
+    p++;
+    f.precision = 0;
+    while (p < end && *p >= '0' && *p <= '9') {
+      f.precision = f.precision * 10 + (*p - '0');
+      p++;
+    }
+  }
+  if (p < end && (*p == 'e' || *p == 'E')) { f.scientific = 1; }
+  return f;
+}
+
+static mc_string *apply_padding(const char *raw, int raw_len, fmt_spec *f) {
+  if (raw_len >= f->width) return mc_alloc_string(raw, raw_len);
+  int pad = f->width - raw_len;
+  char *buf = (char *)malloc((size_t)f->width);
+  if (f->fill == '0' && (raw[0] == '+' || raw[0] == '-')) {
+    /* sign before zero-fill: +000042 */
+    buf[0] = raw[0];
+    memset(buf + 1, '0', (size_t)pad);
+    memcpy(buf + 1 + pad, raw + 1, (size_t)(raw_len - 1));
+  } else {
+    memset(buf, f->fill, (size_t)pad);
+    memcpy(buf + pad, raw, (size_t)raw_len);
+  }
+  mc_string *result = mc_alloc_string(buf, f->width);
+  free(buf);
+  return result;
+}
+
+mc_string *saga_int_format(int64_t val, const mc_string *fmt) {
+  fmt_spec f = parse_fmt(fmt);
+  char raw[64];
+  int n;
+  if (f.show_sign)
+    n = snprintf(raw, sizeof(raw), "%+" PRId64, val);
+  else
+    n = snprintf(raw, sizeof(raw), "%" PRId64, val);
+  return apply_padding(raw, n, &f);
+}
+
+mc_string *saga_float_format(double val, const mc_string *fmt) {
+  fmt_spec f = parse_fmt(fmt);
+  char raw[128];
+  int n;
+  if (f.scientific) {
+    if (f.precision >= 0) {
+      if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+.*e", f.precision, val);
+      else             n = snprintf(raw, sizeof(raw), "%.*e", f.precision, val);
+    } else {
+      if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+e", val);
+      else             n = snprintf(raw, sizeof(raw), "%e", val);
+    }
+  } else if (f.precision >= 0) {
+    if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+.*f", f.precision, val);
+    else             n = snprintf(raw, sizeof(raw), "%.*f", f.precision, val);
+  } else {
+    if (f.show_sign) n = snprintf(raw, sizeof(raw), "%+g", val);
+    else             n = snprintf(raw, sizeof(raw), "%g", val);
+  }
+  return apply_padding(raw, n, &f);
+}
+
+mc_string *saga_string_format(const mc_string *self, const mc_string *fmt) {
+  fmt_spec f = parse_fmt(fmt);
+  int slen = self ? (int)self->len : 0;
+  const char *sdata = (self && self->data) ? self->data : "";
+  if (slen >= f.width) return mc_alloc_string(sdata, slen);
+  int pad = f.width - slen;
+  char *buf = (char *)malloc((size_t)f.width);
+  /* Strings are right-aligned with padding on the left by default. */
+  memset(buf, f.fill, (size_t)pad);
+  memcpy(buf + pad, sdata, (size_t)slen);
+  mc_string *result = mc_alloc_string(buf, f.width);
+  free(buf);
+  return result;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Array                                                                    */
+/*                                                                          */
+/* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount }   */
+/* (mc_array typedef is above, before string helpers that use it.)          */
+/* ───────────────────────────────────────────────────────────────────────── */
+
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array refcounting                                                        */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void mc_retain_array(mc_array *arr) {
+void saga_retain_array(mc_array *arr) {
   if (arr && arr->refcount > 0)
     arr->refcount++;
 }
 
-void mc_release_array(mc_array *arr) {
+void saga_release_array(mc_array *arr) {
   if (!arr || arr->refcount < 0) return;
   arr->refcount--;
   if (arr->refcount <= 0) {
@@ -1332,7 +1565,8 @@ void mc_release_array(mc_array *arr) {
 /* Array operations                                                         */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-mc_array *mc_array_new(int64_t elem_size, int64_t initial_cap) {
+/* Internal versions used by string helpers (defined above via forward decl). */
+static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap) {
   if (initial_cap < 4) initial_cap = 4;
   mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
   arr->data = malloc((size_t)(elem_size * initial_cap));
@@ -1343,7 +1577,7 @@ mc_array *mc_array_new(int64_t elem_size, int64_t initial_cap) {
   return arr;
 }
 
-void mc_array_push(mc_array *arr, const void *elem) {
+static void saga_array_push_internal(mc_array *arr, const void *elem) {
   if (!arr) return;
   if (arr->len >= arr->cap) {
     arr->cap = arr->cap * 2;
@@ -1354,13 +1588,79 @@ void mc_array_push(mc_array *arr, const void *elem) {
   arr->len++;
 }
 
-void *mc_array_at(mc_array *arr, int64_t index) {
+mc_array *saga_array_new(int64_t elem_size, int64_t initial_cap) {
+  if (initial_cap < 4) initial_cap = 4;
+  mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
+  arr->data = malloc((size_t)(elem_size * initial_cap));
+  arr->len = 0;
+  arr->cap = initial_cap;
+  arr->elem_size = elem_size;
+  arr->refcount = 1;
+  return arr;
+}
+
+void saga_array_push(mc_array *arr, const void *elem) {
+  if (!arr) return;
+  if (arr->len >= arr->cap) {
+    arr->cap = arr->cap * 2;
+    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
+  }
+  memcpy((char *)arr->data + arr->elem_size * arr->len, elem,
+         (size_t)arr->elem_size);
+  arr->len++;
+}
+
+void *saga_array_at(mc_array *arr, int64_t index) {
   if (!arr || index < 0 || index >= arr->len) return NULL;
   return (char *)arr->data + arr->elem_size * index;
 }
 
-int64_t mc_array_size(mc_array *arr) {
+int64_t saga_array_size(mc_array *arr) {
   return arr ? arr->len : 0;
+}
+
+int64_t saga_array_find(mc_array *arr, const void *elem, int64_t *out) {
+  if (!arr || !elem) return 1;
+  for (int64_t i = 0; i < arr->len; i++) {
+    void *cur = (char *)arr->data + arr->elem_size * i;
+    if (memcmp(cur, elem, (size_t)arr->elem_size) == 0) {
+      *out = i;
+      return 0;
+    }
+  }
+  return 1; /* not found */
+}
+
+void saga_array_insert(mc_array *arr, const void *elem, int64_t index) {
+  if (!arr || !elem) return;
+  if (index < 0) index = 0;
+  if (index > arr->len) index = arr->len;
+  /* Ensure capacity. */
+  if (arr->len >= arr->cap) {
+    arr->cap = arr->cap * 2;
+    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
+  }
+  /* Shift elements right. */
+  char *base = (char *)arr->data;
+  int64_t es = arr->elem_size;
+  if (index < arr->len) {
+    memmove(base + es * (index + 1), base + es * index,
+            (size_t)(es * (arr->len - index)));
+  }
+  memcpy(base + es * index, elem, (size_t)es);
+  arr->len++;
+}
+
+void *saga_array_pop(mc_array *arr) {
+  if (!arr || arr->len == 0) return NULL;
+  arr->len--;
+  return (char *)arr->data + arr->elem_size * arr->len;
+}
+
+void saga_array_set(mc_array *arr, int64_t index, const void *elem) {
+  if (!arr || !elem || index < 0 || index >= arr->len) return;
+  memcpy((char *)arr->data + arr->elem_size * index, elem,
+         (size_t)arr->elem_size);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -1390,6 +1690,7 @@ typedef struct {
   int64_t key_size;
   int64_t val_size;
   int64_t refcount;
+  int     is_string_key;    /* 1 if keys are mc_string pointers            */
 } mc_map;
 
 #define MC_MAP_EMPTY    (-1)
@@ -1493,9 +1794,8 @@ static uint64_t mc_siphash(const uint8_t *data, int64_t len) {
 
 /* ── Key hashing / comparison helpers ──────────────────────────────────── */
 
-static uint64_t mc_map_hash_key(const mc_map *m, const void *key,
-                                int is_string_key) {
-  if (is_string_key) {
+static uint64_t mc_map_hash_key(const mc_map *m, const void *key) {
+  if (m->is_string_key) {
     const mc_string *s = *(const mc_string *const *)key;
     if (!s || !s->data || s->len <= 0)
       return mc_siphash((const uint8_t *)"", 0);
@@ -1504,9 +1804,8 @@ static uint64_t mc_map_hash_key(const mc_map *m, const void *key,
   return mc_siphash((const uint8_t *)key, m->key_size);
 }
 
-static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b,
-                             int is_string_key) {
-  if (is_string_key) {
+static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b) {
+  if (m->is_string_key) {
     const mc_string *sa = *(const mc_string *const *)a;
     const mc_string *sb = *(const mc_string *const *)b;
     if (sa == sb) return 1;
@@ -1526,8 +1825,8 @@ static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b,
 /* On empty/deleted, *out_entry_idx is set to -1.                           */
 
 static int64_t mc_map_probe(const mc_map *m, const void *key,
-                            int is_string_key, int64_t *out_entry_idx) {
-  uint64_t h = mc_map_hash_key(m, key, is_string_key);
+                            int64_t *out_entry_idx) {
+  uint64_t h = mc_map_hash_key(m, key);
   int64_t mask = m->index_cap - 1; /* index_cap is always a power of 2 */
   int64_t slot = (int64_t)(h & (uint64_t)mask);
   int64_t first_deleted = -1;
@@ -1545,7 +1844,7 @@ static int64_t mc_map_probe(const mc_map *m, const void *key,
       continue;
     }
     /* Occupied — compare keys. */
-    if (mc_map_keys_equal(m, m->entries[eidx].key, key, is_string_key)) {
+    if (mc_map_keys_equal(m, m->entries[eidx].key, key)) {
       *out_entry_idx = eidx;
       return s;
     }
@@ -1557,14 +1856,14 @@ static int64_t mc_map_probe(const mc_map *m, const void *key,
 
 /* ── Rebuild / resize ──────────────────────────────────────────────────── */
 
-static void mc_map_rebuild_index(mc_map *m, int is_string_key) {
+static void mc_map_rebuild_index(mc_map *m) {
   /* Reset index table. */
   for (int64_t i = 0; i < m->index_cap; i++)
     m->indices[i] = MC_MAP_EMPTY;
 
   int64_t mask = m->index_cap - 1;
   for (int64_t ei = 0; ei < m->len; ei++) {
-    uint64_t h = mc_map_hash_key(m, m->entries[ei].key, is_string_key);
+    uint64_t h = mc_map_hash_key(m, m->entries[ei].key);
     int64_t slot = (int64_t)(h & (uint64_t)mask);
     while (m->indices[slot] >= 0)
       slot = (slot + 1) & mask;
@@ -1572,7 +1871,7 @@ static void mc_map_rebuild_index(mc_map *m, int is_string_key) {
   }
 }
 
-static void mc_map_grow(mc_map *m, int is_string_key) {
+static void mc_map_grow(mc_map *m) {
   /* Double the entries capacity. */
   int64_t new_ecap = m->entries_cap * 2;
   if (new_ecap < 16) new_ecap = 16;
@@ -1589,17 +1888,17 @@ static void mc_map_grow(mc_map *m, int is_string_key) {
         (size_t)new_icap * sizeof(int64_t));
     m->index_cap = new_icap;
   }
-  mc_map_rebuild_index(m, is_string_key);
+  mc_map_rebuild_index(m);
 }
 
 /* ── Refcounting ───────────────────────────────────────────────────────── */
 
-void mc_retain_map(mc_map *m) {
+void saga_retain_map(mc_map *m) {
   if (m && m->refcount > 0)
     m->refcount++;
 }
 
-void mc_release_map(mc_map *m) {
+void saga_release_map(mc_map *m) {
   if (!m || m->refcount < 0) return;
   m->refcount--;
   if (m->refcount <= 0) {
@@ -1615,7 +1914,8 @@ void mc_release_map(mc_map *m) {
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-mc_map *mc_map_new(int64_t key_size, int64_t val_size) {
+mc_map *saga_map_new(int64_t key_size, int64_t val_size,
+                     int64_t is_string_key) {
   int64_t initial_ecap = 8;
   int64_t initial_icap = 16; /* power of 2, ≥ 2 * initial_ecap */
 
@@ -1628,18 +1928,18 @@ mc_map *mc_map_new(int64_t key_size, int64_t val_size) {
   m->len = 0;
   m->entries_cap = initial_ecap;
   m->index_cap = initial_icap;
-  m->key_size = (key_size < 0) ? (int64_t)sizeof(void *) : key_size;
+  m->key_size = key_size;
   m->val_size = val_size;
   m->refcount = 1;
+  m->is_string_key = (int)is_string_key;
   return m;
 }
 
-void mc_map_set(mc_map *m, const void *key, const void *value,
-                int64_t is_string_key) {
+void saga_map_set(mc_map *m, const void *key, const void *value) {
   if (!m) return;
 
   int64_t entry_idx;
-  int64_t slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+  int64_t slot = mc_map_probe(m, key, &entry_idx);
 
   if (entry_idx >= 0) {
     /* Key exists — update value in place (preserves insertion order). */
@@ -1649,14 +1949,14 @@ void mc_map_set(mc_map *m, const void *key, const void *value,
 
   /* New key — grow if entries array is full. */
   if (m->len >= m->entries_cap) {
-    mc_map_grow(m, (int)is_string_key);
+    mc_map_grow(m);
     /* Slot may have moved; re-probe. */
-    slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+    slot = mc_map_probe(m, key, &entry_idx);
   }
   /* Also check index load factor (> 2/3). */
   if ((m->len + 1) * 3 > m->index_cap * 2) {
-    mc_map_grow(m, (int)is_string_key);
-    slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+    mc_map_grow(m);
+    slot = mc_map_probe(m, key, &entry_idx);
   }
 
   /* Append to the dense entries array. */
@@ -1670,24 +1970,24 @@ void mc_map_set(mc_map *m, const void *key, const void *value,
   m->len++;
 }
 
-void *mc_map_get(mc_map *m, const void *key, int64_t is_string_key) {
+void *saga_map_get(mc_map *m, const void *key) {
   if (!m || m->len == 0) return NULL;
 
   int64_t entry_idx;
-  mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+  mc_map_probe(m, key, &entry_idx);
   if (entry_idx < 0) return NULL;
   return m->entries[entry_idx].value;
 }
 
-int64_t mc_map_has(mc_map *m, const void *key, int64_t is_string_key) {
-  return mc_map_get(m, key, is_string_key) != NULL ? 1 : 0;
+int64_t saga_map_has(mc_map *m, const void *key) {
+  return saga_map_get(m, key) != NULL ? 1 : 0;
 }
 
-void mc_map_remove(mc_map *m, const void *key, int64_t is_string_key) {
+void saga_map_remove(mc_map *m, const void *key) {
   if (!m || m->len == 0) return;
 
   int64_t entry_idx;
-  int64_t slot = mc_map_probe(m, key, (int)is_string_key, &entry_idx);
+  int64_t slot = mc_map_probe(m, key, &entry_idx);
   if (entry_idx < 0) return;
 
   /* Free the key/value being removed. */
@@ -1705,7 +2005,7 @@ void mc_map_remove(mc_map *m, const void *key, int64_t is_string_key) {
     /* position.                                                           */
     int64_t moved_eidx;
     int64_t moved_slot = mc_map_probe(m, m->entries[entry_idx].key,
-                                      (int)is_string_key, &moved_eidx);
+                                      &moved_eidx);
     /* moved_eidx should still be `last`; fix it. */
     (void)moved_slot;
     /* Scan the index for the entry pointing at `last` and rewrite it. */
@@ -1721,26 +2021,36 @@ void mc_map_remove(mc_map *m, const void *key, int64_t is_string_key) {
   m->len--;
 }
 
-int64_t mc_map_size(mc_map *m) {
+int64_t saga_map_size(mc_map *m) {
   return m ? m->len : 0;
 }
 
 /* O(1) access by insertion index — the dense array IS the order. */
-void *mc_map_key_at(mc_map *m, int64_t index) {
+void *saga_map_key_at(mc_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].key;
 }
 
-void *mc_map_value_at(mc_map *m, int64_t index) {
+void *saga_map_value_at(mc_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].value;
+}
+
+mc_array *saga_map_keys(mc_map *m) {
+  int64_t key_size = m ? m->key_size : 8;
+  int64_t len = m ? m->len : 0;
+  mc_array *arr = saga_array_new_internal(key_size, len > 4 ? len : 4);
+  for (int64_t i = 0; i < len; i++) {
+    saga_array_push_internal(arr, m->entries[i].key);
+  }
+  return arr;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Intrinsics                                                               */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void mc_intrinsic_print(const mc_string *s) {
+void saga_intrinsic_print(const mc_string *s) {
   if (s && s->data && s->len > 0) {
     fwrite(s->data, 1, (size_t)s->len, stdout);
   }
@@ -1750,7 +2060,7 @@ void mc_intrinsic_print(const mc_string *s) {
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Arena-aware allocation helpers                                           */
 /*                                                                          */
-/* These mirror mc_alloc_string / mc_array_new / mc_map_new but allocate    */
+/* These mirror mc_alloc_string / saga_array_new / mc_map_new but allocate    */
 /* from an arena instead of malloc.  The refcount is set to -1 (static /    */
 /* never-freed) because the arena owns the memory — individual objects are  */
 /* not freed; the entire arena is munmap'd at once.                         */
@@ -1791,7 +2101,8 @@ mc_array *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
   return arr;
 }
 
-mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
+mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size,
+                          int64_t is_string_key) {
   if (!a) return NULL;
 
   int64_t initial_ecap = 8;
@@ -1816,9 +2127,10 @@ mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
   m->len         = 0;
   m->entries_cap = initial_ecap;
   m->index_cap   = initial_icap;
-  m->key_size    = (key_size < 0) ? (int64_t)sizeof(void *) : key_size;
+  m->key_size    = key_size;
   m->val_size    = val_size;
   m->refcount    = -1; /* arena-owned */
+  m->is_string_key = (int)is_string_key;
   return m;
 }
 
@@ -1838,7 +2150,7 @@ mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size) {
 mc_string *mc_cow_copy_string(mc_arena *a, mc_string *src) {
   if (!a || !src) return src;
   mc_string *copy = mc_arena_alloc_string(a, src->data, src->len);
-  if (copy) mc_release_string(src); /* drop the shared ref */
+  if (copy) saga_release_string(src); /* drop the shared ref */
   return copy ? copy : src;         /* fallback to original on alloc failure */
 }
 
@@ -1857,6 +2169,6 @@ mc_array *mc_cow_copy_array(mc_arena *a, mc_array *src) {
     memcpy(copy->data, src->data, (size_t)(src->elem_size * src->len));
   copy->len = src->len;
 
-  mc_release_array(src);
+  saga_release_array(src);
   return copy;
 }

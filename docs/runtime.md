@@ -68,6 +68,12 @@ interface |T| Iterable {
 
 ## Types
 
+Methods on intrinsic types (Int, Float, Bool, String, Array, Map) are
+implemented in the `std/` type packages (e.g. `std/int/int.sg`). These
+packages are compiled with `--stdlib` and linked into every binary via
+`libsaga_std.a`. They use `intrinsic_*` calls to access low-level
+operations and C runtime functions.
+
 |Identifier|Type|Notes|
 |---|---|---|
 |Bool|boolean||
@@ -127,16 +133,19 @@ Each of the integer types need the following methods:
 
 **Converters**
 `.Char() Char`
-`.Format() String`
+`.Float() Float`
+`.Float32() Float32`
+`.Float64() Float64`
+`.Format(String) String`
 `.Int() Int`
 `.Int8() Int8`
 `.Int16() Int16`
 `.Int32() Int32`
 `.Int64() Int64`
-`.UInt8() UInt8`
-`.UInt16() UInt16`
-`.UInt32() UInt32`
-`.UInt64() UInt64`
+`.Uint8() Uint8`
+`.Uint16() Uint16`
+`.Uint32() Uint32`
+`.Uint64() Uint64`
 
 Converters are lossy.
 
@@ -151,21 +160,22 @@ Each of the float types need the following methods:
 `.Sub(T) T`: `-`
 
 **Converters**
-`.Format() String`
+`.Format(String) String`
 `.Float32() Float32`
 `.Float64() Float64`
+`.Int() Int`
 
 ### Map
 
 `[]` accessor syntax calls `At()`. The compiler can optimize any calls to avoid
 indirection.
 
-`.At(K) V` // gets value at key
-`.Key?(K) Bool` // gets value at key
-`.Keys() [K]` // gets value at key
-`.Remove(K) Void` // gets value at key
-`.Size() Int` // gets value at key
-`.Set(K, V) Void`: set the element at key to value
+`.At(K) V`: get value at key
+`.Key?(K) Bool`: check if key exists
+`.Keys() [K]`: get all keys
+`.Remove(K) Void`: remove entry by key
+`.Set(K, V) Void`: set value at key
+`.Size() Int`: number of entries
 
 ### Missing
 

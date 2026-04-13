@@ -34,6 +34,11 @@ target_include_directories(saga_tests
     ${PROJECT_SOURCE_DIR}/include
 )
 
+target_compile_definitions(saga_tests
+    PRIVATE
+    SAGA_STD_SGI_DIR="${SAGA_STD_SGI_DIR}"
+)
+
 include(GoogleTest)
 gtest_discover_tests(saga_tests)
 

@@ -24,12 +24,54 @@ namespace fs = std::filesystem;
 // Used by both the --lib single-package path and the --build DAG path.
 // ---------------------------------------------------------------------------
 
+/// Collect receiver methods from a stdlib analyzer into SgiReceiverMethod vec.
+static std::vector<mc::SgiReceiverMethod>
+collect_receiver_methods(const mc::Analyzer &analyzer) {
+  std::vector<mc::SgiReceiverMethod> result;
+  // Intrinsic scalar types (Int, Float, Bool, String) — keyed by Type*.
+  for (auto &[type_ptr, methods] : analyzer.type_methods_) {
+    std::string type_name;
+    switch (type_ptr->kind) {
+    case mc::TypeKind::Int:    type_name = "Int";    break;
+    case mc::TypeKind::Float:  type_name = "Float";  break;
+    case mc::TypeKind::Bool:   type_name = "Bool";   break;
+    case mc::TypeKind::String: type_name = "String"; break;
+    default: break;
+    }
+    if (type_name.empty())
+      continue;
+    std::vector<mc::MethodInfo> pub;
+    for (auto &m : methods)
+      if (m.is_public) pub.push_back(m);
+    if (!pub.empty())
+      result.push_back({type_name, std::move(pub)});
+  }
+  // Generic types (Array, Map) — keyed by TypeKind.
+  for (auto &[kind, methods] : analyzer.kind_methods_) {
+    std::string type_name;
+    switch (kind) {
+    case mc::TypeKind::Array: type_name = "Array"; break;
+    case mc::TypeKind::Map:   type_name = "Map";   break;
+    default: break;
+    }
+    if (type_name.empty())
+      continue;
+    std::vector<mc::MethodInfo> pub;
+    for (auto &m : methods)
+      if (m.is_public) pub.push_back(m);
+    if (!pub.empty())
+      result.push_back({type_name, std::move(pub)});
+  }
+  return result;
+}
+
 static bool compile_package(const std::string &source_dir,
                              const std::string &pkg_name,
                              const std::string &output_dir,
                              const std::vector<std::string> &search_paths,
                              const std::vector<std::string> &sgi_dirs,
-                             bool verbose) {
+                             bool verbose,
+                             bool stdlib_mode = false) {
   std::error_code ec;
   fs::create_directories(output_dir, ec);
   if (ec) {
@@ -65,6 +107,7 @@ static bool compile_package(const std::string &source_dir,
 
   mc::Analyzer analyzer(fileset);
   analyzer.current_package_dir = source_dir;
+  analyzer.is_stdlib = stdlib_mode;
   {
     fs::path parent = fs::path(source_dir).parent_path();
     if (!parent.empty())
@@ -100,8 +143,9 @@ static bool compile_package(const std::string &source_dir,
       }
     }
   }
+  auto receiver_methods = collect_receiver_methods(analyzer);
   std::string sgi_path = output_dir + "/" + pkg_name + ".sgi";
-  if (!mc::write_sgi(sgi_path, pkg_name, imports, exports)) {
+  if (!mc::write_sgi(sgi_path, pkg_name, imports, exports, receiver_methods)) {
     std::cerr << std::format("Error: cannot write interface to '{}'\n",
                              sgi_path);
     return false;
@@ -220,6 +264,7 @@ static void usage_build() {
                "\n"
                "Options:\n"
                "  --lib             Build as library (.o + .sgi, no link)\n"
+               "  --stdlib          Mark package as stdlib (enables intrinsics)\n"
                "  --build           Build using the dependency graph (incremental)\n"
                "  --emit-obj        Write package to object file only\n"
                "  --emit-ir         Write LLVM IR to <name>.ll\n"
@@ -240,6 +285,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
   bool emit_obj = false;
   bool lib_mode = false;
   bool dag_mode = false;
+  bool stdlib_mode = false;
   bool verbose = false;
   std::vector<std::string> search_paths;
   std::vector<std::string> sgi_search_paths;
@@ -251,6 +297,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
     else if (arg == "--dump-ir")     { dump_ir = true; }
     else if (arg == "--emit-obj")    { emit_obj = true; }
     else if (arg == "--lib")         { lib_mode = true; }
+    else if (arg == "--stdlib")      { stdlib_mode = true; }
     else if (arg == "--build")       { dag_mode = true; }
     else if (arg == "-v")            { verbose = true; }
     else if (arg == "--sgi-path" && i + 1 < argc)
@@ -317,6 +364,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
   if (!parser.errors.errors.empty()) { parser.errors.print_errors(); return 1; }
 
   mc::Analyzer analyzer(fileset);
+  analyzer.is_stdlib = stdlib_mode;
   setup_analyzer_paths(analyzer, package_dir, search_paths, sgi_search_paths,
                        prog);
   analyzer.analyze(*ast);
@@ -363,9 +411,10 @@ int cmd_build(const char *prog, int argc, char **argv) {
         }
       }
     }
+    auto receiver_methods = collect_receiver_methods(analyzer);
     fs::path op(obj_path);
     std::string sgi_path = (op.parent_path() / op.stem()).string() + ".sgi";
-    if (!mc::write_sgi(sgi_path, module_name, imports, exports)) {
+    if (!mc::write_sgi(sgi_path, module_name, imports, exports, receiver_methods)) {
       std::cerr << std::format("Error: cannot write interface to '{}'\n",
                                sgi_path);
       return 1;

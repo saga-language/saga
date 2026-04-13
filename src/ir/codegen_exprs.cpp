@@ -222,16 +222,16 @@ llvm::Value *CodeGen::emit_to_string(llvm::Value *val, const TypePtr &sem) {
   case TypeKind::String:
     return val; // Already a string pointer.
   case TypeKind::Int: {
-    auto *fn = module->getFunction("mc_int_to_string");
+    auto *fn = module->getFunction("saga_int_to_string");
     return builder.CreateCall(fn, {val}, "istr");
   }
   case TypeKind::Float: {
-    auto *fn = module->getFunction("mc_float_to_string");
+    auto *fn = module->getFunction("saga_float_to_string");
     return builder.CreateCall(fn, {val}, "fstr");
   }
   case TypeKind::Bool: {
     auto *ext = builder.CreateZExt(val, i64_type, "bext");
-    auto *fn = module->getFunction("mc_bool_to_string");
+    auto *fn = module->getFunction("saga_bool_to_string");
     return builder.CreateCall(fn, {ext}, "bstr");
   }
   default:
@@ -261,7 +261,7 @@ llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
   }
 
   // Interpolated string — emit each part and concatenate.
-  auto *concat_fn = module->getFunction("mc_string_concat");
+  auto *concat_fn = module->getFunction("saga_string_concat");
   llvm::Value *result = nullptr;
 
   for (auto &frag : node.fragments) {
@@ -572,41 +572,41 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
     using K = Token::Kind;
     switch (node.op) {
     case K::Add: {
-      auto *concat_fn = module->getFunction("mc_string_concat");
+      auto *concat_fn = module->getFunction("saga_string_concat");
       return builder.CreateCall(concat_fn, {lhs, rhs}, "concat");
     }
     case K::Equal: {
-      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp_fn = module->getFunction("saga_string_compare");
       auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
       return builder.CreateICmpEQ(cmp, llvm::ConstantInt::get(i64_type, 0),
                                   "eq");
     }
     case K::NotEqual: {
-      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp_fn = module->getFunction("saga_string_compare");
       auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
       return builder.CreateICmpNE(cmp, llvm::ConstantInt::get(i64_type, 0),
                                   "ne");
     }
     case K::LessThan: {
-      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp_fn = module->getFunction("saga_string_compare");
       auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
       return builder.CreateICmpSLT(cmp, llvm::ConstantInt::get(i64_type, 0),
                                    "lt");
     }
     case K::GreaterThan: {
-      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp_fn = module->getFunction("saga_string_compare");
       auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
       return builder.CreateICmpSGT(cmp, llvm::ConstantInt::get(i64_type, 0),
                                    "gt");
     }
     case K::LessThanEqual: {
-      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp_fn = module->getFunction("saga_string_compare");
       auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
       return builder.CreateICmpSLE(cmp, llvm::ConstantInt::get(i64_type, 0),
                                    "le");
     }
     case K::GreaterThanEqual: {
-      auto *cmp_fn = module->getFunction("mc_string_compare");
+      auto *cmp_fn = module->getFunction("saga_string_compare");
       auto *cmp = builder.CreateCall(cmp_fn, {lhs, rhs}, "strcmp");
       return builder.CreateICmpSGE(cmp, llvm::ConstantInt::get(i64_type, 0),
                                    "ge");

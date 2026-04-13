@@ -19,7 +19,7 @@ struct AnalysisResult {
   NodePtr ast;
   std::unique_ptr<Analyzer> analyzer;
 
-  static AnalysisResult from(const std::string &source) {
+  static AnalysisResult from(const std::string &source, bool stdlib = true) {
     AnalysisResult r;
     auto file = File::from_source("test.sg", source);
     r.fileset.add_file(std::move(file));
@@ -28,6 +28,7 @@ struct AnalysisResult {
     r.ast = parser.parse();
 
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
+    r.analyzer->is_stdlib = stdlib;
     if (r.ast) {
       r.analyzer->analyze(*r.ast);
     }
@@ -520,6 +521,55 @@ TEST(Analyzer, SizedTypesInSignature) {
 TEST(Analyzer, InternalTypesInSignature) {
   auto r = AnalysisResult::from(
       "fn foo(e Error, m Missing, c Comparison) {}");
+  EXPECT_TRUE(r.has_no_errors());
+}
+
+// ===========================================================================
+// Intrinsic type receiver methods
+// ===========================================================================
+
+TEST(Analyzer, IntrinsicReceiverMethodStdlibAllowed) {
+  AnalysisResult r;
+  auto file = File::from_source("test.sg",
+      "fn (self String) TestMethod() Int { 42 }\n"
+      "pub fn Main() Void {}");
+  r.fileset.add_file(std::move(file));
+  Parser parser(r.fileset);
+  r.ast = parser.parse();
+  r.analyzer = std::make_unique<Analyzer>(r.fileset);
+  r.analyzer->is_stdlib = true;
+  r.analyzer->analyze(*r.ast);
+  EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, IntrinsicReceiverMethodNonStdlibRejected) {
+  AnalysisResult r;
+  auto file = File::from_source("test.sg",
+      "fn (self String) TestMethod() Int { 42 }\n"
+      "pub fn Main() Void {}");
+  r.fileset.add_file(std::move(file));
+  Parser parser(r.fileset);
+  r.ast = parser.parse();
+  r.analyzer = std::make_unique<Analyzer>(r.fileset);
+  r.analyzer->is_stdlib = false;
+  r.analyzer->analyze(*r.ast);
+  EXPECT_TRUE(r.has_error_containing("intrinsic types"));
+}
+
+TEST(Analyzer, IntrinsicReceiverMethodResolvesInCheckSelector) {
+  AnalysisResult r;
+  auto file = File::from_source("test.sg",
+      "fn (self Int) Double() Int { self * 2 }\n"
+      "pub fn Main() Void {\n"
+      "  x := 5\n"
+      "  y := x.Double()\n"
+      "}");
+  r.fileset.add_file(std::move(file));
+  Parser parser(r.fileset);
+  r.ast = parser.parse();
+  r.analyzer = std::make_unique<Analyzer>(r.fileset);
+  r.analyzer->is_stdlib = true;
+  r.analyzer->analyze(*r.ast);
   EXPECT_TRUE(r.has_no_errors());
 }
 

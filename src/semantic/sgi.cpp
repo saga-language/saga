@@ -338,9 +338,46 @@ static void write_const_export(std::ostringstream &os, const std::string &name,
   os << "const " << name << " " << type_to_sgi(t) << "\n";
 }
 
+/// Serialize a receiver-methods block for one intrinsic type.
+static void write_receiver_methods(std::ostringstream &os,
+                                    const SgiReceiverMethod &rm) {
+  os << "methods " << rm.type_name << " {\n";
+  for (auto &method : rm.methods) {
+    if (!method.is_public)
+      continue;
+    auto &sig = std::get<FuncTypeInfo>(method.signature->detail);
+    os << "  pub fn " << method.name << "(";
+    for (size_t i = 0; i < sig.params.size(); ++i) {
+      if (i > 0)
+        os << ", ";
+      if (sig.is_variadic && i == sig.params.size() - 1)
+        os << "...";
+      os << type_to_sgi(sig.params[i]);
+    }
+    os << ")";
+    if (!sig.returns.empty()) {
+      if (sig.returns.size() == 1 &&
+          sig.returns[0]->kind != TypeKind::Void) {
+        os << " " << type_to_sgi(sig.returns[0]);
+      } else if (sig.returns.size() > 1) {
+        os << " (";
+        for (size_t i = 0; i < sig.returns.size(); ++i) {
+          if (i > 0)
+            os << ", ";
+          os << type_to_sgi(sig.returns[i]);
+        }
+        os << ")";
+      }
+    }
+    os << "\n";
+  }
+  os << "}\n";
+}
+
 std::string generate_sgi(const std::string &package_name,
                           const std::vector<SgiImport> &imports,
-                          const std::vector<SgiExport> &exports) {
+                          const std::vector<SgiExport> &exports,
+                          const std::vector<SgiReceiverMethod> &receiver_methods) {
   std::ostringstream os;
   os << "sgi 1\n";
   os << "package " << package_name << "\n";
@@ -421,16 +458,25 @@ std::string generate_sgi(const std::string &package_name,
     }
   }
 
+  // Receiver methods for intrinsic types (stdlib packages only).
+  for (auto &rm : receiver_methods) {
+    if (!rm.methods.empty()) {
+      os << "\n";
+      write_receiver_methods(os, rm);
+    }
+  }
+
   return os.str();
 }
 
 bool write_sgi(const std::string &path, const std::string &package_name,
                const std::vector<SgiImport> &imports,
-               const std::vector<SgiExport> &exports) {
+               const std::vector<SgiExport> &exports,
+               const std::vector<SgiReceiverMethod> &receiver_methods) {
   std::ofstream out(path);
   if (!out)
     return false;
-  out << generate_sgi(package_name, imports, exports);
+  out << generate_sgi(package_name, imports, exports, receiver_methods);
   return out.good();
 }
 
@@ -467,11 +513,14 @@ struct SgiParser {
       ++pos; // skip newline
   }
 
-  /// Read a word (alphanumeric + underscore).
+  /// Read a word (alphanumeric + underscore, with optional trailing '?').
   std::string read_word() {
     skip_whitespace();
     size_t start = pos;
     while (!at_end() && (std::isalnum(content[pos]) || content[pos] == '_'))
+      ++pos;
+    // Include trailing '?' for boolean-convention names like Key?.
+    if (!at_end() && content[pos] == '?')
       ++pos;
     return content.substr(start, pos - start);
   }
@@ -718,6 +767,18 @@ struct SgiParser {
         return elem ? make_range_type(elem) : nullptr;
       }
     }
+
+    // Well-known builtin types that need correct TypeKind for type equality.
+    if (name == "Comparison")
+      return make_enum_type(
+          "Comparison",
+          {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
+           EnumVariant{"Greater", {}}});
+    if (name == "Error")
+      return make_interface_type(
+          "Error",
+          {MethodInfo{"Message", make_func_type({}, {make_string_type()}),
+                      true}});
 
     // Named type reference: check if it was already defined in this .sgi.
     // If so, return the real type so methods/fields are visible.
@@ -1044,6 +1105,51 @@ struct SgiParser {
     skip_line();
     return {doc, name, type};
   }
+
+  /// Parse a "methods TypeName { ... }" block.
+  SgiReceiverMethod parse_receiver_methods_decl() {
+    SgiReceiverMethod rm;
+    rm.type_name = read_word();
+    skip_whitespace();
+    if (!at_end() && content[pos] == '{')
+      ++pos;
+    skip_line();
+
+    while (true) {
+      skip_whitespace();
+      if (at_end() || content[pos] == '}') {
+        if (!at_end())
+          ++pos;
+        skip_line();
+        break;
+      }
+
+      std::string kw = read_word();
+      if (kw == "pub") {
+        skip_whitespace();
+        std::string next = read_word();
+        if (next == "fn") {
+          std::string mname = read_word();
+          skip_whitespace();
+          auto sig = parse_func_type();
+          skip_line();
+          rm.methods.push_back({mname, sig, true});
+        } else {
+          skip_line();
+        }
+      } else if (kw == "fn") {
+        // Private method — skip.
+        read_word();
+        skip_whitespace();
+        parse_func_type();
+        skip_line();
+      } else {
+        skip_line();
+      }
+    }
+
+    return rm;
+  }
 };
 
 } // anonymous namespace
@@ -1111,6 +1217,8 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
       sgi.exports.push_back(std::move(exp));
     } else if (kw == "const") {
       sgi.exports.push_back(p.parse_const_decl(doc));
+    } else if (kw == "methods") {
+      sgi.receiver_methods.push_back(p.parse_receiver_methods_decl());
     } else {
       p.skip_line();
     }

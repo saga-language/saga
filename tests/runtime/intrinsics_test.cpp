@@ -1,6 +1,6 @@
 /* Intrinsics tests for the Saga runtime (Phase 8).
  *
- * Tests mc_actor_yield and mc_actor_trap.
+ * Tests saga_actor_yield and saga_actor_trap.
  * intrinsic_atomic_add is a direct LLVM instruction — tested in codegen.
  */
 
@@ -12,7 +12,7 @@
 #include <chrono>
 
 /* ═══════════════════════════════════════════════════════════════════════ */
-/* mc_actor_yield unit tests (no executor needed)                         */
+/* saga_actor_yield unit tests (no executor needed)                         */
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 TEST(YieldTest, ResetsReductionCount) {
@@ -21,7 +21,7 @@ TEST(YieldTest, ResetsReductionCount) {
   a->status = MC_ACTOR_RUNNING;
   a->reduction_count = 500;
 
-  mc_actor_yield(a);
+  saga_actor_yield(a);
 
   EXPECT_EQ(a->reduction_count, 0);
 
@@ -35,7 +35,7 @@ TEST(YieldTest, UpdatesLastCycle) {
   a->status = MC_ACTOR_RUNNING;
   a->last_cycle = 0;
 
-  mc_actor_yield(a);
+  saga_actor_yield(a);
 
   EXPECT_GT(a->last_cycle, 0);
 
@@ -44,34 +44,34 @@ TEST(YieldTest, UpdatesLastCycle) {
 }
 
 TEST(YieldTest, NullActorIsSafe) {
-  mc_actor_yield(nullptr); // must not crash
+  saga_actor_yield(nullptr); // must not crash
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
-/* mc_actor_yield executor integration tests                              */
+/* saga_actor_yield executor integration tests                              */
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 class YieldExecutorTest : public ::testing::Test {
 protected:
-  void SetUp() override    { mc_executor_init(2); }
-  void TearDown() override { mc_executor_shutdown(); }
+  void SetUp() override    { saga_executor_init(2); }
+  void TearDown() override { saga_executor_shutdown(); }
 };
 
 /* An actor that yields, then completes. */
 static void yield_then_complete(mc_actor *a) {
-  mc_actor_yield(a);
+  saga_actor_yield(a);
   /* Return normally → COMPLETED. */
 }
 
 TEST_F(YieldExecutorTest, YieldDoesNotPreventCompletion) {
-  mc_actor *a = mc_executor_spawn(yield_then_complete, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(yield_then_complete, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
-  mc_task_wait(a, &status);
+  saga_task_wait(a, &status);
 
   EXPECT_EQ(status, MC_ACTOR_COMPLETED);
-  mc_task_drop(a);
+  saga_task_drop(a);
 }
 
 /* An actor that yields many times inside a loop with reduction ticks.
@@ -80,21 +80,21 @@ static void yield_prevents_quota_kill(mc_actor *a) {
   for (int i = 0; i < 200; i++) {
     /* Tick up the counter close to the limit. */
     for (int j = 0; j < 100000; j++)
-      mc_reduction_tick(a);
+      saga_reduction_tick(a);
     /* Yield resets the counter. */
-    mc_actor_yield(a);
+    saga_actor_yield(a);
   }
 }
 
 TEST_F(YieldExecutorTest, YieldResetsQuotaInLoop) {
-  mc_actor *a = mc_executor_spawn(yield_prevents_quota_kill, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(yield_prevents_quota_kill, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
-  mc_task_wait(a, &status);
+  saga_task_wait(a, &status);
 
   EXPECT_EQ(status, MC_ACTOR_COMPLETED);
-  mc_task_drop(a);
+  saga_task_drop(a);
 }
 
 /* Multiple actors yielding concurrently should all complete. */
@@ -103,20 +103,20 @@ TEST_F(YieldExecutorTest, MultipleYieldingActorsComplete) {
   std::vector<mc_actor *> actors(N);
 
   for (int i = 0; i < N; i++) {
-    actors[i] = mc_executor_spawn(yield_then_complete, nullptr, 0, 0);
+    actors[i] = saga_executor_spawn(yield_then_complete, nullptr, 0, 0);
     ASSERT_NE(actors[i], nullptr);
   }
 
   for (int i = 0; i < N; i++) {
     int64_t status;
-    mc_task_wait(actors[i], &status);
+    saga_task_wait(actors[i], &status);
     EXPECT_EQ(status, MC_ACTOR_COMPLETED);
-    mc_task_drop(actors[i]);
+    saga_task_drop(actors[i]);
   }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
-/* mc_actor_trap unit tests                                               */
+/* saga_actor_trap unit tests                                               */
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 /* Helper: create a heap mc_string for test use. */
@@ -146,7 +146,7 @@ TEST(TrapTest, SetsZombieStatusAndLongjmps) {
 
   bool jumped = false;
   if (setjmp(a->trap) == 0) {
-    mc_actor_trap(a, reason);
+    saga_actor_trap(a, reason);
     FAIL() << "Should have longjmp'd";
   } else {
     jumped = true;
@@ -162,7 +162,7 @@ TEST(TrapTest, SetsZombieStatusAndLongjmps) {
   EXPECT_EQ(std::memcmp(stored->data, "test trap", 9), 0);
 
   free_test_string(reason);
-  /* Clean up the stored result (it was malloc'd by mc_actor_trap). */
+  /* Clean up the stored result (it was malloc'd by saga_actor_trap). */
   free(a->result);
   a->result = nullptr;
   mc_actor_release(a);
@@ -176,7 +176,7 @@ TEST(TrapTest, NullReasonStillSetsZombie) {
 
   bool jumped = false;
   if (setjmp(a->trap) == 0) {
-    mc_actor_trap(a, nullptr);
+    saga_actor_trap(a, nullptr);
     FAIL() << "Should have longjmp'd";
   } else {
     jumped = true;
@@ -191,53 +191,53 @@ TEST(TrapTest, NullReasonStillSetsZombie) {
 }
 
 TEST(TrapTest, NullActorIsSafe) {
-  mc_actor_trap(nullptr, nullptr); // must not crash
+  saga_actor_trap(nullptr, nullptr); // must not crash
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
-/* mc_actor_trap executor integration tests                               */
+/* saga_actor_trap executor integration tests                               */
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 class TrapExecutorTest : public ::testing::Test {
 protected:
-  void SetUp() override    { mc_executor_init(2); }
-  void TearDown() override { mc_executor_shutdown(); }
+  void SetUp() override    { saga_executor_init(2); }
+  void TearDown() override { saga_executor_shutdown(); }
 };
 
 /* An actor that traps with a reason string. */
 static void trap_with_reason(mc_actor *a) {
   /* Allocate the reason string in the arena. */
   mc_string *reason = mc_arena_alloc_string(a->arena, "fatal error", 11);
-  mc_actor_trap(a, reason);
+  saga_actor_trap(a, reason);
   /* Should never reach here. */
 }
 
 TEST_F(TrapExecutorTest, TrapSetsZombieStatus) {
-  mc_actor *a = mc_executor_spawn(trap_with_reason, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(trap_with_reason, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
-  mc_task_wait(a, &status);
+  saga_task_wait(a, &status);
 
-  /* mc_actor_trap sets ZOMBIE, but the worker loop may reclassify.
+  /* saga_actor_trap sets ZOMBIE, but the worker loop may reclassify.
      Check that the actor completed in some terminal state. */
   EXPECT_GE(status, MC_ACTOR_COMPLETED);
 
-  mc_task_drop(a);
+  saga_task_drop(a);
 }
 
 /* An actor that traps without a reason. */
 static void trap_no_reason(mc_actor *a) {
-  mc_actor_trap(a, nullptr);
+  saga_actor_trap(a, nullptr);
 }
 
 TEST_F(TrapExecutorTest, TrapWithoutReasonCompletes) {
-  mc_actor *a = mc_executor_spawn(trap_no_reason, nullptr, 0, 0);
+  mc_actor *a = saga_executor_spawn(trap_no_reason, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
-  mc_task_wait(a, &status);
+  saga_task_wait(a, &status);
 
   EXPECT_GE(status, MC_ACTOR_COMPLETED);
-  mc_task_drop(a);
+  saga_task_drop(a);
 }

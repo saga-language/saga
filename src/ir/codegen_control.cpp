@@ -299,7 +299,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 
   } else if (is_string) {
     // ── String matching: chained icmp + br ──────────────────────────
-    auto *cmp_fn = module->getFunction("mc_string_compare");
+    auto *cmp_fn = module->getFunction("saga_string_compare");
 
     for (size_t i = 0; i < node.arms.size(); ++i) {
       auto &arm = node.arms[i];
@@ -506,7 +506,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
     func->insert(func->end(), body_bb);
     builder.SetInsertPoint(body_bb);
     if (current_actor)
-      builder.CreateCall(module->getFunction("mc_reduction_tick"),
+      builder.CreateCall(module->getFunction("saga_reduction_tick"),
                          {current_actor});
     auto &body_block = std::get<BlockNode>(node.body->data);
     emit_block(body_block);
@@ -540,7 +540,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       func->insert(func->end(), body_bb);
       builder.SetInsertPoint(body_bb);
       if (current_actor)
-        builder.CreateCall(module->getFunction("mc_reduction_tick"),
+        builder.CreateCall(module->getFunction("saga_reduction_tick"),
                            {current_actor});
       auto &body_block = std::get<BlockNode>(node.body->data);
       emit_block(body_block);
@@ -564,7 +564,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
 
         if (is_array) {
           // Get array size.
-          auto *size_fn = module->getFunction("mc_array_size");
+          auto *size_fn = module->getFunction("saga_array_size");
           auto *arr_len = builder.CreateCall(size_fn, {iterable}, "arr.len");
 
           // Create index variable.
@@ -604,10 +604,10 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           func->insert(func->end(), body_bb);
           builder.SetInsertPoint(body_bb);
           if (current_actor)
-            builder.CreateCall(module->getFunction("mc_reduction_tick"),
+            builder.CreateCall(module->getFunction("saga_reduction_tick"),
                                {current_actor});
 
-          auto *at_fn = module->getFunction("mc_array_at");
+          auto *at_fn = module->getFunction("saga_array_at");
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
           auto *elem_ptr =
               builder.CreateCall(at_fn, {iterable, body_idx}, "at");
@@ -636,10 +636,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
         } else if (iter_sem && iter_sem->kind == TypeKind::Map) {
           // ── Map iteration: for [k,] v : map { ... } ───────────────
           auto &map_info = std::get<MapTypeInfo>(iter_sem->detail);
-          bool string_keys = is_string_key_type(map_info.key);
 
           // Get map size.
-          auto *size_fn = module->getFunction("mc_map_size");
+          auto *size_fn = module->getFunction("saga_map_size");
           auto *map_len = builder.CreateCall(size_fn, {iterable}, "map.len");
 
           // Create index variable for iterating occupied slots.
@@ -679,13 +678,13 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           func->insert(func->end(), body_bb);
           builder.SetInsertPoint(body_bb);
           if (current_actor)
-            builder.CreateCall(module->getFunction("mc_reduction_tick"),
+            builder.CreateCall(module->getFunction("saga_reduction_tick"),
                                {current_actor});
 
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
 
           if (key_alloca) {
-            auto *key_at_fn = module->getFunction("mc_map_key_at");
+            auto *key_at_fn = module->getFunction("saga_map_key_at");
             auto *key_ptr = builder.CreateCall(
                 key_at_fn, {iterable, body_idx}, "map.key.ptr");
             auto *key_val = builder.CreateLoad(key_ll, key_ptr, "map.key");
@@ -693,7 +692,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           }
 
           if (val_alloca) {
-            auto *val_at_fn = module->getFunction("mc_map_value_at");
+            auto *val_at_fn = module->getFunction("saga_map_value_at");
             auto *val_ptr = builder.CreateCall(
                 val_at_fn, {iterable, body_idx}, "map.val.ptr");
             auto *val_val = builder.CreateLoad(val_ll, val_ptr, "map.val");
@@ -719,7 +718,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           if (st_info.name == "Task") {
             // Get the channel pointer from the actor:
             // actor->channel is at a known offset.  We pass the actor ptr
-            // to mc_channel_recv which expects (ch, buf).
+            // to saga_channel_recv which expects (ch, buf).
             // The actor struct layout has `channel` at a specific offset.
             // We use a helper: load actor->channel as a ptr.
             //
@@ -766,9 +765,9 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               // Branch to condition (recv loop).
               builder.CreateBr(cond_bb);
 
-              // Condition: call mc_channel_recv; break if -1.
+              // Condition: call saga_channel_recv; break if -1.
               builder.SetInsertPoint(cond_bb);
-              auto *recv_fn = module->getFunction("mc_channel_recv");
+              auto *recv_fn = module->getFunction("saga_channel_recv");
               auto *rc = builder.CreateCall(recv_fn, {ch_ptr, msg_alloca},
                                              "recv.rc");
               auto *eof = builder.CreateICmpEQ(
@@ -782,7 +781,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
               builder.SetInsertPoint(body_bb);
               if (current_actor)
                 builder.CreateCall(
-                    module->getFunction("mc_reduction_tick"),
+                    module->getFunction("saga_reduction_tick"),
                     {current_actor});
               auto &body_block = std::get<BlockNode>(node.body->data);
               emit_block(body_block);
@@ -940,7 +939,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
                 builder.SetInsertPoint(body_bb);
                 if (current_actor)
                   builder.CreateCall(
-                      module->getFunction("mc_reduction_tick"),
+                      module->getFunction("saga_reduction_tick"),
                       {current_actor});
 
                 if (val_alloca) {
@@ -990,7 +989,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
       func->insert(func->end(), body_bb);
       builder.SetInsertPoint(body_bb);
       if (current_actor)
-        builder.CreateCall(module->getFunction("mc_reduction_tick"),
+        builder.CreateCall(module->getFunction("saga_reduction_tick"),
                            {current_actor});
       auto &body_block = std::get<BlockNode>(node.body->data);
       emit_block(body_block);
@@ -1041,8 +1040,8 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     }
   }
 
-  // Create the array: mc_array_new(elem_size, initial_cap)
-  auto *new_fn = module->getFunction("mc_array_new");
+  // Create the array: saga_array_new(elem_size, initial_cap)
+  auto *new_fn = module->getFunction("saga_array_new");
   auto *arr = builder.CreateCall(
       new_fn,
       {llvm::ConstantInt::get(i64_type, elem_size),
@@ -1051,7 +1050,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
       "arr");
 
   // Push each element.
-  auto *push_fn = module->getFunction("mc_array_push");
+  auto *push_fn = module->getFunction("saga_array_push");
   auto *func = builder.GetInsertBlock()->getParent();
 
   for (auto &elem_node : node.elements) {
@@ -1059,7 +1058,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (!val)
       continue;
 
-    // mc_array_push takes a void* to the element.  We need to store the
+    // saga_array_push takes a void* to the element.  We need to store the
     // value to a temporary alloca and pass its address.
     auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
     builder.CreateStore(val, tmp);
@@ -1111,20 +1110,18 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     }
   }
 
-  // Create the map: mc_map_new(key_size, val_size)
-  // For string keys, pass -1 as key_size sentinel.
-  auto *new_fn = module->getFunction("mc_map_new");
-  int64_t key_size_arg = string_keys ? -1 : key_size;
+  // Create the map: saga_map_new(key_size, val_size, is_string_key)
+  auto *new_fn = module->getFunction("saga_map_new");
   auto *map = builder.CreateCall(
       new_fn,
-      {llvm::ConstantInt::get(i64_type, key_size_arg),
-       llvm::ConstantInt::get(i64_type, val_size)},
+      {llvm::ConstantInt::get(i64_type, key_size),
+       llvm::ConstantInt::get(i64_type, val_size),
+       llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0)},
       "map");
 
   // Insert each entry.
-  auto *set_fn = module->getFunction("mc_map_set");
+  auto *set_fn = module->getFunction("saga_map_set");
   auto *func = builder.GetInsertBlock()->getParent();
-  auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
 
   for (auto &entry : node.entries) {
     auto *key_val = emit_expr(*entry.key);
@@ -1138,7 +1135,7 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     auto *val_tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
     builder.CreateStore(val_val, val_tmp);
 
-    builder.CreateCall(set_fn, {map, key_tmp, val_tmp, is_str_key});
+    builder.CreateCall(set_fn, {map, key_tmp, val_tmp});
   }
 
   return map;
@@ -1160,7 +1157,7 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     if (!idx)
       return nullptr;
 
-    auto *at_fn = module->getFunction("mc_array_at");
+    auto *at_fn = module->getFunction("saga_array_at");
     auto *elem_ptr = builder.CreateCall(at_fn, {obj, idx}, "at");
 
     // Determine the element type to load.
@@ -1176,8 +1173,6 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
       return nullptr;
 
     auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
-    bool string_keys = is_string_key_type(map_info.key);
-    auto *is_str_key = llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0);
 
     auto *func = builder.GetInsertBlock()->getParent();
 
@@ -1185,8 +1180,8 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     auto *key_tmp = create_entry_alloca(func, "map.idx.key", idx->getType());
     builder.CreateStore(idx, key_tmp);
 
-    auto *get_fn = module->getFunction("mc_map_get");
-    auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp, is_str_key}, "map.get");
+    auto *get_fn = module->getFunction("saga_map_get");
+    auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp}, "map.get");
 
     // Load the value from the returned pointer.
     auto *val_ll = llvm_type(map_info.value);

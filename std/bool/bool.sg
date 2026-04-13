@@ -1,0 +1,10 @@
+// Package bool provides methods on the Bool intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn (self Bool) String() String {
+  intrinsic_runtime("saga_bool_to_string", self)
+}
+
+pub fn (self Bool) Equals(other Bool) Bool {
+  self == other
+}

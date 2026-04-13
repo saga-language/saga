@@ -1,0 +1,35 @@
+// Package float provides methods on the Float intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn (self Float) String() String {
+  intrinsic_runtime("saga_float_to_string", self)
+}
+
+pub fn (self Float) Int() Int {
+  intrinsic_fptosi(self)
+}
+
+pub fn (self Float) Equals(other Float) Bool {
+  self == other
+}
+
+pub fn (self Float) Compare(other Float) Comparison {
+  if self < other {
+    Comparison.Less
+  } else {
+    if self == other { Comparison.Equal }
+    else { Comparison.Greater }
+  }
+}
+
+pub fn (self Float) Format(fmt String) String {
+  intrinsic_runtime("saga_float_format", self, fmt)
+}
+
+pub fn (self Float) Float32() Float32 {
+  intrinsic_fptrunc(self)
+}
+
+pub fn (self Float) Float64() Float64 {
+  intrinsic_fpext(self)
+}

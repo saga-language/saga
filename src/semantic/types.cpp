@@ -139,14 +139,25 @@ bool is_numeric(const TypePtr &t) {
 
 bool is_ordered(const TypePtr &t) {
   auto u = unwrap_alias(t);
-  return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float ||
-               u->kind == TypeKind::String);
+  if (!u) return false;
+  // Any is the top/bottom type used by intrinsics; treat as orderable.
+  if (u->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(u->detail);
+    if (info.name == "Any") return true;
+  }
+  return u->kind == TypeKind::Int || u->kind == TypeKind::Float ||
+         u->kind == TypeKind::String;
 }
 
 bool is_equatable(const TypePtr &t) {
   auto u = unwrap_alias(t);
   if (!u)
     return false;
+  // Any is the top/bottom type used by intrinsics; treat as equatable.
+  if (u->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(u->detail);
+    if (info.name == "Any") return true;
+  }
   switch (u->kind) {
   case TypeKind::Bool:
   case TypeKind::Int:
@@ -448,6 +459,15 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 
   // Error types propagate silently.
   if (is_error_type(source) || is_error_type(target))
+    return true;
+
+  // Any is a top type — any value is assignable to Any, and Any is assignable
+  // to any type.  Used by intrinsic_runtime / intrinsic_field signatures.
+  auto is_any = [](const TypePtr &t) {
+    if (t->kind != TypeKind::Struct) return false;
+    return std::get<StructTypeInfo>(t->detail).name == "Any";
+  };
+  if (is_any(source) || is_any(target))
     return true;
 
   // Exact match.

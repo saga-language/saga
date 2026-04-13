@@ -1,0 +1,31 @@
+// Package array provides methods on the Array intrinsic type.
+// This is a stdlib package compiled with --stdlib; do not import directly.
+
+pub fn |T| (self [T]) Size() Int {
+  intrinsic_runtime("saga_array_size", self)
+}
+
+pub fn |T| (self [T]) Push(elem T) T {
+  intrinsic_runtime("saga_array_push", self, elem)
+  elem
+}
+
+pub fn |T| (self [T]) At(index Int) T {
+  intrinsic_runtime("saga_array_at", self, index)
+}
+
+pub fn |T| (self [T]) Insert(elem T, index Int) Void {
+  intrinsic_runtime("saga_array_insert", self, elem, index)
+}
+
+pub fn |T| (self [T]) Pop() T {
+  intrinsic_runtime("saga_array_pop", self)
+}
+
+pub fn |T| (self [T]) Set(index Int, elem T) Void {
+  intrinsic_runtime("saga_array_set", self, index, elem)
+}
+
+pub fn |T| (self [T]) Find(elem T) Int | Missing {
+  intrinsic_runtime_try("saga_array_find", self, elem)
+}
