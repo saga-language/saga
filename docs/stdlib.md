@@ -20,6 +20,10 @@ automatically loads their `.sgi` interface files and links their object code.
 
 ### Intrinsics available in stdlib packages
 
+These operations are **stdlib-only** — the analyzer rejects `intrinsic_*` calls
+from user code. They provide the low-level building blocks that type packages
+use to implement methods on intrinsic types.
+
 - `intrinsic_runtime(name, args...)` — call a C runtime function by name
 - `intrinsic_runtime_try(name, args...)` — call a C function that returns a
   status code; wraps the result into the function's declared union return type

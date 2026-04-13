@@ -4021,8 +4021,36 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
     auto &s = std::get<StructTypeInfo>(concrete->detail);
     concrete_methods = s.methods;
   } else {
-    // Check built-in methods.
-    concrete_methods = builtin_methods(concrete->kind, builtins);
+    // Check stdlib-defined receiver methods (type_methods_ for scalar types).
+    const Type *raw = concrete.get();
+    auto tm_it = type_methods_.find(raw);
+    if (tm_it == type_methods_.end()) {
+      const Type *canonical = nullptr;
+      switch (concrete->kind) {
+      case TypeKind::Int:    canonical = builtins.int_type.get(); break;
+      case TypeKind::Float:  canonical = builtins.float_type.get(); break;
+      case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
+      case TypeKind::String: canonical = builtins.string_type.get(); break;
+      default: break;
+      }
+      if (canonical && canonical != raw)
+        tm_it = type_methods_.find(canonical);
+    }
+    if (tm_it != type_methods_.end()) {
+      for (auto &m : tm_it->second)
+        concrete_methods.push_back(m);
+    }
+    // Check stdlib-defined generic receiver methods (kind_methods_ for
+    // Array, Map).
+    auto km_it = kind_methods_.find(concrete->kind);
+    if (km_it != kind_methods_.end()) {
+      for (auto &m : km_it->second)
+        concrete_methods.push_back(m);
+    }
+    // Check remaining built-in methods (Enum, Range, Array/Map String).
+    auto bm = builtin_methods(concrete->kind, builtins);
+    for (auto &m : bm)
+      concrete_methods.push_back(m);
   }
 
   // Every interface method must be present on the concrete type with a

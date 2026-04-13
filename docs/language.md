@@ -286,6 +286,19 @@ must be used, since String supports UTF-8.
 Complex types can be self-referential provided they're defined on or before
 their first use.
 
+### Methods on Intrinsic Types
+
+Intrinsic types (Int, Float, Bool, String, arrays, and maps) have methods like
+`String()`, `Equals()`, `Compare()`, and type-specific operations. These methods
+are defined in Saga source files in the standard library's type packages
+(`std/int`, `std/float`, `std/bool`, `std/string`, `std/array`, `std/map`).
+
+The compiler automatically loads these packages — no import is needed. See
+[stdlib.md](stdlib.md) for the full list of available methods and intrinsics.
+
+User code cannot define new methods on intrinsic types; only stdlib packages
+may do so using privileged `intrinsic_*` operations.
+
 ### Function types
 
 Function types are just signatures.
