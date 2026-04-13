@@ -24,7 +24,9 @@ struct TC {
     r.fileset.add_file(File::from_source("test.sg", source));
     Parser parser(r.fileset);
     r.ast = parser.parse();
-    r.analyzer = std::make_unique<Analyzer>(r.fileset);
+    auto resolver = std::make_shared<PackageResolver>();
+    resolver->sgi_search_paths.push_back(SAGA_STD_SGI_DIR);
+    r.analyzer = std::make_unique<Analyzer>(r.fileset, resolver);
     r.analyzer->is_stdlib = stdlib;
     if (r.ast)
       r.analyzer->analyze(*r.ast);

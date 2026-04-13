@@ -189,11 +189,20 @@ void Analyzer::analyze(const Node &root) {
 }
 
 void Analyzer::load_prelude() {
-  // Only load prelude for non-stdlib packages.
-  // stdlib packages define their own receiver methods; loading prelude
-  // there would cause duplicates before 3A.4 removes builtin_methods().
-  if (is_stdlib || !package_resolver)
+  if (!package_resolver)
     return;
+
+  // Stdlib type packages (int, float, bool, string, array, map) define their
+  // own receiver methods and must not load others' — otherwise they'd
+  // re-export foreign methods in their SGI files.
+  if (is_stdlib && !current_package_dir.empty()) {
+    auto pkg = std::filesystem::path(current_package_dir).filename().string();
+    static const char *type_pkgs[] = {
+        "int", "float", "bool", "string", "array", "map"};
+    for (auto *tp : type_pkgs)
+      if (pkg == tp)
+        return;
+  }
 
   // --- Scalar types (Int, Float, Bool, String) ---
   static const std::string scalar_pkgs[] = {
@@ -2866,6 +2875,12 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
   // Check user-bound methods in the type_methods_ side table.
   {
     auto it = type_methods_.find(obj_type.get());
+    if (it == type_methods_.end() && obj_type->kind == TypeKind::Alias) {
+      // Unwrap alias to find methods on the underlying type.
+      auto underlying = unwrap_alias(obj_type);
+      if (underlying)
+        it = type_methods_.find(underlying.get());
+    }
     if (it != type_methods_.end()) {
       for (auto &m : it->second) {
         if (m.name == field_name)

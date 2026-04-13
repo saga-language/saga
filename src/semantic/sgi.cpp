@@ -768,6 +768,18 @@ struct SgiParser {
       }
     }
 
+    // Well-known builtin types that need correct TypeKind for type equality.
+    if (name == "Comparison")
+      return make_enum_type(
+          "Comparison",
+          {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
+           EnumVariant{"Greater", {}}});
+    if (name == "Error")
+      return make_interface_type(
+          "Error",
+          {MethodInfo{"Message", make_func_type({}, {make_string_type()}),
+                      true}});
+
     // Named type reference: check if it was already defined in this .sgi.
     // If so, return the real type so methods/fields are visible.
     auto it = defined_types.find(name);

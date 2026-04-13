@@ -111,148 +111,23 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
   // These are added per-kind below alongside kind-specific methods.
 
   switch (kind) {
-  case TypeKind::String:
-    methods.push_back(
-        {"Bytes", make_func_type({}, {make_array_type(t.byte_type)}), true});
-    methods.push_back(
-        {"Count", make_func_type({}, {t.int_type}), true});
-    methods.push_back(
-        {"Float",
-         make_func_type({}, {make_union_type({t.float_type, t.error_iface})}),
-         true});
-    methods.push_back(
-        {"Format", make_func_type({t.string_type}, {t.string_type}), true});
-    methods.push_back(
-        {"Int",
-         make_func_type({}, {make_union_type({t.int_type, t.error_iface})}),
-         true});
-    methods.push_back(
-        {"Lower", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Runes", make_func_type({}, {make_array_type(t.int32_type)}), true});
-    methods.push_back(
-        {"Size", make_func_type({}, {t.int_type}), true});
-    methods.push_back(
-        {"Upper", make_func_type({}, {t.string_type}), true});
-    // Universal methods
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Compare", make_func_type({t.string_type}, {t.comparison_type}),
-         true});
-    methods.push_back(
-        {"Equals", make_func_type({t.string_type}, {t.bool_type}), true});
-    break;
+  // Bool, Int, Float, String methods are fully migrated to stdlib packages.
 
   case TypeKind::Array: {
-    // Array methods use a type-param placeholder for the element type.
-    // The analyzer's type-checker resolves the concrete element type at
-    // each call site; these signatures just need the right arity.
-    auto tp = make_type_param(9990, "T");
-    methods.push_back(
-        {"At", make_func_type({t.int_type}, {tp}), true});
-    methods.push_back(
-        {"Find", make_func_type({tp}, {make_union_type({t.int_type, t.error_iface})}), true});
-    methods.push_back(
-        {"Insert", make_func_type({tp, t.int_type}, {t.void_type}), true});
-    methods.push_back(
-        {"Push", make_func_type({tp}, {tp}), true});
-    methods.push_back(
-        {"Pop", make_func_type({}, {tp}), true});
-    methods.push_back(
-        {"Set", make_func_type({t.int_type, tp}, {t.void_type}), true});
-    methods.push_back(
-        {"Size", make_func_type({}, {t.int_type}), true});
-    // Universal methods
+    // Most Array methods are in std/array/array.sg.
+    // String() is deferred — requires TypeParam method dispatch.
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
   }
 
   case TypeKind::Map: {
-    // Map methods use type-param placeholders for key (K) and value (V).
-    // The analyzer's type-checker resolves concrete types at call sites.
-    auto kp = make_type_param(9991, "K");
-    auto vp = make_type_param(9992, "V");
-    methods.push_back(
-        {"At", make_func_type({kp}, {vp}), true});
-    methods.push_back(
-        {"Key?", make_func_type({kp}, {t.bool_type}), true});
-    methods.push_back(
-        {"Keys", make_func_type({}, {make_array_type(kp)}), true});
-    methods.push_back(
-        {"Remove", make_func_type({kp}, {t.void_type}), true});
-    methods.push_back(
-        {"Set", make_func_type({kp, vp}, {t.void_type}), true});
-    methods.push_back(
-        {"Size", make_func_type({}, {t.int_type}), true});
-    // Universal methods
+    // Most Map methods are in std/map/map.sg.
+    // String() is deferred — requires TypeParam method dispatch.
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
   }
-
-  case TypeKind::Int:
-    // Universal methods
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Compare", make_func_type({t.int_type}, {t.comparison_type}), true});
-    methods.push_back(
-        {"Equals", make_func_type({t.int_type}, {t.bool_type}), true});
-    // Converters — a subset; the full set is registered during init.
-    methods.push_back(
-        {"Float", make_func_type({}, {t.float_type}), true});
-    methods.push_back(
-        {"Float32", make_func_type({}, {t.float32_type}), true});
-    methods.push_back(
-        {"Float64", make_func_type({}, {t.float64_type}), true});
-    methods.push_back(
-        {"Format", make_func_type({t.string_type}, {t.string_type}), true});
-    methods.push_back(
-        {"Int", make_func_type({}, {t.int_type}), true});
-    methods.push_back(
-        {"Int8", make_func_type({}, {t.int8_type}), true});
-    methods.push_back(
-        {"Int16", make_func_type({}, {t.int16_type}), true});
-    methods.push_back(
-        {"Int32", make_func_type({}, {t.int32_type}), true});
-    methods.push_back(
-        {"Int64", make_func_type({}, {t.int64_type}), true});
-    methods.push_back(
-        {"Uint8", make_func_type({}, {t.uint8_type}), true});
-    methods.push_back(
-        {"Uint16", make_func_type({}, {t.uint16_type}), true});
-    methods.push_back(
-        {"Uint32", make_func_type({}, {t.uint32_type}), true});
-    methods.push_back(
-        {"Uint64", make_func_type({}, {t.uint64_type}), true});
-    methods.push_back(
-        {"Char", make_func_type({}, {t.char_type}), true});
-    break;
-
-  case TypeKind::Float:
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Compare", make_func_type({t.float_type}, {t.comparison_type}),
-         true});
-    methods.push_back(
-        {"Equals", make_func_type({t.float_type}, {t.bool_type}), true});
-    methods.push_back(
-        {"Format", make_func_type({t.string_type}, {t.string_type}), true});
-    methods.push_back(
-        {"Float32", make_func_type({}, {t.float32_type}), true});
-    methods.push_back(
-        {"Float64", make_func_type({}, {t.float64_type}), true});
-    break;
-
-  case TypeKind::Bool:
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    methods.push_back(
-        {"Equals", make_func_type({t.bool_type}, {t.bool_type}), true});
-    break;
 
   case TypeKind::Enum:
     methods.push_back(

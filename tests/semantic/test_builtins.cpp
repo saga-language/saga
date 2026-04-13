@@ -184,106 +184,51 @@ TEST(Builtins, TypeSymbolKinds) {
   EXPECT_EQ(error_sym->type->kind, TypeKind::Interface);
 }
 
-TEST(Builtins, StringMethods) {
+// String, Int, Float, Bool methods are fully migrated to stdlib packages.
+// builtin_methods() returns empty for these types.
+TEST(Builtins, StringMethodsMigratedToStdlib) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::String, types);
-  EXPECT_FALSE(methods.empty());
-
-  bool has_size = false;
-  bool has_string = false;
-  bool has_compare = false;
-  for (auto &m : methods) {
-    if (m.name == "Size")
-      has_size = true;
-    if (m.name == "String")
-      has_string = true;
-    if (m.name == "Compare")
-      has_compare = true;
-  }
-  EXPECT_TRUE(has_size);
-  EXPECT_TRUE(has_string);
-  EXPECT_TRUE(has_compare);
+  EXPECT_TRUE(methods.empty());
 }
 
-TEST(Builtins, ArrayMethods) {
-  BuiltinTypes types;
-  types.init();
-  auto methods = builtin_methods(TypeKind::Array, types);
-  bool has_size = false;
-  bool has_push = false;
-  for (auto &m : methods) {
-    if (m.name == "Size")
-      has_size = true;
-    if (m.name == "Push")
-      has_push = true;
-  }
-  EXPECT_TRUE(has_size);
-  EXPECT_TRUE(has_push);
-}
-
-TEST(Builtins, IntMethods) {
+TEST(Builtins, IntMethodsMigratedToStdlib) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::Int, types);
-  bool has_string = false;
-  bool has_float = false;
-  bool has_int8 = false;
-  for (auto &m : methods) {
-    if (m.name == "String")
-      has_string = true;
-    if (m.name == "Float")
-      has_float = true;
-    if (m.name == "Int8")
-      has_int8 = true;
-  }
-  EXPECT_TRUE(has_string);
-  EXPECT_TRUE(has_float);
-  EXPECT_TRUE(has_int8);
+  EXPECT_TRUE(methods.empty());
 }
 
-TEST(Builtins, FloatMethods) {
+TEST(Builtins, FloatMethodsMigratedToStdlib) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::Float, types);
-  bool has_string = false;
-  bool has_float32 = false;
-  for (auto &m : methods) {
-    if (m.name == "String")
-      has_string = true;
-    if (m.name == "Float32")
-      has_float32 = true;
-  }
-  EXPECT_TRUE(has_string);
-  EXPECT_TRUE(has_float32);
+  EXPECT_TRUE(methods.empty());
 }
 
-TEST(Builtins, BoolMethods) {
+TEST(Builtins, BoolMethodsMigratedToStdlib) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::Bool, types);
-  bool has_string = false;
-  for (auto &m : methods) {
-    if (m.name == "String")
-      has_string = true;
-  }
-  EXPECT_TRUE(has_string);
+  EXPECT_TRUE(methods.empty());
 }
 
-TEST(Builtins, MapMethods) {
+// Array and Map retain only String (deferred — requires TypeParam dispatch).
+TEST(Builtins, ArrayMethodsOnlyString) {
+  BuiltinTypes types;
+  types.init();
+  auto methods = builtin_methods(TypeKind::Array, types);
+  ASSERT_EQ(methods.size(), 1u);
+  EXPECT_EQ(methods[0].name, "String");
+}
+
+TEST(Builtins, MapMethodsOnlyString) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::Map, types);
-  bool has_size = false;
-  bool has_key = false;
-  for (auto &m : methods) {
-    if (m.name == "Size")
-      has_size = true;
-    if (m.name == "Key?")
-      has_key = true;
-  }
-  EXPECT_TRUE(has_size);
-  EXPECT_TRUE(has_key);
+  ASSERT_EQ(methods.size(), 1u);
+  EXPECT_EQ(methods[0].name, "String");
 }
 
 } // namespace mc
