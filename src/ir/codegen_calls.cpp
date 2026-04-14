@@ -240,6 +240,60 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
       return builder.CreateCall(callee, args, "pkg.call");
     }
 
+    // ── Struct-field function call: r.handler(args) where `handler` is a
+    //    field of function type.  Load the fn pointer from the field, then
+    //    call it directly.
+    if (obj_sem && obj_sem->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
+      for (auto &fld : sinfo.fields) {
+        if (fld.name != method) continue;
+        if (!fld.type || fld.type->kind != TypeKind::Func) break;
+
+        // Resolve the struct ptr — prefer the alloca for a local identifier
+        // so we can GEP without extracting from a loaded value.
+        auto *ptr_type = llvm::PointerType::getUnqual(context);
+        llvm::Value *struct_ptr = nullptr;
+        if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
+          auto lit = locals.find(std::string(id->name));
+          if (lit != locals.end()) {
+            auto *alloca = lit->second;
+            auto st_it = struct_types.find(sinfo.name);
+            if (st_it != struct_types.end() &&
+                alloca->getAllocatedType() == st_it->second) {
+              struct_ptr = alloca;
+            } else if (alloca->getAllocatedType()->isPointerTy()) {
+              struct_ptr = builder.CreateLoad(ptr_type, alloca, "obj.load");
+            }
+          }
+        }
+        if (!struct_ptr)
+          struct_ptr = emit_expr(*sel->object);
+        if (!struct_ptr) return nullptr;
+
+        auto [gep, ftype] = struct_field_gep(struct_ptr, obj_sem, method);
+        if (!gep) break;
+        auto *fn_ptr = builder.CreateLoad(ptr_type, gep, "field.fn");
+
+        std::vector<llvm::Value *> args;
+        std::vector<llvm::Type *> param_types;
+        auto &fi = std::get<FuncTypeInfo>(fld.type->detail);
+        for (auto &pt : fi.params)
+          param_types.push_back(llvm_type(pt));
+        for (auto &arg_node : node.args) {
+          auto *val = emit_expr(*arg_node);
+          if (val) args.push_back(val);
+        }
+        llvm::Type *ret_ll = fi.returns.empty()
+                                 ? void_ll_type : llvm_type(fi.returns[0]);
+        auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
+        if (ret_ll->isVoidTy()) {
+          builder.CreateCall(fn_type, fn_ptr, args);
+          return nullptr;
+        }
+        return builder.CreateCall(fn_type, fn_ptr, args, "field.call");
+      }
+    }
+
     auto *obj = emit_expr(*sel->object);
     if (!obj)
       return nullptr;
@@ -1216,67 +1270,41 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
 
   auto *callee = module->getFunction(link_name);
 
-  // If not a known module function, check if it's a closure variable.
+  // If not a known module function, check if it's a function-typed local
+  // or parameter (first-class function value).  v1: free functions only —
+  // the value is a raw LLVM function pointer; no env, no closure struct.
   if (!callee) {
     auto local_it = locals.find(name);
     if (local_it != locals.end()) {
       auto *alloca = local_it->second;
-      // Check if this local holds a closure fat pointer (either directly
-      // as closure_fat_ptr_type, or as a ptr to one for function parameters).
       auto callee_sem = semantic_type(*node.callee);
       bool is_func_typed = callee_sem && callee_sem->kind == TypeKind::Func;
-      if (alloca->getAllocatedType() == closure_fat_ptr_type || is_func_typed) {
-        // Determine the closure struct pointer.
-        // If the alloca directly holds a closure struct, use it.
-        // If the alloca holds a ptr (function parameter), load first.
+      if (is_func_typed) {
         auto *ptr_type = llvm::PointerType::getUnqual(context);
-        llvm::Value *closure_ptr = alloca;
-        if (alloca->getAllocatedType() != closure_fat_ptr_type) {
-          // Load the pointer to the closure struct.
-          closure_ptr = builder.CreateLoad(ptr_type, alloca, "cl.load");
-        }
+        // The local's alloca holds a ptr; load it to get the fn pointer.
+        auto *fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
 
-        // Load fn_ptr and env_ptr from the closure.
-        auto *fn_gep = builder.CreateStructGEP(closure_fat_ptr_type,
-                                                closure_ptr, 0, "cl.fn.ptr");
-        auto *fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "cl.fn");
-        auto *env_gep = builder.CreateStructGEP(closure_fat_ptr_type,
-                                                  closure_ptr, 1, "cl.env.ptr");
-        auto *env_ptr = builder.CreateLoad(ptr_type, env_gep, "cl.env");
-
-        // Build the indirect call: fn(env, args...)
         std::vector<llvm::Value *> args;
-        args.push_back(env_ptr);
         for (auto &arg_node : node.args) {
           auto *val = emit_expr(*arg_node);
           if (val)
             args.push_back(val);
         }
 
-        // Build the function type from the semantic type.
-        auto callee_sem = semantic_type(*node.callee);
         std::vector<llvm::Type *> param_types;
-        param_types.push_back(ptr_type); // env
         llvm::Type *ret_ll = void_ll_type;
-
-        if (callee_sem && callee_sem->kind == TypeKind::Func) {
-          auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
-          for (auto &pt : fi.params)
-            param_types.push_back(llvm_type(pt));
-          if (!fi.returns.empty())
-            ret_ll = llvm_type(fi.returns[0]);
-        } else {
-          // Fallback: infer from args.
-          for (size_t i = 1; i < args.size(); ++i)
-            param_types.push_back(args[i]->getType());
-        }
+        auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
+        for (auto &pt : fi.params)
+          param_types.push_back(llvm_type(pt));
+        if (!fi.returns.empty())
+          ret_ll = llvm_type(fi.returns[0]);
 
         auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
         if (ret_ll->isVoidTy()) {
           builder.CreateCall(fn_type, fn_ptr, args);
           return nullptr;
         }
-        return builder.CreateCall(fn_type, fn_ptr, args, "cl.call");
+        return builder.CreateCall(fn_type, fn_ptr, args, "fn.call");
       }
     }
     return nullptr;
@@ -1772,6 +1800,13 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   // Enum type names — return a sentinel so selectors can access variants.
   if (enum_types.count(name))
     return llvm::ConstantInt::get(i64_type, 0);
+
+  // Top-level function referenced as a value (e.g. `call_it(greet, ...)` or
+  // a struct literal like `Reg{ handler: greet }`).  Return the raw LLVM
+  // Function* — it is pointer-typed, matching how function-typed locals
+  // and struct fields are lowered.
+  if (auto *fn = module->getFunction(mangle(name)))
+    return fn;
 
   return nullptr;
 }

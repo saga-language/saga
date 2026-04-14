@@ -4222,6 +4222,83 @@ TEST(CodeGen, IntrinsicCallGateRejectsNonStdlib) {
   EXPECT_TRUE(found) << "Should have a 'stdlib only' error message";
 }
 
+// ===========================================================================
+// P2 — First-class function values
+// ===========================================================================
+
+TEST(CodeGen, FuncParamCalledIndirectly) {
+  // A function-typed parameter must be callable: the body performs an
+  // indirect call (not a direct call to a named function) on the loaded
+  // parameter value.
+  auto r = CG::from(
+      "fn greet(n String) Void {}\n"
+      "fn call_it(f fn(String) Void, arg String) Void { f(arg) }\n"
+      "pub fn Main() Void { call_it(greet, \"hi\") }");
+
+  auto *call_it = r.func("call_it");
+  ASSERT_NE(call_it, nullptr);
+  bool has_indirect_call = false;
+  for (auto &bb : *call_it) {
+    for (auto &inst : bb) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (!call->getCalledFunction()) {
+          has_indirect_call = true;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(has_indirect_call)
+      << "call_it must perform an indirect call on its fn-typed parameter";
+
+  // Main must pass greet as an argument — regression for the bug where
+  // the function identifier was silently dropped from the call arg list.
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  auto *greet = r.func("greet");
+  ASSERT_NE(greet, nullptr);
+  bool greet_passed = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call) continue;
+      for (unsigned i = 0; i < call->arg_size(); ++i) {
+        if (call->getArgOperand(i) == greet) {
+          greet_passed = true;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(greet_passed)
+      << "main must pass greet (the Function*) as an argument to call_it";
+}
+
+TEST(CodeGen, StructFieldFuncCalledIndirectly) {
+  // Calling a function-typed struct field (r.h(arg)) must lower to a
+  // field GEP + indirect call, not a silent no-op.
+  auto r = CG::from(
+      "fn greet(n String) Void {}\n"
+      "struct Reg { h fn(String) Void }\n"
+      "pub fn Main() Void { r := Reg{ h: greet }\n r.h(\"x\") }");
+
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool has_indirect_call = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (!call->getCalledFunction()) {
+          has_indirect_call = true;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(has_indirect_call)
+      << "main must perform an indirect call on r.h";
+}
+
 } // namespace mc
 
 
