@@ -146,6 +146,11 @@ struct Analyzer {
   std::unordered_map<const Node *, std::vector<SpawnCaptureInfo>>
       spawn_captures;
 
+  /// Resolved channel element type for each channel-carrying spawn
+  /// (`|T| spawn ...`).  Populated during semantic analysis so codegen does
+  /// not re-run type resolution against a scope that has already been popped.
+  std::unordered_map<const Node *, TypePtr> spawn_channel_elem_types;
+
   // ── Operator overloading ─────────────────────────────────────────────
 
   // ── User-bound methods for non-struct types ────────────────────────

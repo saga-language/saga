@@ -560,10 +560,23 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node) {
           auto *val = emit_expr(*node.args[0]);
           if (!val) return nullptr;
           auto *func = builder.GetInsertBlock()->getParent();
-          auto *tmp = create_entry_alloca(func, "send.tmp", val->getType());
-          builder.CreateStore(val, tmp);
+          // If val is already a pointer to the payload (struct literal,
+          // union alloca), pass it directly — the runtime memcpys
+          // elem_size bytes from the given address.  Otherwise (scalar
+          // value like an Int), spill to a temp alloca first.
+          llvm::Value *data_ptr = val;
+          auto arg_sem = semantic_type(*node.args[0]);
+          bool val_is_ptr_to_payload =
+              val->getType()->isPointerTy() && arg_sem &&
+              (arg_sem->kind == TypeKind::Struct ||
+               arg_sem->kind == TypeKind::Union);
+          if (!val_is_ptr_to_payload) {
+            auto *tmp = create_entry_alloca(func, "send.tmp", val->getType());
+            builder.CreateStore(val, tmp);
+            data_ptr = tmp;
+          }
           builder.CreateCall(module->getFunction("saga_context_send"),
-                             {obj, tmp});
+                             {obj, data_ptr});
           return nullptr;
         }
         if (method == "Exit") {
@@ -1687,10 +1700,18 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   llvm::Value *channel_ptr = nullptr;
   int64_t channel_elem_size = 0;
   if (node.generic && !node.generic->type_params.empty()) {
-    // Resolve the channel element type.
-    auto &type_param_node = *node.generic->type_params[0];
-    auto chan_elem_sem = analyzer.resolve_type(type_param_node);
+    // Read the channel element type the analyzer resolved while the
+    // spawn's enclosing scope was still live.  Re-resolving here would
+    // fail for user struct names because their scope has been popped.
+    TypePtr chan_elem_sem;
+    auto sce_it = analyzer.spawn_channel_elem_types.find(&parent);
+    if (sce_it != analyzer.spawn_channel_elem_types.end())
+      chan_elem_sem = sce_it->second;
+    if (!chan_elem_sem)
+      chan_elem_sem = analyzer.resolve_type(*node.generic->type_params[0]);
     auto *chan_elem_ll = llvm_type(chan_elem_sem);
+    if (!chan_elem_ll || chan_elem_ll->isVoidTy())
+      chan_elem_ll = i64_type; // defensive fallback; shouldn't happen
     channel_elem_size = static_cast<int64_t>(
         module->getDataLayout().getTypeAllocSize(chan_elem_ll));
 

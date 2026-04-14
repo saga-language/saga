@@ -1853,6 +1853,14 @@ void Analyzer::resolve_range_expr(const RangeExprNode &node) {
 
 void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
                                   const Node &parent) {
+  // Resolve the channel element type (|T| in `|T| spawn ...`) while the
+  // surrounding scope still has user types like structs visible.  Codegen
+  // reads this map to avoid redoing the lookup after the scope is popped.
+  if (node.generic && !node.generic->type_params.empty()) {
+    spawn_channel_elem_types[&parent] =
+        resolve_type(*node.generic->type_params[0]);
+  }
+
   push_scope(ScopeKind::Spawn);
 
   // Push this spawn onto the stack for capture tracking.

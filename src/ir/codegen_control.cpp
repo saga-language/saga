@@ -748,9 +748,17 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
             }
 
             if (ch_ptr) {
-              // Determine message type.  Default to i64 if unknown.
+              // Determine message type from the Task's type argument
+              // (Task's first type arg is the channel element type T).
               llvm::Type *msg_ll = i64_type;
-              // TODO: Extract element type from generic type parameter.
+              TypePtr elem_sem;
+              if (!st_info.type_args.empty())
+                elem_sem = st_info.type_args[0];
+              if (elem_sem) {
+                auto *ll = llvm_type(elem_sem);
+                if (ll && !ll->isVoidTy())
+                  msg_ll = ll;
+              }
 
               // Create message buffer alloca.
               llvm::AllocaInst *msg_alloca = nullptr;

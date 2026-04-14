@@ -4299,6 +4299,44 @@ TEST(CodeGen, StructFieldFuncCalledIndirectly) {
       << "main must perform an indirect call on r.h";
 }
 
+// ===========================================================================
+// P3 — Struct-typed channels
+// ===========================================================================
+
+TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
+  // Regression: `|UserStruct| spawn` previously segfaulted the compiler
+  // because the channel element type couldn't be resolved at codegen time.
+  auto r = CG::from(
+      "struct Msg { id Int\n desc String }\n"
+      "pub fn Main() Void {\n"
+      "  task := |Msg| spawn |ctx| {\n"
+      "    ctx.Send(Msg{ id: 1, desc: \"x\" })\n"
+      "  }\n"
+      "}");
+
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+
+  // saga_channel_new must be called with an elem_size equal to
+  // sizeof(Msg) (i64 id + ptr desc = 16 on 64-bit), not 8 (the old
+  // default) — confirming the element type was resolved.
+  bool saw_channel_new_with_struct_size = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call) continue;
+      auto *callee = call->getCalledFunction();
+      if (!callee || callee->getName() != "saga_channel_new") continue;
+      if (call->arg_size() < 1) continue;
+      auto *sz = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+      if (sz && sz->getSExtValue() == 16)
+        saw_channel_new_with_struct_size = true;
+    }
+  }
+  EXPECT_TRUE(saw_channel_new_with_struct_size)
+      << "Expected saga_channel_new called with elem_size=16 for Msg{Int,String}";
+}
+
 } // namespace mc
 
 
