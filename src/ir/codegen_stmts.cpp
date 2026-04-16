@@ -71,6 +71,11 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
 // ===========================================================================
 
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
+  // Generic free functions have no concrete signature.  Emission happens
+  // per call-site specialisation (Step 5 of monomorphism_plan.md).
+  if (fn.generic && !fn.receiver)
+    return;
+
   std::string name(fn.name.name);
   bool is_main = (name == "Main");
   std::string link_name = is_main ? "main" : mangle(name);
@@ -79,6 +84,26 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   if (!func)
     return; // Should have been forward-declared.
 
+  // Build the LLVM parameter types from the AST annotations (same logic
+  // as build_func_type uses).  Specialised emission computes them from
+  // bindings instead.
+  std::vector<llvm::Type *> param_ll;
+  if (!is_main) {
+    for (auto &param : fn.signature.params) {
+      auto *ll_type = resolve_type_node(*param.type);
+      if (param.is_variadic)
+        ll_type = llvm::PointerType::getUnqual(context);
+      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+        param_ll.push_back(ll_type);
+    }
+  }
+
+  emit_function_body_inner(fn, func, param_ll, is_main);
+}
+
+void CodeGen::emit_function_body_inner(
+    const FuncDeclNode &fn, llvm::Function *func,
+    const std::vector<llvm::Type *> &param_ll, bool is_main) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
 
@@ -94,17 +119,20 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   }
 
   // Create allocas for parameters and store the incoming argument values.
+  // param_ll has one entry per flattened parameter name so variadic /
+  // multi-name params are already expanded.
   size_t arg_idx = 0;
+  size_t ll_idx = 0;
   for (auto &param : fn.signature.params) {
-    auto *ll_type = resolve_type_node(*param.type);
-    // Variadic params are arrays at the LLVM level (ptr to mc_array).
-    if (param.is_variadic)
-      ll_type = llvm::PointerType::getUnqual(context);
     for (auto &ident : param.names.identifiers) {
+      auto *ll_type = ll_idx < param_ll.size()
+                          ? param_ll[ll_idx]
+                          : llvm::PointerType::getUnqual(context);
       std::string pname(ident.name);
       auto *alloca = create_entry_alloca(func, pname, ll_type);
       builder.CreateStore(func->getArg(arg_idx++), alloca);
       locals[pname] = alloca;
+      ++ll_idx;
     }
   }
 
@@ -210,28 +238,24 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   llvm::Type *var_type = i64_type; // default to Int
   if (node.type) {
     // Check node_types first (recorded during analysis), then fallback.
-    auto nt_it = analyzer.node_types.find(&**node.type);
-    if (nt_it != analyzer.node_types.end()) {
-      var_type = llvm_type(nt_it->second);
+    if (auto recorded = semantic_type(**node.type)) {
+      var_type = llvm_type(recorded);
     } else {
       auto sem_type = analyzer.resolve_type(**node.type);
       var_type = llvm_type(sem_type);
     }
   } else if (node.init) {
     // Infer from the init expression's semantic type.
-    auto it = analyzer.node_types.find(&**node.init);
-    if (it != analyzer.node_types.end())
-      var_type = llvm_type(it->second);
+    if (auto recorded = semantic_type(**node.init))
+      var_type = llvm_type(recorded);
   }
 
   // Determine semantic type for refcount tracking and interface boxing.
   TypePtr sem_type_ptr = nullptr;
   if (node.type) {
     // Look up from the node_types map first (recorded during analysis).
-    auto it = analyzer.node_types.find(&**node.type);
-    if (it != analyzer.node_types.end()) {
-      sem_type_ptr = it->second;
-    } else {
+    sem_type_ptr = semantic_type(**node.type);
+    if (!sem_type_ptr) {
       // Fall back to resolve_type (works for builtins).
       sem_type_ptr = analyzer.resolve_type(**node.type);
     }

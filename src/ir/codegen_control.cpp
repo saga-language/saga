@@ -808,13 +808,11 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
             // ── Iterable struct: for v : iter { ... } via Next() ────────
             // Requires the struct to implement: Next() T | Error
             // where T is the element type.
-            auto elem_it = analyzer.iterable_next_elem_type.find(
-                range->iterable.get());
-            if (elem_it == analyzer.iterable_next_elem_type.end()) {
+            auto elem_sem = iterable_next_elem_type_of(*range->iterable);
+            if (!elem_sem) {
               // Analyzer reported the error — just skip the loop.
               builder.CreateBr(exit_bb);
             } else {
-              auto elem_sem = elem_it->second;
               auto *elem_ll = llvm_type(elem_sem);
               auto *ptr_type = llvm::PointerType::getUnqual(context);
 

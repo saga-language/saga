@@ -20,6 +20,12 @@ static bool is_intrinsic_type_name(std::string_view name) {
 void CodeGen::declare_functions(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     if (auto *fn = std::get_if<FuncDeclNode>(&decl->data)) {
+      // Generic free functions are emitted lazily as monomorphised
+      // specialisations at each call site (see monomorphism_plan.md,
+      // Step 5).  The template itself has no concrete LLVM signature.
+      if (fn->generic && !fn->receiver)
+        continue;
+
       // Skip receiver methods on intrinsic types — handled by
       // declare_intrinsic_methods or hardcoded codegen.
       if (fn->receiver) {
@@ -110,9 +116,7 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
     return;
 
   // Determine the semantic type.
-  auto sem_type = analyzer.node_types.count(&*node.value)
-                      ? analyzer.node_types.at(&*node.value)
-                      : nullptr;
+  auto sem_type = semantic_type(*node.value);
   if (!sem_type && node.type)
     sem_type = analyzer.resolve_type(**node.type);
   if (!sem_type)

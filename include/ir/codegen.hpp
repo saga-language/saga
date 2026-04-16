@@ -151,6 +151,47 @@ struct CodeGen {
   };
   std::vector<LoopContext> loop_stack;
 
+  // ── Per-instantiation side-table view ────────────────────────────────
+
+  /// When emitting a monomorphised generic specialisation, points at the
+  /// analyzer's BodyInstantiation for this (generic, bindings) pair.  All
+  /// side-table accessors below check this map first and fall through to
+  /// the global analyzer tables for nodes that don't belong to the
+  /// generic body (see monomorphism_plan.md, Step 4).
+  const Analyzer::BodyInstantiation *current_instantiation_ = nullptr;
+
+  // ── FuncEmissionScope (RAII, Step 5a) ────────────────────────────────
+
+  /// Guards re-entrant function emission.  On construction captures every
+  /// piece of per-function CodeGen state and resets to fresh-function
+  /// defaults; on destruction restores it.  Used by emit_specialisation
+  /// so that emitting a generic specialisation in the middle of another
+  /// function's emission does not leak allocas, loop labels, or the
+  /// instantiation-view pointer.
+  ///
+  /// NOTE: when you add new per-function CodeGen state, update the
+  /// save/restore list in src/ir/codegen_calls.cpp.
+  class FuncEmissionScope {
+  public:
+    explicit FuncEmissionScope(CodeGen &cg);
+    ~FuncEmissionScope();
+    FuncEmissionScope(const FuncEmissionScope &) = delete;
+    FuncEmissionScope &operator=(const FuncEmissionScope &) = delete;
+
+  private:
+    CodeGen &cg_;
+    llvm::BasicBlock *saved_bb_;
+    llvm::BasicBlock::iterator saved_ip_;
+    std::unordered_map<std::string, llvm::AllocaInst *> saved_locals_;
+    std::vector<ManagedLocal> saved_managed_locals_;
+    std::vector<LoopContext> saved_loop_stack_;
+    bool saved_current_func_is_main_;
+    TypePtr saved_current_func_return_sem_;
+    const Analyzer::BodyInstantiation *saved_current_instantiation_;
+    llvm::Value *saved_current_actor_;
+    llvm::AllocaInst *saved_pending_channel_alloca_;
+  };
+
   // ── Construction ─────────────────────────────────────────────────────
 
   CodeGen(const std::string &module_name, Analyzer &analyzer);
@@ -176,6 +217,15 @@ struct CodeGen {
   void dump() const;
   bool write_ir(const std::string &path) const;
   bool write_object(const std::string &path);
+
+  /// Linker-safe type mangler.  Output is restricted to [A-Za-z0-9_].
+  /// Recursive; nested compound types are terminated with `_End`.
+  std::string mangle_type(const TypePtr &t) const;
+
+  /// Compute the specialised link name for a generic free function.
+  std::string mangle_specialisation(
+      const FuncDeclNode &fn,
+      const std::vector<TypePtr> &ordered_type_args) const;
 
 private:
   // ── Type helpers ─────────────────────────────────────────────────────
@@ -247,6 +297,24 @@ private:
   /// Emit a full function definition (entry block + body).
   void emit_func_decl(const FuncDeclNode &node);
 
+  /// Shared body-emission helper used by both emit_func_decl and
+  /// emit_specialisation.  Assumes `func` has been created and the caller
+  /// has set up per-function state (locals/loop/etc).  Writes the entry
+  /// block, param allocas (using `param_ll` LLVM types), the body, and
+  /// the return-handling tail.
+  void emit_function_body_inner(const FuncDeclNode &fn, llvm::Function *func,
+                                 const std::vector<llvm::Type *> &param_ll,
+                                 bool is_main);
+
+  /// Emit one monomorphised specialisation of a generic free function.
+  /// Creates (or returns) an LLVM Function with LinkOnceODR linkage whose
+  /// signature is derived from `bindings`.  Runs the body under a fresh
+  /// FuncEmissionScope with `current_instantiation_` pointed at `inst`.
+  llvm::Function *
+  emit_specialisation(const FuncDeclNode &fn, const TypePtr &generic_fn_type,
+                      const std::unordered_map<uint32_t, TypePtr> &bindings,
+                      const Analyzer::BodyInstantiation *inst);
+
   // ── Block / statement emission ───────────────────────────────────────
 
   /// Emit a block, returning the value of the last expression (or nullptr).
@@ -269,7 +337,7 @@ private:
   llvm::Value *emit_float_literal(const FloatLiteralNode &node);
   llvm::Value *emit_bool_literal(const BoolLiteralNode &node);
   llvm::Value *emit_string_literal(const StringLiteralNode &node);
-  llvm::Value *emit_call_expr(const CallExprNode &node);
+  llvm::Value *emit_call_expr(const CallExprNode &node, const Node &parent);
   llvm::Value *emit_identifier(const IdentifierNode &node);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
@@ -303,6 +371,42 @@ private:
 
   /// Look up the semantic type of an AST node (recorded by the analyzer).
   TypePtr semantic_type(const Node &node) const;
+
+  // ── Per-instantiation accessors (Step 4) ─────────────────────────────
+  //
+  // Every read of an analyzer side-table inside codegen must go through
+  // these accessors.  Each consults current_instantiation_ first and
+  // seamlessly falls through to the corresponding analyzer.<table> when
+  // the node isn't part of the generic body being specialised.  Misses
+  // in *both* maps are real bugs — callers assert or handle as they did
+  // before Step 4.
+
+  /// Look up the Symbol recorded for an identifier/selector/etc. node.
+  const Symbol *node_symbol(const Node &node) const;
+
+  /// Closure capture list for a FuncExprNode (or its parent wrapper).
+  const std::vector<Analyzer::CaptureInfo> *
+  node_captures_of(const Node &node) const;
+
+  /// Spawn capture list for a SpawnExprNode's parent.
+  const std::vector<Analyzer::SpawnCaptureInfo> *
+  spawn_captures_of(const Node &node) const;
+
+  /// Element type for an iterable in a for-range loop (struct protocol).
+  TypePtr iterable_next_elem_type_of(const Node &node) const;
+
+  /// Channel element type recorded on a spawn expression.
+  TypePtr spawn_channel_elem_type_of(const Node &node) const;
+
+  /// Overloaded binary-op method name (e.g. "Add") for a BinaryExprNode.
+  const std::string *struct_operator_method_of(const Node &node) const;
+
+  /// Type recorded for a span (LSP hover fallback).
+  TypePtr span_type_at(Span span) const;
+
+  /// Type-argument bindings at a generic call site.
+  const std::unordered_map<uint32_t, TypePtr> *
+  node_type_args_of(const Node &node) const;
 
   // ── Union helpers ────────────────────────────────────────────────────
 
