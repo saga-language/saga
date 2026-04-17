@@ -73,3 +73,138 @@ pub fn (self Int) Float32() Float32 {
 pub fn (self Int) Format(fmt String) String {
   intrinsic_runtime("saga_int_format", self, fmt)
 }
+
+// --- Int8 ---
+
+pub fn (self Int8) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Int8) Equals(other Int8) Bool {
+  self == other
+}
+
+pub fn (self Int8) Compare(other Int8) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Int16 ---
+
+pub fn (self Int16) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Int16) Equals(other Int16) Bool {
+  self == other
+}
+
+pub fn (self Int16) Compare(other Int16) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Int32 ---
+
+pub fn (self Int32) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Int32) Equals(other Int32) Bool {
+  self == other
+}
+
+pub fn (self Int32) Compare(other Int32) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Int64 ---
+
+pub fn (self Int64) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Int64) Equals(other Int64) Bool {
+  self == other
+}
+
+pub fn (self Int64) Compare(other Int64) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Uint8 ---
+
+pub fn (self Uint8) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Uint8) Equals(other Uint8) Bool {
+  self == other
+}
+
+pub fn (self Uint8) Compare(other Uint8) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Uint16 ---
+
+pub fn (self Uint16) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Uint16) Equals(other Uint16) Bool {
+  self == other
+}
+
+pub fn (self Uint16) Compare(other Uint16) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Uint32 ---
+
+pub fn (self Uint32) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Uint32) Equals(other Uint32) Bool {
+  self == other
+}
+
+pub fn (self Uint32) Compare(other Uint32) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+
+
+
+// --- Uint64 ---
+
+pub fn (self Uint64) String() String {
+  intrinsic_runtime("saga_int_to_string", self)
+}
+
+pub fn (self Uint64) Equals(other Uint64) Bool {
+  self == other
+}
+
+pub fn (self Uint64) Compare(other Uint64) Comparison {
+  if self < other { Comparison.Less }
+  else { if self == other { Comparison.Equal } else { Comparison.Greater } }
+}
+

@@ -210,6 +210,14 @@ void Analyzer::load_prelude() {
   };
   auto get_canonical = [this](const std::string &type_name) -> const Type * {
     if (type_name == "Int")    return builtins.int_type.get();
+    if (type_name == "Int8")   return builtins.int8_type.get();
+    if (type_name == "Int16")  return builtins.int16_type.get();
+    if (type_name == "Int32")  return builtins.int32_type.get();
+    if (type_name == "Int64")  return builtins.int64_type.get();
+    if (type_name == "Uint8")  return builtins.uint8_type.get();
+    if (type_name == "Uint16") return builtins.uint16_type.get();
+    if (type_name == "Uint32") return builtins.uint32_type.get();
+    if (type_name == "Uint64") return builtins.uint64_type.get();
     if (type_name == "Float")  return builtins.float_type.get();
     if (type_name == "Bool")   return builtins.bool_type.get();
     if (type_name == "String") return builtins.string_type.get();
@@ -799,6 +807,14 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
         // Populate type_methods_ / kind_methods_ from stdlib receiver methods.
         auto get_canonical = [this](const std::string &tn) -> const Type * {
           if (tn == "Int")    return builtins.int_type.get();
+          if (tn == "Int8")   return builtins.int8_type.get();
+          if (tn == "Int16")  return builtins.int16_type.get();
+          if (tn == "Int32")  return builtins.int32_type.get();
+          if (tn == "Int64")  return builtins.int64_type.get();
+          if (tn == "Uint8")  return builtins.uint8_type.get();
+          if (tn == "Uint16") return builtins.uint16_type.get();
+          if (tn == "Uint32") return builtins.uint32_type.get();
+          if (tn == "Uint64") return builtins.uint64_type.get();
           if (tn == "Float")  return builtins.float_type.get();
           if (tn == "Bool")   return builtins.bool_type.get();
           if (tn == "String") return builtins.string_type.get();
@@ -923,11 +939,31 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   }
 
   // Merge receiver methods from stdlib sub-packages into this analyzer.
-  // The sub-analyzer's type pointers differ from ours; map by TypeKind.
+  // The sub-analyzer's type pointers differ from ours; map by type identity.
   for (auto &[sub_type_ptr, methods] : sub_analyzer.type_methods_) {
     const Type *our_type = nullptr;
     switch (sub_type_ptr->kind) {
-    case TypeKind::Int:    our_type = builtins.int_type.get();    break;
+    case TypeKind::Int: {
+      auto &ii = std::get<IntType>(sub_type_ptr->detail);
+      if (ii.bits == 0)
+        our_type = builtins.int_type.get();
+      else if (ii.is_signed) {
+        switch (ii.bits) {
+        case 8:  our_type = builtins.int8_type.get(); break;
+        case 16: our_type = builtins.int16_type.get(); break;
+        case 32: our_type = builtins.int32_type.get(); break;
+        case 64: our_type = builtins.int64_type.get(); break;
+        }
+      } else {
+        switch (ii.bits) {
+        case 8:  our_type = builtins.uint8_type.get(); break;
+        case 16: our_type = builtins.uint16_type.get(); break;
+        case 32: our_type = builtins.uint32_type.get(); break;
+        case 64: our_type = builtins.uint64_type.get(); break;
+        }
+      }
+      break;
+    }
     case TypeKind::Float:  our_type = builtins.float_type.get();  break;
     case TypeKind::Bool:   our_type = builtins.bool_type.get();   break;
     case TypeKind::String: our_type = builtins.string_type.get(); break;
@@ -2983,10 +3019,49 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
   {
     auto it = type_methods_.find(obj_type.get());
     if (it == type_methods_.end() && obj_type->kind == TypeKind::Alias) {
-      // Unwrap alias to find methods on the underlying type.
       auto underlying = unwrap_alias(obj_type);
       if (underlying)
         it = type_methods_.find(underlying.get());
+    }
+    if (it == type_methods_.end()) {
+      // Fall back to the canonical builtin pointer for intrinsic types.
+      // SGI-parsed types may produce distinct TypePtr values for the same
+      // logical type (e.g. Int64 from make_int_type vs builtins.int64_type).
+      const Type *canonical = nullptr;
+      switch (obj_type->kind) {
+      case TypeKind::Int: {
+        auto &ii = std::get<IntType>(obj_type->detail);
+        if (ii.bits == 0) canonical = builtins.int_type.get();
+        else if (ii.is_signed) {
+          switch (ii.bits) {
+          case 8:  canonical = builtins.int8_type.get(); break;
+          case 16: canonical = builtins.int16_type.get(); break;
+          case 32: canonical = builtins.int32_type.get(); break;
+          case 64: canonical = builtins.int64_type.get(); break;
+          }
+        } else {
+          switch (ii.bits) {
+          case 8:  canonical = builtins.uint8_type.get(); break;
+          case 16: canonical = builtins.uint16_type.get(); break;
+          case 32: canonical = builtins.uint32_type.get(); break;
+          case 64: canonical = builtins.uint64_type.get(); break;
+          }
+        }
+        break;
+      }
+      case TypeKind::Float: {
+        auto &fi = std::get<FloatType>(obj_type->detail);
+        if (fi.bits == 0) canonical = builtins.float_type.get();
+        else if (fi.bits == 32) canonical = builtins.float32_type.get();
+        else if (fi.bits == 64) canonical = builtins.float64_type.get();
+        break;
+      }
+      case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
+      case TypeKind::String: canonical = builtins.string_type.get(); break;
+      default: break;
+      }
+      if (canonical && canonical != obj_type.get())
+        it = type_methods_.find(canonical);
     }
     if (it != type_methods_.end()) {
       for (auto &m : it->second) {

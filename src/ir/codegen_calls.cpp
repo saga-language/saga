@@ -828,9 +828,31 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       const Type *raw = obj_sem.get();
       auto tm_it = analyzer.type_methods_.find(raw);
       if (tm_it == analyzer.type_methods_.end()) {
+        // Resolve to the canonical builtin pointer for this type.
         const Type *canonical = nullptr;
         switch (obj_sem->kind) {
-        case TypeKind::Int:    canonical = analyzer.builtins.int_type.get(); break;
+        case TypeKind::Int: {
+          auto &ii = std::get<IntType>(obj_sem->detail);
+          if (ii.bits == 0) {
+            canonical = (ii.is_signed ? analyzer.builtins.int_type
+                                      : analyzer.builtins.int_type).get();
+          } else if (ii.is_signed) {
+            switch (ii.bits) {
+            case 8:  canonical = analyzer.builtins.int8_type.get(); break;
+            case 16: canonical = analyzer.builtins.int16_type.get(); break;
+            case 32: canonical = analyzer.builtins.int32_type.get(); break;
+            case 64: canonical = analyzer.builtins.int64_type.get(); break;
+            }
+          } else {
+            switch (ii.bits) {
+            case 8:  canonical = analyzer.builtins.uint8_type.get(); break;
+            case 16: canonical = analyzer.builtins.uint16_type.get(); break;
+            case 32: canonical = analyzer.builtins.uint32_type.get(); break;
+            case 64: canonical = analyzer.builtins.uint64_type.get(); break;
+            }
+          }
+          break;
+        }
         case TypeKind::Float:  canonical = analyzer.builtins.float_type.get(); break;
         case TypeKind::Bool:   canonical = analyzer.builtins.bool_type.get(); break;
         case TypeKind::String: canonical = analyzer.builtins.string_type.get(); break;
@@ -843,36 +865,34 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         for (auto &m : tm_it->second) {
           if (m.name != method)
             continue;
-          // Determine the origin package from intrinsic_method_links,
-          // or fall back to a well-known package name from the TypeKind.
-          const char *type_name = nullptr;
+          // Determine the type name and origin package.
+          // Sized int types (Int8..Uint64) live in the "int" package;
+          // the type name must match the receiver (e.g. "Int64").
+          std::string tn = type_to_string(obj_sem);
+          const char *stdlib_pkg_name = nullptr;
           switch (obj_sem->kind) {
-          case TypeKind::Int:    type_name = "Int"; break;
-          case TypeKind::Float:  type_name = "Float"; break;
-          case TypeKind::Bool:   type_name = "Bool"; break;
-          case TypeKind::String: type_name = "String"; break;
+          case TypeKind::Int:    stdlib_pkg_name = "int"; break;
+          case TypeKind::Float:  stdlib_pkg_name = "float"; break;
+          case TypeKind::Bool:   stdlib_pkg_name = "bool"; break;
+          case TypeKind::String: stdlib_pkg_name = "string"; break;
           default: break;
           }
-          if (!type_name)
+          if (!stdlib_pkg_name)
             break;
 
           // The stdlib defines methods as `pkg__TypeName__Method` where
-          // pkg is the lowercase type name (e.g. "string__String__Lower").
+          // pkg is the package name (e.g. "int__Int64__String").
           // First check if the method is defined in the current module
           // (happens when a stdlib package compiles its own methods).
           std::string same_pkg_link =
-              mangle(std::string(type_name) + "__" + method);
+              mangle(tn + "__" + method);
           auto *callee = module->getFunction(same_pkg_link);
 
           if (!callee && m.signature &&
               m.signature->kind == TypeKind::Func) {
-            // Cross-package call: the method lives in the stdlib type package
-            // (e.g. "std/string" exports "string__String__Lower").
-            std::string stdlib_pkg = std::string(type_name);
-            std::transform(stdlib_pkg.begin(), stdlib_pkg.end(),
-                           stdlib_pkg.begin(), ::tolower);
-            std::string cross_link = mangle(stdlib_pkg,
-                std::string(type_name) + "__" + method);
+            // Cross-package call: the method lives in the stdlib type package.
+            std::string cross_link = mangle(stdlib_pkg_name,
+                tn + "__" + method);
 
             callee = module->getFunction(cross_link);
             if (!callee) {

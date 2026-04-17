@@ -32,8 +32,24 @@ collect_receiver_methods(const mc::Analyzer &analyzer) {
   for (auto &[type_ptr, methods] : analyzer.type_methods_) {
     std::string type_name;
     switch (type_ptr->kind) {
-    case mc::TypeKind::Int:    type_name = "Int";    break;
-    case mc::TypeKind::Float:  type_name = "Float";  break;
+    case mc::TypeKind::Int: {
+      auto &ii = std::get<mc::IntType>(type_ptr->detail);
+      if (ii.bits == 0)
+        type_name = "Int";
+      else if (ii.is_signed)
+        type_name = "Int" + std::to_string(ii.bits);
+      else
+        type_name = "Uint" + std::to_string(ii.bits);
+      break;
+    }
+    case mc::TypeKind::Float: {
+      auto &fi = std::get<mc::FloatType>(type_ptr->detail);
+      if (fi.bits == 0)
+        type_name = "Float";
+      else
+        type_name = "Float" + std::to_string(fi.bits);
+      break;
+    }
     case mc::TypeKind::Bool:   type_name = "Bool";   break;
     case mc::TypeKind::String: type_name = "String"; break;
     default: break;

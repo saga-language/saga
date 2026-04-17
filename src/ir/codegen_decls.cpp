@@ -13,8 +13,12 @@ namespace mc {
 
 /// Return true if the name refers to a scalar intrinsic type.
 static bool is_intrinsic_type_name(std::string_view name) {
-  return name == "Int" || name == "Float" || name == "Bool" ||
-         name == "String";
+  return name == "Int" || name == "Int8" || name == "Int16" ||
+         name == "Int32" || name == "Int64" ||
+         name == "Uint8" || name == "Uint16" ||
+         name == "Uint32" || name == "Uint64" ||
+         name == "Float" || name == "Float32" || name == "Float64" ||
+         name == "Bool" || name == "String";
 }
 
 void CodeGen::declare_functions(const SourceNode &src) {
