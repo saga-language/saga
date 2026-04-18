@@ -1048,6 +1048,9 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const GenericTypeAppNode &n) -> TypePtr {
             return resolve_generic_type_app(n);
           },
+          [&](const SelectorNode &n) -> TypePtr {
+            return resolve_selector_type(n);
+          },
           [&](const auto &) -> TypePtr {
             error(node.span, "expected type expression");
             return builtins.error_type;
@@ -1067,6 +1070,31 @@ TypePtr Analyzer::resolve_identifier_type(const IdentifierNode &node) {
     return builtins.error_type;
   }
   return sym->type ? sym->type : builtins.error_type;
+}
+
+TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
+  auto *obj_ident = std::get_if<IdentifierNode>(&node.object->data);
+  if (!obj_ident) {
+    error(node.span, "expected package name in qualified type");
+    return builtins.error_type;
+  }
+  auto mod_sym = lookup(std::string(obj_ident->name));
+  if (!mod_sym || !mod_sym->type ||
+      mod_sym->type->kind != TypeKind::Module) {
+    error(obj_ident->span,
+          std::format("'{}' is not a package", obj_ident->name));
+    return builtins.error_type;
+  }
+  auto &mod = std::get<ModuleTypeInfo>(mod_sym->type->detail);
+  std::string type_name(node.field.name);
+  for (auto &exp : mod.exports) {
+    if (exp.name == type_name && exp.type)
+      return exp.type;
+  }
+  error(node.field.span,
+        std::format("package '{}' has no exported type '{}'",
+                    mod.name, type_name));
+  return builtins.error_type;
 }
 
 TypePtr Analyzer::resolve_array_type(const ArrayTypeNode &node) {

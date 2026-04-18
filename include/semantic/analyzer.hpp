@@ -353,6 +353,7 @@ private:
   void visit_source(const SourceNode &node);
   void collect_declaration(const Node &node);
   TypePtr resolve_identifier_type(const IdentifierNode &node);
+  TypePtr resolve_selector_type(const SelectorNode &node);
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
   TypePtr resolve_func_type(const FuncTypeNode &node);
