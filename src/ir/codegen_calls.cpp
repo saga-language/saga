@@ -186,6 +186,13 @@ llvm::Function *CodeGen::emit_specialisation(
   };
 
   std::vector<llvm::Type *> param_ll;
+  bool has_receiver = fn.receiver.has_value();
+  std::string recv_struct_name;
+  if (has_receiver) {
+    param_ll.push_back(llvm::PointerType::getUnqual(context));
+    if (auto *ri = std::get_if<IdentifierNode>(&fn.receiver->type->data))
+      recv_struct_name = std::string(ri->name);
+  }
   for (auto &pt : fi.params) {
     auto *ll = to_param_ll(pt);
     if (!ll) return nullptr;
@@ -211,6 +218,10 @@ llvm::Function *CodeGen::emit_specialisation(
 
   // Name the arguments for IR readability.
   size_t arg_idx = 0;
+  if (has_receiver) {
+    func->getArg(arg_idx++)->setName(
+        std::string(fn.receiver->name.name));
+  }
   for (auto &param : fn.signature.params) {
     for (auto &ident : param.names.identifiers) {
       if (arg_idx < func->arg_size())
@@ -218,14 +229,85 @@ llvm::Function *CodeGen::emit_specialisation(
     }
   }
 
-  // Emit the body under a fresh per-function scope.  The scope saves the
-  // caller's state (including builder insert point, locals, loop stack,
-  // and current_instantiation_) so a specialisation emitted mid-call
-  // doesn't leak state back to its caller.
+  // Emit the body under a fresh per-function scope.
   {
     FuncEmissionScope guard(*this);
     current_instantiation_ = inst;
-    emit_function_body_inner(fn, func, param_ll, /*is_main=*/false);
+
+    if (has_receiver) {
+      // Receiver method: set up self, struct fields, and params manually
+      // (emit_function_body_inner doesn't handle receivers).
+      auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+      builder.SetInsertPoint(entry);
+      locals.clear();
+      managed_locals.clear();
+      current_func_is_main = false;
+      current_func_return_sem = fi.returns.empty()
+          ? nullptr : fi.returns[0];
+
+      // Self parameter.
+      std::string recv_name(fn.receiver->name.name);
+      auto *self_alloca = create_entry_alloca(
+          func, recv_name, llvm::PointerType::getUnqual(context));
+      builder.CreateStore(func->getArg(0), self_alloca);
+      locals[recv_name] = self_alloca;
+
+      // Inject struct fields as locals.
+      if (!recv_struct_name.empty()) {
+        auto st_it = struct_types.find(recv_struct_name);
+        if (st_it != struct_types.end()) {
+          auto *st = st_it->second;
+          auto &fields = struct_fields[recv_struct_name];
+          auto *self_ptr = builder.CreateLoad(
+              llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
+          for (size_t fi2 = 0; fi2 < fields.size(); ++fi2) {
+            auto *ftype = st->getElementType(fi2);
+            auto *gep = builder.CreateStructGEP(
+                st, self_ptr, fi2, fields[fi2]);
+            auto *val = builder.CreateLoad(
+                ftype, gep, fields[fi2] + ".val");
+            auto *field_alloca = create_entry_alloca(
+                func, fields[fi2], ftype);
+            builder.CreateStore(val, field_alloca);
+            locals[fields[fi2]] = field_alloca;
+          }
+        }
+      }
+
+      // Regular parameters (with concrete types from substitution).
+      size_t pidx = 1; // skip self
+      size_t ll_idx = 1;
+      for (auto &param : fn.signature.params) {
+        for (auto &ident : param.names.identifiers) {
+          auto *ll_type = ll_idx < param_ll.size()
+                              ? param_ll[ll_idx]
+                              : llvm::PointerType::getUnqual(context);
+          std::string pname(ident.name);
+          auto *alloca = create_entry_alloca(func, pname, ll_type);
+          builder.CreateStore(func->getArg(pidx++), alloca);
+          locals[pname] = alloca;
+          ++ll_idx;
+        }
+      }
+
+      // Emit body.
+      auto &block = std::get<BlockNode>(fn.body->data);
+      auto *tail_val = emit_block(block);
+
+      if (!builder.GetInsertBlock()->getTerminator()) {
+        emit_release_locals();
+        auto *ret_type = func->getReturnType();
+        if (ret_type->isVoidTy()) {
+          builder.CreateRetVoid();
+        } else if (tail_val && tail_val->getType() == ret_type) {
+          builder.CreateRet(tail_val);
+        } else {
+          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+        }
+      }
+    } else {
+      emit_function_body_inner(fn, func, param_ll, /*is_main=*/false);
+    }
   }
   return func;
 }
@@ -935,6 +1017,63 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // Struct method call: obj.Method(args) → StructName.Method(obj, args).
     if (obj_sem && obj_sem->kind == TypeKind::Struct) {
       auto &info = std::get<StructTypeInfo>(obj_sem->detail);
+
+      // Generic method on a concrete struct: monomorphise at call site.
+      for (auto &m : info.methods) {
+        if (m.name == method && m.signature && has_type_params(m.signature)) {
+          auto fd_it = analyzer.func_decl_by_type_.find(m.signature.get());
+          if (fd_it != analyzer.func_decl_by_type_.end()) {
+            auto *ta_ptr = node_type_args_of(parent);
+            if (ta_ptr) {
+              auto &bindings = *ta_ptr;
+              const Analyzer::BodyInstantiation *inst = nullptr;
+              auto inst_it = analyzer.instantiations_.find(fd_it->second);
+              if (inst_it != analyzer.instantiations_.end()) {
+                for (auto &i : inst_it->second) {
+                  if (i.bindings.size() == bindings.size()) {
+                    bool match = true;
+                    for (auto &[id, t] : bindings) {
+                      auto j = i.bindings.find(id);
+                      if (j == i.bindings.end() ||
+                          !types_equal(t, j->second)) {
+                        match = false;
+                        break;
+                      }
+                    }
+                    if (match) { inst = &i; break; }
+                  }
+                }
+              }
+              auto *spec = emit_specialisation(
+                  *fd_it->second, m.signature, bindings, inst);
+              if (spec) {
+                std::vector<llvm::Value *> args;
+                // self pointer
+                if (auto *id = std::get_if<IdentifierNode>(
+                        &sel->object->data)) {
+                  auto local_it = locals.find(std::string(id->name));
+                  if (local_it != locals.end())
+                    args.push_back(local_it->second);
+                  else
+                    args.push_back(obj);
+                } else {
+                  args.push_back(obj);
+                }
+                for (auto &a : node.args) {
+                  auto *v = emit_expr(*a);
+                  if (v) args.push_back(v);
+                }
+                if (spec->getReturnType()->isVoidTy()) {
+                  builder.CreateCall(spec, args);
+                  return nullptr;
+                }
+                return builder.CreateCall(spec, args, "gen.mcall");
+              }
+            }
+          }
+          break;
+        }
+      }
 
       // Determine the package that defines this struct.
       // If the struct exists in our local struct_types, use package_name.

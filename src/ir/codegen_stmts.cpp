@@ -71,10 +71,19 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
 // ===========================================================================
 
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
-  // Generic free functions have no concrete signature.  Emission happens
+  // Generic functions have no concrete signature.  Emission happens
   // per call-site specialisation (Step 5 of monomorphism_plan.md).
-  if (fn.generic && !fn.receiver)
-    return;
+  // Receiver methods on generic receiver types (Array/Map) are not
+  // skipped — their T is the element type, not a free type parameter.
+  if (fn.generic) {
+    if (!fn.receiver)
+      return;
+    auto &rt = fn.receiver->type->data;
+    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                           std::get_if<MapTypeNode>(&rt);
+    if (!is_generic_recv)
+      return;
+  }
 
   std::string name(fn.name.name);
   bool is_main = (name == "Main");

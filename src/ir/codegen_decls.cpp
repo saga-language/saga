@@ -24,11 +24,20 @@ static bool is_intrinsic_type_name(std::string_view name) {
 void CodeGen::declare_functions(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     if (auto *fn = std::get_if<FuncDeclNode>(&decl->data)) {
-      // Generic free functions are emitted lazily as monomorphised
+      // Generic functions are emitted lazily as monomorphised
       // specialisations at each call site (see monomorphism_plan.md,
       // Step 5).  The template itself has no concrete LLVM signature.
-      if (fn->generic && !fn->receiver)
-        continue;
+      // Receiver methods on generic receiver types (Array/Map) are
+      // handled through their own codegen path.
+      if (fn->generic) {
+        if (!fn->receiver)
+          continue;
+        auto &rt = fn->receiver->type->data;
+        bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                               std::get_if<MapTypeNode>(&rt);
+        if (!is_generic_recv)
+          continue;
+      }
 
       // Skip receiver methods on intrinsic types — handled by
       // declare_intrinsic_methods or hardcoded codegen.
@@ -305,6 +314,8 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
       auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
       if (!fn)
         continue;
+      if (fn->generic)
+        continue;
 
       std::string method_name(fn->name.name);
       std::string link_name = mangle(struct_name + "__" + method_name);
@@ -347,6 +358,8 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver)
+      continue;
+    if (fn->generic)
       continue;
 
     auto *recv_ident = std::get_if<IdentifierNode>(&fn->receiver->type->data);
@@ -404,6 +417,8 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     for (auto &member : s->members) {
       auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
       if (!fn)
+        continue;
+      if (fn->generic)
         continue;
 
       std::string method_name(fn->name.name);
@@ -494,6 +509,8 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver)
+      continue;
+    if (fn->generic)
       continue;
 
     auto *recv_ident = std::get_if<IdentifierNode>(&fn->receiver->type->data);

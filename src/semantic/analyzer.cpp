@@ -1336,17 +1336,21 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
     sym_it->second.type = fn_type;
   }
 
-  // Record the reverse FuncDecl lookup for free functions so that
-  // check_call_expr can get from a callee's type back to its AST.
-  // Methods are handled separately by the selector path.
-  if (!fn.receiver && fn_type) {
+  // Record the reverse FuncDecl lookup so that check_call_expr can get
+  // from a callee's type back to its AST for body instantiation.
+  // For receiver methods on concrete types (e.g. generic methods on a
+  // user struct), we also register here so the monomorphiser can find them.
+  bool is_generic_on_concrete_recv =
+      has_generics && fn.receiver &&
+      fn_type && fn_type->kind == TypeKind::Func;
+  if (fn_type && (!fn.receiver || is_generic_on_concrete_recv)) {
     func_decl_by_type_[fn_type.get()] = &fn;
   }
 
   // Stash the generic template for lazy body-analysis at instantiation
-  // time.  Receiver methods are not stored here — they go through the
-  // existing type_methods_/kind_methods_ paths.
-  if (has_generics && !fn.receiver) {
+  // time.  Generic receiver methods on concrete types are included so
+  // their bodies are checked per-instantiation (same as free generics).
+  if (has_generics && (!fn.receiver || is_generic_on_concrete_recv)) {
     generic_templates_[&fn] =
         GenericTemplate{&fn, current_scope, std::move(generic_params)};
   }
@@ -1565,12 +1569,17 @@ void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
 
 void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
                                       const TypePtr &enclosing_struct) {
-  // Generic free functions are analysed lazily, once per instantiation.
-  // Their decl_scope was captured during the signature pass; the body is
-  // visited from instantiate_generic_call (Step 2).  Receiver methods on
-  // generic types (Array/Map) still flow through the normal path.
-  if (fn.generic && !fn.receiver) {
-    return;
+  // Generic functions are analysed lazily, once per instantiation.
+  // Receiver methods on generic receiver types (Array/Map) still flow
+  // through the normal path because their T is the element type.
+  if (fn.generic) {
+    if (!fn.receiver)
+      return;
+    auto &rt = fn.receiver->type->data;
+    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                           std::get_if<MapTypeNode>(&rt);
+    if (!is_generic_recv)
+      return;
   }
 
   push_scope(ScopeKind::Function);
@@ -2131,11 +2140,17 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 
 void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
                                     const TypePtr &enclosing_struct) {
-  // Generic free functions: body is type-checked lazily per instantiation
-  // (Step 2).  Skip the eager pass.  Receiver methods on generic types
-  // (Array/Map) continue through the normal path.
-  if (fn.generic && !fn.receiver) {
-    return;
+  // Generic functions are type-checked lazily per instantiation.
+  // Receiver methods on generic receiver types (Array/Map) still flow
+  // through the eager path because their T is the element type.
+  if (fn.generic) {
+    if (!fn.receiver)
+      return;
+    auto &rt = fn.receiver->type->data;
+    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                           std::get_if<MapTypeNode>(&rt);
+    if (!is_generic_recv)
+      return;
   }
 
   push_scope(ScopeKind::Function);
@@ -4209,6 +4224,13 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
 
   // Push the function scope that will hold parameters and return types.
   push_scope(ScopeKind::Function);
+
+  // Inject receiver parameter for generic methods on concrete types.
+  if (fn.receiver) {
+    auto recv_type = resolve_type(*fn.receiver->type);
+    declare_local(Symbol::parameter(std::string(fn.receiver->name.name),
+                                    recv_type, fn.receiver->name.span));
+  }
 
   // Substituted return types for return-stmt checking.
   for (auto &r : fn.signature.returns) {
