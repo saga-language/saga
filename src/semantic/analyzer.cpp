@@ -210,6 +210,14 @@ void Analyzer::load_prelude() {
   };
   auto get_canonical = [this](const std::string &type_name) -> const Type * {
     if (type_name == "Int")    return builtins.int_type.get();
+    if (type_name == "Int8")   return builtins.int8_type.get();
+    if (type_name == "Int16")  return builtins.int16_type.get();
+    if (type_name == "Int32")  return builtins.int32_type.get();
+    if (type_name == "Int64")  return builtins.int64_type.get();
+    if (type_name == "Uint8")  return builtins.uint8_type.get();
+    if (type_name == "Uint16") return builtins.uint16_type.get();
+    if (type_name == "Uint32") return builtins.uint32_type.get();
+    if (type_name == "Uint64") return builtins.uint64_type.get();
     if (type_name == "Float")  return builtins.float_type.get();
     if (type_name == "Bool")   return builtins.bool_type.get();
     if (type_name == "String") return builtins.string_type.get();
@@ -346,11 +354,19 @@ std::unordered_map<uint32_t, TypePtr> Analyzer::current_type_bindings() const {
 // ===========================================================================
 
 void Analyzer::record_type(const Node &node, TypePtr type) {
-  node_types[&node] = std::move(type);
+  if (current_instantiation_) {
+    current_instantiation_->node_types[&node] = std::move(type);
+  } else {
+    node_types[&node] = std::move(type);
+  }
 }
 
 void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
-  node_symbols[&node] = sym;
+  if (current_instantiation_) {
+    current_instantiation_->node_symbols[&node] = sym;
+  } else {
+    node_symbols[&node] = sym;
+  }
 }
 
 // ===========================================================================
@@ -362,7 +378,24 @@ void Analyzer::error(Span span, const std::string &message) {
   if (!fileset.files.empty()) {
     pos = fileset.files[0]->position_at(span.start);
   }
-  errors.report_error(pos, message);
+
+  // Append an "...instantiated from" frame for every active generic
+  // instantiation so multi-level generic errors render a C++-template-style
+  // backtrace rather than a single opaque in-body location.
+  std::string full = message;
+  for (auto it = instantiation_stack_.rbegin();
+       it != instantiation_stack_.rend(); ++it) {
+    const Node *call_node = *it;
+    if (!call_node)
+      continue;
+    Position frame_pos{};
+    if (!fileset.files.empty()) {
+      frame_pos = fileset.files[0]->position_at(call_node->span.start);
+    }
+    full += std::format("\n  ...instantiated from {}", frame_pos);
+  }
+
+  errors.report_error(pos, full);
 }
 
 void Analyzer::type_error(Span span, const TypePtr &expected,
@@ -774,6 +807,14 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
         // Populate type_methods_ / kind_methods_ from stdlib receiver methods.
         auto get_canonical = [this](const std::string &tn) -> const Type * {
           if (tn == "Int")    return builtins.int_type.get();
+          if (tn == "Int8")   return builtins.int8_type.get();
+          if (tn == "Int16")  return builtins.int16_type.get();
+          if (tn == "Int32")  return builtins.int32_type.get();
+          if (tn == "Int64")  return builtins.int64_type.get();
+          if (tn == "Uint8")  return builtins.uint8_type.get();
+          if (tn == "Uint16") return builtins.uint16_type.get();
+          if (tn == "Uint32") return builtins.uint32_type.get();
+          if (tn == "Uint64") return builtins.uint64_type.get();
           if (tn == "Float")  return builtins.float_type.get();
           if (tn == "Bool")   return builtins.bool_type.get();
           if (tn == "String") return builtins.string_type.get();
@@ -898,11 +939,31 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   }
 
   // Merge receiver methods from stdlib sub-packages into this analyzer.
-  // The sub-analyzer's type pointers differ from ours; map by TypeKind.
+  // The sub-analyzer's type pointers differ from ours; map by type identity.
   for (auto &[sub_type_ptr, methods] : sub_analyzer.type_methods_) {
     const Type *our_type = nullptr;
     switch (sub_type_ptr->kind) {
-    case TypeKind::Int:    our_type = builtins.int_type.get();    break;
+    case TypeKind::Int: {
+      auto &ii = std::get<IntType>(sub_type_ptr->detail);
+      if (ii.bits == 0)
+        our_type = builtins.int_type.get();
+      else if (ii.is_signed) {
+        switch (ii.bits) {
+        case 8:  our_type = builtins.int8_type.get(); break;
+        case 16: our_type = builtins.int16_type.get(); break;
+        case 32: our_type = builtins.int32_type.get(); break;
+        case 64: our_type = builtins.int64_type.get(); break;
+        }
+      } else {
+        switch (ii.bits) {
+        case 8:  our_type = builtins.uint8_type.get(); break;
+        case 16: our_type = builtins.uint16_type.get(); break;
+        case 32: our_type = builtins.uint32_type.get(); break;
+        case 64: our_type = builtins.uint64_type.get(); break;
+        }
+      }
+      break;
+    }
     case TypeKind::Float:  our_type = builtins.float_type.get();  break;
     case TypeKind::Bool:   our_type = builtins.bool_type.get();   break;
     case TypeKind::String: our_type = builtins.string_type.get(); break;
@@ -987,6 +1048,9 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const GenericTypeAppNode &n) -> TypePtr {
             return resolve_generic_type_app(n);
           },
+          [&](const SelectorNode &n) -> TypePtr {
+            return resolve_selector_type(n);
+          },
           [&](const auto &) -> TypePtr {
             error(node.span, "expected type expression");
             return builtins.error_type;
@@ -1006,6 +1070,31 @@ TypePtr Analyzer::resolve_identifier_type(const IdentifierNode &node) {
     return builtins.error_type;
   }
   return sym->type ? sym->type : builtins.error_type;
+}
+
+TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
+  auto *obj_ident = std::get_if<IdentifierNode>(&node.object->data);
+  if (!obj_ident) {
+    error(node.span, "expected package name in qualified type");
+    return builtins.error_type;
+  }
+  auto mod_sym = lookup(std::string(obj_ident->name));
+  if (!mod_sym || !mod_sym->type ||
+      mod_sym->type->kind != TypeKind::Module) {
+    error(obj_ident->span,
+          std::format("'{}' is not a package", obj_ident->name));
+    return builtins.error_type;
+  }
+  auto &mod = std::get<ModuleTypeInfo>(mod_sym->type->detail);
+  std::string type_name(node.field.name);
+  for (auto &exp : mod.exports) {
+    if (exp.name == type_name && exp.type)
+      return exp.type;
+  }
+  error(node.field.span,
+        std::format("package '{}' has no exported type '{}'",
+                    mod.name, type_name));
+  return builtins.error_type;
 }
 
 TypePtr Analyzer::resolve_array_type(const ArrayTypeNode &node) {
@@ -1160,9 +1249,10 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // while resolving the receiver type, so we defer pop_scope() until after
   // the receiver binding below.
   bool has_generics = fn.generic.has_value();
+  std::vector<TypeParam> generic_params;
   if (has_generics) {
     push_scope(ScopeKind::Block);
-    enter_generics(*fn.generic);
+    generic_params = enter_generics(*fn.generic);
   }
 
   auto fn_type = resolve_signature(fn.signature);
@@ -1272,6 +1362,25 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   auto sym_it = current_scope->symbols.find(std::string(fn.name.name));
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = fn_type;
+  }
+
+  // Record the reverse FuncDecl lookup so that check_call_expr can get
+  // from a callee's type back to its AST for body instantiation.
+  // For receiver methods on concrete types (e.g. generic methods on a
+  // user struct), we also register here so the monomorphiser can find them.
+  bool is_generic_on_concrete_recv =
+      has_generics && fn.receiver &&
+      fn_type && fn_type->kind == TypeKind::Func;
+  if (fn_type && (!fn.receiver || is_generic_on_concrete_recv)) {
+    func_decl_by_type_[fn_type.get()] = &fn;
+  }
+
+  // Stash the generic template for lazy body-analysis at instantiation
+  // time.  Generic receiver methods on concrete types are included so
+  // their bodies are checked per-instantiation (same as free generics).
+  if (has_generics && (!fn.receiver || is_generic_on_concrete_recv)) {
+    generic_templates_[&fn] =
+        GenericTemplate{&fn, current_scope, std::move(generic_params)};
   }
 }
 
@@ -1488,6 +1597,19 @@ void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
 
 void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
                                       const TypePtr &enclosing_struct) {
+  // Generic functions are analysed lazily, once per instantiation.
+  // Receiver methods on generic receiver types (Array/Map) still flow
+  // through the normal path because their T is the element type.
+  if (fn.generic) {
+    if (!fn.receiver)
+      return;
+    auto &rt = fn.receiver->type->data;
+    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                           std::get_if<MapTypeNode>(&rt);
+    if (!is_generic_recv)
+      return;
+  }
+
   push_scope(ScopeKind::Function);
 
   // Enter generics if present.
@@ -1605,7 +1727,10 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
         // Record the capture on the closure's pending list.
         // (pending_closure_captures is set when resolving a FuncExprNode)
         if (pending_closure_node_) {
-          auto &caps = node_captures[pending_closure_node_];
+          auto &caps = current_instantiation_
+                           ? current_instantiation_
+                                 ->node_captures[pending_closure_node_]
+                           : node_captures[pending_closure_node_];
           // Avoid duplicate captures.
           bool already = false;
           for (auto &c : caps)
@@ -1633,7 +1758,10 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
       if (scope->lookup_local(name))
         break;
       if (scope->kind == ScopeKind::Spawn) {
-        auto &caps = spawn_captures[pending_spawn_node_];
+        auto &caps = current_instantiation_
+                         ? current_instantiation_
+                               ->spawn_captures[pending_spawn_node_]
+                         : spawn_captures[pending_spawn_node_];
         bool already = false;
         for (auto &c : caps)
           if (c.name == name) {
@@ -1853,6 +1981,19 @@ void Analyzer::resolve_range_expr(const RangeExprNode &node) {
 
 void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
                                   const Node &parent) {
+  // Resolve the channel element type (|T| in `|T| spawn ...`) while the
+  // surrounding scope still has user types like structs visible.  Codegen
+  // reads this map to avoid redoing the lookup after the scope is popped.
+  if (node.generic && !node.generic->type_params.empty()) {
+    auto ch_elem = resolve_type(*node.generic->type_params[0]);
+    if (current_instantiation_) {
+      current_instantiation_->spawn_channel_elem_types[&parent] =
+          std::move(ch_elem);
+    } else {
+      spawn_channel_elem_types[&parent] = std::move(ch_elem);
+    }
+  }
+
   push_scope(ScopeKind::Spawn);
 
   // Push this spawn onto the stack for capture tracking.
@@ -1878,8 +2019,11 @@ void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
       spawn_node_stack_.empty() ? nullptr : spawn_node_stack_.back();
 
   // Classify spawn captures based on their types.
-  auto cap_it = spawn_captures.find(&parent);
-  if (cap_it != spawn_captures.end()) {
+  auto &caps_map =
+      current_instantiation_ ? current_instantiation_->spawn_captures
+                             : spawn_captures;
+  auto cap_it = caps_map.find(&parent);
+  if (cap_it != caps_map.end()) {
     for (auto &cap : cap_it->second) {
       if (!cap.type) {
         cap.kind = SpawnCaptureKind::Copy;
@@ -2024,6 +2168,19 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 
 void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
                                     const TypePtr &enclosing_struct) {
+  // Generic functions are type-checked lazily per instantiation.
+  // Receiver methods on generic receiver types (Array/Map) still flow
+  // through the eager path because their T is the element type.
+  if (fn.generic) {
+    if (!fn.receiver)
+      return;
+    auto &rt = fn.receiver->type->data;
+    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                           std::get_if<MapTypeNode>(&rt);
+    if (!is_generic_recv)
+      return;
+  }
+
   push_scope(ScopeKind::Function);
 
   if (fn.generic)
@@ -2110,7 +2267,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const GroupExprNode &n) -> TypePtr {
             return check_group_expr(n);
           },
-          [&](const CallExprNode &n) -> TypePtr { return check_call_expr(n); },
+          [&](const CallExprNode &n) -> TypePtr {
+            return check_call_expr(n, node);
+          },
           [&](const IndexExprNode &n) -> TypePtr {
             return check_index_expr(n);
           },
@@ -2316,8 +2475,11 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
         // Record the field's declared type on the field-name span so
         // that LSP hover can display it (the IdentifierNode is not a
         // Node*, so node_types can't be used).
-        if (fi.type)
-          span_types.push_back({node.fields[i].name.span, fi.type});
+        if (fi.type) {
+          auto &st = current_instantiation_ ? current_instantiation_->span_types
+                                            : span_types;
+          st.push_back({node.fields[i].name.span, fi.type});
+        }
         break;
       }
     }
@@ -2355,7 +2517,11 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
 
   // Helper: record the resolved method and return the result type.
   auto resolve = [&](const std::string &method, TypePtr result) -> TypePtr {
-    struct_operator_methods[&parent] = method;
+    if (current_instantiation_) {
+      current_instantiation_->struct_operator_methods[&parent] = method;
+    } else {
+      struct_operator_methods[&parent] = method;
+    }
     return result;
   };
 
@@ -2631,7 +2797,8 @@ TypePtr Analyzer::check_group_expr(const GroupExprNode &node) {
   return check_expr(*node.inner);
 }
 
-TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
+TypePtr Analyzer::check_call_expr(const CallExprNode &node,
+                                  const Node &parent) {
   // Gate all intrinsic_* calls to stdlib packages only.
   if (auto *ident = std::get_if<IdentifierNode>(&node.callee->data)) {
     if (ident->name.starts_with("intrinsic_") && !is_stdlib) {
@@ -2661,10 +2828,29 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node) {
   // If the callee contains type parameters, attempt generic instantiation.
   auto effective_type = callee_type;
   if (has_type_params(callee_type)) {
+    std::unordered_map<uint32_t, TypePtr> bindings;
     auto instantiated =
-        instantiate_generic_call(callee_type, arg_types, node.span);
+        instantiate_generic_call(callee_type, arg_types, node.span, &bindings);
     if (!is_error_type(instantiated))
       effective_type = instantiated;
+
+    // For generic free functions, analyse the body with these concrete
+    // bindings so member-access, operator-overloading and capture
+    // tracking see concrete types.  Methods on generic types (Array/Map)
+    // and receiver-method calls go through their own paths and aren't
+    // registered in generic_templates_.
+    if (!bindings.empty() && callee_type) {
+      auto fd_it = func_decl_by_type_.find(callee_type.get());
+      if (fd_it != func_decl_by_type_.end() &&
+          generic_templates_.find(fd_it->second) != generic_templates_.end()) {
+        instantiate_generic_body(*fd_it->second, bindings, parent);
+        if (current_instantiation_) {
+          current_instantiation_->node_type_args[&parent] = bindings;
+        } else {
+          node_type_args[&parent] = bindings;
+        }
+      }
+    }
   }
 
   auto &fn_info = std::get<FuncTypeInfo>(effective_type->detail);
@@ -2876,10 +3062,49 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
   {
     auto it = type_methods_.find(obj_type.get());
     if (it == type_methods_.end() && obj_type->kind == TypeKind::Alias) {
-      // Unwrap alias to find methods on the underlying type.
       auto underlying = unwrap_alias(obj_type);
       if (underlying)
         it = type_methods_.find(underlying.get());
+    }
+    if (it == type_methods_.end()) {
+      // Fall back to the canonical builtin pointer for intrinsic types.
+      // SGI-parsed types may produce distinct TypePtr values for the same
+      // logical type (e.g. Int64 from make_int_type vs builtins.int64_type).
+      const Type *canonical = nullptr;
+      switch (obj_type->kind) {
+      case TypeKind::Int: {
+        auto &ii = std::get<IntType>(obj_type->detail);
+        if (ii.bits == 0) canonical = builtins.int_type.get();
+        else if (ii.is_signed) {
+          switch (ii.bits) {
+          case 8:  canonical = builtins.int8_type.get(); break;
+          case 16: canonical = builtins.int16_type.get(); break;
+          case 32: canonical = builtins.int32_type.get(); break;
+          case 64: canonical = builtins.int64_type.get(); break;
+          }
+        } else {
+          switch (ii.bits) {
+          case 8:  canonical = builtins.uint8_type.get(); break;
+          case 16: canonical = builtins.uint16_type.get(); break;
+          case 32: canonical = builtins.uint32_type.get(); break;
+          case 64: canonical = builtins.uint64_type.get(); break;
+          }
+        }
+        break;
+      }
+      case TypeKind::Float: {
+        auto &fi = std::get<FloatType>(obj_type->detail);
+        if (fi.bits == 0) canonical = builtins.float_type.get();
+        else if (fi.bits == 32) canonical = builtins.float32_type.get();
+        else if (fi.bits == 64) canonical = builtins.float64_type.get();
+        break;
+      }
+      case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
+      case TypeKind::String: canonical = builtins.string_type.get(); break;
+      default: break;
+      }
+      if (canonical && canonical != obj_type.get())
+        it = type_methods_.find(canonical);
     }
     if (it != type_methods_.end()) {
       for (auto &m : it->second) {
@@ -3204,8 +3429,15 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                                found_iterable = true;
                                // Record for codegen so it knows which
                                // element type to extract.
-                               iterable_next_elem_type[range.iterable.get()] =
-                                   elem_type;
+                               if (current_instantiation_) {
+                                 current_instantiation_
+                                     ->iterable_next_elem_type[range.iterable
+                                                                   .get()] =
+                                     elem_type;
+                               } else {
+                                 iterable_next_elem_type[range.iterable.get()] =
+                                     elem_type;
+                               }
                                break;
                              }
                              break; // found Next(), stop method search
@@ -3311,8 +3543,11 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
   }
 
   // Update spawn capture types now that type-checking is complete.
-  auto cap_it = spawn_captures.find(&parent);
-  if (cap_it != spawn_captures.end()) {
+  auto &caps_map =
+      current_instantiation_ ? current_instantiation_->spawn_captures
+                             : spawn_captures;
+  auto cap_it = caps_map.find(&parent);
+  if (cap_it != caps_map.end()) {
     for (auto &cap : cap_it->second) {
       auto sym = current_scope->lookup(cap.name);
       if (!sym) {
@@ -3504,8 +3739,11 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
 
   // Update capture types now that type checking is complete.
   // During resolve phase, capture types may have been nullptr.
-  auto cap_it = node_captures.find(&parent);
-  if (cap_it != node_captures.end()) {
+  auto &caps_map =
+      current_instantiation_ ? current_instantiation_->node_captures
+                             : node_captures;
+  auto cap_it = caps_map.find(&parent);
+  if (cap_it != caps_map.end()) {
     for (auto &cap : cap_it->second) {
       if (!cap.type) {
         auto sym = lookup(cap.name);
@@ -3920,9 +4158,9 @@ void Analyzer::check_import_decl(const ImportDeclNode &node) {
 // ===========================================================================
 
 TypePtr
-Analyzer::instantiate_generic_call(const TypePtr &callee_type,
-                                   const std::vector<TypePtr> &arg_types,
-                                   Span call_span) {
+Analyzer::instantiate_generic_call(
+    const TypePtr &callee_type, const std::vector<TypePtr> &arg_types,
+    Span call_span, std::unordered_map<uint32_t, TypePtr> *out_bindings) {
   if (!callee_type || callee_type->kind != TypeKind::Func)
     return builtins.error_type;
 
@@ -3939,10 +4177,141 @@ Analyzer::instantiate_generic_call(const TypePtr &callee_type,
     }
   }
 
+  if (out_bindings)
+    *out_bindings = bindings;
+
   if (bindings.empty())
     return callee_type; // No type params to substitute.
 
   return substitute(callee_type, bindings);
+}
+
+Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
+    const FuncDeclNode &fn,
+    const std::unordered_map<uint32_t, TypePtr> &bindings,
+    const Node &call_node) {
+  auto tpl_it = generic_templates_.find(&fn);
+  if (tpl_it == generic_templates_.end())
+    return nullptr; // not a generic free function we know about
+
+  auto &tpl = tpl_it->second;
+
+  // Reuse a cached instantiation with matching bindings.  A matching entry
+  // that is still in_progress is the recursion guard for mutually recursive
+  // generics: we hand back the partial entry without re-analysing.
+  auto &list = instantiations_[&fn];
+  auto same_bindings = [&](const std::unordered_map<uint32_t, TypePtr> &a,
+                           const std::unordered_map<uint32_t, TypePtr> &b) {
+    if (a.size() != b.size())
+      return false;
+    for (auto &[id, t] : a) {
+      auto it = b.find(id);
+      if (it == b.end())
+        return false;
+      if (!types_equal(t, it->second))
+        return false;
+    }
+    return true;
+  };
+  for (auto &inst : list) {
+    if (same_bindings(inst.bindings, bindings))
+      return &inst;
+  }
+
+  // Fresh entry.  Insert with in_progress = true so a re-entrant call from
+  // the body analysis (same decl, same bindings) finds the partial entry
+  // and breaks the cycle.
+  list.push_back(BodyInstantiation{});
+  BodyInstantiation &inst = list.back();
+  inst.decl = &fn;
+  inst.bindings = bindings;
+  inst.in_progress = true;
+
+  // Swap to a fresh child of the declaration's lexical scope.  Names in
+  // the body resolve against where the generic was declared, not the
+  // caller's scope.
+  auto saved_scope = current_scope;
+  BodyInstantiation *saved_inst = current_instantiation_;
+  instantiation_stack_.push_back(&call_node);
+
+  current_scope = tpl.decl_scope->child(ScopeKind::Block);
+
+  // Register each generic type parameter under its original name in the
+  // new scope so a reference to `T` inside the body resolves to the
+  // concrete binding.  Both the named symbol lookup and the type_bindings
+  // table (used by substitute()) are populated.
+  for (auto &tp : tpl.type_params) {
+    auto bind_it = bindings.find(tp.id);
+    if (bind_it == bindings.end())
+      continue;
+    auto &concrete = bind_it->second;
+    current_scope->symbols.emplace(
+        tp.name, Symbol::type_param(tp.name, concrete, Span{}));
+    current_scope->type_bindings[tp.id] = concrete;
+  }
+
+  // Push the function scope that will hold parameters and return types.
+  push_scope(ScopeKind::Function);
+
+  // Inject receiver parameter for generic methods on concrete types.
+  if (fn.receiver) {
+    auto recv_type = resolve_type(*fn.receiver->type);
+    declare_local(Symbol::parameter(std::string(fn.receiver->name.name),
+                                    recv_type, fn.receiver->name.span));
+  }
+
+  // Substituted return types for return-stmt checking.
+  for (auto &r : fn.signature.returns) {
+    auto rt = resolve_type(*r);
+    current_scope->return_types.push_back(substitute(rt, bindings));
+  }
+
+  // Inject parameters with substituted (concrete) types.  Without this
+  // step, identifiers referring to parameters inside the body would
+  // resolve to their original TypeParam-typed symbols and the body would
+  // type-check against `T` rather than the concrete type.
+  for (auto &p : fn.signature.params) {
+    auto pt = resolve_type(*p.type);
+    pt = substitute(pt, bindings);
+    for (auto &ident : p.names.identifiers) {
+      auto param_type = p.is_variadic ? make_array_type(pt) : pt;
+      declare_local(Symbol::parameter(std::string(ident.name),
+                                      std::move(param_type), ident.span));
+    }
+  }
+
+  // Route side-table writes into this instantiation's view.
+  current_instantiation_ = &inst;
+
+  // Phase 3 — name resolution over the body.
+  auto &block = std::get<BlockNode>(fn.body->data);
+  resolve_block(block);
+
+  // Phase 4 — type checking over the body.
+  auto body_type = check_block(block);
+
+  // Tail-expression return compatibility (mirrors check_func_decl_body).
+  if (!current_scope->return_types.empty() && !block.stmts.empty()) {
+    bool tail_is_return = always_returns(*block.stmts.back());
+    if (!tail_is_return) {
+      auto &expected = current_scope->return_types;
+      if (expected.size() == 1 && !is_error_type(body_type)) {
+        if (!types_equal(expected[0], builtins.void_type)) {
+          expect_assignable(fn.body->span, expected[0], body_type,
+                            "return type");
+        }
+      }
+    }
+  }
+
+  // Restore everything.
+  pop_scope();           // the Function scope
+  current_scope = saved_scope;
+  current_instantiation_ = saved_inst;
+  instantiation_stack_.pop_back();
+
+  inst.in_progress = false;
+  return &inst;
 }
 
 TypePtr Analyzer::instantiate_generic_struct(

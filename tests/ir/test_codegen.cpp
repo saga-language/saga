@@ -1455,6 +1455,32 @@ TEST(CodeGen, ArrayRuntimeDeclared) {
   EXPECT_NE(r.func("saga_array_size"), nullptr);
 }
 
+// Regression: an iterator binding for a struct-element array must allocate
+// a pointer-sized slot (struct elements live as pointers in array storage),
+// not a slot the size of the full struct. Mismatched sizes corrupted the
+// load when the struct's first field was used as if it were the struct ptr.
+TEST(CodeGen, ForRangeStructArrayIterIsPointer) {
+  auto r = CG::from(
+      "struct Reg { name String }\n"
+      "pub fn Main() Void {\n"
+      "  regs := [Reg{ name: \"one\" }]\n"
+      "  for reg : regs {\n"
+      "    intrinsic_print(\".\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  llvm::AllocaInst *reg_alloca = nullptr;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getName() == "reg")
+          reg_alloca = a;
+  ASSERT_NE(reg_alloca, nullptr) << "iterator alloca 'reg' missing";
+  EXPECT_TRUE(reg_alloca->getAllocatedType()->isPointerTy())
+      << "iterator binding for struct array must be pointer-typed";
+}
+
 // ===========================================================================
 // Slice 10 — String interpolation
 // ===========================================================================
@@ -3693,13 +3719,14 @@ TEST(CodeGen, IntrinsicYieldInsideSpawn) {
   EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_yield"));
 }
 
-TEST(CodeGen, IntrinsicYieldOutsideSpawnIsNoop) {
+TEST(CodeGen, IntrinsicYieldOutsideSpawnEmitsCall) {
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  intrinsic_yield()\n"
       "}");
-  // Outside a spawn block, yield is a no-op — no call emitted.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_actor_yield"));
+  // The call is emitted unconditionally; the runtime reads the current
+  // actor from a thread-local and no-ops if there isn't one.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_yield"));
 }
 
 TEST(CodeGen, IntrinsicTrapInsideSpawn) {
@@ -3713,13 +3740,14 @@ TEST(CodeGen, IntrinsicTrapInsideSpawn) {
   EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_trap"));
 }
 
-TEST(CodeGen, IntrinsicTrapOutsideSpawnIsNoop) {
+TEST(CodeGen, IntrinsicTrapOutsideSpawnEmitsCall) {
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  intrinsic_trap(\"oops\")\n"
       "}");
-  // Outside a spawn block, trap is a no-op.
-  EXPECT_FALSE(module_has_call_to(r.mod(), "saga_actor_trap"));
+  // The call is emitted unconditionally; the runtime reads the current
+  // actor from a thread-local and no-ops if there isn't one.
+  EXPECT_TRUE(module_has_call_to(r.mod(), "saga_actor_trap"));
 }
 
 TEST(CodeGen, IntrinsicAtomicAdd) {
@@ -4218,6 +4246,121 @@ TEST(CodeGen, IntrinsicCallGateRejectsNonStdlib) {
     if (e.message.find("only be called from stdlib") != std::string::npos)
       found = true;
   EXPECT_TRUE(found) << "Should have a 'stdlib only' error message";
+}
+
+// ===========================================================================
+// P2 — First-class function values
+// ===========================================================================
+
+TEST(CodeGen, FuncParamCalledIndirectly) {
+  // A function-typed parameter must be callable: the body performs an
+  // indirect call (not a direct call to a named function) on the loaded
+  // parameter value.
+  auto r = CG::from(
+      "fn greet(n String) Void {}\n"
+      "fn call_it(f fn(String) Void, arg String) Void { f(arg) }\n"
+      "pub fn Main() Void { call_it(greet, \"hi\") }");
+
+  auto *call_it = r.func("call_it");
+  ASSERT_NE(call_it, nullptr);
+  bool has_indirect_call = false;
+  for (auto &bb : *call_it) {
+    for (auto &inst : bb) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (!call->getCalledFunction()) {
+          has_indirect_call = true;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(has_indirect_call)
+      << "call_it must perform an indirect call on its fn-typed parameter";
+
+  // Main must pass greet as an argument — regression for the bug where
+  // the function identifier was silently dropped from the call arg list.
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  auto *greet = r.func("greet");
+  ASSERT_NE(greet, nullptr);
+  bool greet_passed = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call) continue;
+      for (unsigned i = 0; i < call->arg_size(); ++i) {
+        if (call->getArgOperand(i) == greet) {
+          greet_passed = true;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(greet_passed)
+      << "main must pass greet (the Function*) as an argument to call_it";
+}
+
+TEST(CodeGen, StructFieldFuncCalledIndirectly) {
+  // Calling a function-typed struct field (r.h(arg)) must lower to a
+  // field GEP + indirect call, not a silent no-op.
+  auto r = CG::from(
+      "fn greet(n String) Void {}\n"
+      "struct Reg { h fn(String) Void }\n"
+      "pub fn Main() Void { r := Reg{ h: greet }\n r.h(\"x\") }");
+
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool has_indirect_call = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst)) {
+        if (!call->getCalledFunction()) {
+          has_indirect_call = true;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_TRUE(has_indirect_call)
+      << "main must perform an indirect call on r.h";
+}
+
+// ===========================================================================
+// P3 — Struct-typed channels
+// ===========================================================================
+
+TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
+  // Regression: `|UserStruct| spawn` previously segfaulted the compiler
+  // because the channel element type couldn't be resolved at codegen time.
+  auto r = CG::from(
+      "struct Msg { id Int\n desc String }\n"
+      "pub fn Main() Void {\n"
+      "  task := |Msg| spawn |ctx| {\n"
+      "    ctx.Send(Msg{ id: 1, desc: \"x\" })\n"
+      "  }\n"
+      "}");
+
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+
+  // saga_channel_new must be called with an elem_size equal to
+  // sizeof(Msg) (i64 id + ptr desc = 16 on 64-bit), not 8 (the old
+  // default) — confirming the element type was resolved.
+  bool saw_channel_new_with_struct_size = false;
+  for (auto &bb : *main) {
+    for (auto &inst : bb) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call) continue;
+      auto *callee = call->getCalledFunction();
+      if (!callee || callee->getName() != "saga_channel_new") continue;
+      if (call->arg_size() < 1) continue;
+      auto *sz = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+      if (sz && sz->getSExtValue() == 16)
+        saw_channel_new_with_struct_size = true;
+    }
+  }
+  EXPECT_TRUE(saw_channel_new_with_struct_size)
+      << "Expected saga_channel_new called with elem_size=16 for Msg{Int,String}";
 }
 
 } // namespace mc

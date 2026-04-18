@@ -298,15 +298,30 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_reduction_tick", module.get());
 
-  // void saga_actor_yield(mc_actor* a)
+  // void saga_actor_yield(void)
   llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::FunctionType::get(void_ll_type, {}, false),
       llvm::Function::ExternalLinkage, "saga_actor_yield", module.get());
 
-  // void saga_actor_trap(mc_actor* a, mc_string* reason)
+  // void saga_actor_trap(mc_string* reason)
   llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_actor_trap", module.get());
+
+  // void* saga_error_from_trap(mc_actor* a)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_error_from_trap", module.get());
+
+  // Seed the Error interface's codegen registration.  Error is a builtin
+  // interface with a single method (Message() String); unlike Saga-declared
+  // interfaces it has no InterfaceDeclNode to drive declare_interfaces.
+  if (!iface_vtable_types.count("Error")) {
+    auto *vtable_st = llvm::StructType::create(
+        context, {ptr_type}, "mc.vtable.Error");
+    iface_vtable_types["Error"] = vtable_st;
+    iface_method_names["Error"] = {"Message"};
+  }
 }
 // ===========================================================================
 // Vtable generation

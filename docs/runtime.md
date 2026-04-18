@@ -203,7 +203,8 @@ This struct is available inside a spawn block.
 
 `.Cancelled?() Bool`: Polling method to see if the parent called `.Cancel()`
 `.Exit(T) Void`: Terminates the coroutine and sets the return value
-`.Send(T) Void`: Non blocking push into the task channel
+`.Send(T) Void`: Push into the task channel. Blocks when the buffer is
+full until a consumer drains an element (or the channel is closed).
 
 ### String
 

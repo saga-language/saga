@@ -578,16 +578,24 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           auto &arr_info = std::get<ArrayTypeInfo>(iter_sem->detail);
           auto *elem_ll = llvm_type(arr_info.element);
 
+          // Array literals store struct elements as pointers in each slot
+          // (see emit_array_literal). The iterator binding must match that
+          // representation, else the load reads past the slot.
+          bool struct_elem = arr_info.element &&
+                             arr_info.element->kind == TypeKind::Struct;
+          llvm::Type *bind_ll =
+              struct_elem ? llvm::PointerType::getUnqual(context) : elem_ll;
+
           if (range->vars.size() == 1) {
             val_alloca = create_entry_alloca(
-                func, std::string(range->vars[0].name), elem_ll);
+                func, std::string(range->vars[0].name), bind_ll);
             locals[std::string(range->vars[0].name)] = val_alloca;
           } else if (range->vars.size() == 2) {
             key_alloca = create_entry_alloca(
                 func, std::string(range->vars[0].name), i64_type);
             locals[std::string(range->vars[0].name)] = key_alloca;
             val_alloca = create_entry_alloca(
-                func, std::string(range->vars[1].name), elem_ll);
+                func, std::string(range->vars[1].name), bind_ll);
             locals[std::string(range->vars[1].name)] = val_alloca;
           }
 
@@ -612,7 +620,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           auto *elem_ptr =
               builder.CreateCall(at_fn, {iterable, body_idx}, "at");
           auto *elem_val =
-              builder.CreateLoad(elem_ll, elem_ptr, "elem");
+              builder.CreateLoad(bind_ll, elem_ptr, "elem");
 
           if (key_alloca)
             builder.CreateStore(body_idx, key_alloca);
@@ -748,9 +756,17 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
             }
 
             if (ch_ptr) {
-              // Determine message type.  Default to i64 if unknown.
+              // Determine message type from the Task's type argument
+              // (Task's first type arg is the channel element type T).
               llvm::Type *msg_ll = i64_type;
-              // TODO: Extract element type from generic type parameter.
+              TypePtr elem_sem;
+              if (!st_info.type_args.empty())
+                elem_sem = st_info.type_args[0];
+              if (elem_sem) {
+                auto *ll = llvm_type(elem_sem);
+                if (ll && !ll->isVoidTy())
+                  msg_ll = ll;
+              }
 
               // Create message buffer alloca.
               llvm::AllocaInst *msg_alloca = nullptr;
@@ -800,13 +816,11 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
             // ── Iterable struct: for v : iter { ... } via Next() ────────
             // Requires the struct to implement: Next() T | Error
             // where T is the element type.
-            auto elem_it = analyzer.iterable_next_elem_type.find(
-                range->iterable.get());
-            if (elem_it == analyzer.iterable_next_elem_type.end()) {
+            auto elem_sem = iterable_next_elem_type_of(*range->iterable);
+            if (!elem_sem) {
               // Analyzer reported the error — just skip the loop.
               builder.CreateBr(exit_bb);
             } else {
-              auto elem_sem = elem_it->second;
               auto *elem_ll = llvm_type(elem_sem);
               auto *ptr_type = llvm::PointerType::getUnqual(context);
 
@@ -1372,18 +1386,19 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   func->insert(func->end(), err_bb);
   builder.SetInsertPoint(err_bb);
 
-  // If the or-clause has a pipe variable, bind it.
-  // For now, we pass a null pointer as the error value (full error
-  // extraction would need interface boxing). This is enough for the
-  // fallback block to work.
+  // Bind the pipe variable to the Error payload extracted from the
+  // union.  The payload first 8 bytes hold the interface fat pointer
+  // produced by whichever path produced the Error (e.g. Task.Wait's
+  // saga_error_from_trap).
   if (node.pipe) {
     std::string pipe_name(node.pipe->name);
-    auto *err_alloca = create_entry_alloca(
-        func, pipe_name, llvm::PointerType::getUnqual(context));
-    builder.CreateStore(
-        llvm::ConstantPointerNull::get(
-            llvm::PointerType::getUnqual(context)),
-        err_alloca);
+    auto *ptr_type = llvm::PointerType::getUnqual(context);
+    auto *err_alloca = create_entry_alloca(func, pipe_name, ptr_type);
+    auto *payload_gep = builder.CreateStructGEP(union_st, union_ptr, 1,
+                                                 "err.payload.gep");
+    auto *err_val = builder.CreateLoad(ptr_type, payload_gep,
+                                        "err.payload.val");
+    builder.CreateStore(err_val, err_alloca);
     locals[pipe_name] = err_alloca;
   }
 

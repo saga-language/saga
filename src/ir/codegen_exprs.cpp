@@ -76,7 +76,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_or_expr(n);
           },
           [&](const CallExprNode &n) -> llvm::Value * {
-            return emit_call_expr(n);
+            return emit_call_expr(n, node);
           },
           [&](const FuncExprNode &n) -> llvm::Value * {
             return emit_func_expr(n, node);
@@ -329,9 +329,126 @@ llvm::Value *CodeGen::make_string_constant(const std::string &text) {
 // ===========================================================================
 
 TypePtr CodeGen::semantic_type(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->node_types.find(&node);
+    if (it != current_instantiation_->node_types.end())
+      return it->second;
+  }
   auto it = analyzer.node_types.find(&node);
   if (it != analyzer.node_types.end())
     return it->second;
+  return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Per-instantiation side-table accessors (monomorphism_plan.md, Step 4)
+//
+// Each accessor checks current_instantiation_'s per-instantiation view
+// first, then falls through to the corresponding analyzer.<table> global.
+// A miss in the instantiation view is NOT an error — nodes outside the
+// generic body live only in the global tables.
+// ---------------------------------------------------------------------------
+
+const Symbol *CodeGen::node_symbol(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->node_symbols.find(&node);
+    if (it != current_instantiation_->node_symbols.end())
+      return &it->second;
+  }
+  auto it = analyzer.node_symbols.find(&node);
+  if (it != analyzer.node_symbols.end())
+    return &it->second;
+  return nullptr;
+}
+
+const std::vector<Analyzer::CaptureInfo> *
+CodeGen::node_captures_of(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->node_captures.find(&node);
+    if (it != current_instantiation_->node_captures.end())
+      return &it->second;
+  }
+  auto it = analyzer.node_captures.find(&node);
+  if (it != analyzer.node_captures.end())
+    return &it->second;
+  return nullptr;
+}
+
+const std::vector<Analyzer::SpawnCaptureInfo> *
+CodeGen::spawn_captures_of(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->spawn_captures.find(&node);
+    if (it != current_instantiation_->spawn_captures.end())
+      return &it->second;
+  }
+  auto it = analyzer.spawn_captures.find(&node);
+  if (it != analyzer.spawn_captures.end())
+    return &it->second;
+  return nullptr;
+}
+
+TypePtr CodeGen::iterable_next_elem_type_of(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->iterable_next_elem_type.find(&node);
+    if (it != current_instantiation_->iterable_next_elem_type.end())
+      return it->second;
+  }
+  auto it = analyzer.iterable_next_elem_type.find(&node);
+  if (it != analyzer.iterable_next_elem_type.end())
+    return it->second;
+  return nullptr;
+}
+
+TypePtr CodeGen::spawn_channel_elem_type_of(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->spawn_channel_elem_types.find(&node);
+    if (it != current_instantiation_->spawn_channel_elem_types.end())
+      return it->second;
+  }
+  auto it = analyzer.spawn_channel_elem_types.find(&node);
+  if (it != analyzer.spawn_channel_elem_types.end())
+    return it->second;
+  return nullptr;
+}
+
+const std::string *
+CodeGen::struct_operator_method_of(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->struct_operator_methods.find(&node);
+    if (it != current_instantiation_->struct_operator_methods.end())
+      return &it->second;
+  }
+  auto it = analyzer.struct_operator_methods.find(&node);
+  if (it != analyzer.struct_operator_methods.end())
+    return &it->second;
+  return nullptr;
+}
+
+TypePtr CodeGen::span_type_at(Span span) const {
+  auto scan = [&](const std::vector<std::pair<Span, TypePtr>> &v) -> TypePtr {
+    for (auto &[s, t] : v) {
+      if (s.start == span.start && s.end == span.end)
+        return t;
+    }
+    return nullptr;
+  };
+  if (current_instantiation_) {
+    if (auto t = scan(current_instantiation_->span_types))
+      return t;
+  }
+  return scan(analyzer.span_types);
+}
+
+const std::unordered_map<uint32_t, TypePtr> *
+CodeGen::node_type_args_of(const Node &node) const {
+  if (current_instantiation_) {
+    auto it = current_instantiation_->node_type_args.find(&node);
+    if (it != current_instantiation_->node_type_args.end())
+      return &it->second;
+  }
+  auto it = analyzer.node_type_args.find(&node);
+  if (it != analyzer.node_type_args.end())
+    return &it->second;
   return nullptr;
 }
 
@@ -513,9 +630,8 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
 
   // ── Struct operator overloading ────────────────────────────────────────────
   if (lhs_sem && lhs_sem->kind == TypeKind::Struct) {
-    auto it = analyzer.struct_operator_methods.find(&parent);
-    if (it != analyzer.struct_operator_methods.end())
-      return emit_struct_binary_op(node, parent, lhs_sem, it->second);
+    if (auto *method = struct_operator_method_of(parent))
+      return emit_struct_binary_op(node, parent, lhs_sem, *method);
   }
 
   // ── Type matching on union types ─────────────────────────────────────
@@ -525,10 +641,9 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
       (node.op == K::Equal || node.op == K::NotEqual)) {
     if (auto *rhs_ident = std::get_if<IdentifierNode>(&node.rhs->data)) {
       // Check if RHS is a type name by looking at the analyzer's symbol.
-      auto rhs_sym_it = analyzer.node_symbols.find(node.rhs.get());
+      const Symbol *rhs_sym = node_symbol(*node.rhs);
       bool is_type_sym = false;
-      if (rhs_sym_it != analyzer.node_symbols.end() &&
-          rhs_sym_it->second.kind == SymbolKind::Type) {
+      if (rhs_sym && rhs_sym->kind == SymbolKind::Type) {
         is_type_sym = true;
       }
       // Also check via name lookup for built-in types.

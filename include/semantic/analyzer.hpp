@@ -10,6 +10,7 @@
 #include "semantic/scope.hpp"
 #include "semantic/types.hpp"
 
+#include <list>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -146,6 +147,11 @@ struct Analyzer {
   std::unordered_map<const Node *, std::vector<SpawnCaptureInfo>>
       spawn_captures;
 
+  /// Resolved channel element type for each channel-carrying spawn
+  /// (`|T| spawn ...`).  Populated during semantic analysis so codegen does
+  /// not re-run type resolution against a scope that has already been popped.
+  std::unordered_map<const Node *, TypePtr> spawn_channel_elem_types;
+
   // ── Operator overloading ─────────────────────────────────────────────
 
   // ── User-bound methods for non-struct types ────────────────────────
@@ -172,6 +178,68 @@ struct Analyzer {
   /// element type T when the iterable is a struct implementing
   /// `Next() T | Error`.  Codegen reads this to emit the protocol-based loop.
   std::unordered_map<const Node *, TypePtr> iterable_next_elem_type;
+
+  // ── Generic free-function templates (lazy body-analysis) ─────────────
+
+  /// A generic free function's body is not analysed at declaration time;
+  /// it is re-analysed once per distinct binding tuple at instantiation
+  /// time. The signature pass stores the AST and the lexical scope the
+  /// body should resolve names against.
+  struct GenericTemplate {
+    const FuncDeclNode *decl;   // body reachable via decl->body
+    Scope::Ptr decl_scope;      // scope visible to the body when declared
+    std::vector<TypeParam> type_params; // ordered (id, name) pairs
+  };
+
+  /// Generic free-function templates collected during the signature pass.
+  /// Keyed by FuncDeclNode*.  Receiver methods on intrinsic types are
+  /// handled separately via type_methods_/kind_methods_ and are not
+  /// stored here.
+  std::unordered_map<const FuncDeclNode *, GenericTemplate> generic_templates_;
+
+  /// Reverse map: signature TypePtr → FuncDeclNode*.  Populated during the
+  /// signature pass so that check_call_expr can find the declaring AST for
+  /// a callee it just type-checked.  Covers both generic and non-generic
+  /// free functions (non-generic entries are harmless and keep the map
+  /// simple for future use).
+  std::unordered_map<const Type *, const FuncDeclNode *> func_decl_by_type_;
+
+  /// One per-instantiation side-table view.  Lives inside instantiations_.
+  /// Codegen will read these in Step 4 through accessors that fall through
+  /// to the global tables for nodes that aren't in the generic body.
+  struct BodyInstantiation {
+    const FuncDeclNode *decl = nullptr;
+    std::unordered_map<uint32_t, TypePtr> bindings;
+    bool in_progress = false;
+
+    std::unordered_map<const Node *, TypePtr> node_types;
+    std::unordered_map<const Node *, Symbol> node_symbols;
+    std::unordered_map<const Node *, std::vector<CaptureInfo>> node_captures;
+    std::unordered_map<const Node *, std::vector<SpawnCaptureInfo>>
+        spawn_captures;
+    std::unordered_map<const Node *, TypePtr> iterable_next_elem_type;
+    std::unordered_map<const Node *, TypePtr> spawn_channel_elem_types;
+    std::unordered_map<const Node *, std::string> struct_operator_methods;
+    std::vector<std::pair<Span, TypePtr>> span_types;
+    std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
+        node_type_args;
+  };
+
+  /// Cached body instantiations.  List-per-decl keeps references stable
+  /// across insertions so current_instantiation_ remains valid while the
+  /// map is mutated by nested instantiations.
+  std::unordered_map<const FuncDeclNode *, std::list<BodyInstantiation>>
+      instantiations_;
+
+  /// The BodyInstantiation whose side-tables should receive writes (and
+  /// satisfy reads) during the current Phase 3/4 pass.  nullptr when
+  /// analysing non-generic code.
+  BodyInstantiation *current_instantiation_ = nullptr;
+
+  /// Call-site backtrace for instantiation errors.  check_call_expr pushes
+  /// the CallExprNode* before driving a body instantiation and pops after.
+  /// Analyzer::error() reads this to append "...instantiated from" frames.
+  std::vector<const Node *> instantiation_stack_;
 
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
@@ -285,6 +353,7 @@ private:
   void visit_source(const SourceNode &node);
   void collect_declaration(const Node &node);
   TypePtr resolve_identifier_type(const IdentifierNode &node);
+  TypePtr resolve_selector_type(const SelectorNode &node);
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
   TypePtr resolve_func_type(const FuncTypeNode &node);
@@ -374,7 +443,7 @@ private:
   TypePtr check_struct_literal(const StructLiteralNode &node);
   TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);
   TypePtr check_unary_expr(const UnaryExprNode &node);
-  TypePtr check_call_expr(const CallExprNode &node);
+  TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
   TypePtr check_if_expr(const IfExprNode &node);
@@ -419,9 +488,21 @@ private:
 
   /// Instantiate a generic callable: infer type-parameter bindings from
   /// call-site argument types and return the fully substituted signature.
-  TypePtr instantiate_generic_call(const TypePtr &callee_type,
-                                   const std::vector<TypePtr> &arg_types,
-                                   Span call_span);
+  /// If out_bindings is non-null, the inferred bindings are written there
+  /// so the caller can drive body instantiation (see instantiate_generic_body).
+  TypePtr instantiate_generic_call(
+      const TypePtr &callee_type, const std::vector<TypePtr> &arg_types,
+      Span call_span,
+      std::unordered_map<uint32_t, TypePtr> *out_bindings = nullptr);
+
+  /// Drive Phase 3 and Phase 4 over a generic free function's body with
+  /// the given bindings.  Reuses a cached BodyInstantiation on match (or
+  /// when a re-entrant call re-arrives during in-progress analysis).
+  /// `call_node` is pushed onto instantiation_stack_ for error traces.
+  BodyInstantiation *instantiate_generic_body(
+      const FuncDeclNode &fn,
+      const std::unordered_map<uint32_t, TypePtr> &bindings,
+      const Node &call_node);
 
   /// Instantiate a generic struct type: infer type-parameter bindings from
   /// field initializer values and return the fully substituted struct type.
