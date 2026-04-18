@@ -1455,6 +1455,32 @@ TEST(CodeGen, ArrayRuntimeDeclared) {
   EXPECT_NE(r.func("saga_array_size"), nullptr);
 }
 
+// Regression: an iterator binding for a struct-element array must allocate
+// a pointer-sized slot (struct elements live as pointers in array storage),
+// not a slot the size of the full struct. Mismatched sizes corrupted the
+// load when the struct's first field was used as if it were the struct ptr.
+TEST(CodeGen, ForRangeStructArrayIterIsPointer) {
+  auto r = CG::from(
+      "struct Reg { name String }\n"
+      "pub fn Main() Void {\n"
+      "  regs := [Reg{ name: \"one\" }]\n"
+      "  for reg : regs {\n"
+      "    intrinsic_print(\".\")\n"
+      "  }\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  llvm::AllocaInst *reg_alloca = nullptr;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+        if (a->getName() == "reg")
+          reg_alloca = a;
+  ASSERT_NE(reg_alloca, nullptr) << "iterator alloca 'reg' missing";
+  EXPECT_TRUE(reg_alloca->getAllocatedType()->isPointerTy())
+      << "iterator binding for struct array must be pointer-typed";
+}
+
 // ===========================================================================
 // Slice 10 — String interpolation
 // ===========================================================================

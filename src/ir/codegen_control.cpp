@@ -578,16 +578,24 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           auto &arr_info = std::get<ArrayTypeInfo>(iter_sem->detail);
           auto *elem_ll = llvm_type(arr_info.element);
 
+          // Array literals store struct elements as pointers in each slot
+          // (see emit_array_literal). The iterator binding must match that
+          // representation, else the load reads past the slot.
+          bool struct_elem = arr_info.element &&
+                             arr_info.element->kind == TypeKind::Struct;
+          llvm::Type *bind_ll =
+              struct_elem ? llvm::PointerType::getUnqual(context) : elem_ll;
+
           if (range->vars.size() == 1) {
             val_alloca = create_entry_alloca(
-                func, std::string(range->vars[0].name), elem_ll);
+                func, std::string(range->vars[0].name), bind_ll);
             locals[std::string(range->vars[0].name)] = val_alloca;
           } else if (range->vars.size() == 2) {
             key_alloca = create_entry_alloca(
                 func, std::string(range->vars[0].name), i64_type);
             locals[std::string(range->vars[0].name)] = key_alloca;
             val_alloca = create_entry_alloca(
-                func, std::string(range->vars[1].name), elem_ll);
+                func, std::string(range->vars[1].name), bind_ll);
             locals[std::string(range->vars[1].name)] = val_alloca;
           }
 
@@ -612,7 +620,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           auto *elem_ptr =
               builder.CreateCall(at_fn, {iterable, body_idx}, "at");
           auto *elem_val =
-              builder.CreateLoad(elem_ll, elem_ptr, "elem");
+              builder.CreateLoad(bind_ll, elem_ptr, "elem");
 
           if (key_alloca)
             builder.CreateStore(body_idx, key_alloca);
