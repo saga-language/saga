@@ -54,7 +54,8 @@ std::string CodeGen::mangle(const std::string &name) const {
 }
 
 std::string CodeGen::mangle(const std::string &pkg, const std::string &name) {
-  return pkg + "__" + name;
+  // Empty origin means a built-in type with no package (e.g. Error, Comparison).
+  return pkg.empty() ? name : (pkg + "__" + name);
 }
 
 llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
@@ -121,11 +122,13 @@ void CodeGen::init_types() {
   closure_fat_ptr_type = llvm::StructType::create(
       context, {ptr_ty, ptr_ty}, "mc_closure");
 
-  // Register built-in enums.
-  enum_types["Comparison"] = true;
-  enum_variants["Comparison.Less"] = 0;
-  enum_variants["Comparison.Equal"] = 1;
-  enum_variants["Comparison.Greater"] = 2;
+  // Register built-in enums with the current package as origin key.
+  // key_for("", "Comparison") resolves to mangle(package_name, "Comparison").
+  std::string cmp_key = mangle(package_name, "Comparison");
+  enum_types[cmp_key] = true;
+  enum_variants[cmp_key + ".Less"] = 0;
+  enum_variants[cmp_key + ".Equal"] = 1;
+  enum_variants[cmp_key + ".Greater"] = 2;
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
@@ -147,7 +150,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return i64_type; // Enums are represented as i64 tags.
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
-    auto it = struct_types.find(info.name);
+    auto it = struct_types.find(key_for(info.origin_package, info.name));
     if (it != struct_types.end())
       return it->second;
     // Struct not yet registered — return opaque ptr as fallback.
@@ -204,6 +207,12 @@ void CodeGen::emit(const Node &root) {
 // ===========================================================================
 
 void CodeGen::emit_package(const PackageNode &pkg) {
+  // Pass 0: materialize imported module types before any local passes.
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    materialize_imports_from_source(s);
+  }
+
   // Pass 1: register all type declarations (structs, enums, interfaces)
   // across every source file before emitting any function bodies. This
   // ensures cross-file references within the same package resolve correctly.
@@ -252,8 +261,6 @@ static bool source_has_spawn(const Node &node) {
 void CodeGen::emit_source(const SourceNode &src) {
   // Pre-scan for spawn expressions so executor init/shutdown can be placed.
   if (!has_spawn) {
-    // Build a temporary Node wrapping the SourceNode for the visitor.
-    // Instead, scan declarations directly.
     for (auto &decl : src.declarations) {
       if (source_has_spawn(*decl)) {
         has_spawn = true;
@@ -261,6 +268,9 @@ void CodeGen::emit_source(const SourceNode &src) {
       }
     }
   }
+
+  // Pass 0: materialize imported module types before local declare passes.
+  materialize_imports_from_source(src);
 
   // Pass 1: create LLVM struct types, register enums and interfaces.
   declare_structs(src);

@@ -16,11 +16,12 @@ namespace mc {
 llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
   if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
     std::string tname(ident->name);
-    if (struct_types.count(tname))
+    // Keys are qualified (pkg__Name), so fall back via key_for when origin is unknown.
+    if (struct_types.count(key_for("", tname)))
       return llvm::PointerType::getUnqual(context); // struct as ptr
-    if (enum_types.count(tname))
+    if (enum_types.count(key_for("", tname)))
       return i64_type; // enum as i64 tag
-    if (iface_vtable_types.count(tname))
+    if (iface_vtable_types.count(key_for("", tname)))
       return llvm::PointerType::getUnqual(context); // interface as ptr to fat ptr
   }
   // Fall back to analyzer resolve (works for builtins).

@@ -1207,7 +1207,7 @@ TEST(CodeGen, StructTypeCreated) {
       "struct Point { x, y Int }\n"
       "pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.Point");
+      r.mod().getContext(), "mc." + CG::mangled("Point"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
   EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
@@ -1284,7 +1284,7 @@ TEST(CodeGen, StructMixedFieldTypes) {
       "  u := User{name: \"Alice\", age: 30}\n"
       "}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.User");
+      r.mod().getContext(), "mc." + CG::mangled("User"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
   // name is ptr (string), age is i64.
@@ -1311,9 +1311,9 @@ TEST(CodeGen, MultipleStructTypes) {
       "struct A { x Int }\n"
       "struct B { y Float }\n"
       "pub fn Main() Void {}");
-  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc.A"),
+  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc." + CG::mangled("A")),
             nullptr);
-  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc.B"),
+  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc." + CG::mangled("B")),
             nullptr);
 }
 
@@ -1878,12 +1878,12 @@ TEST(CodeGen, BuiltinComparisonEnum) {
   // The built-in Comparison enum should be registered.
   auto r = CG::from("pub fn Main() Void {}");
   // Check that the codegen knows about Comparison variants.
-  EXPECT_TRUE(r.codegen->enum_variants.count("Comparison.Less"));
-  EXPECT_TRUE(r.codegen->enum_variants.count("Comparison.Equal"));
-  EXPECT_TRUE(r.codegen->enum_variants.count("Comparison.Greater"));
-  EXPECT_EQ(r.codegen->enum_variants["Comparison.Less"], 0);
-  EXPECT_EQ(r.codegen->enum_variants["Comparison.Equal"], 1);
-  EXPECT_EQ(r.codegen->enum_variants["Comparison.Greater"], 2);
+  EXPECT_TRUE(r.codegen->enum_variants.count(CG::mangled("Comparison") + ".Less"));
+  EXPECT_TRUE(r.codegen->enum_variants.count(CG::mangled("Comparison") + ".Equal"));
+  EXPECT_TRUE(r.codegen->enum_variants.count(CG::mangled("Comparison") + ".Greater"));
+  EXPECT_EQ(r.codegen->enum_variants[CG::mangled("Comparison") + ".Less"], 0);
+  EXPECT_EQ(r.codegen->enum_variants[CG::mangled("Comparison") + ".Equal"], 1);
+  EXPECT_EQ(r.codegen->enum_variants[CG::mangled("Comparison") + ".Greater"], 2);
 }
 
 // ===========================================================================
@@ -2430,7 +2430,7 @@ TEST(CodeGen, InterfaceVtableTypeCreated) {
       "interface Greeter { Greet() String }\n"
       "pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.vtable.Greeter");
+      r.mod().getContext(), "mc.vtable." + CG::mangled("Greeter"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 1u) << "Vtable should have 1 fn ptr";
   EXPECT_TRUE(st->getElementType(0)->isPointerTy());
@@ -2444,7 +2444,7 @@ TEST(CodeGen, InterfaceVtableMultipleMethods) {
       "}\n"
       "pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.vtable.ReadWriter");
+      r.mod().getContext(), "mc.vtable." + CG::mangled("ReadWriter"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
 }
@@ -2524,7 +2524,7 @@ TEST(CodeGen, VtableGlobalCreated) {
       "  s Speaker = d\n"
       "}");
   // Should have a vtable global for Dog implementing Speaker.
-  auto *vtable = r.mod().getNamedGlobal("mc.vtable.Dog.Speaker");
+  auto *vtable = r.mod().getNamedGlobal("mc.vtable." + CG::mangled("Dog") + "." + CG::mangled("Speaker"));
   ASSERT_NE(vtable, nullptr) << "Should create vtable for Dog::Speaker";
   EXPECT_TRUE(vtable->isConstant());
 }
@@ -2589,7 +2589,7 @@ TEST(CodeGen, InterfaceMethodNamesRegistered) {
   auto r = CG::from(
       "interface Stringer { String() String }\n"
       "pub fn Main() Void {}");
-  auto it = r.codegen->iface_method_names.find("Stringer");
+  auto it = r.codegen->iface_method_names.find(CG::mangled("Stringer"));
   ASSERT_NE(it, r.codegen->iface_method_names.end());
   ASSERT_EQ(it->second.size(), 1u);
   EXPECT_EQ(it->second[0], "String");
@@ -2600,8 +2600,8 @@ TEST(CodeGen, MultipleInterfacesDeclared) {
       "interface Reader { Read() String }\n"
       "interface Writer { Write(s String) Void }\n"
       "pub fn Main() Void {}");
-  EXPECT_TRUE(r.codegen->iface_vtable_types.count("Reader"));
-  EXPECT_TRUE(r.codegen->iface_vtable_types.count("Writer"));
+  EXPECT_TRUE(r.codegen->iface_vtable_types.count(CG::mangled("Reader")));
+  EXPECT_TRUE(r.codegen->iface_vtable_types.count(CG::mangled("Writer")));
 }
 
 TEST(CodeGen, StructMethodRegisteredInLinks) {
@@ -2609,7 +2609,7 @@ TEST(CodeGen, StructMethodRegisteredInLinks) {
       "struct Cat { name String }\n"
       "fn (c Cat) Meow() String { \"meow\" }\n"
       "pub fn Main() Void {}");
-  auto it = r.codegen->struct_method_links.find("Cat");
+  auto it = r.codegen->struct_method_links.find(CG::mangled("Cat"));
   ASSERT_NE(it, r.codegen->struct_method_links.end());
   ASSERT_EQ(it->second.size(), 1u);
   EXPECT_EQ(it->second[0].first, CG::mangled("Cat__Meow"));

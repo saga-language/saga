@@ -1466,12 +1466,13 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
     return nullptr;
 
   auto &info = std::get<StructTypeInfo>(sem->detail);
-  auto st_it = struct_types.find(info.name);
+  std::string skey = key_for(info.origin_package, info.name);
+  auto st_it = struct_types.find(skey);
   if (st_it == struct_types.end())
     return nullptr;
 
   auto *st = st_it->second;
-  auto &fields = struct_fields[info.name];
+  auto &fields = struct_fields[skey];
 
   // Allocate the struct on the stack.
   auto *func = builder.GetInsertBlock()->getParent();
@@ -1518,12 +1519,13 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
     return {nullptr, nullptr};
 
   auto &info = std::get<StructTypeInfo>(struct_sem_type->detail);
-  auto st_it = struct_types.find(info.name);
+  std::string skey = key_for(info.origin_package, info.name);
+  auto st_it = struct_types.find(skey);
   if (st_it == struct_types.end())
     return {nullptr, nullptr};
 
   auto *st = st_it->second;
-  auto &fields = struct_fields[info.name];
+  auto &fields = struct_fields[skey];
 
   for (size_t i = 0; i < fields.size(); ++i) {
     if (fields[i] == field_name) {

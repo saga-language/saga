@@ -208,6 +208,15 @@ struct CodeGen {
                                   const std::string &symbol_name,
                                   const TypePtr &func_type);
 
+  /// Eagerly populate all codegen registries for every export of an
+  /// imported module.  Must be called before any declare_structs/
+  /// declare_functions/etc. pass walks the local source AST.
+  void materialize_import(const TypePtr &module_type);
+
+  /// Scan a SourceNode for import declarations and call materialize_import
+  /// for each resolved module type.
+  void materialize_imports_from_source(const SourceNode &src);
+
   // ── Entry point ──────────────────────────────────────────────────────
 
   void emit(const Node &root);
@@ -233,8 +242,20 @@ private:
   void init_types();
   void declare_runtime();
 
+  /// Form the origin-qualified registry key for a named type.
+  /// Falls back to package_name when origin is empty (local or built-in
+  /// types whose origin_package was not set, e.g. in unit-test contexts).
+  std::string key_for(const std::string &origin,
+                      const std::string &name) const {
+    return mangle(origin.empty() ? package_name : origin, name);
+  }
+
   /// True if a semantic type represents string keys (for mc_map).
   static bool is_string_key_type(const TypePtr &t);
+
+  /// Unescape a raw string fragment (strips surrounding quotes, processes
+  /// backslash sequences).  Shared by emit_string_literal and emit_const_decl.
+  static std::string unescape_fragment(std::string_view raw);
 
   /// Get the LLVM type corresponding to a semantic TypePtr.
   llvm::Type *llvm_type(const TypePtr &t);
@@ -280,8 +301,9 @@ private:
   void emit_intrinsic_methods(const SourceNode &src);
 
   /// Get or create a vtable for a concrete struct implementing an interface.
-  llvm::GlobalVariable *get_or_create_vtable(const std::string &struct_name,
-                                              const std::string &iface_name);
+  /// struct_type and iface_type must be TypeKind::Struct and ::Interface.
+  llvm::GlobalVariable *get_or_create_vtable(const TypePtr &struct_type,
+                                              const TypePtr &iface_type);
 
   /// Box a concrete value into an interface fat pointer.
   llvm::Value *emit_interface_box(llvm::Value *concrete_val,

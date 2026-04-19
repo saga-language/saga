@@ -89,7 +89,8 @@ void CodeGen::declare_structs(const SourceNode &src) {
 
 void CodeGen::emit_struct_decl(const StructDeclNode &node) {
   std::string name(node.name.name);
-  if (struct_types.count(name))
+  std::string key = mangle(package_name, name);
+  if (struct_types.count(key))
     return; // Already registered.
 
   // Resolve field types directly from the AST + analyzer.
@@ -107,9 +108,9 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
     }
   }
 
-  auto *st = llvm::StructType::create(context, field_types, "mc." + name);
-  struct_types[name] = st;
-  struct_fields[name] = std::move(field_names);
+  auto *st = llvm::StructType::create(context, field_types, "mc." + key);
+  struct_types[key] = st;
+  struct_fields[key] = std::move(field_names);
 }
 
 // ===========================================================================
@@ -156,14 +157,26 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   else if (auto *bool_lit = std::get_if<BoolLiteralNode>(&node.value->data)) {
     init = llvm::ConstantInt::get(i1_type, bool_lit->literal == "true" ? 1 : 0);
   }
+  // String literal (plain, no interpolation in const context).
+  else if (auto *str_lit = std::get_if<StringLiteralNode>(&node.value->data)) {
+    std::string text;
+    for (auto &frag_node : str_lit->fragments) {
+      if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
+        text += unescape_fragment(frag->text);
+    }
+    // make_string_constant returns GlobalVariable* (a Constant* subclass).
+    init = llvm::cast<llvm::Constant>(make_string_constant(text));
+    ll_type = llvm::PointerType::getUnqual(context);
+  }
   // Struct literal.
   else if (auto *slit = std::get_if<StructLiteralNode>(&node.value->data)) {
     if (sem_type->kind == TypeKind::Struct) {
       auto &sinfo = std::get<StructTypeInfo>(sem_type->detail);
-      auto st_it = struct_types.find(sinfo.name);
+      std::string skey = key_for(sinfo.origin_package, sinfo.name);
+      auto st_it = struct_types.find(skey);
       if (st_it != struct_types.end()) {
         auto *st = st_it->second;
-        auto &fnames = struct_fields[sinfo.name];
+        auto &fnames = struct_fields[skey];
         // Build field constants (zero-init if not provided).
         std::vector<llvm::Constant *> field_vals(fnames.size(), nullptr);
         for (size_t i = 0; i < fnames.size(); ++i)
@@ -215,9 +228,10 @@ void CodeGen::declare_enums(const SourceNode &src) {
 
 void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
   std::string name(node.name.name);
-  if (enum_types.count(name))
+  std::string key = mangle(package_name, name);
+  if (enum_types.count(key))
     return;
-  enum_types[name] = true;
+  enum_types[key] = true;
 
   int64_t next_index = 0;
   for (auto &field : node.fields) {
@@ -225,8 +239,8 @@ void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
 
     // Check for explicit {index: N} override.
     for (auto &init : field.initializer) {
-      std::string key(init.name.name);
-      if (key == "index") {
+      std::string init_key(init.name.name);
+      if (init_key == "index") {
         if (auto *lit =
                 std::get_if<IntegerLiteralNode>(&init.value->data)) {
           std::string clean;
@@ -237,7 +251,7 @@ void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
       }
     }
 
-    enum_variants[name + "." + variant_name] = next_index;
+    enum_variants[key + "." + variant_name] = next_index;
     next_index++;
   }
 }
@@ -255,7 +269,8 @@ void CodeGen::declare_interfaces(const SourceNode &src) {
 
 void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
   std::string name(node.name.name);
-  if (iface_vtable_types.count(name))
+  std::string key = mangle(package_name, name);
+  if (iface_vtable_types.count(key))
     return;
 
   auto *ptr_type = llvm::PointerType::getUnqual(context);
@@ -270,9 +285,9 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
   }
 
   auto *vtable_st = llvm::StructType::create(
-      context, vtable_fields, "mc.vtable." + name);
-  iface_vtable_types[name] = vtable_st;
-  iface_method_names[name] = std::move(method_names);
+      context, vtable_fields, "mc.vtable." + key);
+  iface_vtable_types[key] = vtable_st;
+  iface_method_names[key] = std::move(method_names);
 
   // Build a minimal InterfaceTypeInfo for codegen type lookup.
   // We just need the name and method names for vtable matching.
@@ -291,7 +306,8 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
     auto fn_type = make_func_type(std::move(params), std::move(returns));
     sem_methods.push_back({std::string(m.name.name), fn_type, m.is_public});
   }
-  named_sem_types[name] = make_interface_type(name, std::move(sem_methods), {});
+  named_sem_types[key] =
+      make_interface_type(name, std::move(sem_methods), {}, package_name);
 }
 
 // ===========================================================================
@@ -305,7 +321,8 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(s->name.name);
-    auto st_it = struct_types.find(struct_name);
+    std::string struct_key = mangle(package_name, struct_name);
+    auto st_it = struct_types.find(struct_key);
     if (st_it == struct_types.end())
       continue;
 
@@ -350,7 +367,7 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
           if (arg_idx < func->arg_size())
             func->getArg(arg_idx++)->setName(std::string(ident.name));
 
-      struct_method_links[struct_name].push_back({link_name, method_name});
+      struct_method_links[struct_key].push_back({link_name, method_name});
     }
   }
 
@@ -367,7 +384,8 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    if (!struct_types.count(struct_name))
+    std::string struct_key2 = mangle(package_name, struct_name);
+    if (!struct_types.count(struct_key2))
       continue;
 
     std::string method_name(fn->name.name);
@@ -401,7 +419,7 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
         if (arg_idx < func->arg_size())
           func->getArg(arg_idx++)->setName(std::string(ident.name));
 
-    struct_method_links[struct_name].push_back({link_name, method_name});
+    struct_method_links[struct_key2].push_back({link_name, method_name});
   }
 }
 
@@ -413,6 +431,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(s->name.name);
+    std::string struct_key = mangle(package_name, struct_name);
 
     for (auto &member : s->members) {
       auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
@@ -444,10 +463,10 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       // Inject struct fields as locals so bare names (e.g. `fd`) resolve.
       // Load each field from self via GEP and copy into a local alloca.
       {
-        auto st_it = struct_types.find(struct_name);
+        auto st_it = struct_types.find(struct_key);
         if (st_it != struct_types.end()) {
           auto *st = st_it->second;
-          auto &fields = struct_fields[struct_name];
+          auto &fields = struct_fields[struct_key];
           auto *self_ptr = builder.CreateLoad(
               llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
           for (size_t fi = 0; fi < fields.size(); ++fi) {
@@ -518,7 +537,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    if (!struct_types.count(struct_name))
+    if (!struct_types.count(mangle(package_name, struct_name)))
       continue;
 
     std::string method_name(fn->name.name);

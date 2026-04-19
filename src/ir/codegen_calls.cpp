@@ -254,10 +254,11 @@ llvm::Function *CodeGen::emit_specialisation(
 
       // Inject struct fields as locals.
       if (!recv_struct_name.empty()) {
-        auto st_it = struct_types.find(recv_struct_name);
+        std::string recv_key = mangle(package_name, recv_struct_name);
+        auto st_it = struct_types.find(recv_key);
         if (st_it != struct_types.end()) {
           auto *st = st_it->second;
-          auto &fields = struct_fields[recv_struct_name];
+          auto &fields = struct_fields[recv_key];
           auto *self_ptr = builder.CreateLoad(
               llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
           for (size_t fi2 = 0; fi2 < fields.size(); ++fi2) {
@@ -330,47 +331,26 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
           return fn;
         }
         // For enum variants from an imported module, look up the tag.
+        // materialize_import() has already registered all enum keys.
         if (exp.type && exp.type->kind == TypeKind::Enum) {
-          auto &einfo = std::get<EnumTypeInfo>(exp.type->detail);
-          // Register enum type and variants from the import if not
-          // already known, so variant selectors can resolve them.
-          if (!enum_types.count(einfo.name)) {
-            enum_types[einfo.name] = true;
-            int64_t next_index = 0;
-            for (auto &v : einfo.variants) {
-              if (v.index >= 0)
-                next_index = v.index;
-              enum_variants[einfo.name + "." + v.name] = next_index++;
-            }
-          }
-          // Return a sentinel so chained selectors (.Write) can
-          // look up the variant in the enum_variants map.
-          return llvm::ConstantInt::get(i64_type, 0);
+          return llvm::ConstantInt::get(i64_type, 0); // sentinel for chained selectors
         }
 
         // Non-function, non-enum export: a module-level constant.
         // Declare (or find) an external global and load from it.
+        // materialize_import() has already registered struct types.
         {
           std::string gv_name = mangle(mod.name, field_name);
           auto *ll = llvm_type(exp.type);
 
-          // For struct-typed constants, ensure the LLVM struct type exists.
           if (exp.type && exp.type->kind == TypeKind::Struct) {
             auto &sinfo = std::get<StructTypeInfo>(exp.type->detail);
-            if (!struct_types.count(sinfo.name)) {
-              // Register a minimal LLVM struct from the semantic info.
-              std::vector<llvm::Type *> ftypes;
-              std::vector<std::string> fnames;
-              for (auto &f : sinfo.fields) {
-                ftypes.push_back(llvm_type(f.type));
-                fnames.push_back(f.name);
-              }
-              auto *st = llvm::StructType::create(context, ftypes,
-                                                   "mc." + sinfo.name);
-              struct_types[sinfo.name] = st;
-              struct_fields[sinfo.name] = std::move(fnames);
-            }
-            ll = struct_types[sinfo.name];
+            std::string origin =
+                sinfo.origin_package.empty() ? mod.name : sinfo.origin_package;
+            std::string skey = mangle(origin, sinfo.name);
+            auto st_it = struct_types.find(skey);
+            if (st_it != struct_types.end())
+              ll = st_it->second;
           }
 
           auto *gv = module->getGlobalVariable(gv_name);
@@ -400,7 +380,8 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
       auto sem = semantic_type(*node.object);
       if (sem && sem->kind == TypeKind::Struct) {
         auto &info = std::get<StructTypeInfo>(sem->detail);
-        auto st_it = struct_types.find(info.name);
+        std::string skey = key_for(info.origin_package, info.name);
+        auto st_it = struct_types.find(skey);
         if (st_it != struct_types.end()) {
           // The alloca might be a ptr to struct (if stored from a literal)
           // or the struct type itself.
@@ -437,8 +418,9 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
   // Enum variant access: EnumName.Variant → integer constant.
   if (sem && sem->kind == TypeKind::Enum) {
     auto &info = std::get<EnumTypeInfo>(sem->detail);
-    std::string key = info.name + "." + field_name;
-    auto ev_it = enum_variants.find(key);
+    std::string ekey = key_for(info.origin_package, info.name);
+    std::string ev_key = ekey + "." + field_name;
+    auto ev_it = enum_variants.find(ev_key);
     if (ev_it != enum_variants.end())
       return llvm::ConstantInt::get(i64_type, ev_it->second);
   }
@@ -550,7 +532,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
           auto lit = locals.find(std::string(id->name));
           if (lit != locals.end()) {
             auto *alloca = lit->second;
-            auto st_it = struct_types.find(sinfo.name);
+            auto st_it = struct_types.find(key_for(sinfo.origin_package, sinfo.name));
             if (st_it != struct_types.end() &&
                 alloca->getAllocatedType() == st_it->second) {
               struct_ptr = alloca;
@@ -1075,41 +1057,16 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         }
       }
 
-      // Determine the package that defines this struct.
-      // If the struct exists in our local struct_types, use package_name.
-      // Otherwise, check if the object originates from a module selector
-      // and use that module's name.
-      // Determine the package that defines this struct.
-      // Walk the selector chain to find if the object originates from an
-      // imported module. For chained selectors like os.Stdout.Write,
-      // the inner selector's object is the module.
-      std::string origin_pkg = package_name;
-      {
-        const Node *walk = sel->object.get();
-        while (walk) {
-          if (auto *inner_sel = std::get_if<SelectorNode>(&walk->data)) {
-            auto inner_sem = semantic_type(*inner_sel->object);
-            if (inner_sem && inner_sem->kind == TypeKind::Module) {
-              origin_pkg = std::get<ModuleTypeInfo>(inner_sem->detail).name;
-              break;
-            }
-            walk = inner_sel->object.get();
-          } else if (auto *id = std::get_if<IdentifierNode>(&walk->data)) {
-            auto id_sem = semantic_type(*walk);
-            if (id_sem && id_sem->kind == TypeKind::Module) {
-              origin_pkg = std::get<ModuleTypeInfo>(id_sem->detail).name;
-            }
-            break;
-          } else {
-            break;
-          }
-        }
-      }
-
-      std::string link_name = mangle(origin_pkg, info.name + "__" + method);
+      // Use the struct's origin_package to form the qualified key and link name.
+      // Falls back to package_name for local types with empty origin_package.
+      std::string struct_origin =
+          info.origin_package.empty() ? package_name : info.origin_package;
+      std::string struct_key = mangle(struct_origin, info.name);
+      std::string link_name = mangle(struct_origin, info.name + "__" + method);
       auto *callee = module->getFunction(link_name);
 
-      // If the method isn't in this module (cross-package struct), declare it.
+      // If the method isn't forward-declared yet (shouldn't happen after
+      // materialize_import, but guard for non-imported local types), declare it.
       if (!callee) {
         for (auto &m : info.methods) {
           if (m.name == method && m.signature &&
@@ -1134,8 +1091,6 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       if (callee) {
         // Build argument list: self + explicit args.
         // For struct methods, self is a pointer to the struct.
-        // obj might be a loaded pointer or a direct alloca — we need
-        // the alloca (pointer) for self.
         llvm::Value *self_ptr = obj;
 
         // If the object is an identifier referencing a local, use the alloca.
@@ -1144,7 +1099,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
           if (local_it != locals.end()) {
             auto *alloca = local_it->second;
             auto *alloca_type = alloca->getAllocatedType();
-            auto st_it = struct_types.find(info.name);
+            auto st_it = struct_types.find(struct_key);
             if (st_it != struct_types.end() && alloca_type == st_it->second) {
               self_ptr = alloca; // Direct struct alloca.
             } else if (alloca_type->isPointerTy()) {
@@ -1153,9 +1108,8 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
           }
         }
 
-        // If self_ptr is a struct value (not a pointer/alloca), we need
-        // to spill it to a temporary alloca so the method gets a ptr.
-        auto st_it2 = struct_types.find(info.name);
+        // If self_ptr is a struct value (not a pointer/alloca), spill to alloca.
+        auto st_it2 = struct_types.find(struct_key);
         if (st_it2 != struct_types.end() &&
             self_ptr->getType() == st_it2->second) {
           auto *func = builder.GetInsertBlock()->getParent();
@@ -1182,10 +1136,12 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // Interface dynamic dispatch: obj.Method(args) via vtable.
     if (obj_sem && obj_sem->kind == TypeKind::Interface) {
       auto &iface_info = std::get<InterfaceTypeInfo>(obj_sem->detail);
-      std::string iface_name = iface_info.name;
+      // key_for falls back to package_name for local types; bare "Error" stays
+      // bare since its origin_package is empty and the built-in uses bare key.
+      std::string iface_key = key_for(iface_info.origin_package, iface_info.name);
 
-      auto mn_it = iface_method_names.find(iface_name);
-      auto vt_it = iface_vtable_types.find(iface_name);
+      auto mn_it = iface_method_names.find(iface_key);
+      auto vt_it = iface_vtable_types.find(iface_key);
       if (mn_it != iface_method_names.end() &&
           vt_it != iface_vtable_types.end()) {
         auto &methods = mn_it->second;
@@ -2238,7 +2194,8 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
     return llvm::ConstantInt::get(i1_type, 0);
 
   // Enum type names — return a sentinel so selectors can access variants.
-  if (enum_types.count(name))
+  // Keys are qualified (e.g. "test__Colors"), so fall back via key_for.
+  if (enum_types.count(key_for("", name)))
     return llvm::ConstantInt::get(i64_type, 0);
 
   // Top-level function referenced as a value (e.g. `call_it(greet, ...)` or

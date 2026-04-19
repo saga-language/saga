@@ -316,42 +316,53 @@ void CodeGen::declare_runtime() {
   // Seed the Error interface's codegen registration.  Error is a builtin
   // interface with a single method (Message() String); unlike Saga-declared
   // interfaces it has no InterfaceDeclNode to drive declare_interfaces.
-  if (!iface_vtable_types.count("Error")) {
+  // Use the current package as the key so key_for("", "Error") resolves it.
+  std::string error_key = mangle(package_name, "Error");
+  if (!iface_vtable_types.count(error_key)) {
     auto *vtable_st = llvm::StructType::create(
-        context, {ptr_type}, "mc.vtable.Error");
-    iface_vtable_types["Error"] = vtable_st;
-    iface_method_names["Error"] = {"Message"};
+        context, {ptr_type}, "mc.vtable." + error_key);
+    iface_vtable_types[error_key] = vtable_st;
+    iface_method_names[error_key] = {"Message"};
   }
 }
 // ===========================================================================
 // Vtable generation
 // ===========================================================================
 
-llvm::GlobalVariable *CodeGen::get_or_create_vtable(
-    const std::string &struct_name, const std::string &iface_name) {
-  std::string key = struct_name + "::" + iface_name;
-  auto it = vtable_globals.find(key);
+llvm::GlobalVariable *CodeGen::get_or_create_vtable(const TypePtr &struct_type,
+                                                     const TypePtr &iface_type) {
+  if (!struct_type || struct_type->kind != TypeKind::Struct) return nullptr;
+  if (!iface_type || iface_type->kind != TypeKind::Interface) return nullptr;
+
+  auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
+  auto &iinfo = std::get<InterfaceTypeInfo>(iface_type->detail);
+
+  std::string struct_key = key_for(sinfo.origin_package, sinfo.name);
+  std::string iface_key = key_for(iinfo.origin_package, iinfo.name);
+
+  std::string vtable_cache_key = struct_key + "::" + iface_key;
+  auto it = vtable_globals.find(vtable_cache_key);
   if (it != vtable_globals.end())
     return it->second;
 
-  auto vt_it = iface_vtable_types.find(iface_name);
+  auto vt_it = iface_vtable_types.find(iface_key);
   if (vt_it == iface_vtable_types.end())
     return nullptr;
   auto *vtable_st = vt_it->second;
 
-  auto &method_names = iface_method_names[iface_name];
-  auto &methods = struct_method_links[struct_name];
+  auto &method_names = iface_method_names[iface_key];
+  auto &methods = struct_method_links[struct_key];
 
   // Build the vtable constant.
+  std::string struct_origin =
+      sinfo.origin_package.empty() ? package_name : sinfo.origin_package;
   std::vector<llvm::Constant *> entries;
   for (auto &iface_method : method_names) {
-    // Find the corresponding struct method.
-    std::string link_name = mangle(struct_name + "__" + iface_method);
+    std::string link_name = mangle(struct_origin, sinfo.name + "__" + iface_method);
     auto *fn = module->getFunction(link_name);
     if (fn) {
       entries.push_back(fn);
     } else {
-      // Method not found — null pointer (shouldn't happen if analyzer passed).
       entries.push_back(
           llvm::ConstantPointerNull::get(
               llvm::PointerType::getUnqual(context)));
@@ -361,9 +372,9 @@ llvm::GlobalVariable *CodeGen::get_or_create_vtable(
   auto *vtable_const = llvm::ConstantStruct::get(vtable_st, entries);
   auto *vtable_global = new llvm::GlobalVariable(
       *module, vtable_st, true, llvm::GlobalValue::PrivateLinkage,
-      vtable_const, "mc.vtable." + struct_name + "." + iface_name);
+      vtable_const, "mc.vtable." + struct_key + "." + iface_key);
 
-  vtable_globals[key] = vtable_global;
+  vtable_globals[vtable_cache_key] = vtable_global;
   return vtable_global;
 }
 
@@ -380,19 +391,11 @@ llvm::Value *CodeGen::emit_interface_box(llvm::Value *concrete_val,
     return nullptr;
 
 
-  auto &iface_info = std::get<InterfaceTypeInfo>(iface_type->detail);
-  std::string iface_name = iface_info.name;
-
-  // Determine the struct name.
-  std::string struct_name;
-  if (concrete_type->kind == TypeKind::Struct) {
-    struct_name = std::get<StructTypeInfo>(concrete_type->detail).name;
-  } else {
+  if (concrete_type->kind != TypeKind::Struct)
     return nullptr; // Only struct boxing supported for now.
-  }
 
-  // Get or create the vtable.
-  auto *vtable = get_or_create_vtable(struct_name, iface_name);
+  // Get or create the vtable using origin-qualified type pointers.
+  auto *vtable = get_or_create_vtable(concrete_type, iface_type);
   if (!vtable)
     return nullptr;
 
@@ -644,7 +647,8 @@ void CodeGen::emit_release_locals() {
         }
       }
       if (!struct_name.empty()) {
-        // Resolve the Close() link name.
+        // struct_name is the origin-qualified key (e.g. "lib__Point").
+        // Resolve the Close() link name from struct_method_links.
         std::string close_link;
         auto ml_it = struct_method_links.find(struct_name);
         if (ml_it != struct_method_links.end()) {
@@ -655,8 +659,9 @@ void CodeGen::emit_release_locals() {
             }
           }
         }
+        // Fallback: struct_name is already "pkg__Name", append "__Close".
         if (close_link.empty())
-          close_link = mangle(struct_name + "__Close");
+          close_link = struct_name + "__Close";
 
         auto *close_fn = module->getFunction(close_link);
         if (!close_fn) {
