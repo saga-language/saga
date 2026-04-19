@@ -187,7 +187,8 @@ static int build_graph_mode(const char *prog,
                              bool lib_mode,
                              bool verbose) {
   mc::BuildGraph graph;
-  if (!graph.scan(source_dir, import_path, output_dir, search_paths)) {
+  if (!graph.scan(source_dir, import_path, output_dir, search_paths,
+                  sgi_search_paths)) {
     std::cerr << std::format("Error: {}\n", graph.error);
     return 1;
   }

@@ -266,7 +266,8 @@ static std::string resolve_source_dir(
 bool BuildGraph::scan(const std::string &source_dir_in,
                       const std::string &import_path_in,
                       const std::string &output_dir,
-                      const std::vector<std::string> &search_paths) {
+                      const std::vector<std::string> &search_paths,
+                      const std::vector<std::string> &sgi_dirs) {
   // Canonicalize source_dir.
   std::error_code ec;
   std::string source_dir =
@@ -330,10 +331,26 @@ bool BuildGraph::scan(const std::string &source_dir_in,
         continue; // Already in graph.
       std::string dep_dir = resolve_source_dir(dep, search_paths);
       if (dep_dir.empty()) {
-        error = std::format("cannot find package '{}' (imported by '{}')",
-                            dep, ip);
-        in_progress.erase(ip);
-        return false;
+        // Not a source package — check for a pre-compiled .sgi (e.g. stdlib).
+        auto slash = dep.rfind('/');
+        std::string dep_pkg = (slash != std::string::npos)
+                                  ? dep.substr(slash + 1) : dep;
+        bool has_sgi = false;
+        for (auto &sd : sgi_dirs) {
+          std::error_code ec2;
+          if (fs::is_regular_file(fs::path(sd) / (dep_pkg + ".sgi"), ec2)) {
+            has_sgi = true;
+            break;
+          }
+        }
+        if (!has_sgi) {
+          error = std::format("cannot find package '{}' (imported by '{}')",
+                              dep, ip);
+          in_progress.erase(ip);
+          return false;
+        }
+        // Pre-compiled dep — no source to scan, skip.
+        continue;
       }
       if (!self(self, dep, dep_dir)) {
         in_progress.erase(ip);

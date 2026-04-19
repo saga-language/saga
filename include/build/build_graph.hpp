@@ -61,7 +61,8 @@ struct BuildGraph {
   bool scan(const std::string &source_dir,
             const std::string &import_path,
             const std::string &output_dir,
-            const std::vector<std::string> &search_paths);
+            const std::vector<std::string> &search_paths,
+            const std::vector<std::string> &sgi_dirs = {});
 
   // ── Build ordering ────────────────────────────────────────────────────────
 
