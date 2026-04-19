@@ -1,0 +1,6 @@
+pub struct Counter {
+  n Int
+}
+
+pub fn (c Counter) Value() Int { c.n }
+pub fn (c Counter) Double() Int { c.n * 2 }

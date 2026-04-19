@@ -1,0 +1,12 @@
+pub enum State {
+  Stopped {name: "stop"}
+  Running {name: "run"}
+}
+
+pub fn StateName(s State) String {
+  switch s {
+    case State.Stopped: "stopped"
+    case State.Running: "running"
+    else: "unknown"
+  }
+}

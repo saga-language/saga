@@ -1,0 +1,11 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  arr := [lib.Point{x: 1, y: 2}, lib.Point{x: 3, y: 4}]
+  for p : arr {
+    io.Println(p.Sum().String())
+  }
+  m := {"origin": lib.Point{x: 0, y: 5}}
+  io.Println(m.At("origin").Sum().String())
+}

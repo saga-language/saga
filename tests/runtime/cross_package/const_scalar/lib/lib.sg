@@ -1,0 +1,3 @@
+pub const Pi Float = 3.14
+pub const Max Int = 100
+pub const Greeting String = "hi"

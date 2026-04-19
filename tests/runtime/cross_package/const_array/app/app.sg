@@ -1,0 +1,9 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  io.Println(lib.Primes.Size().String())
+  for p : lib.Primes {
+    io.Println(p.String())
+  }
+}

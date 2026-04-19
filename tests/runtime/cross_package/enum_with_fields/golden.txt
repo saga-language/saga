@@ -1,0 +1,4 @@
+stopped
+running
+true
+false

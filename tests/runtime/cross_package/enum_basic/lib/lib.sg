@@ -1,0 +1,14 @@
+pub enum Color {
+  Red
+  Green
+  Blue
+}
+
+pub fn ColorName(c Color) String {
+  switch c {
+    case Color.Red: "red"
+    case Color.Green: "green"
+    case Color.Blue: "blue"
+    else: "unknown"
+  }
+}

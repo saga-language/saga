@@ -1,0 +1,9 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  io.Println(lib.NonNeg(lib.Point{x: 3, y: 4}).String())
+  io.Println(lib.NonNeg(lib.Point{x: -1, y: 0}).String())
+  p := lib.Point{x: 10, y: 20}
+  io.Println(lib.NonNeg(p).String())
+}

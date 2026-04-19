@@ -1,0 +1,7 @@
+pub struct Point {
+  x Int
+  y Int
+}
+
+pub fn Origin() Point { Point{x: 0, y: 0} }
+pub fn Make(x, y Int) Point { Point{x: x, y: y} }
