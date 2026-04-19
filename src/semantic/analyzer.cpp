@@ -28,6 +28,11 @@ Analyzer::Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver)
   register_builtins(global_scope, builtins);
 }
 
+std::string Analyzer::current_package_name() const {
+  if (current_package_dir.empty()) return "";
+  return std::filesystem::path(current_package_dir).filename().string();
+}
+
 // ===========================================================================
 // PackageResolver
 // ===========================================================================
@@ -1187,7 +1192,8 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
         {m.name, substitute(m.signature, bindings), m.is_public});
 
   auto result =
-      make_struct_type(info.name, std::move(new_fields), std::move(new_methods));
+      make_struct_type(info.name, std::move(new_fields), std::move(new_methods),
+                       {}, info.origin_package);
   auto &ri = std::get<StructTypeInfo>(result->detail);
   ri.type_params = info.type_params;
   ri.type_args = std::move(args);
@@ -1432,7 +1438,8 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
 
   auto struct_type =
       make_struct_type(std::string(s.name.name), std::move(fields),
-                       std::move(methods), std::move(type_params));
+                       std::move(methods), std::move(type_params),
+                       current_package_name());
   // Set embeds on the created type.
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   info.embeds = std::move(embeds);
@@ -1478,7 +1485,8 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
   }
 
   auto enum_type =
-      make_enum_type(std::string(e.name.name), std::move(variants));
+      make_enum_type(std::string(e.name.name), std::move(variants),
+                     current_package_name());
 
   auto sym_it = current_scope->symbols.find(std::string(e.name.name));
   if (sym_it != current_scope->symbols.end()) {
@@ -1502,7 +1510,8 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
   }
 
   auto iface_type = make_interface_type(
-      std::string(i.name.name), std::move(methods), std::move(type_params));
+      std::string(i.name.name), std::move(methods), std::move(type_params),
+      current_package_name());
 
   auto &target_scope = has_generics ? current_scope->parent : current_scope;
   auto sym_it = target_scope->symbols.find(std::string(i.name.name));
@@ -1558,7 +1567,8 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
     if (alias_underlying) {
       // Create a unique alias type that inherits the underlying type's methods.
       auto alias_type = make_alias_type(
-          std::string(c.name.name), alias_underlying);
+          std::string(c.name.name), alias_underlying, {},
+          current_package_name());
       auto sym_it = current_scope->symbols.find(std::string(c.name.name));
       if (sym_it != current_scope->symbols.end()) {
         sym_it->second.type = alias_type;
@@ -3596,7 +3606,8 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
         new_methods.push_back({m.name, substitute(m.signature, bindings), m.is_public});
 
       auto result = make_struct_type(info.name, std::move(new_fields),
-                                     std::move(new_methods));
+                                     std::move(new_methods), {},
+                                     info.origin_package);
       auto &ri = std::get<StructTypeInfo>(result->detail);
       ri.type_params = info.type_params;
       ri.type_args.push_back(chan_type);
@@ -4356,7 +4367,8 @@ TypePtr Analyzer::instantiate_generic_struct(
   }
 
   auto result = make_struct_type(info.name, std::move(new_fields),
-                                 std::move(new_methods));
+                                 std::move(new_methods), {},
+                                 info.origin_package);
   auto &result_info = std::get<StructTypeInfo>(result->detail);
   result_info.type_params = info.type_params;
   // Record the concrete type arguments.

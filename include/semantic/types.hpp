@@ -103,10 +103,12 @@ struct MethodInfo {
   std::string name;
   TypePtr signature;        // always a FuncTypeInfo inside
   bool is_public = false;
+  std::string origin_package;
 };
 
 struct StructTypeInfo {
   std::string name;
+  std::string origin_package;
   std::vector<FieldInfo> fields;
   std::vector<MethodInfo> methods;
   std::vector<TypePtr> embeds;                 // mixin / embedded types
@@ -122,11 +124,13 @@ struct EnumVariant {
 
 struct EnumTypeInfo {
   std::string name;
+  std::string origin_package;
   std::vector<EnumVariant> variants;
 };
 
 struct InterfaceTypeInfo {
   std::string name;
+  std::string origin_package;
   std::vector<MethodInfo> methods;
   std::vector<TypeParam> type_params;
   std::vector<TypePtr> type_args;
@@ -143,6 +147,7 @@ struct TypeParamInfo {
 
 struct AliasTypeInfo {
   std::string name;
+  std::string origin_package;
   TypePtr underlying;                      // the aliased type
   std::vector<MethodInfo> methods;         // user-bound methods on this alias
 };
@@ -215,17 +220,21 @@ TypePtr make_func_type(std::vector<TypePtr> params,
 TypePtr make_struct_type(const std::string &name,
                          std::vector<FieldInfo> fields = {},
                          std::vector<MethodInfo> methods = {},
-                         std::vector<TypeParam> type_params = {});
+                         std::vector<TypeParam> type_params = {},
+                         std::string origin_package = "");
 TypePtr make_enum_type(const std::string &name,
-                       std::vector<EnumVariant> variants = {});
+                       std::vector<EnumVariant> variants = {},
+                       std::string origin_package = "");
 TypePtr make_interface_type(const std::string &name,
                             std::vector<MethodInfo> methods = {},
-                            std::vector<TypeParam> type_params = {});
+                            std::vector<TypeParam> type_params = {},
+                            std::string origin_package = "");
 TypePtr make_union_type(std::vector<TypePtr> alternatives);
 TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound = std::nullopt);
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
-                       std::vector<MethodInfo> methods = {});
+                        std::vector<MethodInfo> methods = {},
+                        std::string origin_package = "");
 TypePtr make_module_type(const std::string &name,
                          const std::string &import_path,
                          std::vector<ModuleExport> exports = {});
@@ -261,6 +270,24 @@ TypePtr unwrap_alias(const TypePtr &t);
 
 /// Get the TypeKind of the underlying type, unwrapping aliases.
 TypeKind underlying_kind(const TypePtr &t);
+
+/// Return the origin_package of a nominal type (Struct, Enum, Interface),
+/// unwrapping aliases first. Returns "" for non-nominal kinds.
+inline std::string origin_of(const TypePtr &t) {
+  if (!t) return "";
+  auto u = unwrap_alias(t);
+  if (!u) return "";
+  switch (u->kind) {
+  case TypeKind::Struct:
+    return std::get<StructTypeInfo>(u->detail).origin_package;
+  case TypeKind::Enum:
+    return std::get<EnumTypeInfo>(u->detail).origin_package;
+  case TypeKind::Interface:
+    return std::get<InterfaceTypeInfo>(u->detail).origin_package;
+  default:
+    return "";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Type compatibility

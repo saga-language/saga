@@ -261,6 +261,10 @@ struct Analyzer {
   explicit Analyzer(FileSet &fs);
   explicit Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver);
 
+  /// Return the short package name derived from current_package_dir.
+  /// Returns "" when no package directory is set (top-level compilation).
+  std::string current_package_name() const;
+
   // ── Entry point ──────────────────────────────────────────────────────
 
   /// Analyze an entire package (PackageNode at root).
