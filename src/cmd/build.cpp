@@ -155,7 +155,9 @@ static bool compile_package(const std::string &source_dir,
     for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
       if (sym.is_public && !sym.is_builtin && sym.type) {
         bool is_type = (sym.kind == mc::SymbolKind::Type);
-        exports.push_back({"", sym_name, sym.type, is_type});
+        std::string origin = mc::origin_of(sym.type);
+        if (origin.empty()) origin = pkg_name;
+        exports.push_back({"", sym_name, sym.type, is_type, origin});
       }
     }
   }
@@ -424,7 +426,9 @@ int cmd_build(const char *prog, int argc, char **argv) {
       for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
         if (sym.is_public && !sym.is_builtin && sym.type) {
           bool is_type = (sym.kind == mc::SymbolKind::Type);
-          exports.push_back({"", sym_name, sym.type, is_type});
+          std::string origin = mc::origin_of(sym.type);
+          if (origin.empty()) origin = module_name;
+          exports.push_back({"", sym_name, sym.type, is_type, origin});
         }
       }
     }
