@@ -912,8 +912,13 @@ struct SgiParser {
     if (it != defined_types.end())
       return it->second;
 
-    // Otherwise return a stub with just the name — resolved later if needed.
-    return make_struct_type(name);
+    // Forward reference: create a stub and register it so subsequent
+    // references share the same TypePtr. When the real decl arrives, its
+    // body is filled into this stub via mutate_into (see below), so all
+    // earlier references see the real fields.
+    auto stub = make_struct_type(name);
+    defined_types[name] = stub;
+    return stub;
   }
 
   /// Parse an optional `|T#id, U#id, ...|` declaration list. Returns the
@@ -1130,11 +1135,25 @@ struct SgiParser {
       }
     }
 
-    auto t = make_struct_type(name, std::move(fields), std::move(methods),
-                               std::move(type_params));
-    // Set embeds
-    auto &info = std::get<StructTypeInfo>(t->detail);
-    info.embeds = std::move(embeds);
+    // Reuse a previously-emitted forward stub if one exists, mutating its
+    // detail in-place so all earlier references see the real fields.
+    TypePtr t;
+    auto stub_it = defined_types.find(name);
+    if (stub_it != defined_types.end() &&
+        stub_it->second->kind == TypeKind::Struct) {
+      t = stub_it->second;
+      auto &info = std::get<StructTypeInfo>(t->detail);
+      info.name = name;
+      info.fields = std::move(fields);
+      info.methods = std::move(methods);
+      info.type_params = std::move(type_params);
+      info.embeds = std::move(embeds);
+    } else {
+      t = make_struct_type(name, std::move(fields), std::move(methods),
+                           std::move(type_params));
+      auto &info = std::get<StructTypeInfo>(t->detail);
+      info.embeds = std::move(embeds);
+    }
 
     pop_type_param_scope();
 

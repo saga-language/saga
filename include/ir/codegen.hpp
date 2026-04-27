@@ -280,6 +280,12 @@ private:
   /// Emit a package-level constant as an LLVM global variable.
   void emit_const_decl(const ConstDeclNode &node);
 
+  /// Build an LLVM constant for `val_node` whose Saga type is `expected`.
+  /// Supports integer/float/bool/string literals and nested struct literals.
+  /// Returns nullptr when the expression is not a compile-time constant.
+  llvm::Constant *build_const_value(const Node &val_node,
+                                    const TypePtr &expected);
+
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
   void emit_enum_decl(const EnumDeclNode &node);
@@ -312,6 +318,21 @@ private:
 
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
+
+  /// Apply byval/sret/align param attributes to a freshly-created Function
+  /// based on its AST signature.  Must be called once after Function::Create.
+  void apply_func_abi_attrs(llvm::Function *func, const FuncDeclNode &fn);
+
+  /// Build the LLVM FunctionType for a struct method (in-bound or out-bound).
+  /// Also applies byval/sret attrs to the supplied function (after Create).
+  /// Returns the lowered signature and stamps attributes into `out_attrs`.
+  struct MethodSig {
+    llvm::FunctionType *fn_type = nullptr;
+    llvm::Type *sret_struct_ty = nullptr;
+    std::vector<llvm::Type *> byval_struct_tys; // one per regular param
+  };
+  MethodSig build_method_signature(const FuncDeclNode &fn);
+  void apply_method_abi_attrs(llvm::Function *func, const MethodSig &sig);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);

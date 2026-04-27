@@ -66,18 +66,29 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
           sinfo.origin_package.empty() ? mod.name : sinfo.origin_package;
       std::string key = mangle(origin, sinfo.name);
 
-      if (struct_types.count(key))
-        break; // already materialized
+      auto exist = struct_types.find(key);
+      if (exist != struct_types.end() && !exist->second->isOpaque())
+        break; // already materialized with a body
 
       // Build the LLVM struct type from the semantic field list.
+      // Field LLVM types are resolved via llvm_type, which itself may
+      // create opaque forward declarations for not-yet-materialized
+      // structs — those will be filled when their materialize_import
+      // call runs.
       std::vector<llvm::Type *> ftypes;
       std::vector<std::string> fnames;
       for (auto &f : sinfo.fields) {
         ftypes.push_back(llvm_type(f.type));
         fnames.push_back(f.name);
       }
-      auto *st = llvm::StructType::create(context, ftypes, "mc." + key);
-      struct_types[key] = st;
+      llvm::StructType *st = nullptr;
+      if (exist != struct_types.end() && exist->second->isOpaque()) {
+        st = exist->second;
+        st->setBody(ftypes);
+      } else {
+        st = llvm::StructType::create(context, ftypes, "mc." + key);
+        struct_types[key] = st;
+      }
       struct_fields[key] = std::move(fnames);
       named_sem_types[key] = exp.type;
 
@@ -96,15 +107,55 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
 
         auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
         auto *ptr_type = llvm::PointerType::getUnqual(context);
+        // Sret lowering for struct returns.
+        llvm::Type *sret_ty = nullptr;
+        llvm::Type *ret_ll = void_ll_type;
+        if (!fi.returns.empty()) {
+          auto *r = llvm_type(fi.returns[0]);
+          if (r && r->isStructTy()) {
+            sret_ty = r;
+            ret_ll = void_ll_type;
+          } else {
+            ret_ll = r;
+          }
+        }
         std::vector<llvm::Type *> param_ll;
+        std::vector<llvm::Type *> byval_attached(fi.params.size(), nullptr);
+        if (sret_ty)
+          param_ll.push_back(ptr_type);
         param_ll.push_back(ptr_type); // self pointer
-        for (auto &p : fi.params)
-          param_ll.push_back(llvm_type(p));
-        llvm::Type *ret_ll = fi.returns.empty() ? void_ll_type
-                                                 : llvm_type(fi.returns[0]);
+        for (size_t pi = 0; pi < fi.params.size(); ++pi) {
+          auto *p = llvm_type(fi.params[pi]);
+          if (p && p->isStructTy()) {
+            byval_attached[pi] = p;
+            param_ll.push_back(ptr_type);
+          } else {
+            param_ll.push_back(p);
+          }
+        }
         auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
-        llvm::Function::Create(ft, llvm::Function::ExternalLinkage, link_name,
-                               module.get());
+        auto *func = llvm::Function::Create(
+            ft, llvm::Function::ExternalLinkage, link_name, module.get());
+
+        unsigned aidx = 0;
+        if (sret_ty) {
+          llvm::AttrBuilder ab(context);
+          ab.addStructRetAttr(sret_ty);
+          ab.addAlignmentAttr(
+              module->getDataLayout().getABITypeAlign(sret_ty));
+          func->addParamAttrs(aidx++, ab);
+        }
+        ++aidx; // self
+        for (size_t pi = 0; pi < fi.params.size(); ++pi) {
+          if (byval_attached[pi]) {
+            llvm::AttrBuilder ab(context);
+            ab.addByValAttr(byval_attached[pi]);
+            ab.addAlignmentAttr(
+                module->getDataLayout().getABITypeAlign(byval_attached[pi]));
+            func->addParamAttrs(aidx, ab);
+          }
+          ++aidx;
+        }
       }
       break;
     }

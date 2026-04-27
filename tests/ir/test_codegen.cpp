@@ -1270,8 +1270,10 @@ TEST(CodeGen, StructReturnType) {
       "pub fn Main() Void {}");
   auto *fn = r.func("Make");
   ASSERT_NE(fn, nullptr);
-  // Structs are returned as ptr.
-  EXPECT_TRUE(fn->getReturnType()->isPointerTy());
+  // D1 ABI: struct returns lower to void + hidden sret pointer arg.
+  EXPECT_TRUE(fn->getReturnType()->isVoidTy());
+  ASSERT_GT(fn->arg_size(), 0u);
+  EXPECT_TRUE(fn->getArg(0)->hasStructRetAttr());
 }
 
 TEST(CodeGen, StructMixedFieldTypes) {
@@ -1455,11 +1457,10 @@ TEST(CodeGen, ArrayRuntimeDeclared) {
   EXPECT_NE(r.func("saga_array_size"), nullptr);
 }
 
-// Regression: an iterator binding for a struct-element array must allocate
-// a pointer-sized slot (struct elements live as pointers in array storage),
-// not a slot the size of the full struct. Mismatched sizes corrupted the
-// load when the struct's first field was used as if it were the struct ptr.
-TEST(CodeGen, ForRangeStructArrayIterIsPointer) {
+// Under D1 ABI, struct array elements are stored inline. The iterator
+// binding allocates a struct-typed slot and memcpy's from the array's
+// per-slot pointer.
+TEST(CodeGen, ForRangeStructArrayIterIsStruct) {
   auto r = CG::from(
       "struct Reg { name String }\n"
       "pub fn Main() Void {\n"
@@ -1477,8 +1478,8 @@ TEST(CodeGen, ForRangeStructArrayIterIsPointer) {
         if (a->getName() == "reg")
           reg_alloca = a;
   ASSERT_NE(reg_alloca, nullptr) << "iterator alloca 'reg' missing";
-  EXPECT_TRUE(reg_alloca->getAllocatedType()->isPointerTy())
-      << "iterator binding for struct array must be pointer-typed";
+  EXPECT_TRUE(reg_alloca->getAllocatedType()->isStructTy())
+      << "iterator binding for struct array must be struct-typed under D1";
 }
 
 // ===========================================================================
@@ -2743,14 +2744,17 @@ TEST(CodeGen, FuncReturnsUnion) {
       "}");
   auto *safe_div = r.func("SafeDiv");
   ASSERT_NE(safe_div, nullptr);
-  // Return type should be the union struct, not i64.
-  auto *ret_type = safe_div->getReturnType();
-  EXPECT_TRUE(ret_type->isStructTy()) << "Return type should be a union struct";
-  if (ret_type->isStructTy()) {
-    auto *st = llvm::cast<llvm::StructType>(ret_type);
-    EXPECT_EQ(st->getNumElements(), 2u);
-    EXPECT_TRUE(st->getElementType(0)->isIntegerTy(8)) << "Tag i8";
-  }
+  // D1 ABI: union returns lower to void + hidden sret pointer arg whose
+  // pointee is the union struct.
+  EXPECT_TRUE(safe_div->getReturnType()->isVoidTy());
+  ASSERT_GT(safe_div->arg_size(), 0u);
+  EXPECT_TRUE(safe_div->getArg(0)->hasStructRetAttr());
+  auto *st_ty = safe_div->getParamStructRetType(0);
+  ASSERT_NE(st_ty, nullptr);
+  ASSERT_TRUE(st_ty->isStructTy());
+  auto *st = llvm::cast<llvm::StructType>(st_ty);
+  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(8)) << "Tag i8";
 }
 
 TEST(CodeGen, FuncReturnsUnionWithOrAtCallSite) {

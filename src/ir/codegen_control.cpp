@@ -578,13 +578,13 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           auto &arr_info = std::get<ArrayTypeInfo>(iter_sem->detail);
           auto *elem_ll = llvm_type(arr_info.element);
 
-          // Array literals store struct elements as pointers in each slot
-          // (see emit_array_literal). The iterator binding must match that
-          // representation, else the load reads past the slot.
+          // Under D1, array storage is inline: each slot holds the struct
+          // contents directly. The iterator binds a struct alloca and
+          // memcpy's from saga_array_at's slot pointer into it.
           bool struct_elem = arr_info.element &&
-                             arr_info.element->kind == TypeKind::Struct;
-          llvm::Type *bind_ll =
-              struct_elem ? llvm::PointerType::getUnqual(context) : elem_ll;
+                             arr_info.element->kind == TypeKind::Struct &&
+                             elem_ll && elem_ll->isStructTy();
+          llvm::Type *bind_ll = struct_elem ? elem_ll : elem_ll;
 
           if (range->vars.size() == 1) {
             val_alloca = create_entry_alloca(
@@ -619,13 +619,20 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
           auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
           auto *elem_ptr =
               builder.CreateCall(at_fn, {iterable, body_idx}, "at");
-          auto *elem_val =
-              builder.CreateLoad(bind_ll, elem_ptr, "elem");
 
           if (key_alloca)
             builder.CreateStore(body_idx, key_alloca);
-          if (val_alloca)
-            builder.CreateStore(elem_val, val_alloca);
+          if (val_alloca) {
+            if (struct_elem) {
+              auto sz = module->getDataLayout().getTypeAllocSize(bind_ll);
+              auto al = module->getDataLayout().getABITypeAlign(bind_ll);
+              builder.CreateMemCpy(val_alloca, al, elem_ptr, al, sz);
+            } else {
+              auto *elem_val =
+                  builder.CreateLoad(bind_ll, elem_ptr, "elem");
+              builder.CreateStore(elem_val, val_alloca);
+            }
+          }
 
           auto &body_block = std::get<BlockNode>(node.body->data);
           emit_block(body_block);
@@ -695,16 +702,28 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
             auto *key_at_fn = module->getFunction("saga_map_key_at");
             auto *key_ptr = builder.CreateCall(
                 key_at_fn, {iterable, body_idx}, "map.key.ptr");
-            auto *key_val = builder.CreateLoad(key_ll, key_ptr, "map.key");
-            builder.CreateStore(key_val, key_alloca);
+            if (key_ll->isStructTy()) {
+              auto sz = module->getDataLayout().getTypeAllocSize(key_ll);
+              auto al = module->getDataLayout().getABITypeAlign(key_ll);
+              builder.CreateMemCpy(key_alloca, al, key_ptr, al, sz);
+            } else {
+              auto *key_val = builder.CreateLoad(key_ll, key_ptr, "map.key");
+              builder.CreateStore(key_val, key_alloca);
+            }
           }
 
           if (val_alloca) {
             auto *val_at_fn = module->getFunction("saga_map_value_at");
             auto *val_ptr = builder.CreateCall(
                 val_at_fn, {iterable, body_idx}, "map.val.ptr");
-            auto *val_val = builder.CreateLoad(val_ll, val_ptr, "map.val");
-            builder.CreateStore(val_val, val_alloca);
+            if (val_ll->isStructTy()) {
+              auto sz = module->getDataLayout().getTypeAllocSize(val_ll);
+              auto al = module->getDataLayout().getABITypeAlign(val_ll);
+              builder.CreateMemCpy(val_alloca, al, val_ptr, al, sz);
+            } else {
+              auto *val_val = builder.CreateLoad(val_ll, val_ptr, "map.val");
+              builder.CreateStore(val_val, val_alloca);
+            }
           }
 
           auto &body_block = std::get<BlockNode>(node.body->data);
@@ -1043,13 +1062,11 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     auto first_sem = semantic_type(*node.elements[0]);
     if (first_sem) {
       elem_ll_type = llvm_type(first_sem);
-      if (elem_ll_type->isDoubleTy())
-        elem_size = 8;
+      if (elem_ll_type->isStructTy())
+        elem_size = module->getDataLayout().getTypeAllocSize(elem_ll_type);
       else if (elem_ll_type->isIntegerTy(1))
         elem_size = 1;
-      else if (elem_ll_type->isIntegerTy(64))
-        elem_size = 8;
-      else if (elem_ll_type->isPointerTy())
+      else
         elem_size = 8;
     }
   }
@@ -1072,11 +1089,22 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (!val)
       continue;
 
-    // saga_array_push takes a void* to the element.  We need to store the
-    // value to a temporary alloca and pass its address.
-    auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
-    builder.CreateStore(val, tmp);
-    builder.CreateCall(push_fn, {arr, tmp});
+    // saga_array_push takes a void* to the element and memcpy's
+    // elem_size bytes from it.  For struct elements we pass the alloca
+    // pointer directly; for SSA values we spill to a temp first.
+    if (elem_ll_type->isStructTy()) {
+      llvm::Value *src = val;
+      if (val->getType()->isStructTy()) {
+        auto *tmp = create_entry_alloca(func, "elem.tmp", elem_ll_type);
+        builder.CreateStore(val, tmp);
+        src = tmp;
+      }
+      builder.CreateCall(push_fn, {arr, src});
+    } else {
+      auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
+      builder.CreateStore(val, tmp);
+      builder.CreateCall(push_fn, {arr, tmp});
+    }
   }
 
   return arr;
@@ -1102,24 +1130,20 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     if (key_sem) {
       key_ll_type = llvm_type(key_sem);
       string_keys = is_string_key_type(key_sem);
-      if (key_ll_type->isDoubleTy())
-        key_size = 8;
+      if (key_ll_type->isStructTy())
+        key_size = module->getDataLayout().getTypeAllocSize(key_ll_type);
       else if (key_ll_type->isIntegerTy(1))
         key_size = 1;
-      else if (key_ll_type->isIntegerTy(64))
-        key_size = 8;
-      else if (key_ll_type->isPointerTy())
+      else
         key_size = 8;
     }
     if (val_sem) {
       val_ll_type = llvm_type(val_sem);
-      if (val_ll_type->isDoubleTy())
-        val_size = 8;
+      if (val_ll_type->isStructTy())
+        val_size = module->getDataLayout().getTypeAllocSize(val_ll_type);
       else if (val_ll_type->isIntegerTy(1))
         val_size = 1;
-      else if (val_ll_type->isIntegerTy(64))
-        val_size = 8;
-      else if (val_ll_type->isPointerTy())
+      else
         val_size = 8;
     }
   }
@@ -1143,13 +1167,28 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     if (!key_val || !val_val)
       continue;
 
-    // Store key and value to temporaries for passing by pointer.
+    // Key spill (struct keys not supported here yet; default scalar path).
     auto *key_tmp = create_entry_alloca(func, "map.key.tmp", key_val->getType());
     builder.CreateStore(key_val, key_tmp);
-    auto *val_tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
-    builder.CreateStore(val_val, val_tmp);
 
-    builder.CreateCall(set_fn, {map, key_tmp, val_tmp});
+    // Value: for struct values, pass the struct alloca pointer directly
+    // so the runtime memcpy's val_size bytes of struct contents.
+    llvm::Value *val_ptr = nullptr;
+    if (val_ll_type->isStructTy()) {
+      if (val_val->getType()->isStructTy()) {
+        auto *tmp = create_entry_alloca(func, "map.val.tmp", val_ll_type);
+        builder.CreateStore(val_val, tmp);
+        val_ptr = tmp;
+      } else {
+        val_ptr = val_val; // already a pointer to a struct alloca
+      }
+    } else {
+      auto *tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
+      builder.CreateStore(val_val, tmp);
+      val_ptr = tmp;
+    }
+
+    builder.CreateCall(set_fn, {map, key_tmp, val_ptr});
   }
 
   return map;

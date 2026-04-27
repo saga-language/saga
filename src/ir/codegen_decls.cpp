@@ -6,6 +6,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <charconv>
 
@@ -64,8 +65,18 @@ void CodeGen::declare_functions(const SourceNode &src) {
       auto *func = llvm::Function::Create(
           fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
 
+      apply_func_abi_attrs(func, *fn);
+
       // Name the arguments for readability.
       size_t arg_idx = 0;
+      // Skip the hidden sret arg if present.
+      if (fn->signature.returns.size() == 1) {
+        auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+        if (r_ll && r_ll->isStructTy()) {
+          if (arg_idx < func->arg_size())
+            func->getArg(arg_idx++)->setName("sret.out");
+        }
+      }
       for (auto &param : fn->signature.params) {
         for (auto &ident : param.names.identifiers) {
           if (arg_idx < func->arg_size())
@@ -90,26 +101,55 @@ void CodeGen::declare_structs(const SourceNode &src) {
 void CodeGen::emit_struct_decl(const StructDeclNode &node) {
   std::string name(node.name.name);
   std::string key = mangle(package_name, name);
-  if (struct_types.count(key))
-    return; // Already registered.
 
-  // Resolve field types directly from the AST + analyzer.
+  // If a body has already been set (re-declaration / re-emit), skip.
+  auto existing = struct_types.find(key);
+  if (existing != struct_types.end() && !existing->second->isOpaque())
+    return;
+
+  // Use the analyzer's already-resolved StructTypeInfo when available — the
+  // analyzer's current_scope may not match this package by the time codegen
+  // runs, so calling analyzer.resolve_type() on bare identifiers can fail.
+  TypePtr struct_sem_type;
+  if (analyzer.package_scope_) {
+    auto sym_it = analyzer.package_scope_->symbols.find(name);
+    if (sym_it != analyzer.package_scope_->symbols.end())
+      struct_sem_type = sym_it->second.type;
+  }
+
   std::vector<llvm::Type *> field_types;
   std::vector<std::string> field_names;
 
-  for (auto &member : node.members) {
-    if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data)) {
-      auto sem_type = analyzer.resolve_type(*fs->type);
-      auto *ll = llvm_type(sem_type);
-      for (auto &ident : fs->names.identifiers) {
-        field_types.push_back(ll);
-        field_names.push_back(std::string(ident.name));
+  if (struct_sem_type && struct_sem_type->kind == TypeKind::Struct) {
+    auto &sinfo = std::get<StructTypeInfo>(struct_sem_type->detail);
+    for (auto &fi : sinfo.fields) {
+      field_types.push_back(llvm_type(fi.type));
+      field_names.push_back(fi.name);
+    }
+  } else {
+    for (auto &member : node.members) {
+      if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data)) {
+        auto sem_type = analyzer.resolve_type(*fs->type);
+        auto *ll = llvm_type(sem_type);
+        for (auto &ident : fs->names.identifiers) {
+          field_types.push_back(ll);
+          field_names.push_back(std::string(ident.name));
+        }
       }
     }
   }
 
-  auto *st = llvm::StructType::create(context, field_types, "mc." + key);
-  struct_types[key] = st;
+  // Use a pre-existing opaque forward declaration if one was created by
+  // llvm_type during recursive resolution above; otherwise create fresh.
+  llvm::StructType *st = nullptr;
+  auto it = struct_types.find(key);
+  if (it != struct_types.end() && it->second->isOpaque()) {
+    st = it->second;
+    st->setBody(field_types);
+  } else {
+    st = llvm::StructType::create(context, field_types, "mc." + key);
+    struct_types[key] = st;
+  }
   struct_fields[key] = std::move(field_names);
 }
 
@@ -169,44 +209,10 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
     ll_type = llvm::PointerType::getUnqual(context);
   }
   // Struct literal.
-  else if (auto *slit = std::get_if<StructLiteralNode>(&node.value->data)) {
-    if (sem_type->kind == TypeKind::Struct) {
-      auto &sinfo = std::get<StructTypeInfo>(sem_type->detail);
-      std::string skey = key_for(sinfo.origin_package, sinfo.name);
-      auto st_it = struct_types.find(skey);
-      if (st_it != struct_types.end()) {
-        auto *st = st_it->second;
-        auto &fnames = struct_fields[skey];
-        // Build field constants (zero-init if not provided).
-        std::vector<llvm::Constant *> field_vals(fnames.size(), nullptr);
-        for (size_t i = 0; i < fnames.size(); ++i)
-          field_vals[i] = llvm::Constant::getNullValue(st->getElementType(i));
-        for (auto &fa : slit->fields) {
-          std::string fname(fa.name.name);
-          for (size_t i = 0; i < fnames.size(); ++i) {
-            if (fnames[i] == fname) {
-              // Try to evaluate field value as constant.
-              if (auto *il = std::get_if<IntegerLiteralNode>(&fa.value->data)) {
-                int64_t v = 0;
-                auto sv = il->literal;
-                std::from_chars(sv.data(), sv.data() + sv.size(), v);
-                field_vals[i] = llvm::ConstantInt::get(
-                    st->getElementType(i), v);
-              } else if (auto *fl = std::get_if<FloatLiteralNode>(&fa.value->data)) {
-                double v = std::stod(std::string(fl->literal));
-                field_vals[i] = llvm::ConstantFP::get(
-                    st->getElementType(i), v);
-              } else if (auto *bl = std::get_if<BoolLiteralNode>(&fa.value->data)) {
-                field_vals[i] = llvm::ConstantInt::get(
-                    st->getElementType(i), bl->literal == "true" ? 1 : 0);
-              }
-              break;
-            }
-          }
-        }
-        init = llvm::ConstantStruct::get(st, field_vals);
-        ll_type = st;
-      }
+  else if (std::get_if<StructLiteralNode>(&node.value->data)) {
+    if (auto *c = build_const_value(*node.value, sem_type)) {
+      init = c;
+      ll_type = c->getType();
     }
   }
 
@@ -217,6 +223,66 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
       *module, ll_type, /*isConstant=*/true,
       llvm::GlobalValue::ExternalLinkage, init, link_name);
   (void)gv;
+}
+
+llvm::Constant *CodeGen::build_const_value(const Node &val_node,
+                                            const TypePtr &expected) {
+  if (auto *il = std::get_if<IntegerLiteralNode>(&val_node.data)) {
+    int64_t v = 0;
+    auto sv = il->literal;
+    std::from_chars(sv.data(), sv.data() + sv.size(), v);
+    auto *ty = expected ? llvm_type(expected) : (llvm::Type *)i64_type;
+    if (!ty || !ty->isIntegerTy()) ty = i64_type;
+    return llvm::ConstantInt::get(ty, v);
+  }
+  if (auto *fl = std::get_if<FloatLiteralNode>(&val_node.data)) {
+    double v = std::stod(std::string(fl->literal));
+    auto *ty = expected ? llvm_type(expected) : (llvm::Type *)f64_type;
+    if (!ty || !ty->isFloatingPointTy()) ty = f64_type;
+    return llvm::ConstantFP::get(ty, v);
+  }
+  if (auto *bl = std::get_if<BoolLiteralNode>(&val_node.data)) {
+    return llvm::ConstantInt::get(i1_type, bl->literal == "true" ? 1 : 0);
+  }
+  if (auto *sl = std::get_if<StringLiteralNode>(&val_node.data)) {
+    std::string text;
+    for (auto &frag_node : sl->fragments) {
+      if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
+        text += unescape_fragment(frag->text);
+    }
+    return llvm::cast<llvm::Constant>(make_string_constant(text));
+  }
+  if (auto *slit = std::get_if<StructLiteralNode>(&val_node.data)) {
+    if (!expected || expected->kind != TypeKind::Struct) return nullptr;
+    if (!std::holds_alternative<StructTypeInfo>(expected->detail))
+      return nullptr;
+    auto &sinfo = std::get<StructTypeInfo>(expected->detail);
+    std::string skey = key_for(sinfo.origin_package, sinfo.name);
+    auto st_it = struct_types.find(skey);
+    if (st_it == struct_types.end()) return nullptr;
+    auto *st = st_it->second;
+    if (st->isOpaque()) llvm_type(expected);  // force body fill
+    size_t n = st->getNumElements();
+    auto &fnames = struct_fields[skey];
+    std::vector<llvm::Constant *> field_vals(n, nullptr);
+    for (size_t i = 0; i < n; ++i)
+      field_vals[i] = llvm::Constant::getNullValue(st->getElementType(i));
+    for (auto &fa : slit->fields) {
+      std::string fname(fa.name.name);
+      for (size_t i = 0; i < n && i < fnames.size(); ++i) {
+        if (fnames[i] == fname) {
+          TypePtr field_ty;
+          for (auto &fi : sinfo.fields)
+            if (fi.name == fname) { field_ty = fi.type; break; }
+          if (auto *c = build_const_value(*fa.value, field_ty))
+            field_vals[i] = c;
+          break;
+        }
+      }
+    }
+    return llvm::ConstantStruct::get(st, field_vals);
+  }
+  return nullptr;
 }
 
 void CodeGen::declare_enums(const SourceNode &src) {
@@ -314,6 +380,61 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
 // Struct method declarations
 // ===========================================================================
 
+CodeGen::MethodSig
+CodeGen::build_method_signature(const FuncDeclNode &fn) {
+  MethodSig sig;
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+  // Sret lowering for struct returns.
+  llvm::Type *ret_type = void_ll_type;
+  if (!fn.signature.returns.empty()) {
+    auto *r = resolve_type_node(*fn.signature.returns[0]);
+    if (r && r->isStructTy()) {
+      sig.sret_struct_ty = r;
+      ret_type = void_ll_type;
+    } else {
+      ret_type = r;
+    }
+  }
+
+  std::vector<llvm::Type *> param_types;
+  if (sig.sret_struct_ty)
+    param_types.push_back(ptr_type);
+  param_types.push_back(ptr_type); // self pointer
+  for (auto &param : fn.signature.params) {
+    auto *ll = resolve_type_node(*param.type);
+    bool byval = ll && ll->isStructTy() && !param.is_variadic;
+    for (size_t i = 0; i < param.names.identifiers.size(); ++i) {
+      sig.byval_struct_tys.push_back(byval ? ll : nullptr);
+      param_types.push_back(byval ? ptr_type : ll);
+    }
+  }
+  sig.fn_type = llvm::FunctionType::get(ret_type, param_types, false);
+  return sig;
+}
+
+void CodeGen::apply_method_abi_attrs(llvm::Function *func,
+                                       const MethodSig &sig) {
+  unsigned idx = 0;
+  if (sig.sret_struct_ty) {
+    llvm::AttrBuilder ab(context);
+    ab.addStructRetAttr(sig.sret_struct_ty);
+    ab.addAlignmentAttr(
+        module->getDataLayout().getABITypeAlign(sig.sret_struct_ty));
+    func->addParamAttrs(idx++, ab);
+  }
+  ++idx; // self
+  for (auto *bv : sig.byval_struct_tys) {
+    if (bv) {
+      llvm::AttrBuilder ab(context);
+      ab.addByValAttr(bv);
+      ab.addAlignmentAttr(module->getDataLayout().getABITypeAlign(bv));
+      func->addParamAttrs(idx, ab);
+    }
+    ++idx;
+  }
+}
+
 void CodeGen::declare_struct_methods(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     auto *s = std::get_if<StructDeclNode>(&decl->data);
@@ -340,32 +461,21 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
       if (module->getFunction(link_name))
         continue;
 
-      // Build function type: first param is ptr to self struct.
-      auto *ptr_type = llvm::PointerType::getUnqual(context);
-      std::vector<llvm::Type *> param_types;
-      param_types.push_back(ptr_type); // self pointer
-
-      for (auto &param : fn->signature.params) {
-        auto *ll = resolve_type_node(*param.type);
-        for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-          param_types.push_back(ll);
-      }
-
-      llvm::Type *ret_type = void_ll_type;
-      if (!fn->signature.returns.empty())
-        ret_type = resolve_type_node(*fn->signature.returns[0]);
-
-      auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
+      auto sig = build_method_signature(*fn);
       auto *func = llvm::Function::Create(
-          fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+          sig.fn_type, llvm::Function::ExternalLinkage, link_name,
+          module.get());
+      apply_method_abi_attrs(func, sig);
 
       // Name arguments.
-      func->getArg(0)->setName("self");
-      size_t arg_idx = 1;
+      unsigned aidx = 0;
+      if (sig.sret_struct_ty)
+        func->getArg(aidx++)->setName("sret.out");
+      func->getArg(aidx++)->setName("self");
       for (auto &param : fn->signature.params)
         for (auto &ident : param.names.identifiers)
-          if (arg_idx < func->arg_size())
-            func->getArg(arg_idx++)->setName(std::string(ident.name));
+          if (aidx < func->arg_size())
+            func->getArg(aidx++)->setName(std::string(ident.name));
 
       struct_method_links[struct_key].push_back({link_name, method_name});
     }
@@ -394,30 +504,19 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
     if (module->getFunction(link_name))
       continue;
 
-    auto *ptr_type = llvm::PointerType::getUnqual(context);
-    std::vector<llvm::Type *> param_types;
-    param_types.push_back(ptr_type); // self pointer
-
-    for (auto &param : fn->signature.params) {
-      auto *ll = resolve_type_node(*param.type);
-      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-        param_types.push_back(ll);
-    }
-
-    llvm::Type *ret_type = void_ll_type;
-    if (!fn->signature.returns.empty())
-      ret_type = resolve_type_node(*fn->signature.returns[0]);
-
-    auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
+    auto sig = build_method_signature(*fn);
     auto *func = llvm::Function::Create(
-        fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+        sig.fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+    apply_method_abi_attrs(func, sig);
 
-    func->getArg(0)->setName(std::string(fn->receiver->name.name));
-    size_t arg_idx = 1;
+    unsigned aidx = 0;
+    if (sig.sret_struct_ty)
+      func->getArg(aidx++)->setName("sret.out");
+    func->getArg(aidx++)->setName(std::string(fn->receiver->name.name));
     for (auto &param : fn->signature.params)
       for (auto &ident : param.names.identifiers)
-        if (arg_idx < func->arg_size())
-          func->getArg(arg_idx++)->setName(std::string(ident.name));
+        if (aidx < func->arg_size())
+          func->getArg(aidx++)->setName(std::string(ident.name));
 
     struct_method_links[struct_key2].push_back({link_name, method_name});
   }

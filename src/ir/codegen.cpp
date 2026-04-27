@@ -70,14 +70,18 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
   // Build the LLVM function type from the semantic type.
   auto &fi = std::get<FuncTypeInfo>(func_type->detail);
 
-  std::vector<llvm::Type *> param_types;
-  for (auto &p : fi.params)
-    param_types.push_back(llvm_type(p));
-
+  // Determine sret lowering for struct returns.
+  llvm::Type *sret_struct_ty = nullptr;
   llvm::Type *ret_ll = void_ll_type;
   if (!fi.returns.empty() && fi.returns[0]->kind != TypeKind::Void) {
     if (fi.returns.size() == 1) {
-      ret_ll = llvm_type(fi.returns[0]);
+      auto *r = llvm_type(fi.returns[0]);
+      if (r && r->isStructTy()) {
+        sret_struct_ty = r;
+        ret_ll = void_ll_type;
+      } else {
+        ret_ll = r;
+      }
     } else {
       // Multi-return: create a struct type.
       std::vector<llvm::Type *> ret_types;
@@ -91,9 +95,44 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
     }
   }
 
+  // Param types: structs lowered to ptr (byval applied below).
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  std::vector<llvm::Type *> param_types;
+  std::vector<llvm::Type *> byval_attached(fi.params.size(), nullptr);
+  if (sret_struct_ty)
+    param_types.push_back(ptr_ty);
+  for (size_t i = 0; i < fi.params.size(); ++i) {
+    auto *p = llvm_type(fi.params[i]);
+    if (p && p->isStructTy()) {
+      byval_attached[i] = p;
+      param_types.push_back(ptr_ty);
+    } else {
+      param_types.push_back(p);
+    }
+  }
+
   auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, /*isVarArg=*/false);
   auto *func = llvm::Function::Create(
       fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+
+  unsigned idx = 0;
+  if (sret_struct_ty) {
+    llvm::AttrBuilder ab(context);
+    ab.addStructRetAttr(sret_struct_ty);
+    ab.addAlignmentAttr(
+        module->getDataLayout().getABITypeAlign(sret_struct_ty));
+    func->addParamAttrs(idx++, ab);
+  }
+  for (size_t i = 0; i < fi.params.size(); ++i) {
+    if (byval_attached[i]) {
+      llvm::AttrBuilder ab(context);
+      ab.addByValAttr(byval_attached[i]);
+      ab.addAlignmentAttr(
+          module->getDataLayout().getABITypeAlign(byval_attached[i]));
+      func->addParamAttrs(idx, ab);
+    }
+    ++idx;
+  }
   return func;
 }
 
@@ -150,11 +189,33 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return i64_type; // Enums are represented as i64 tags.
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
-    auto it = struct_types.find(key_for(info.origin_package, info.name));
-    if (it != struct_types.end())
-      return it->second;
-    // Struct not yet registered — return opaque ptr as fallback.
-    return llvm::PointerType::getUnqual(context);
+    std::string key = key_for(info.origin_package, info.name);
+    auto it = struct_types.find(key);
+    llvm::StructType *st = nullptr;
+    if (it != struct_types.end()) {
+      st = it->second;
+      if (!st->isOpaque())
+        return st;
+    } else {
+      // Forward declare opaque first; insert before recursing into fields
+      // so any self-reference resolves to this same opaque shell.
+      st = llvm::StructType::create(context, "mc." + key);
+      struct_types[key] = st;
+    }
+    // Fill body eagerly using semantic field info, so callers that need
+    // size/alignment (unions, byval/sret lowering) get a sized struct.
+    std::vector<llvm::Type *> ftypes;
+    std::vector<std::string> fnames;
+    for (auto &f : info.fields) {
+      ftypes.push_back(llvm_type(f.type));
+      fnames.push_back(f.name);
+    }
+    st->setBody(ftypes);
+    if (struct_fields.find(key) == struct_fields.end())
+      struct_fields[key] = std::move(fnames);
+    if (named_sem_types.find(key) == named_sem_types.end())
+      named_sem_types[key] = t;
+    return st;
   }
   case TypeKind::Interface:
     // Interfaces are represented as a fat pointer struct.

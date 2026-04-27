@@ -360,6 +360,10 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
                 llvm::GlobalValue::ExternalLinkage,
                 /*Initializer=*/nullptr, gv_name);
           }
+          // For struct-typed constants under D1 ABI, return the pointer so
+          // chained selectors can GEP through it. For scalar constants, load.
+          if (exp.type && exp.type->kind == TypeKind::Struct)
+            return gv;
           return builder.CreateLoad(ll, gv, field_name);
         }
         break;
@@ -389,14 +393,20 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
           if (alloca_type == st_it->second) {
             // Direct struct alloca — GEP into it.
             auto [gep, ftype] = struct_field_gep(alloca, sem, field_name);
-            if (gep)
+            if (gep) {
+              if (ftype && ftype->isStructTy())
+                return gep;
               return builder.CreateLoad(ftype, gep, field_name);
+            }
           } else if (alloca_type->isPointerTy()) {
             // Pointer to struct — load the pointer, then GEP.
             auto *ptr = builder.CreateLoad(alloca_type, alloca, obj_name);
             auto [gep, ftype] = struct_field_gep(ptr, sem, field_name);
-            if (gep)
+            if (gep) {
+              if (ftype && ftype->isStructTy())
+                return gep;
               return builder.CreateLoad(ftype, gep, field_name);
+            }
           }
         }
       }
@@ -411,8 +421,11 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
   auto sem = semantic_type(*node.object);
   if (sem && sem->kind == TypeKind::Struct) {
     auto [gep, ftype] = struct_field_gep(obj, sem, field_name);
-    if (gep)
+    if (gep) {
+      if (ftype && ftype->isStructTy())
+        return gep;
       return builder.CreateLoad(ftype, gep, field_name);
+    }
   }
 
   // Enum variant access: EnumName.Variant → integer constant.
@@ -462,6 +475,17 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
       std::vector<llvm::Value *> args;
 
+      // Sret lowering: if callee returns a struct via sret, alloca the
+      // result struct and pass as the hidden first argument.
+      auto *parent_fn = builder.GetInsertBlock()->getParent();
+      llvm::Value *sret_slot = nullptr;
+      llvm::Type *sret_struct_ty = nullptr;
+      if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
+        sret_struct_ty = callee->getParamStructRetType(0);
+        sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
+        args.push_back(sret_slot);
+      }
+
       if (fn_info.is_variadic && !fn_info.params.empty()) {
         // Pack variadic arguments: non-variadic params are emitted
         // normally, then the remaining args are packed into an mc_array.
@@ -492,27 +516,71 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
           auto *val = emit_expr(*node.args[i]);
           if (!val) continue;
           // If the parameter type is a union but the argument is
-          // concrete, wrap the value into the union struct.
+          // concrete, wrap the value into the union struct (yields a ptr
+          // to the union alloca).
           if (i < fn_info.params.size() &&
               fn_info.params[i]->kind == TypeKind::Union) {
             auto arg_sem = semantic_type(*node.args[i]);
             if (arg_sem && arg_sem->kind != TypeKind::Union) {
               auto *wrapped = emit_union_wrap(val, arg_sem, fn_info.params[i]);
-              if (wrapped) {
-                auto *union_st = get_union_llvm_type(fn_info.params[i]);
-                val = builder.CreateLoad(union_st, wrapped, "arg.union");
+              if (wrapped)
+                val = wrapped; // keep as pointer for byval lowering
+            }
+          }
+          // Byval struct/union param: ensure val is a pointer to the
+          // struct/union alloca.  If it's an SSA struct value, spill.
+          if (i < fn_info.params.size() && fn_info.params[i] &&
+              (fn_info.params[i]->kind == TypeKind::Struct ||
+               fn_info.params[i]->kind == TypeKind::Union)) {
+            auto *p_ll = llvm_type(fn_info.params[i]);
+            if (p_ll && p_ll->isStructTy()) {
+              if (val->getType()->isStructTy()) {
+                auto *tmp = create_entry_alloca(parent_fn, "arg.spill",
+                                                 p_ll);
+                builder.CreateStore(val, tmp);
+                val = tmp;
               }
+              // else val is already a pointer to a struct alloca.
             }
           }
           args.push_back(val);
         }
       }
 
-      if (callee->getReturnType()->isVoidTy()) {
-        builder.CreateCall(callee, args);
-        return nullptr;
+      auto *call = builder.CreateCall(callee, args,
+          callee->getReturnType()->isVoidTy() ? "" : "pkg.call");
+
+      // Mirror sret/byval attrs on the call site so LLVM lowers correctly.
+      unsigned idx = 0;
+      if (sret_slot) {
+        call->addParamAttr(idx,
+            llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
+        call->addParamAttr(idx,
+            llvm::Attribute::getWithAlignment(context,
+                module->getDataLayout().getABITypeAlign(sret_struct_ty)));
+        ++idx;
       }
-      return builder.CreateCall(callee, args, "pkg.call");
+      for (size_t i = 0; i < fn_info.params.size(); ++i) {
+        if (fn_info.params[i] &&
+            (fn_info.params[i]->kind == TypeKind::Struct ||
+             fn_info.params[i]->kind == TypeKind::Union)) {
+          auto *p_ll = llvm_type(fn_info.params[i]);
+          if (p_ll && p_ll->isStructTy()) {
+            call->addParamAttr(idx,
+                llvm::Attribute::getWithByValType(context, p_ll));
+            call->addParamAttr(idx,
+                llvm::Attribute::getWithAlignment(context,
+                    module->getDataLayout().getABITypeAlign(p_ll)));
+          }
+        }
+        ++idx;
+      }
+
+      if (sret_slot)
+        return sret_slot;
+      if (callee->getReturnType()->isVoidTy())
+        return nullptr;
+      return call;
     }
 
     // ── Struct-field function call: r.handler(args) where `handler` is a
@@ -1089,11 +1157,21 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       }
 
       if (callee) {
-        // Build argument list: self + explicit args.
+        auto *parent_fn = builder.GetInsertBlock()->getParent();
+
+        // Sret lowering: if callee returns a struct via sret, alloca a
+        // result slot and pass it as the hidden first argument.
+        std::vector<llvm::Value *> args;
+        llvm::Value *sret_slot = nullptr;
+        llvm::Type *sret_struct_ty = nullptr;
+        if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
+          sret_struct_ty = callee->getParamStructRetType(0);
+          sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
+          args.push_back(sret_slot);
+        }
+
         // For struct methods, self is a pointer to the struct.
         llvm::Value *self_ptr = obj;
-
-        // If the object is an identifier referencing a local, use the alloca.
         if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
           auto local_it = locals.find(std::string(id->name));
           if (local_it != locals.end()) {
@@ -1101,35 +1179,89 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
             auto *alloca_type = alloca->getAllocatedType();
             auto st_it = struct_types.find(struct_key);
             if (st_it != struct_types.end() && alloca_type == st_it->second) {
-              self_ptr = alloca; // Direct struct alloca.
+              self_ptr = alloca;
             } else if (alloca_type->isPointerTy()) {
               self_ptr = builder.CreateLoad(alloca_type, alloca, "self.ptr");
             }
           }
         }
 
-        // If self_ptr is a struct value (not a pointer/alloca), spill to alloca.
+        // If self_ptr is a struct value (not a pointer/alloca), spill.
         auto st_it2 = struct_types.find(struct_key);
         if (st_it2 != struct_types.end() &&
             self_ptr->getType() == st_it2->second) {
-          auto *func = builder.GetInsertBlock()->getParent();
-          auto *tmp = create_entry_alloca(func, "self.tmp", st_it2->second);
+          auto *tmp = create_entry_alloca(parent_fn, "self.tmp",
+                                           st_it2->second);
           builder.CreateStore(self_ptr, tmp);
           self_ptr = tmp;
         }
-
-        std::vector<llvm::Value *> args;
         args.push_back(self_ptr);
-        for (auto &arg_node : node.args) {
-          auto *val = emit_expr(*arg_node);
-          if (val)
-            args.push_back(val);
+
+        // Resolve the method signature for byval lowering of struct args.
+        const FuncTypeInfo *m_fi = nullptr;
+        for (auto &m : info.methods) {
+          if (m.name == method && m.signature &&
+              m.signature->kind == TypeKind::Func) {
+            m_fi = &std::get<FuncTypeInfo>(m.signature->detail);
+            break;
+          }
         }
-        if (callee->getReturnType()->isVoidTy()) {
-          builder.CreateCall(callee, args);
+
+        for (size_t ai = 0; ai < node.args.size(); ++ai) {
+          auto *val = emit_expr(*node.args[ai]);
+          if (!val)
+            continue;
+          if (m_fi && ai < m_fi->params.size() && m_fi->params[ai] &&
+              (m_fi->params[ai]->kind == TypeKind::Struct ||
+               m_fi->params[ai]->kind == TypeKind::Union)) {
+            auto *p_ll = llvm_type(m_fi->params[ai]);
+            if (p_ll && p_ll->isStructTy() && val->getType()->isStructTy()) {
+              auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+              builder.CreateStore(val, tmp);
+              val = tmp;
+            }
+          }
+          args.push_back(val);
+        }
+
+        std::string call_name =
+            callee->getReturnType()->isVoidTy() ? "" : "mcall";
+        auto *call = builder.CreateCall(callee, args, call_name);
+
+        // Mirror sret/byval attrs on the call site.
+        unsigned cidx = 0;
+        if (sret_slot) {
+          call->addParamAttr(cidx,
+              llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
+          call->addParamAttr(cidx,
+              llvm::Attribute::getWithAlignment(context,
+                  module->getDataLayout().getABITypeAlign(sret_struct_ty)));
+          ++cidx;
+        }
+        ++cidx; // self
+        if (m_fi) {
+          for (size_t ai = 0; ai < m_fi->params.size(); ++ai) {
+            if (m_fi->params[ai] &&
+                (m_fi->params[ai]->kind == TypeKind::Struct ||
+                 m_fi->params[ai]->kind == TypeKind::Union)) {
+              auto *p_ll = llvm_type(m_fi->params[ai]);
+              if (p_ll && p_ll->isStructTy()) {
+                call->addParamAttr(cidx,
+                    llvm::Attribute::getWithByValType(context, p_ll));
+                call->addParamAttr(cidx,
+                    llvm::Attribute::getWithAlignment(context,
+                        module->getDataLayout().getABITypeAlign(p_ll)));
+              }
+            }
+            ++cidx;
+          }
+        }
+
+        if (sret_slot)
+          return sret_slot;
+        if (callee->getReturnType()->isVoidTy())
           return nullptr;
-        }
-        return builder.CreateCall(callee, args, "mcall");
+        return call;
       }
     }
 
@@ -1704,13 +1836,74 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   }
 
   std::vector<llvm::Value *> args;
-  for (auto &arg_node : node.args) {
-    auto *val = emit_expr(*arg_node);
-    if (val)
-      args.push_back(val);
+
+  // Sret lowering for direct dispatch.
+  auto *parent_fn = builder.GetInsertBlock()->getParent();
+  llvm::Value *sret_slot = nullptr;
+  llvm::Type *sret_struct_ty = nullptr;
+  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
+    sret_struct_ty = callee->getParamStructRetType(0);
+    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
+    args.push_back(sret_slot);
   }
 
-  return builder.CreateCall(callee, args);
+  // Resolve the semantic param types so we can recognise struct args
+  // that need spilling for byval.
+  auto callee_sem = semantic_type(*node.callee);
+  const FuncTypeInfo *fi = nullptr;
+  if (callee_sem && callee_sem->kind == TypeKind::Func)
+    fi = &std::get<FuncTypeInfo>(callee_sem->detail);
+
+  for (size_t i = 0; i < node.args.size(); ++i) {
+    auto *val = emit_expr(*node.args[i]);
+    if (!val)
+      continue;
+    if (fi && i < fi->params.size() && fi->params[i] &&
+        (fi->params[i]->kind == TypeKind::Struct ||
+         fi->params[i]->kind == TypeKind::Union)) {
+      auto *p_ll = llvm_type(fi->params[i]);
+      if (p_ll && p_ll->isStructTy() && val->getType()->isStructTy()) {
+        auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+        builder.CreateStore(val, tmp);
+        val = tmp;
+      }
+    }
+    args.push_back(val);
+  }
+
+  auto *call = builder.CreateCall(callee, args);
+
+  // Mirror sret/byval attrs on the call site.
+  unsigned cidx = 0;
+  if (sret_slot) {
+    call->addParamAttr(cidx,
+        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
+    call->addParamAttr(cidx,
+        llvm::Attribute::getWithAlignment(context,
+            module->getDataLayout().getABITypeAlign(sret_struct_ty)));
+    ++cidx;
+  }
+  if (fi) {
+    for (size_t i = 0; i < fi->params.size(); ++i) {
+      if (fi->params[i] &&
+          (fi->params[i]->kind == TypeKind::Struct ||
+           fi->params[i]->kind == TypeKind::Union)) {
+        auto *p_ll = llvm_type(fi->params[i]);
+        if (p_ll && p_ll->isStructTy()) {
+          call->addParamAttr(cidx,
+              llvm::Attribute::getWithByValType(context, p_ll));
+          call->addParamAttr(cidx,
+              llvm::Attribute::getWithAlignment(context,
+                  module->getDataLayout().getABITypeAlign(p_ll)));
+        }
+      }
+      ++cidx;
+    }
+  }
+
+  if (sret_slot)
+    return sret_slot;
+  return call;
 }
 
 // ===========================================================================
