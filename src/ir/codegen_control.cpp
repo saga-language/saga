@@ -1539,7 +1539,18 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
       continue;
 
     auto *gep = builder.CreateStructGEP(st, alloca, idx, fname);
-    builder.CreateStore(val, gep);
+    auto *field_ll = st->getElementType(idx);
+    // D1: aggregate fields are stored inline. If the rhs is a pointer to
+    // a struct (e.g. from a nested struct literal), memcpy the bytes
+    // rather than storing the pointer into the struct slot.
+    if (field_ll->isStructTy() && val->getType()->isPointerTy()) {
+      auto &dl = module->getDataLayout();
+      uint64_t sz = dl.getTypeAllocSize(field_ll);
+      llvm::Align al = dl.getABITypeAlign(field_ll);
+      builder.CreateMemCpy(gep, al, val, al, sz);
+    } else {
+      builder.CreateStore(val, gep);
+    }
   }
 
   // Return a pointer to the struct alloca.
