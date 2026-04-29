@@ -370,7 +370,8 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
     for (auto &r : m.signature.returns)
       returns.push_back(analyzer.resolve_type(*r));
     auto fn_type = make_func_type(std::move(params), std::move(returns));
-    sem_methods.push_back({std::string(m.name.name), fn_type, m.is_public});
+    sem_methods.push_back(
+        {std::string(m.name.name), fn_type, m.is_public, package_name});
   }
   named_sem_types[key] =
       make_interface_type(name, std::move(sem_methods), {}, package_name);

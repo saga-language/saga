@@ -257,6 +257,66 @@ TEST(SgiRoundtrip, ModuleTypeExposesStructWithOrigin) {
 }
 
 // ---------------------------------------------------------------------------
+// MethodInfo.origin_package survives SGI round-trip
+// ---------------------------------------------------------------------------
+// P5 required that selector resolution preserve the method's origin_package
+// all the way to codegen so cross-package method calls mangle against the
+// defining package's symbol table. Verify that SGI parsing populates the
+// field for every reconstructed method, both on direct struct exports and
+// on interfaces.
+
+TEST(SgiRoundtrip, StructMethodOriginMatchesType) {
+  auto sig = make_func_type({}, {make_string_type()});
+  auto s = make_struct_type(
+      "Counter",
+      {FieldInfo{"value", make_int_type(), true}},
+      {MethodInfo{"Name", sig, true, ""}});
+  auto parsed = roundtrip("lib", {{"", "Counter", s, true}});
+  ASSERT_EQ(parsed.exports.size(), 1u);
+  auto &si = std::get<StructTypeInfo>(parsed.exports[0].type->detail);
+  EXPECT_EQ(si.origin_package, "lib");
+  ASSERT_EQ(si.methods.size(), 1u);
+  EXPECT_EQ(si.methods[0].origin_package, "lib")
+      << "method origin must mirror the enclosing struct so that "
+         "cross-package method calls mangle to lib__Counter__Name";
+}
+
+TEST(SgiRoundtrip, InterfaceMethodOriginMatchesType) {
+  auto sig = make_func_type({}, {make_string_type()});
+  auto iface = make_interface_type(
+      "Drawable", {MethodInfo{"Draw", sig, true, ""}});
+  auto parsed = roundtrip("ui", {{"", "Drawable", iface, true}});
+  ASSERT_EQ(parsed.exports.size(), 1u);
+  auto &ii = std::get<InterfaceTypeInfo>(parsed.exports[0].type->detail);
+  EXPECT_EQ(ii.origin_package, "ui");
+  ASSERT_EQ(ii.methods.size(), 1u);
+  EXPECT_EQ(ii.methods[0].origin_package, "ui");
+}
+
+TEST(SgiRoundtrip, ExplicitOriginOverridesFilePackageForMethods) {
+  auto sig = make_func_type({}, {make_int_type()});
+  auto s = make_struct_type(
+      "Box",
+      {FieldInfo{"value", make_int_type(), true}},
+      {MethodInfo{"Get", sig, true, ""}});
+  // SgiExport fields: { doc, name, type, is_type, origin_path } — the
+  // origin_path is the trailing field, not the first.
+  SgiExport exp;
+  exp.name = "Box";
+  exp.type = s;
+  exp.is_type = true;
+  exp.origin_path = "orig";
+  auto parsed = roundtrip("re_export", {exp});
+  ASSERT_EQ(parsed.exports.size(), 1u);
+  auto &si = std::get<StructTypeInfo>(parsed.exports[0].type->detail);
+  EXPECT_EQ(si.origin_package, "orig");
+  ASSERT_EQ(si.methods.size(), 1u);
+  EXPECT_EQ(si.methods[0].origin_package, "orig")
+      << "@origin override must apply to methods so re-exports still mangle "
+         "to the defining package";
+}
+
+// ---------------------------------------------------------------------------
 // Receiver methods preserve T→9990, K/V→9991/9992 for generic intrinsics
 // ---------------------------------------------------------------------------
 

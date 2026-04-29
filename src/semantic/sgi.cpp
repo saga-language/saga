@@ -1497,24 +1497,36 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
 
   // Stamp origin_package on every reconstructed nominal type. Exports with
   // an explicit `@origin` use that; others default to the file's package.
+  // Method origin_package mirrors the enclosing type's origin so that
+  // method-link mangling at the importer always targets the defining
+  // package's symbol, not the caller's.
   for (auto &exp : sgi.exports) {
     if (!exp.type) continue;
     std::string origin = exp.origin_path.empty()
                              ? sgi.package_name
                              : exp.origin_path;
     switch (exp.type->kind) {
-    case TypeKind::Struct:
-      std::get<StructTypeInfo>(exp.type->detail).origin_package = origin;
+    case TypeKind::Struct: {
+      auto &si = std::get<StructTypeInfo>(exp.type->detail);
+      si.origin_package = origin;
+      for (auto &m : si.methods) m.origin_package = origin;
       break;
+    }
     case TypeKind::Enum:
       std::get<EnumTypeInfo>(exp.type->detail).origin_package = origin;
       break;
-    case TypeKind::Interface:
-      std::get<InterfaceTypeInfo>(exp.type->detail).origin_package = origin;
+    case TypeKind::Interface: {
+      auto &ii = std::get<InterfaceTypeInfo>(exp.type->detail);
+      ii.origin_package = origin;
+      for (auto &m : ii.methods) m.origin_package = origin;
       break;
-    case TypeKind::Alias:
-      std::get<AliasTypeInfo>(exp.type->detail).origin_package = origin;
+    }
+    case TypeKind::Alias: {
+      auto &ai = std::get<AliasTypeInfo>(exp.type->detail);
+      ai.origin_package = origin;
+      for (auto &m : ai.methods) m.origin_package = origin;
       break;
+    }
     default:
       break;
     }

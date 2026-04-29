@@ -1189,7 +1189,8 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   std::vector<MethodInfo> new_methods;
   for (auto &m : info.methods)
     new_methods.push_back(
-        {m.name, substitute(m.signature, bindings), m.is_public});
+        {m.name, substitute(m.signature, bindings), m.is_public,
+         m.origin_package});
 
   auto result =
       make_struct_type(info.name, std::move(new_fields), std::move(new_methods),
@@ -1320,7 +1321,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                 stored_sig = substitute(fn_type, remap);
             }
             struct_info.methods.push_back(
-                {std::string(fn.name.name), stored_sig, fn.is_public});
+                {std::string(fn.name.name), stored_sig, fn.is_public,
+                 current_package_name()});
           }
         }
       }
@@ -1332,11 +1334,13 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
           auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
           if (check_recv_origin(struct_info.origin_package, struct_info.name))
             struct_info.methods.push_back(
-                {std::string(fn.name.name), fn_type, fn.is_public});
+                {std::string(fn.name.name), fn_type, fn.is_public,
+                 current_package_name()});
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
           alias_info.methods.push_back(
-              {std::string(fn.name.name), fn_type, fn.is_public});
+              {std::string(fn.name.name), fn_type, fn.is_public,
+               current_package_name()});
         } else if (recv_sym->type->kind == TypeKind::Enum) {
           // Enums can also have methods bound to them.
           // Store in the type_methods side table.
@@ -1489,7 +1493,8 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
                      }
                      auto fn_type = resolve_signature(fn.signature);
                      methods.push_back({std::string(fn.name.name), fn_type,
-                                        member.is_public});
+                                        member.is_public,
+                                        current_package_name()});
                    },
                    [&](const auto &) {},
                },
@@ -1580,7 +1585,8 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
 
   for (auto &field : i.methods) {
     auto fn_type = resolve_signature(field.signature);
-    methods.push_back({std::string(field.name.name), fn_type, field.is_public});
+    methods.push_back({std::string(field.name.name), fn_type, field.is_public,
+                       current_package_name()});
   }
 
   auto iface_type = make_interface_type(
@@ -3691,7 +3697,8 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
         new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
       std::vector<MethodInfo> new_methods;
       for (auto &m : info.methods)
-        new_methods.push_back({m.name, substitute(m.signature, bindings), m.is_public});
+        new_methods.push_back({m.name, substitute(m.signature, bindings),
+                               m.is_public, m.origin_package});
 
       auto result = make_struct_type(info.name, std::move(new_fields),
                                      std::move(new_methods), {},
@@ -4451,7 +4458,8 @@ TypePtr Analyzer::instantiate_generic_struct(
   std::vector<MethodInfo> new_methods;
   for (auto &m : info.methods) {
     new_methods.push_back(
-        {m.name, substitute(m.signature, bindings), m.is_public});
+        {m.name, substitute(m.signature, bindings), m.is_public,
+         m.origin_package});
   }
 
   auto result = make_struct_type(info.name, std::move(new_fields),
