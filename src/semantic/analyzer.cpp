@@ -1274,13 +1274,65 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // receiver types like [T] can resolve T as the function's type parameter.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
-    if (auto *ident = std::get_if<IdentifierNode>(&recv_type_node->data)) {
+    // Helper: check D4 — cannot bind a receiver to a type from another package.
+    auto check_recv_origin = [&](const std::string &origin,
+                                 const std::string &type_name) -> bool {
+      if (!origin.empty() && origin != current_package_name()) {
+        error(fn.receiver->name.span,
+              std::format("cannot bind receiver method to type '{}' from "
+                          "another package",
+                          type_name));
+        return false;
+      }
+      return true;
+    };
+
+    if (auto *gapp =
+            std::get_if<GenericTypeAppNode>(&recv_type_node->data)) {
+      // Generic type application receiver: pub fn |T| (b |T| Box) Method(...)
+      // Attach the method to the base struct type (ignoring the type args).
+      if (auto *base_ident =
+              std::get_if<IdentifierNode>(&gapp->base_type->data)) {
+        auto recv_sym = lookup(std::string(base_ident->name));
+        if (recv_sym && recv_sym->type &&
+            recv_sym->type->kind == TypeKind::Struct) {
+          auto &struct_info =
+              std::get<StructTypeInfo>(recv_sym->type->detail);
+          if (check_recv_origin(struct_info.origin_package,
+                                struct_info.name)) {
+            // Remap the function's TypeParam IDs to the struct's TypeParam IDs
+            // so that instantiate_generic_struct can substitute them correctly.
+            // e.g. fn |T#5| (b |T#5| Box) Get() T#5  →  Get() T#0 (struct's T)
+            TypePtr stored_sig = fn_type;
+            if (!struct_info.type_params.empty() &&
+                gapp->type_args.size() == struct_info.type_params.size()) {
+              std::unordered_map<uint32_t, TypePtr> remap;
+              for (size_t i = 0; i < gapp->type_args.size(); ++i) {
+                auto arg_t = resolve_type(*gapp->type_args[i]);
+                if (arg_t && arg_t->kind == TypeKind::TypeParam) {
+                  auto &tp = std::get<TypeParamInfo>(arg_t->detail);
+                  remap[tp.param.id] =
+                      make_type_param(struct_info.type_params[i].id,
+                                      struct_info.type_params[i].name);
+                }
+              }
+              if (!remap.empty())
+                stored_sig = substitute(fn_type, remap);
+            }
+            struct_info.methods.push_back(
+                {std::string(fn.name.name), stored_sig, fn.is_public});
+          }
+        }
+      }
+    } else if (auto *ident =
+                   std::get_if<IdentifierNode>(&recv_type_node->data)) {
       auto recv_sym = lookup(std::string(ident->name));
       if (recv_sym && recv_sym->type) {
         if (recv_sym->type->kind == TypeKind::Struct) {
           auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
-          struct_info.methods.push_back(
-              {std::string(fn.name.name), fn_type, fn.is_public});
+          if (check_recv_origin(struct_info.origin_package, struct_info.name))
+            struct_info.methods.push_back(
+                {std::string(fn.name.name), fn_type, fn.is_public});
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
           alias_info.methods.push_back(
@@ -1305,6 +1357,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
           }
         }
       }
+    } else if (std::get_if<SelectorNode>(&recv_type_node->data)) {
+      // Qualified receiver: pub fn (self pkg.Type) Method(...)
+      // D4: types from other packages always have a different origin — reject.
+      error(fn.receiver->name.span,
+            "cannot bind receiver method to type from another package");
     } else if (auto *arr_tn =
                    std::get_if<ArrayTypeNode>(&recv_type_node->data)) {
       // Generic array receiver: pub fn (self [T]) Method(...) ...
@@ -1413,6 +1470,23 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
                      }
                    },
                    [&](const FuncDeclNode &fn) {
+                     // Shadowing check: method-level type params must not
+                     // reuse names from the enclosing struct's type params.
+                     if (fn.generic && !type_params.empty()) {
+                       for (auto &tp_node : fn.generic->type_params) {
+                         auto &tp_ident =
+                             std::get<IdentifierNode>(tp_node->data);
+                         for (auto &stp : type_params) {
+                           if (stp.name == std::string(tp_ident.name)) {
+                             error(tp_node->span,
+                                   std::format("type parameter '{}' shadows "
+                                               "enclosing struct type "
+                                               "parameter",
+                                               tp_ident.name));
+                           }
+                         }
+                       }
+                     }
                      auto fn_type = resolve_signature(fn.signature);
                      methods.push_back({std::string(fn.name.name), fn_type,
                                         member.is_public});
@@ -2994,8 +3068,22 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
         return f.type ? f.type : builtins.error_type;
     }
     for (auto &m : info.methods) {
-      if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
+      if (m.name == field_name) {
+        auto sig = m.signature ? m.signature : builtins.error_type;
+        // D3 step 1: generic methods on imported types cannot be called
+        // cross-package (method-level type params survive struct instantiation).
+        if (!info.origin_package.empty() &&
+            info.origin_package != current_package_name() &&
+            has_type_params(sig)) {
+          error(node.field.span,
+                std::format("cannot call generic method '{}' across packages "
+                            "(D3: generic method bodies are not cross-package "
+                            "in this version)",
+                            field_name));
+          return builtins.error_type;
+        }
+        return sig;
+      }
     }
     // Check embedded types.
     for (auto &embed : info.embeds) {

@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <format>
 #include <fstream>
+#include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace mc {
@@ -606,6 +609,18 @@ struct SgiParser {
   }
   void bind_type_param(const TypeParam &tp) {
     if (type_param_scopes.empty()) push_type_param_scope();
+    // Shadowing check: method-level type params must not reuse names from
+    // enclosing struct/interface type param scopes.
+    if (type_param_scopes.size() > 1) {
+      for (size_t i = 0; i + 1 < type_param_scopes.size(); ++i) {
+        if (type_param_scopes[i].count(tp.name)) {
+          throw std::runtime_error(
+              std::format("type parameter '{}' shadows enclosing struct type "
+                          "parameter",
+                          tp.name));
+        }
+      }
+    }
     type_param_scopes.back()[tp.name] = tp;
   }
   std::optional<TypeParam> lookup_type_param(const std::string &name) const {
@@ -1381,6 +1396,7 @@ struct SgiParser {
 } // anonymous namespace
 
 std::optional<SgiFile> parse_sgi(const std::string &content) {
+  try {
   SgiParser p;
   p.content = content;
   p.pos = 0;
@@ -1505,6 +1521,10 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
   }
 
   return sgi;
+  } catch (const std::exception &e) {
+    std::cerr << "sgi parse error: " << e.what() << "\n";
+    return std::nullopt;
+  }
 }
 
 std::optional<SgiFile> load_sgi(const std::string &path) {

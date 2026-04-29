@@ -277,6 +277,37 @@ TEST(SgiRoundtrip, ArrayReceiverMethodsUseSentinelT) {
   EXPECT_EQ(std::get<TypeParamInfo>(sig.returns[0]->detail).param.id, 9990u);
 }
 
+// ---------------------------------------------------------------------------
+// P5: SGI parser rejects type-param shadowing in nested scopes (mirror of the
+// analyzer check)
+// ---------------------------------------------------------------------------
+
+TEST(SgiRoundtrip, RejectsMethodTypeParamShadowingStructTypeParam) {
+  // A method declared inside a generic struct must not redeclare a name
+  // that's already bound in the enclosing struct's type-param list.
+  std::string text =
+      "sgi 2\n"
+      "package box\n"
+      "\n"
+      "struct |T#0| Box {\n"
+      "  pub fn |T#1| Bad() T\n"
+      "}\n";
+  auto parsed = parse_sgi(text);
+  EXPECT_FALSE(parsed.has_value());
+}
+
+TEST(SgiRoundtrip, AllowsMethodTypeParamDistinctFromStructTypeParam) {
+  std::string text =
+      "sgi 2\n"
+      "package box\n"
+      "\n"
+      "struct |T#0| Box {\n"
+      "  pub fn |U#1| Convert() U\n"
+      "}\n";
+  auto parsed = parse_sgi(text);
+  ASSERT_TRUE(parsed.has_value());
+}
+
 TEST(SgiRoundtrip, MapReceiverMethodsUseSentinelKV) {
   auto set_sig = make_func_type({make_type_param(9991, "K"),
                                    make_type_param(9992, "V")},

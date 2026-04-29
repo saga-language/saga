@@ -14,7 +14,7 @@ pub fn Main() Void {
   io.Println(w.inner.Value().String())
 
   arr := [lib.Counter{n: 1}, lib.Counter{n: 2}]
-  io.Println(arr[0].Value().String())
+  io.Println(arr.At(0).Value().String())
 
   m := {"first": lib.Counter{n: 100}}
   io.Println(m.At("first").Value().String())

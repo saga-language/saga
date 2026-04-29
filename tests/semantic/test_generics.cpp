@@ -219,4 +219,27 @@ TEST(Generics, SpawnWithGeneric) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// P5: type-parameter shadowing (method on generic struct must not reuse the
+// struct's type-param names in its own |...| clause)
+// ===========================================================================
+
+TEST(Generics, MethodTypeParamShadowsStructParam) {
+  auto r = GR::from(
+      "struct |T| Box {\n"
+      "  value T\n"
+      "  fn |T| Map(x T) Void { }\n"
+      "}");
+  EXPECT_TRUE(r.has_err("shadows enclosing struct type parameter"));
+}
+
+TEST(Generics, StandaloneReceiverMethodReusingStructParamIsOk) {
+  // Standalone receiver methods may reuse the struct's type-param name in
+  // their own |...| clause — that's the binding point for the receiver's T.
+  auto r = GR::from(
+      "struct |T| Box { value T }\n"
+      "pub fn |T| (b |T| Box) Get() T { b.value }");
+  EXPECT_TRUE(r.ok());
+}
+
 } // namespace mc
