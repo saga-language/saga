@@ -527,6 +527,27 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
                 val = wrapped; // keep as pointer for byval lowering
             }
           }
+          // Interface boxing: param expects an interface, arg is a concrete
+          // struct.  Spill struct SSA values, then wrap the struct pointer
+          // in a fat pointer { data, vtable }.
+          if (i < fn_info.params.size() && fn_info.params[i] &&
+              fn_info.params[i]->kind == TypeKind::Interface) {
+            auto arg_sem = semantic_type(*node.args[i]);
+            if (arg_sem && arg_sem->kind == TypeKind::Struct) {
+              llvm::Value *struct_ptr = val;
+              if (val->getType()->isStructTy()) {
+                auto *p_ll = llvm_type(arg_sem);
+                auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill",
+                                                 p_ll);
+                builder.CreateStore(val, tmp);
+                struct_ptr = tmp;
+              }
+              auto *boxed = emit_interface_box(struct_ptr, arg_sem,
+                                                fn_info.params[i]);
+              if (boxed)
+                val = boxed;
+            }
+          }
           // Byval struct/union param: ensure val is a pointer to the
           // struct/union alloca.  If it's an SSA struct value, spill.
           if (i < fn_info.params.size() && fn_info.params[i] &&
@@ -1858,6 +1879,25 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto *val = emit_expr(*node.args[i]);
     if (!val)
       continue;
+    // Interface boxing: param expects an interface, arg is a concrete
+    // struct.  Spill struct SSA values, then wrap the struct pointer
+    // in a fat pointer { data, vtable }.
+    if (fi && i < fi->params.size() && fi->params[i] &&
+        fi->params[i]->kind == TypeKind::Interface) {
+      auto arg_sem = semantic_type(*node.args[i]);
+      if (arg_sem && arg_sem->kind == TypeKind::Struct) {
+        llvm::Value *struct_ptr = val;
+        if (val->getType()->isStructTy()) {
+          auto *p_ll = llvm_type(arg_sem);
+          auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill", p_ll);
+          builder.CreateStore(val, tmp);
+          struct_ptr = tmp;
+        }
+        auto *boxed = emit_interface_box(struct_ptr, arg_sem, fi->params[i]);
+        if (boxed)
+          val = boxed;
+      }
+    }
     if (fi && i < fi->params.size() && fi->params[i] &&
         (fi->params[i]->kind == TypeKind::Struct ||
          fi->params[i]->kind == TypeKind::Union)) {
