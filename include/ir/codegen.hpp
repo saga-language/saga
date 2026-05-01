@@ -294,8 +294,13 @@ private:
   void declare_interfaces(const SourceNode &src);
   void emit_interface_decl(const InterfaceDeclNode &node);
 
-  /// Declare struct methods as regular functions with mangled names.
-  void declare_struct_methods(const SourceNode &src);
+  /// Forward-declare LLVM Function symbols for every non-generic struct
+  /// method. Does not touch struct_method_links.
+  void declare_struct_method_symbols(const SourceNode &src);
+
+  /// Populate struct_method_links for every non-generic struct method.
+  /// Must run after declare_struct_method_symbols so the symbols exist.
+  void register_struct_method_links(const SourceNode &src);
 
   /// Emit struct method bodies.
   void emit_struct_methods(const SourceNode &src);
@@ -333,6 +338,9 @@ private:
   };
   MethodSig build_method_signature(const FuncDeclNode &fn);
   void apply_method_abi_attrs(llvm::Function *func, const MethodSig &sig);
+  void name_method_args(llvm::Function *func, const MethodSig &sig,
+                        const FuncDeclNode &fn,
+                        std::string_view receiver_name);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
@@ -395,6 +403,40 @@ private:
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
   llvm::Value *emit_for_expr(const ForExprNode &node);
+
+  // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
+  struct ForLoopBlocks {
+    llvm::BasicBlock *cond_bb;
+    llvm::BasicBlock *body_bb;
+    llvm::BasicBlock *update_bb;
+    llvm::BasicBlock *exit_bb;
+  };
+  void emit_for_infinite(const ForExprNode &node, const ForLoopBlocks &bbs);
+  void emit_for_c_style(const ForExprNode &node,
+                        const ForIterClauseNode &iter,
+                        const ForLoopBlocks &bbs);
+  void emit_for_condition(const ForExprNode &node, const Node &mode,
+                          const ForLoopBlocks &bbs);
+  void emit_for_range(const ForExprNode &node,
+                      const ForRangeClauseNode &range,
+                      const ForLoopBlocks &bbs);
+  void emit_for_range_array(const ForExprNode &node,
+                            const ForRangeClauseNode &range,
+                            llvm::Value *iterable, const TypePtr &iter_sem,
+                            const ForLoopBlocks &bbs);
+  void emit_for_range_map(const ForExprNode &node,
+                          const ForRangeClauseNode &range,
+                          llvm::Value *iterable, const TypePtr &iter_sem,
+                          const ForLoopBlocks &bbs);
+  void emit_for_range_task(const ForExprNode &node,
+                           const ForRangeClauseNode &range,
+                           const StructTypeInfo &task_info,
+                           const ForLoopBlocks &bbs);
+  void emit_for_range_iterable_struct(const ForExprNode &node,
+                                      const ForRangeClauseNode &range,
+                                      llvm::Value *iterable,
+                                      const TypePtr &iter_sem,
+                                      const ForLoopBlocks &bbs);
   llvm::Value *emit_struct_literal(const StructLiteralNode &node);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
@@ -404,6 +446,13 @@ private:
   llvm::Value *emit_or_expr(const OrExprNode &node);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
+
+  // Selector-callee dispatch in code generation: handles every shape of
+  // `obj.method(args)` (module fn, struct method, struct-field call,
+  // task message, context method). Implemented in
+  // codegen_method_dispatch.cpp; call only when the callee is a selector.
+  llvm::Value *emit_method_or_module_call(const CallExprNode &node,
+                                          const Node &parent);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   std::pair<llvm::Value *, llvm::Type *>

@@ -284,6 +284,33 @@ struct Analyzer {
   /// Process all import declarations in a source after names are collected.
   void process_imports(const std::vector<NodePtr> &declarations);
 
+private:
+  /// Return a cached/mock TypePtr for `import_path` if present, or nullopt
+  /// to signal the caller to continue with sgi/source resolution. Returns
+  /// builtins.error_type wrapped in optional on cycle detection.
+  std::optional<TypePtr> resolve_import_cached(const std::string &import_path,
+                                               Span span);
+
+  /// Try loading the import from a pre-compiled .sgi file. Returns the
+  /// constructed module TypePtr on success, nullopt if no .sgi was found.
+  std::optional<TypePtr> load_import_from_sgi(const std::string &import_path);
+
+  /// Parse and analyze the import's source files. Returns the constructed
+  /// module TypePtr on success, builtins.error_type on failure.
+  TypePtr compile_import_from_source(const std::string &import_path,
+                                     Span span);
+
+  /// Build the public-export list from a fully-analyzed sub-package scope.
+  std::vector<ModuleExport>
+  extract_module_exports(const Analyzer &sub_analyzer);
+
+  /// Merge stdlib receiver methods from a sub-analyzer or sgi into our
+  /// own type_methods_ / kind_methods_ tables.
+  void merge_sgi_receiver_methods(const struct SgiFile &sgi);
+  void merge_sub_analyzer_receiver_methods(const Analyzer &sub);
+
+public:
+
   // ── Scope helpers ────────────────────────────────────────────────────
 
   /// Push a new child scope of the given kind.
@@ -450,6 +477,16 @@ private:
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
+
+  // ── check_selector helpers ──────────────────────────────────────────
+  TypePtr resolve_module_selector(const ModuleTypeInfo &mod,
+                                  const std::string &field_name,
+                                  Span field_span);
+  TypePtr resolve_struct_member(const TypePtr &owner_type,
+                                const std::string &field_name,
+                                Span field_span);
+  TypePtr resolve_method_signature(const TypePtr &obj_type,
+                                   const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,

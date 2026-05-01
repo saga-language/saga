@@ -436,7 +436,21 @@ void CodeGen::apply_method_abi_attrs(llvm::Function *func,
   }
 }
 
-void CodeGen::declare_struct_methods(const SourceNode &src) {
+void CodeGen::name_method_args(llvm::Function *func, const MethodSig &sig,
+                               const FuncDeclNode &fn,
+                               std::string_view receiver_name) {
+  unsigned aidx = 0;
+  if (sig.sret_struct_ty)
+    func->getArg(aidx++)->setName("sret.out");
+  func->getArg(aidx++)->setName(std::string(receiver_name));
+  for (auto &param : fn.signature.params)
+    for (auto &ident : param.names.identifiers)
+      if (aidx < func->arg_size())
+        func->getArg(aidx++)->setName(std::string(ident.name));
+}
+
+void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
+  // In-bound methods (defined inside a struct body).
   for (auto &decl : src.declarations) {
     auto *s = std::get_if<StructDeclNode>(&decl->data);
     if (!s)
@@ -444,21 +458,16 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
 
     std::string struct_name(s->name.name);
     std::string struct_key = mangle(package_name, struct_name);
-    auto st_it = struct_types.find(struct_key);
-    if (st_it == struct_types.end())
+    if (!struct_types.count(struct_key))
       continue;
 
-    // In-bound methods (defined inside the struct body).
     for (auto &member : s->members) {
       auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn)
-        continue;
-      if (fn->generic)
+      if (!fn || fn->generic)
         continue;
 
       std::string method_name(fn->name.name);
       std::string link_name = mangle(struct_name + "__" + method_name);
-
       if (module->getFunction(link_name))
         continue;
 
@@ -467,27 +476,14 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
           sig.fn_type, llvm::Function::ExternalLinkage, link_name,
           module.get());
       apply_method_abi_attrs(func, sig);
-
-      // Name arguments.
-      unsigned aidx = 0;
-      if (sig.sret_struct_ty)
-        func->getArg(aidx++)->setName("sret.out");
-      func->getArg(aidx++)->setName("self");
-      for (auto &param : fn->signature.params)
-        for (auto &ident : param.names.identifiers)
-          if (aidx < func->arg_size())
-            func->getArg(aidx++)->setName(std::string(ident.name));
-
-      struct_method_links[struct_key].push_back({link_name, method_name});
+      name_method_args(func, sig, *fn, "self");
     }
   }
 
   // Out-bound methods (top-level functions with a receiver).
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
-    if (!fn || !fn->receiver)
-      continue;
-    if (fn->generic)
+    if (!fn || !fn->receiver || fn->generic)
       continue;
 
     auto *recv_ident = std::get_if<IdentifierNode>(&fn->receiver->type->data);
@@ -495,13 +491,12 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    std::string struct_key2 = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key2))
+    std::string struct_key = mangle(package_name, struct_name);
+    if (!struct_types.count(struct_key))
       continue;
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
-
     if (module->getFunction(link_name))
       continue;
 
@@ -509,17 +504,55 @@ void CodeGen::declare_struct_methods(const SourceNode &src) {
     auto *func = llvm::Function::Create(
         sig.fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
     apply_method_abi_attrs(func, sig);
+    name_method_args(func, sig, *fn, fn->receiver->name.name);
+  }
+}
 
-    unsigned aidx = 0;
-    if (sig.sret_struct_ty)
-      func->getArg(aidx++)->setName("sret.out");
-    func->getArg(aidx++)->setName(std::string(fn->receiver->name.name));
-    for (auto &param : fn->signature.params)
-      for (auto &ident : param.names.identifiers)
-        if (aidx < func->arg_size())
-          func->getArg(aidx++)->setName(std::string(ident.name));
+void CodeGen::register_struct_method_links(const SourceNode &src) {
+  auto register_link = [&](const std::string &struct_key,
+                           const std::string &struct_name,
+                           const std::string &method_name) {
+    std::string link_name = mangle(struct_name + "__" + method_name);
+    auto &links = struct_method_links[struct_key];
+    for (auto &existing : links)
+      if (existing.first == link_name)
+        return;
+    links.push_back({link_name, method_name});
+  };
 
-    struct_method_links[struct_key2].push_back({link_name, method_name});
+  for (auto &decl : src.declarations) {
+    auto *s = std::get_if<StructDeclNode>(&decl->data);
+    if (!s)
+      continue;
+
+    std::string struct_name(s->name.name);
+    std::string struct_key = mangle(package_name, struct_name);
+    if (!struct_types.count(struct_key))
+      continue;
+
+    for (auto &member : s->members) {
+      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
+      if (!fn || fn->generic)
+        continue;
+      register_link(struct_key, struct_name, std::string(fn->name.name));
+    }
+  }
+
+  for (auto &decl : src.declarations) {
+    auto *fn = std::get_if<FuncDeclNode>(&decl->data);
+    if (!fn || !fn->receiver || fn->generic)
+      continue;
+
+    auto *recv_ident = std::get_if<IdentifierNode>(&fn->receiver->type->data);
+    if (!recv_ident)
+      continue;
+
+    std::string struct_name(recv_ident->name);
+    std::string struct_key = mangle(package_name, struct_name);
+    if (!struct_types.count(struct_key))
+      continue;
+
+    register_link(struct_key, struct_name, std::string(fn->name.name));
   }
 }
 

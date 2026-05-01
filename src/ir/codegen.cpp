@@ -341,7 +341,8 @@ void CodeGen::emit_source(const SourceNode &src) {
   // Pass 2: forward-declare all functions, struct methods, and intrinsic
   // type methods.
   declare_functions(src);
-  declare_struct_methods(src);
+  declare_struct_method_symbols(src);
+  register_struct_method_links(src);
   declare_intrinsic_methods(src);
 
   // Pass 2b: emit package-level constants as globals.
