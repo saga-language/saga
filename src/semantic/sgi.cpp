@@ -1585,4 +1585,14 @@ TypePtr sgi_to_type(const std::string &text) {
   return p.parse_type();
 }
 
+bool sgi_needs_init(const SgiFile &sgi) {
+  for (auto &exp : sgi.exports) {
+    if (exp.is_type || !exp.type) continue;
+    if (exp.type->kind == TypeKind::Array ||
+        exp.type->kind == TypeKind::Map)
+      return true;
+  }
+  return false;
+}
+
 } // namespace mc

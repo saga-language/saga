@@ -11,10 +11,13 @@
 #include "semantic/analyzer.hpp"
 #include "semantic/sgi.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <format>
 #include <iostream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -86,6 +89,7 @@ static bool compile_package(const std::string &source_dir,
                              const std::string &output_dir,
                              const std::vector<std::string> &search_paths,
                              const std::vector<std::string> &sgi_dirs,
+                             const std::vector<std::string> &init_symbols,
                              bool verbose,
                              bool stdlib_mode = false) {
   std::error_code ec;
@@ -141,6 +145,7 @@ static bool compile_package(const std::string &source_dir,
   }
 
   mc::CodeGen codegen(pkg_name, analyzer);
+  codegen.imported_init_symbols = init_symbols;
   codegen.emit(*ast);
 
   std::string obj_path = output_dir + "/" + pkg_name + ".o";
@@ -221,21 +226,67 @@ static int build_graph_mode(const char *prog,
 
   std::vector<std::string> dep_obj_paths;
 
+  // Track which packages need a runtime `<pkg>__init__` so the binary's
+  // Main wrapper can call them in topological order.  Keyed by import path.
+  std::unordered_map<std::string, bool> pkg_needs_init;
+  std::unordered_map<std::string, std::string> pkg_link_name;
+
+  // Index nodes by import path for transitive-dep walks.
+  std::unordered_map<std::string, const mc::BuildGraph::Node *> by_path;
+  for (const auto *n : sorted)
+    by_path[n->import_path] = n;
+
   for (size_t i = 0; i < sorted.size(); ++i) {
     const auto *node = sorted[i];
     bool is_root = (i + 1 == sorted.size());
+
+    // Walk transitive deps in topological order.  `sorted` is already
+    // dep-first, so iterating prefixes preserves ordering; we filter to
+    // the transitive closure of node->deps.
+    std::unordered_set<std::string> trans_deps;
+    {
+      std::vector<std::string> stack(node->deps.begin(), node->deps.end());
+      while (!stack.empty()) {
+        std::string cur = std::move(stack.back());
+        stack.pop_back();
+        if (!trans_deps.insert(cur).second)
+          continue;
+        auto it = by_path.find(cur);
+        if (it != by_path.end())
+          for (auto &d : it->second->deps) stack.push_back(d);
+      }
+    }
+    std::vector<std::string> init_symbols;
+    for (size_t j = 0; j < i; ++j) {
+      const auto *dep = sorted[j];
+      if (!trans_deps.count(dep->import_path))
+        continue;
+      if (pkg_needs_init.count(dep->import_path) &&
+          pkg_needs_init[dep->import_path])
+        init_symbols.push_back(pkg_link_name[dep->import_path]);
+    }
 
     if (mc::BuildGraph::needs_rebuild(*node)) {
       if (verbose)
         std::cerr << std::format("  building {}\n", node->import_path);
       if (!compile_package(node->source_dir, node->name, node->output_dir,
-                           search_paths, cumulative_sgi_dirs, verbose))
+                           search_paths, cumulative_sgi_dirs, init_symbols,
+                           verbose))
         return 1;
       if (!mc::BuildGraph::save_hash(*node))
         std::cerr << std::format("Warning: could not save hash for '{}'\n",
                                  node->import_path);
     } else if (verbose) {
       std::cerr << std::format("  up-to-date {}\n", node->import_path);
+    }
+
+    // Record whether this freshly-compiled-or-cached package needs init.
+    {
+      std::string sgi = node->output_dir + "/" + node->name + ".sgi";
+      auto parsed = mc::load_sgi(sgi);
+      pkg_needs_init[node->import_path] =
+          parsed && mc::sgi_needs_init(*parsed);
+      pkg_link_name[node->import_path] = node->name + "__init__";
     }
 
     cumulative_sgi_dirs.push_back(node->output_dir);
@@ -400,6 +451,19 @@ int cmd_build(const char *prog, int argc, char **argv) {
       : input_path.stem().string();
 
   mc::CodeGen codegen(module_name, analyzer);
+  // Best-effort init-symbol discovery: each resolved import's .sgi tells us
+  // whether that package owns runtime-allocated consts.  Single-package mode
+  // has no full build graph, so order falls back to map-iteration order;
+  // unrelated packages can init in any order without observable difference.
+  for (auto &[imp_path, dir] : analyzer.package_resolver->sgi_resolved_dirs) {
+    auto slash = imp_path.rfind('/');
+    std::string pname = (slash != std::string::npos)
+                            ? imp_path.substr(slash + 1) : imp_path;
+    std::string sgi = dir + "/" + pname + ".sgi";
+    auto parsed = mc::load_sgi(sgi);
+    if (parsed && mc::sgi_needs_init(*parsed))
+      codegen.imported_init_symbols.push_back(pname + "__init__");
+  }
   codegen.emit(*ast);
 
   if (dump_ir) codegen.dump();

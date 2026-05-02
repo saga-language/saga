@@ -171,6 +171,13 @@ void CodeGen::emit_function_body_inner(
   managed_locals.clear();
   current_func_is_main = is_main;
 
+  // Main begins with package initialisation: every imported package's
+  // `<pkg>__init__` (topo order, deps first) plus this package's own
+  // init.  Runs before saga_executor_init so init code never observes
+  // a live executor (TD4).
+  if (is_main)
+    emit_init_calls();
+
   // If this is Main and we have spawn expressions, init the executor.
   if (is_main && has_spawn) {
     builder.CreateCall(module->getFunction("saga_executor_init"),

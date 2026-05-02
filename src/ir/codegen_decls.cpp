@@ -178,6 +178,21 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
 
   auto *ll_type = llvm_type(sem_type);
 
+  // Collection constants (arrays, maps) cannot be built as compile-time
+  // LLVM constants — their backing storage is heap-allocated.  Emit a
+  // mutable null-valued ptr global and queue the value expression so it
+  // runs from `<pkg>__init__` before user code observes the global.
+  if (sem_type->kind == TypeKind::Array || sem_type->kind == TypeKind::Map) {
+    auto *ptr_ty = llvm::PointerType::getUnqual(context);
+    new llvm::GlobalVariable(
+        *module, ptr_ty, /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::Constant::getNullValue(ptr_ty), link_name);
+    deferred_const_inits_.push_back(&node);
+    init_function_needed = true;
+    return;
+  }
+
   // Try to build a constant initializer.
   llvm::Constant *init = nullptr;
 

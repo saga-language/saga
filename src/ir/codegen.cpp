@@ -261,33 +261,61 @@ void CodeGen::emit(const Node &root) {
           [&](const auto &) {},
       },
       root.data);
+
+  if (init_function_needed)
+    emit_init_function();
+}
+
+llvm::Function *CodeGen::declare_void_init(const std::string &link_name) {
+  if (auto *existing = module->getFunction(link_name))
+    return existing;
+  auto *fn_type = llvm::FunctionType::get(void_ll_type, {}, /*isVarArg=*/false);
+  return llvm::Function::Create(
+      fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
+}
+
+void CodeGen::emit_init_calls() {
+  for (auto &sym : imported_init_symbols)
+    builder.CreateCall(declare_void_init(sym), {});
+  if (init_function_needed)
+    builder.CreateCall(declare_void_init(package_name + "__init__"), {});
+}
+
+void CodeGen::emit_init_function() {
+  // Symbol convention: `<pkg>__init__`.  Built directly rather than via
+  // mangle() because mangle would inject a second `__` separator.  May
+  // already exist as a forward-declaration created by the Main wrapper.
+  llvm::Function *func =
+      declare_void_init(package_name + "__init__");
+  if (!func->empty())
+    return;
+
+  auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+  builder.SetInsertPoint(entry);
+
+  locals.clear();
+  managed_locals.clear();
+  current_func_is_main = false;
+  current_func_return_sem = nullptr;
+
+  for (const ConstDeclNode *node : deferred_const_inits_) {
+    std::string global_name = mangle(std::string(node->name.name));
+    auto *gv = module->getGlobalVariable(global_name);
+    if (!gv)
+      continue;
+    auto *val = emit_expr(*node->value);
+    if (!val)
+      continue;
+    builder.CreateStore(val, gv);
+  }
+
+  builder.CreateRetVoid();
+  llvm::verifyFunction(*func);
 }
 
 // ===========================================================================
 // Top-level visitors
 // ===========================================================================
-
-void CodeGen::emit_package(const PackageNode &pkg) {
-  // Pass 0: materialize imported module types before any local passes.
-  for (auto &src : pkg.sources) {
-    auto &s = std::get<SourceNode>(src->data);
-    materialize_imports_from_source(s);
-  }
-
-  // Pass 1: register all type declarations (structs, enums, interfaces)
-  // across every source file before emitting any function bodies. This
-  // ensures cross-file references within the same package resolve correctly.
-  for (auto &src : pkg.sources) {
-    auto &s = std::get<SourceNode>(src->data);
-    declare_structs(s);
-    declare_enums(s);
-    declare_interfaces(s);
-  }
-
-  // Pass 2: emit each source file (functions, methods, etc.).
-  for (auto &src : pkg.sources)
-    emit_source(std::get<SourceNode>(src->data));
-}
 
 /// Pre-scan declarations for spawn expressions to set has_spawn early.
 static bool source_has_spawn(const Node &node) {
@@ -317,6 +345,62 @@ static bool source_has_spawn(const Node &node) {
   };
   visitor(visitor, node);
   return found;
+}
+
+void CodeGen::emit_package(const PackageNode &pkg) {
+  // Pass 0: materialize imported module types before any local passes.
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    materialize_imports_from_source(s);
+  }
+
+  // Pass 1: register all type declarations (structs, enums, interfaces)
+  // across every source file before emitting any function bodies. This
+  // ensures cross-file references within the same package resolve correctly.
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    declare_structs(s);
+    declare_enums(s);
+    declare_interfaces(s);
+  }
+
+  // Pass 2: forward-declare functions and methods across all files so that
+  // bodies in any source can reference symbols declared in any other.
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    if (!has_spawn) {
+      for (auto &decl : s.declarations) {
+        if (source_has_spawn(*decl)) { has_spawn = true; break; }
+      }
+    }
+    declare_functions(s);
+    declare_struct_method_symbols(s);
+    register_struct_method_links(s);
+    declare_intrinsic_methods(s);
+  }
+
+  // Pass 2b: emit package-level constants across all files.  Must run
+  // before any function body so `init_function_needed` is set when the
+  // Main wrapper is generated (Main may live in a different source file
+  // than the collection consts that need a runtime initialiser).
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    for (auto &decl : s.declarations) {
+      if (auto *c = std::get_if<ConstDeclNode>(&decl->data))
+        emit_const_decl(*c);
+    }
+  }
+
+  // Pass 3: emit function and method bodies.
+  for (auto &src : pkg.sources) {
+    auto &s = std::get<SourceNode>(src->data);
+    for (auto &decl : s.declarations) {
+      if (auto *fn = std::get_if<FuncDeclNode>(&decl->data))
+        emit_func_decl(*fn);
+    }
+    emit_struct_methods(s);
+    emit_intrinsic_methods(s);
+  }
 }
 
 void CodeGen::emit_source(const SourceNode &src) {

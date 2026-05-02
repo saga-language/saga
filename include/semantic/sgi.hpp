@@ -142,6 +142,11 @@ std::optional<SgiFile> load_sgi(const std::string &path);
 /// `import_path` is the full import path (e.g. "std/io").
 TypePtr sgi_to_module_type(const SgiFile &sgi, const std::string &import_path);
 
+/// True when the package declares a constant whose value must be allocated at
+/// program start (Array or Map at the top level).  Drives whether the linker
+/// must call `<pkg>__init__` from the binary's main wrapper.
+bool sgi_needs_init(const SgiFile &sgi);
+
 // ---------------------------------------------------------------------------
 // Type serialization helpers (also used by the writer/reader)
 // ---------------------------------------------------------------------------

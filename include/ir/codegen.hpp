@@ -139,6 +139,17 @@ struct CodeGen {
   /// (triggers executor init/shutdown in main).
   bool has_spawn = false;
 
+  /// True when the package contains at least one constant whose
+  /// initialiser must run at program start (arrays, maps).  Drives
+  /// emission of the per-package `<pkg>__init__` function.
+  bool init_function_needed = false;
+
+  /// Mangled link names of imported packages whose `<pkg>__init__` must be
+  /// invoked before user `Main` runs.  Topological order: deepest dependency
+  /// first.  Populated by the build driver before `emit()` runs; consumed by
+  /// the Main wrapper.  Empty for library mode (no Main).
+  std::vector<std::string> imported_init_symbols;
+
   /// Pending channel alloca from the most recent spawn with a generic type.
   /// Picked up by the next DeclAssign to create a companion ".channel" local.
   llvm::AllocaInst *pending_channel_alloca_ = nullptr;
@@ -279,6 +290,27 @@ private:
 
   /// Emit a package-level constant as an LLVM global variable.
   void emit_const_decl(const ConstDeclNode &node);
+
+  /// Emit `<pkg>__init__`: a single-entry void function whose body
+  /// allocates and stores every collection constant whose value cannot
+  /// be expressed as a compile-time LLVM constant.  Called once after
+  /// all source nodes have been processed.
+  void emit_init_function();
+
+  /// Get or forward-declare a `void(void)` function with the given link
+  /// name.  Used by the Main wrapper to call each imported package's
+  /// `<pkg>__init__` symbol.
+  llvm::Function *declare_void_init(const std::string &link_name);
+
+  /// Prepend init calls to the current insertion point: every symbol in
+  /// `imported_init_symbols` (topo order, deps first) followed by this
+  /// package's own `<pkg>__init__` when `init_function_needed` is true.
+  /// Called from the entry block of Main, before any executor setup.
+  void emit_init_calls();
+
+  /// Constants whose initialisers must run at program start, in source
+  /// order.  Populated by emit_const_decl, flushed by emit_init_function.
+  std::vector<const ConstDeclNode *> deferred_const_inits_;
 
   /// Build an LLVM constant for `val_node` whose Saga type is `expected`.
   /// Supports integer/float/bool/string literals and nested struct literals.
