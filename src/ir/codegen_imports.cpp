@@ -81,6 +81,7 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
         ftypes.push_back(llvm_type(f.type));
         fnames.push_back(f.name);
       }
+      append_embed_slots(sinfo, ftypes, fnames);
       llvm::StructType *st = nullptr;
       if (exist != struct_types.end() && exist->second->isOpaque()) {
         st = exist->second;

@@ -1656,18 +1656,18 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
                member.member->data);
   }
 
-  // Resolve embeds.
+  // Resolve embeds. Each entry is an IdentifierNode (local) or a
+  // SelectorNode (`pkg.Name`); resolve_type handles both, so we get
+  // qualified-name support for free.
   std::vector<TypePtr> embeds;
-  for (auto &embed_ident : s.embeds) {
-    auto sym = lookup(std::string(embed_ident.name));
-    if (!sym) {
-      undefined_error(embed_ident.span, std::string(embed_ident.name));
-    } else if (sym->kind != SymbolKind::Type) {
-      error(embed_ident.span,
-            std::format("'{}' is not a type", std::string(embed_ident.name)));
-    } else if (sym->type) {
-      embeds.push_back(sym->type);
+  for (auto &embed_node : s.embeds) {
+    auto et = resolve_type(*embed_node);
+    if (!et || et->kind == TypeKind::Error) continue;
+    if (et->kind != TypeKind::Struct) {
+      error(embed_node->span, "embedded type must be a struct");
+      continue;
     }
+    embeds.push_back(et);
   }
 
   auto struct_type =

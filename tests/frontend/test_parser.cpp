@@ -398,8 +398,12 @@ TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   EXPECT_TRUE(s->generic.has_value());
   ASSERT_EQ(s->generic->type_params.size(), 1);
   ASSERT_EQ(s->embeds.size(), 2);
-  EXPECT_EQ(s->embeds[0].name, "Base");
-  EXPECT_EQ(s->embeds[1].name, "Mixin");
+  auto *e0 = std::get_if<mc::IdentifierNode>(&s->embeds[0]->data);
+  ASSERT_NE(e0, nullptr);
+  EXPECT_EQ(e0->name, "Base");
+  auto *e1 = std::get_if<mc::IdentifierNode>(&s->embeds[1]->data);
+  ASSERT_NE(e1, nullptr);
+  EXPECT_EQ(e1->name, "Mixin");
   ASSERT_EQ(s->members.size(), 2);
   EXPECT_TRUE(s->members[0].is_public);
   auto *field = std::get_if<mc::FieldSpecNode>(&s->members[0].member->data);
@@ -2319,8 +2323,24 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
   ASSERT_NE(s, nullptr);
   EXPECT_EQ(s->name.name, "Child");
   ASSERT_EQ(s->embeds.size(), 1);
-  EXPECT_EQ(s->embeds[0].name, "Parent");
+  auto *e0 = std::get_if<mc::IdentifierNode>(&s->embeds[0]->data);
+  ASSERT_NE(e0, nullptr);
+  EXPECT_EQ(e0->name, "Parent");
   EXPECT_TRUE(s->members.empty());
+}
+
+TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
+  auto r = ParseResult::from("struct User < lib.Timestamps { name String }\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *s = r.decl_as<StructDeclNode>(0);
+  ASSERT_NE(s, nullptr);
+  ASSERT_EQ(s->embeds.size(), 1);
+  auto *sel = std::get_if<mc::SelectorNode>(&s->embeds[0]->data);
+  ASSERT_NE(sel, nullptr);
+  auto *obj = std::get_if<mc::IdentifierNode>(&sel->object->data);
+  ASSERT_NE(obj, nullptr);
+  EXPECT_EQ(obj->name, "lib");
+  EXPECT_EQ(sel->field.name, "Timestamps");
 }
 
 // =============================================================================

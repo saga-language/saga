@@ -1538,8 +1538,27 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
                                       std::move(methods));
 }
 
+// parse_embed_name — EmbedName = Identifier [ "." Identifier ]
+//
+// Embed clauses (`struct User < lib.Timestamps { … }`) accept either a
+// local type identifier or a package-qualified selector. Generic embeds
+// are deliberately rejected here so the AST stays simple — until the
+// analyzer needs them, the surface area is identifier-or-selector only.
+NodePtr Parser::parse_embed_name() {
+  auto start = mark();
+  Token id_tok = expect(Token::Kind::Identifier);
+  NodePtr ident = make_node<IdentifierNode>(span_from(start), id_tok.literal);
+  if (!check(Token::Kind::Dot))
+    return ident;
+  advance(); // consume "."
+  auto field_start = mark();
+  Token field_tok = expect(Token::Kind::Identifier);
+  IdentifierNode field{span_from(field_start), field_tok.literal};
+  return make_node<SelectorNode>(span_from(start), std::move(ident), field);
+}
+
 // parse_struct_decl — StructDecl = "struct" [ Generic ] Identifier
-//                     [ "<" IdentifierList ] "{" [ StructMember
+//                     [ "<" EmbedList ] "{" [ StructMember
 //                     { terminal StructMember } ] "}"
 //
 // StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
@@ -1556,18 +1575,14 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
-  std::vector<IdentifierNode> embeds;
+  std::vector<NodePtr> embeds;
   if (check(Token::Kind::LessThan)) {
     advance();
-    auto id_start = mark();
-    Token id_tok = expect(Token::Kind::Identifier);
-    embeds.push_back(IdentifierNode{span_from(id_start), id_tok.literal});
+    embeds.push_back(parse_embed_name());
 
     while (check(Token::Kind::Comma)) {
       advance();
-      auto eid_start = mark();
-      Token eid_tok = expect(Token::Kind::Identifier);
-      embeds.push_back(IdentifierNode{span_from(eid_start), eid_tok.literal});
+      embeds.push_back(parse_embed_name());
     }
   }
 

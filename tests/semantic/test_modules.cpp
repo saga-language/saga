@@ -249,6 +249,45 @@ pub fn Main() Void {
     std::cerr << "  " << e.message << "\n";
 }
 
+TEST(Modules, EmbedQualifiedStructFromImport) {
+  auto ts_type = make_struct_type("Timestamps",
+      {FieldInfo{"created", make_int_type(), true},
+       FieldInfo{"updated", make_int_type(), true}},
+      {}, {}, "lib");
+
+  auto mock_lib = make_mock_module("lib", "lib",
+      {{"Timestamps", ts_type}});
+
+  auto r = ModuleTestResult::with_mocks(R"(
+import "lib"
+
+struct User < lib.Timestamps {
+  name String
+}
+
+pub fn Main() Void {}
+  )", {{"lib", mock_lib}});
+
+  EXPECT_TRUE(r.has_no_errors()) << "Errors:";
+  for (auto &e : r.analyzer->errors.errors)
+    std::cerr << "  " << e.message << "\n";
+
+  // Locate the User struct in the analyzer's symbol table and confirm it
+  // recorded one embed pointing at the imported Timestamps type.
+  auto &scope = r.analyzer->package_scope_;
+  ASSERT_NE(scope, nullptr);
+  auto sym = scope->symbols.find("User");
+  ASSERT_NE(sym, scope->symbols.end());
+  ASSERT_NE(sym->second.type, nullptr);
+  ASSERT_EQ(sym->second.type->kind, TypeKind::Struct);
+  auto &info = std::get<StructTypeInfo>(sym->second.type->detail);
+  ASSERT_EQ(info.embeds.size(), 1u);
+  EXPECT_EQ(info.embeds[0]->kind, TypeKind::Struct);
+  auto &emb_info = std::get<StructTypeInfo>(info.embeds[0]->detail);
+  EXPECT_EQ(emb_info.name, "Timestamps");
+  EXPECT_EQ(emb_info.origin_package, "lib");
+}
+
 // ===========================================================================
 // Module not found
 // ===========================================================================

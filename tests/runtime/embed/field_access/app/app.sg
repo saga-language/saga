@@ -1,0 +1,17 @@
+import "io"
+
+struct Timestamps {
+  created Int
+  updated Int
+}
+
+struct User < Timestamps {
+  name String
+}
+
+pub fn Main() Void {
+  u := User{name: "alice", created: 1, updated: 2}
+  io.Println(u.name)
+  io.Println(u.created.String())
+  io.Println(u.updated.String())
+}

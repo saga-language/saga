@@ -126,6 +126,7 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
       field_types.push_back(llvm_type(fi.type));
       field_names.push_back(fi.name);
     }
+    append_embed_slots(sinfo, field_types, field_names);
   } else {
     for (auto &member : node.members) {
       if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data)) {
@@ -151,6 +152,22 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
     struct_types[key] = st;
   }
   struct_fields[key] = std::move(field_names);
+}
+
+std::string CodeGen::embed_slot_name(const StructTypeInfo &embed_info) {
+  return "__embed_" + embed_info.name;
+}
+
+void CodeGen::append_embed_slots(const StructTypeInfo &info,
+                                 std::vector<llvm::Type *> &field_types,
+                                 std::vector<std::string> &field_names) {
+  for (auto &embed : info.embeds) {
+    if (!embed || embed->kind != TypeKind::Struct)
+      continue;
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    field_types.push_back(llvm_type(embed));
+    field_names.push_back(embed_slot_name(einfo));
+  }
 }
 
 // ===========================================================================

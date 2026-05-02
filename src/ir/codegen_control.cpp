@@ -937,7 +937,6 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
     return nullptr;
 
   auto *st = st_it->second;
-  auto &fields = struct_fields[skey];
 
   // Allocate the struct on the stack.
   auto *func = builder.GetInsertBlock()->getParent();
@@ -946,30 +945,25 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
   // Zero-initialize all fields.
   builder.CreateStore(llvm::Constant::getNullValue(st), alloca);
 
-  // Store each provided field value.
+  // Store each provided field value. For a literal that addresses a
+  // promoted field (the field lives on an embedded struct), reuse
+  // struct_field_gep — it already walks the embed layout and hands back
+  // a pointer into the right inner slot.
   for (auto &fa : node.fields) {
     std::string fname(fa.name.name);
-    // Find the field index.
-    int idx = -1;
-    for (size_t i = 0; i < fields.size(); ++i) {
-      if (fields[i] == fname) {
-        idx = static_cast<int>(i);
-        break;
-      }
-    }
-    if (idx < 0)
-      continue;
 
     auto *val = emit_expr(*fa.value);
     if (!val)
       continue;
 
-    auto *gep = builder.CreateStructGEP(st, alloca, idx, fname);
-    auto *field_ll = st->getElementType(idx);
+    auto [gep, field_ll] = struct_field_gep(alloca, sem, fname);
+    if (!gep)
+      continue;
+
     // D1: aggregate fields are stored inline. If the rhs is a pointer to
     // a struct (e.g. from a nested struct literal), memcpy the bytes
     // rather than storing the pointer into the struct slot.
-    if (field_ll->isStructTy() && val->getType()->isPointerTy()) {
+    if (field_ll && field_ll->isStructTy() && val->getType()->isPointerTy()) {
       auto &dl = module->getDataLayout();
       uint64_t sz = dl.getTypeAllocSize(field_ll);
       llvm::Align al = dl.getABITypeAlign(field_ll);
@@ -1003,7 +997,11 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
   auto *st = st_it->second;
   auto &fields = struct_fields[skey];
 
-  for (size_t i = 0; i < fields.size(); ++i) {
+  // Direct field lookup. We restrict to info.fields.size() so that the
+  // synthetic `__embed_<Name>` slots appended after the own fields are
+  // not addressable by name from user code — they are reachable only via
+  // promoted-field access (handled below).
+  for (size_t i = 0; i < info.fields.size() && i < fields.size(); ++i) {
     if (fields[i] == field_name) {
       auto *gep = builder.CreateStructGEP(st, struct_ptr, i, field_name);
       // Prefer the semantic field type's LLVM lowering so generic
@@ -1013,13 +1011,31 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
       // match the slot for this to be safe; aggregate type arguments
       // wider than a pointer are tracked as P8 tech debt.
       llvm::Type *field_ll = st->getElementType(i);
-      if (i < info.fields.size() && info.fields[i].type) {
+      if (info.fields[i].type) {
         if (auto *sem_ll = llvm_type(info.fields[i].type))
           field_ll = sem_ll;
       }
       return {gep, field_ll};
     }
   }
+
+  // Promoted-field access: the field lives on one of the embedded structs.
+  // Walk each embed in declaration order and recurse into its layout.
+  // Layout invariant: embed slots are appended to `fields` after the
+  // owner's own fields, in the same order as `info.embeds`.
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= fields.size()) break;
+
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                             embed_slot_name(einfo));
+    auto inner = struct_field_gep(slot_gep, embed, field_name);
+    if (inner.first) return inner;
+  }
+
   return {nullptr, nullptr};
 }
 

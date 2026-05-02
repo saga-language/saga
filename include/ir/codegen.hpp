@@ -487,9 +487,24 @@ private:
                                           const Node &parent);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
+  /// Promoted-field access (the field lives on an embedded struct) is
+  /// resolved here too: a two-step GEP through `__embed_<Name>` is emitted
+  /// transparently to the caller.
   std::pair<llvm::Value *, llvm::Type *>
   struct_field_gep(llvm::Value *struct_ptr, const TypePtr &struct_sem_type,
                    const std::string &field_name);
+
+  /// Append one synthetic `__embed_<TypeName>` slot per embed in `info` to
+  /// the given LLVM type/name vectors. Embed slots are laid out after the
+  /// struct's own fields and contain the embedded struct by value, not as
+  /// a pointer (see TD6 in the back-to-green plan).
+  void append_embed_slots(const StructTypeInfo &info,
+                          std::vector<llvm::Type *> &field_types,
+                          std::vector<std::string> &field_names);
+
+  /// Conventional name of the synthetic slot that holds an embedded struct
+  /// by value, e.g. `__embed_Timestamps` for `embed lib.Timestamps`.
+  static std::string embed_slot_name(const StructTypeInfo &embed_info);
 
   // ── Type query helpers ───────────────────────────────────────────────
 

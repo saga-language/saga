@@ -654,6 +654,66 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     }
   }
 
+  // Embedded-method redirect: when `method` lives on one of the struct's
+  // embedded structs (rather than directly on `obj_sem`), retarget the
+  // receiver pointer at the `__embed_<Name>` slot and switch `obj_sem`
+  // to the embed's type. The downstream struct-method branch then forms
+  // the link name and ABI from the embed's perspective. Mirrors the
+  // analyzer's one-level embed walk in resolve_struct_member.
+  if (obj_sem && obj_sem->kind == TypeKind::Struct) {
+    auto &outer = std::get<StructTypeInfo>(obj_sem->detail);
+    bool direct_method = false;
+    for (auto &m : outer.methods) {
+      if (m.name == method) { direct_method = true; break; }
+    }
+    if (!direct_method) {
+      std::string okey = key_for(outer.origin_package, outer.name);
+      auto st_it = struct_types.find(okey);
+      auto fields_it = struct_fields.find(okey);
+      if (st_it != struct_types.end() && fields_it != struct_fields.end()) {
+        auto *outer_st = st_it->second;
+        auto &fields = fields_it->second;
+        for (size_t ei = 0; ei < outer.embeds.size(); ++ei) {
+          auto &embed = outer.embeds[ei];
+          if (!embed || embed->kind != TypeKind::Struct) continue;
+          auto &einfo = std::get<StructTypeInfo>(embed->detail);
+          bool found = false;
+          for (auto &m : einfo.methods)
+            if (m.name == method) { found = true; break; }
+          if (!found) continue;
+
+          size_t slot_idx = outer.fields.size() + ei;
+          if (slot_idx >= fields.size()) break;
+
+          // Pointer to outer struct: prefer the local alloca for an
+          // identifier; otherwise spill the SSA struct value.
+          llvm::Value *outer_ptr = nullptr;
+          if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
+            auto local_it = locals.find(std::string(id->name));
+            if (local_it != locals.end() &&
+                local_it->second->getAllocatedType() == outer_st)
+              outer_ptr = local_it->second;
+          }
+          if (!outer_ptr) {
+            if (obj->getType()->isPointerTy()) {
+              outer_ptr = obj;
+            } else {
+              auto *parent_fn = builder.GetInsertBlock()->getParent();
+              auto *tmp = create_entry_alloca(parent_fn,
+                                              "embed.self.spill", outer_st);
+              builder.CreateStore(obj, tmp);
+              outer_ptr = tmp;
+            }
+          }
+          obj = builder.CreateStructGEP(outer_st, outer_ptr, slot_idx,
+                                        embed_slot_name(einfo));
+          obj_sem = embed;
+          break;
+        }
+      }
+    }
+  }
+
   // Struct method call: obj.Method(args) → StructName.Method(obj, args).
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {
     auto &info = std::get<StructTypeInfo>(obj_sem->detail);
