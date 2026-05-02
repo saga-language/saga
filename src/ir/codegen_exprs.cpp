@@ -48,7 +48,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_switch_expr(n);
           },
           [&](const StructLiteralNode &n) -> llvm::Value * {
-            return emit_struct_literal(n);
+            return emit_struct_literal(n, node);
           },
           [&](const SelectorNode &n) -> llvm::Value * {
             return emit_selector(n, node);

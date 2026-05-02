@@ -170,6 +170,20 @@ void CodeGen::init_types() {
   enum_variants[cmp_key + ".Greater"] = 2;
 }
 
+std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
+  std::string base = key_for(info.origin_package, info.name);
+  if (info.type_args.empty())
+    return base;
+  base += "<";
+  for (size_t i = 0; i < info.type_args.size(); ++i) {
+    if (i)
+      base += ",";
+    base += type_to_string(info.type_args[i]);
+  }
+  base += ">";
+  return base;
+}
+
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   if (!t)
     return void_ll_type;
@@ -189,7 +203,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return i64_type; // Enums are represented as i64 tags.
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
-    std::string key = key_for(info.origin_package, info.name);
+    std::string key = struct_cache_key(info);
     auto it = struct_types.find(key);
     llvm::StructType *st = nullptr;
     if (it != struct_types.end()) {

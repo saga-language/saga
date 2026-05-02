@@ -426,7 +426,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       auto sem = semantic_type(**node.init);
       if (val && sem && sem->kind == TypeKind::Struct) {
         auto &sinfo = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = key_for(sinfo.origin_package, sinfo.name);
+        std::string skey = struct_cache_key(sinfo);
         auto st_it = struct_types.find(skey);
         if (st_it != struct_types.end()) {
           auto *st_type = st_it->second;
@@ -531,7 +531,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct) {
       // Struct zero value: allocate struct, zero-initialize all fields.
       auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
-      std::string skey = key_for(info.origin_package, info.name);
+      std::string skey = struct_cache_key(info);
       auto st_it = struct_types.find(skey);
       if (st_it != struct_types.end()) {
         auto *st_type = st_it->second;
@@ -615,7 +615,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       auto sem = semantic_type(*node.value);
       if (val && sem && sem->kind == TypeKind::Struct) {
         auto &sinfo = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = key_for(sinfo.origin_package, sinfo.name);
+        std::string skey = struct_cache_key(sinfo);
         auto st_it = struct_types.find(skey);
         if (st_it != struct_types.end()) {
           auto *st_type = st_it->second;

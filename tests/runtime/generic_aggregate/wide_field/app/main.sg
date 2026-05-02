@@ -1,0 +1,21 @@
+// Regression: a generic struct holding an aggregate type argument wider
+// than a pointer must lower to a per-instantiation LLVM struct sized for
+// the substituted field type.  Before the per-instantiation cache fix,
+// `Box<Point>` shared the template's `{ ptr }` slot (8 bytes), and
+// `b.value.x` / `b.value.y` returned garbage / off-by-one fields.
+import "std/io"
+
+pub struct Point {
+  x Int
+  y Int
+}
+
+pub struct |T| Box {
+  value T
+}
+
+pub fn Main() Void {
+  b := Box{value: Point{x: 11, y: 22}}
+  io.Println(b.value.x.String())
+  io.Println(b.value.y.String())
+}

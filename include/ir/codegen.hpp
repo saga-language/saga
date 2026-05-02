@@ -275,6 +275,15 @@ private:
     return mangle(origin.empty() ? package_name : origin, name);
   }
 
+  /// Canonical LLVM-struct cache key for a struct semantic type. Templates
+  /// (no concrete type args) key as `(origin, name)`. Instantiations append
+  /// `<arg1,arg2,...>` so each instantiation gets its own LLVM struct sized
+  /// for its substituted fields.  Without this, a generic struct holding an
+  /// aggregate type argument wider than a pointer would lower to a slot
+  /// sized for the template's `ptr`, corrupting adjacent memory on field
+  /// store.
+  std::string struct_cache_key(const StructTypeInfo &info) const;
+
   /// True if a semantic type represents string keys (for saga_runtime_map).
   static bool is_string_key_type(const TypePtr &t);
 
@@ -475,7 +484,8 @@ private:
                                       llvm::Value *iterable,
                                       const TypePtr &iter_sem,
                                       const ForLoopBlocks &bbs);
-  llvm::Value *emit_struct_literal(const StructLiteralNode &node);
+  llvm::Value *emit_struct_literal(const StructLiteralNode &node,
+                                   const Node &parent);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);

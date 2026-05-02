@@ -289,7 +289,7 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
     if (!std::holds_alternative<StructTypeInfo>(expected->detail))
       return nullptr;
     auto &sinfo = std::get<StructTypeInfo>(expected->detail);
-    std::string skey = key_for(sinfo.origin_package, sinfo.name);
+    std::string skey = struct_cache_key(sinfo);
     auto st_it = struct_types.find(skey);
     if (st_it == struct_types.end()) return nullptr;
     auto *st = st_it->second;

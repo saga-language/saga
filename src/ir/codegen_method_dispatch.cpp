@@ -45,7 +45,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         auto lit = locals.find(std::string(id->name));
         if (lit != locals.end()) {
           auto *alloca = lit->second;
-          auto st_it = struct_types.find(key_for(sinfo.origin_package, sinfo.name));
+          auto st_it = struct_types.find(struct_cache_key(sinfo));
           if (st_it != struct_types.end() &&
               alloca->getAllocatedType() == st_it->second) {
             struct_ptr = alloca;
@@ -522,7 +522,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
       if (m.name == method) { direct_method = true; break; }
     }
     if (!direct_method) {
-      std::string okey = key_for(outer.origin_package, outer.name);
+      std::string okey = struct_cache_key(outer);
       auto st_it = struct_types.find(okey);
       auto fields_it = struct_fields.find(okey);
       if (st_it != struct_types.end() && fields_it != struct_fields.end()) {

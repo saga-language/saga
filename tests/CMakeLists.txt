@@ -70,3 +70,6 @@ add_subdirectory(runtime/cross_package)
 
 # Single-package embed integration tests.
 add_subdirectory(runtime/embed)
+
+# Generic struct ABI / per-instantiation layout regression tests.
+add_subdirectory(runtime/generic_aggregate)

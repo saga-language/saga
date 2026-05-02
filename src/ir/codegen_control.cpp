@@ -924,14 +924,26 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
 // Struct literals
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
-  // Resolve the struct's semantic type.
-  auto sem = semantic_type(*node.type_expr);
+llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
+                                          const Node &parent) {
+  // Prefer the analyzer's recorded type for the literal expression — for
+  // a generic struct literal like `Box{value: Point{...}}` the parent
+  // node carries the instantiation `Box<Point>` (with substituted fields
+  // and concrete type_args), whereas `node.type_expr` is just the bare
+  // template identifier.  Fall back to the type-expr type for older
+  // call sites or non-generic structs.
+  auto sem = semantic_type(parent);
+  if (!sem || sem->kind != TypeKind::Struct)
+    sem = semantic_type(*node.type_expr);
   if (!sem || sem->kind != TypeKind::Struct)
     return nullptr;
 
   auto &info = std::get<StructTypeInfo>(sem->detail);
-  std::string skey = key_for(info.origin_package, info.name);
+  // Materialize the per-instantiation LLVM struct on first use; for
+  // non-generic structs this is a cache hit on the type registered by
+  // emit_struct_decl/materialize_import.
+  llvm_type(sem);
+  std::string skey = struct_cache_key(info);
   auto st_it = struct_types.find(skey);
   if (st_it == struct_types.end())
     return nullptr;
@@ -989,7 +1001,7 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
     return {nullptr, nullptr};
 
   auto &info = std::get<StructTypeInfo>(struct_sem_type->detail);
-  std::string skey = key_for(info.origin_package, info.name);
+  std::string skey = struct_cache_key(info);
   auto st_it = struct_types.find(skey);
   if (st_it == struct_types.end())
     return {nullptr, nullptr};
