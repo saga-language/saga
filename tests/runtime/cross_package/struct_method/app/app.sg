@@ -1,0 +1,21 @@
+import "io"
+import "lib"
+
+struct Wrapper {
+  inner lib.Counter
+}
+
+pub fn Main() Void {
+  c := lib.Counter{n: 42}
+  io.Println(c.Value().String())
+  io.Println(c.Double().String())
+
+  w := Wrapper{inner: lib.Counter{n: 7}}
+  io.Println(w.inner.Value().String())
+
+  arr := [lib.Counter{n: 1}, lib.Counter{n: 2}]
+  io.Println(arr.At(0).Value().String())
+
+  m := {"first": lib.Counter{n: 100}}
+  io.Println(m.At("first").Value().String())
+}

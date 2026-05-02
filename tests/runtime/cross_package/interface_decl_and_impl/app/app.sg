@@ -1,0 +1,20 @@
+import "io"
+import "lib"
+
+struct Circle {
+  radius Int
+}
+
+pub fn (c Circle) Draw() String { "circle" }
+
+struct Rect {
+  width Int
+  height Int
+}
+
+pub fn (r Rect) Draw() String { "rect" }
+
+pub fn Main() Void {
+  io.Println(lib.Render(Circle{radius: 5}))
+  io.Println(lib.Render(Rect{width: 3, height: 4}))
+}

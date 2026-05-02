@@ -505,7 +505,10 @@ struct StructDeclNode {
   bool is_public;
   std::optional<GenericNode> generic;
   IdentifierNode name;
-  std::vector<IdentifierNode> embeds; // mixin names from `< A, B` clause
+  // Embed list from `< A, lib.B` clause. Each element is either an
+  // IdentifierNode (local name) or a SelectorNode (qualified name).
+  // Generic-typed embeds are not yet supported.
+  std::vector<NodePtr> embeds;
   std::vector<StructMemberNode> members;
 };
 

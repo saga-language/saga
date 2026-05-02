@@ -1,0 +1,11 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  o := lib.Origin()
+  io.Println(o.x.String())
+  io.Println(o.y.String())
+  p := lib.Make(3, 7)
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}

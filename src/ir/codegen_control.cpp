@@ -471,561 +471,6 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
   return nullptr;
 }
 
-// ===========================================================================
-// For loop expression
-// ===========================================================================
-
-llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
-  auto *func = builder.GetInsertBlock()->getParent();
-
-  // Create basic blocks for the loop structure.
-  auto *cond_bb = llvm::BasicBlock::Create(context, "for.cond", func);
-  auto *body_bb = llvm::BasicBlock::Create(context, "for.body");
-  auto *update_bb = llvm::BasicBlock::Create(context, "for.update");
-  auto *exit_bb = llvm::BasicBlock::Create(context, "for.exit");
-
-  // Push loop context for break/next.
-  loop_stack.push_back({exit_bb, update_bb});
-
-  if (!node.mode) {
-    // ── Infinite loop: for { ... } ─────────────────────────────────
-    // No condition — branch directly to body, condition block is just
-    // a trampoline.
-    builder.CreateBr(body_bb);
-
-    // Condition block (used as the "next" target — just jumps to body).
-    // We already branched to body from entry, so cond_bb becomes the
-    // "next" landing.  Rewrite: next goes to cond_bb which goes to body.
-    builder.SetInsertPoint(cond_bb);
-    builder.CreateBr(body_bb);
-
-    // Update the loop context: next → cond_bb (which goes to body).
-    loop_stack.back().next_bb = cond_bb;
-
-    // Body.
-    func->insert(func->end(), body_bb);
-    builder.SetInsertPoint(body_bb);
-    if (current_actor)
-      builder.CreateCall(module->getFunction("saga_reduction_tick"),
-                         {current_actor});
-    auto &body_block = std::get<BlockNode>(node.body->data);
-    emit_block(body_block);
-    if (!builder.GetInsertBlock()->getTerminator())
-      builder.CreateBr(cond_bb);
-
-  } else {
-    auto &mode_node = *node.mode;
-
-    if (auto *iter = std::get_if<ForIterClauseNode>(&mode_node->data)) {
-      // ── C-style: for init; cond; update { ... } ───────────────────
-      // Emit init in the current block.
-      emit_expr(*iter->init);
-
-      // Branch to condition.
-      builder.CreateBr(cond_bb);
-
-      // Condition block.
-      builder.SetInsertPoint(cond_bb);
-      auto *cond_val = emit_expr(*iter->condition);
-      if (cond_val && !cond_val->getType()->isIntegerTy(1))
-        cond_val = builder.CreateICmpNE(
-            cond_val, llvm::Constant::getNullValue(cond_val->getType()),
-            "tobool");
-      if (cond_val)
-        builder.CreateCondBr(cond_val, body_bb, exit_bb);
-      else
-        builder.CreateBr(body_bb);
-
-      // Body.
-      func->insert(func->end(), body_bb);
-      builder.SetInsertPoint(body_bb);
-      if (current_actor)
-        builder.CreateCall(module->getFunction("saga_reduction_tick"),
-                           {current_actor});
-      auto &body_block = std::get<BlockNode>(node.body->data);
-      emit_block(body_block);
-      if (!builder.GetInsertBlock()->getTerminator())
-        builder.CreateBr(update_bb);
-
-      // Update block.
-      func->insert(func->end(), update_bb);
-      builder.SetInsertPoint(update_bb);
-      emit_expr(*iter->update);
-      builder.CreateBr(cond_bb);
-
-    } else if (auto *range = std::get_if<ForRangeClauseNode>(&mode_node->data)) {
-      // ── Range-based: for v : iterable { ... } ─────────────────────
-      auto *iterable = emit_expr(*range->iterable);
-      if (!iterable) {
-        builder.CreateBr(exit_bb);
-      } else {
-        auto iter_sem = semantic_type(*range->iterable);
-        bool is_array = iter_sem && iter_sem->kind == TypeKind::Array;
-
-        if (is_array) {
-          // Get array size.
-          auto *size_fn = module->getFunction("saga_array_size");
-          auto *arr_len = builder.CreateCall(size_fn, {iterable}, "arr.len");
-
-          // Create index variable.
-          auto *idx_alloca = create_entry_alloca(func, ".idx", i64_type);
-          builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx_alloca);
-
-          // Create allocas for loop variables.
-          llvm::AllocaInst *key_alloca = nullptr;
-          llvm::AllocaInst *val_alloca = nullptr;
-
-          auto &arr_info = std::get<ArrayTypeInfo>(iter_sem->detail);
-          auto *elem_ll = llvm_type(arr_info.element);
-
-          // Array literals store struct elements as pointers in each slot
-          // (see emit_array_literal). The iterator binding must match that
-          // representation, else the load reads past the slot.
-          bool struct_elem = arr_info.element &&
-                             arr_info.element->kind == TypeKind::Struct;
-          llvm::Type *bind_ll =
-              struct_elem ? llvm::PointerType::getUnqual(context) : elem_ll;
-
-          if (range->vars.size() == 1) {
-            val_alloca = create_entry_alloca(
-                func, std::string(range->vars[0].name), bind_ll);
-            locals[std::string(range->vars[0].name)] = val_alloca;
-          } else if (range->vars.size() == 2) {
-            key_alloca = create_entry_alloca(
-                func, std::string(range->vars[0].name), i64_type);
-            locals[std::string(range->vars[0].name)] = key_alloca;
-            val_alloca = create_entry_alloca(
-                func, std::string(range->vars[1].name), bind_ll);
-            locals[std::string(range->vars[1].name)] = val_alloca;
-          }
-
-          // Branch to condition.
-          builder.CreateBr(cond_bb);
-
-          // Condition: idx < len.
-          builder.SetInsertPoint(cond_bb);
-          auto *cur_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
-          auto *cmp = builder.CreateICmpSLT(cur_idx, arr_len, "range.cmp");
-          builder.CreateCondBr(cmp, body_bb, exit_bb);
-
-          // Body: load element, store to loop var(s).
-          func->insert(func->end(), body_bb);
-          builder.SetInsertPoint(body_bb);
-          if (current_actor)
-            builder.CreateCall(module->getFunction("saga_reduction_tick"),
-                               {current_actor});
-
-          auto *at_fn = module->getFunction("saga_array_at");
-          auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
-          auto *elem_ptr =
-              builder.CreateCall(at_fn, {iterable, body_idx}, "at");
-          auto *elem_val =
-              builder.CreateLoad(bind_ll, elem_ptr, "elem");
-
-          if (key_alloca)
-            builder.CreateStore(body_idx, key_alloca);
-          if (val_alloca)
-            builder.CreateStore(elem_val, val_alloca);
-
-          auto &body_block = std::get<BlockNode>(node.body->data);
-          emit_block(body_block);
-          if (!builder.GetInsertBlock()->getTerminator())
-            builder.CreateBr(update_bb);
-
-          // Update: idx++.
-          func->insert(func->end(), update_bb);
-          builder.SetInsertPoint(update_bb);
-          auto *upd_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
-          auto *next_idx =
-              builder.CreateAdd(upd_idx, llvm::ConstantInt::get(i64_type, 1),
-                                "idx.next");
-          builder.CreateStore(next_idx, idx_alloca);
-          builder.CreateBr(cond_bb);
-        } else if (iter_sem && iter_sem->kind == TypeKind::Map) {
-          // ── Map iteration: for [k,] v : map { ... } ───────────────
-          auto &map_info = std::get<MapTypeInfo>(iter_sem->detail);
-
-          // Get map size.
-          auto *size_fn = module->getFunction("saga_map_size");
-          auto *map_len = builder.CreateCall(size_fn, {iterable}, "map.len");
-
-          // Create index variable for iterating occupied slots.
-          auto *idx_alloca = create_entry_alloca(func, ".map.idx", i64_type);
-          builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx_alloca);
-
-          // Create allocas for loop variables.
-          auto *key_ll = llvm_type(map_info.key);
-          auto *val_ll = llvm_type(map_info.value);
-          llvm::AllocaInst *key_alloca = nullptr;
-          llvm::AllocaInst *val_alloca = nullptr;
-
-          if (range->vars.size() == 1) {
-            // Single variable gets the value.
-            val_alloca = create_entry_alloca(
-                func, std::string(range->vars[0].name), val_ll);
-            locals[std::string(range->vars[0].name)] = val_alloca;
-          } else if (range->vars.size() == 2) {
-            key_alloca = create_entry_alloca(
-                func, std::string(range->vars[0].name), key_ll);
-            locals[std::string(range->vars[0].name)] = key_alloca;
-            val_alloca = create_entry_alloca(
-                func, std::string(range->vars[1].name), val_ll);
-            locals[std::string(range->vars[1].name)] = val_alloca;
-          }
-
-          // Branch to condition.
-          builder.CreateBr(cond_bb);
-
-          // Condition: idx < size.
-          builder.SetInsertPoint(cond_bb);
-          auto *cur_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
-          auto *cmp = builder.CreateICmpSLT(cur_idx, map_len, "map.cmp");
-          builder.CreateCondBr(cmp, body_bb, exit_bb);
-
-          // Body: load key and value at current index.
-          func->insert(func->end(), body_bb);
-          builder.SetInsertPoint(body_bb);
-          if (current_actor)
-            builder.CreateCall(module->getFunction("saga_reduction_tick"),
-                               {current_actor});
-
-          auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
-
-          if (key_alloca) {
-            auto *key_at_fn = module->getFunction("saga_map_key_at");
-            auto *key_ptr = builder.CreateCall(
-                key_at_fn, {iterable, body_idx}, "map.key.ptr");
-            auto *key_val = builder.CreateLoad(key_ll, key_ptr, "map.key");
-            builder.CreateStore(key_val, key_alloca);
-          }
-
-          if (val_alloca) {
-            auto *val_at_fn = module->getFunction("saga_map_value_at");
-            auto *val_ptr = builder.CreateCall(
-                val_at_fn, {iterable, body_idx}, "map.val.ptr");
-            auto *val_val = builder.CreateLoad(val_ll, val_ptr, "map.val");
-            builder.CreateStore(val_val, val_alloca);
-          }
-
-          auto &body_block = std::get<BlockNode>(node.body->data);
-          emit_block(body_block);
-          if (!builder.GetInsertBlock()->getTerminator())
-            builder.CreateBr(update_bb);
-
-          // Update: idx++.
-          func->insert(func->end(), update_bb);
-          builder.SetInsertPoint(update_bb);
-          auto *upd_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
-          auto *next_idx = builder.CreateAdd(
-              upd_idx, llvm::ConstantInt::get(i64_type, 1), "map.idx.next");
-          builder.CreateStore(next_idx, idx_alloca);
-          builder.CreateBr(cond_bb);
-        } else if (iter_sem && iter_sem->kind == TypeKind::Struct) {
-          // Check for Task iteration: for msg : task { ... }
-          auto &st_info = std::get<StructTypeInfo>(iter_sem->detail);
-          if (st_info.name == "Task") {
-            // Get the channel pointer from the actor:
-            // actor->channel is at a known offset.  We pass the actor ptr
-            // to saga_channel_recv which expects (ch, buf).
-            // The actor struct layout has `channel` at a specific offset.
-            // We use a helper: load actor->channel as a ptr.
-            //
-            // actor->channel offset: we GEP into the raw struct.
-            // However, codegen doesn't have the C struct layout.  Instead,
-            // we store the channel pointer at the spawn site into a local
-            // variable, and iterate on it.
-            //
-            // For now, we emit a runtime call pattern:
-            //   actor ptr = iterable (the Task handle)
-            //   channel ptr was stored alongside the task in a companion
-            //   local variable named "<task>.channel".
-
-            // Look for companion channel variable.
-            std::string task_name;
-            if (auto *iter_id = std::get_if<IdentifierNode>(
-                    &range->iterable->data))
-              task_name = std::string(iter_id->name);
-
-            llvm::Value *ch_ptr = nullptr;
-            if (!task_name.empty()) {
-              auto ch_it = locals.find(task_name + ".channel");
-              if (ch_it != locals.end())
-                ch_ptr = builder.CreateLoad(
-                    llvm::PointerType::getUnqual(context),
-                    ch_it->second, "ch.ptr");
-            }
-
-            if (ch_ptr) {
-              // Determine message type from the Task's type argument
-              // (Task's first type arg is the channel element type T).
-              llvm::Type *msg_ll = i64_type;
-              TypePtr elem_sem;
-              if (!st_info.type_args.empty())
-                elem_sem = st_info.type_args[0];
-              if (elem_sem) {
-                auto *ll = llvm_type(elem_sem);
-                if (ll && !ll->isVoidTy())
-                  msg_ll = ll;
-              }
-
-              // Create message buffer alloca.
-              llvm::AllocaInst *msg_alloca = nullptr;
-              if (range->vars.size() >= 1) {
-                std::string vname(range->vars[0].name);
-                msg_alloca = create_entry_alloca(func, vname, msg_ll);
-                locals[vname] = msg_alloca;
-              } else {
-                msg_alloca = create_entry_alloca(func, ".msg.buf", msg_ll);
-              }
-
-              // Branch to condition (recv loop).
-              builder.CreateBr(cond_bb);
-
-              // Condition: call saga_channel_recv; break if -1.
-              builder.SetInsertPoint(cond_bb);
-              auto *recv_fn = module->getFunction("saga_channel_recv");
-              auto *rc = builder.CreateCall(recv_fn, {ch_ptr, msg_alloca},
-                                             "recv.rc");
-              auto *eof = builder.CreateICmpEQ(
-                  rc, llvm::ConstantInt::get(
-                      llvm::Type::getInt32Ty(context), -1),
-                  "recv.eof");
-              builder.CreateCondBr(eof, exit_bb, body_bb);
-
-              // Body.
-              func->insert(func->end(), body_bb);
-              builder.SetInsertPoint(body_bb);
-              if (current_actor)
-                builder.CreateCall(
-                    module->getFunction("saga_reduction_tick"),
-                    {current_actor});
-              auto &body_block = std::get<BlockNode>(node.body->data);
-              emit_block(body_block);
-              if (!builder.GetInsertBlock()->getTerminator())
-                builder.CreateBr(update_bb);
-
-              // Update block: just loop back to recv.
-              func->insert(func->end(), update_bb);
-              builder.SetInsertPoint(update_bb);
-              builder.CreateBr(cond_bb);
-            } else {
-              // No channel found — skip.
-              builder.CreateBr(exit_bb);
-            }
-          } else {
-            // ── Iterable struct: for v : iter { ... } via Next() ────────
-            // Requires the struct to implement: Next() T | Error
-            // where T is the element type.
-            auto elem_sem = iterable_next_elem_type_of(*range->iterable);
-            if (!elem_sem) {
-              // Analyzer reported the error — just skip the loop.
-              builder.CreateBr(exit_bb);
-            } else {
-              auto *elem_ll = llvm_type(elem_sem);
-              auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-              // ── Find the Next() method's mangled link name ───────────
-              std::string next_link_name;
-              {
-                auto ml_it = struct_method_links.find(st_info.name);
-                if (ml_it != struct_method_links.end()) {
-                  for (auto &[lname, mname] : ml_it->second) {
-                    if (mname == "Next") {
-                      next_link_name = lname;
-                      break;
-                    }
-                  }
-                }
-                if (next_link_name.empty())
-                  next_link_name = mangle(st_info.name + "__Next");
-              }
-
-              // ── Build the return union type: T | Error ──────────────
-              // Prefer the type recorded in the method signature so the
-              // union llvm type cache hits consistently.
-              TypePtr next_ret_sem;
-              for (auto &m : st_info.methods) {
-                if (m.name == "Next" && m.signature &&
-                    m.signature->kind == TypeKind::Func) {
-                  auto &fi =
-                      std::get<FuncTypeInfo>(m.signature->detail);
-                  if (!fi.returns.empty())
-                    next_ret_sem = fi.returns[0];
-                  break;
-                }
-              }
-              if (!next_ret_sem)
-                next_ret_sem = make_union_type(
-                    {elem_sem, analyzer.builtins.error_iface});
-
-              auto *union_st = get_union_llvm_type(next_ret_sem);
-
-              // Find the error tag index (the Error interface alternative).
-              int error_tag = 1; // default: tag 1 for T | Error
-              if (next_ret_sem->kind == TypeKind::Union) {
-                auto &ui =
-                    std::get<UnionTypeInfo>(next_ret_sem->detail);
-                for (size_t i = 0; i < ui.alternatives.size(); ++i) {
-                  if (ui.alternatives[i]->kind == TypeKind::Interface)
-                    error_tag = static_cast<int>(i);
-                }
-              }
-
-              // ── Find or forward-declare Next() ───────────────────
-              auto *next_fn = module->getFunction(next_link_name);
-              if (!next_fn && union_st) {
-                auto *ret_ll = static_cast<llvm::Type *>(union_st);
-                auto *fn_type =
-                    llvm::FunctionType::get(ret_ll, {ptr_type}, false);
-                next_fn = llvm::Function::Create(
-                    fn_type, llvm::Function::ExternalLinkage,
-                    next_link_name, module.get());
-              }
-
-              // ── Get self_ptr for the iterable ────────────────────
-              // Prefer the local alloca so Next() can mutate cursor state.
-              llvm::Value *self_ptr = nullptr;
-              if (auto *id = std::get_if<IdentifierNode>(
-                      &range->iterable->data)) {
-                auto local_it =
-                    locals.find(std::string(id->name));
-                if (local_it != locals.end()) {
-                  auto *alloca = local_it->second;
-                  auto st_it2 = struct_types.find(st_info.name);
-                  if (st_it2 != struct_types.end() &&
-                      alloca->getAllocatedType() == st_it2->second)
-                    self_ptr = alloca;
-                }
-              }
-              if (!self_ptr) {
-                // Spill the already-loaded value to a temp alloca.
-                auto st_it2 = struct_types.find(st_info.name);
-                if (st_it2 != struct_types.end() &&
-                    iterable->getType() == st_it2->second) {
-                  auto *tmp = create_entry_alloca(
-                      func, "iter.self", st_it2->second);
-                  builder.CreateStore(iterable, tmp);
-                  self_ptr = tmp;
-                } else {
-                  self_ptr = iterable;
-                }
-              }
-
-              // ── Allocas for loop variable and Next() result ───────
-              llvm::AllocaInst *val_alloca = nullptr;
-              if (!range->vars.empty()) {
-                std::string vname(range->vars[0].name);
-                val_alloca = create_entry_alloca(func, vname, elem_ll);
-                locals[vname] = val_alloca;
-              }
-
-              llvm::AllocaInst *result_alloca = nullptr;
-              if (union_st)
-                result_alloca =
-                    create_entry_alloca(func, "next.result", union_st);
-
-              // ── Loop structure ──────────────────────────────────
-              if (!next_fn || !result_alloca || !self_ptr) {
-                builder.CreateBr(exit_bb);
-              } else {
-                // Branch to condition.
-                builder.CreateBr(cond_bb);
-
-                // Condition: call Next(), check tag.
-                builder.SetInsertPoint(cond_bb);
-                auto *next_val =
-                    builder.CreateCall(next_fn, {self_ptr}, "next.val");
-                builder.CreateStore(next_val, result_alloca);
-
-                auto *tag_gep = builder.CreateStructGEP(
-                    union_st, result_alloca, 0, "next.tag.ptr");
-                auto *tag = builder.CreateLoad(
-                    llvm::Type::getInt8Ty(context), tag_gep, "next.tag");
-                auto *is_err = builder.CreateICmpEQ(
-                    tag,
-                    llvm::ConstantInt::get(
-                        llvm::Type::getInt8Ty(context), error_tag),
-                    "next.is_err");
-                builder.CreateCondBr(is_err, exit_bb, body_bb);
-
-                // Body: extract element and run user code.
-                func->insert(func->end(), body_bb);
-                builder.SetInsertPoint(body_bb);
-                if (current_actor)
-                  builder.CreateCall(
-                      module->getFunction("saga_reduction_tick"),
-                      {current_actor});
-
-                if (val_alloca) {
-                  auto *val = emit_union_extract(
-                      result_alloca, elem_sem, next_ret_sem);
-                  if (val)
-                    builder.CreateStore(val, val_alloca);
-                }
-
-                auto &body_block =
-                    std::get<BlockNode>(node.body->data);
-                emit_block(body_block);
-                if (!builder.GetInsertBlock()->getTerminator())
-                  builder.CreateBr(update_bb);
-
-                // Update: unconditional back-edge to cond (Next() does
-                // the advancing).
-                func->insert(func->end(), update_bb);
-                builder.SetInsertPoint(update_bb);
-                builder.CreateBr(cond_bb);
-              }
-            }
-          }
-        } else {
-          // Non-array/map/task iterable — not yet supported.
-          builder.CreateBr(exit_bb);
-        }
-      }
-
-    } else {
-      // ── Condition-only: for cond { ... } ──────────────────────────
-      builder.CreateBr(cond_bb);
-
-      // Condition block.
-      builder.SetInsertPoint(cond_bb);
-      auto *cond_val = emit_expr(*mode_node);
-      if (cond_val && !cond_val->getType()->isIntegerTy(1))
-        cond_val = builder.CreateICmpNE(
-            cond_val, llvm::Constant::getNullValue(cond_val->getType()),
-            "tobool");
-      if (cond_val)
-        builder.CreateCondBr(cond_val, body_bb, exit_bb);
-      else
-        builder.CreateBr(body_bb);
-
-      // Body.
-      func->insert(func->end(), body_bb);
-      builder.SetInsertPoint(body_bb);
-      if (current_actor)
-        builder.CreateCall(module->getFunction("saga_reduction_tick"),
-                           {current_actor});
-      auto &body_block = std::get<BlockNode>(node.body->data);
-      emit_block(body_block);
-      if (!builder.GetInsertBlock()->getTerminator())
-        builder.CreateBr(update_bb);
-
-      // Update block (just loops back to condition).
-      func->insert(func->end(), update_bb);
-      builder.SetInsertPoint(update_bb);
-      builder.CreateBr(cond_bb);
-    }
-  }
-
-  // Pop loop context.
-  loop_stack.pop_back();
-
-  // Exit block.
-  func->insert(func->end(), exit_bb);
-  builder.SetInsertPoint(exit_bb);
-
-  return nullptr;
-}
 
 // ===========================================================================
 // Array literals
@@ -1043,13 +488,11 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     auto first_sem = semantic_type(*node.elements[0]);
     if (first_sem) {
       elem_ll_type = llvm_type(first_sem);
-      if (elem_ll_type->isDoubleTy())
-        elem_size = 8;
+      if (elem_ll_type->isStructTy())
+        elem_size = module->getDataLayout().getTypeAllocSize(elem_ll_type);
       else if (elem_ll_type->isIntegerTy(1))
         elem_size = 1;
-      else if (elem_ll_type->isIntegerTy(64))
-        elem_size = 8;
-      else if (elem_ll_type->isPointerTy())
+      else
         elem_size = 8;
     }
   }
@@ -1072,11 +515,22 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (!val)
       continue;
 
-    // saga_array_push takes a void* to the element.  We need to store the
-    // value to a temporary alloca and pass its address.
-    auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
-    builder.CreateStore(val, tmp);
-    builder.CreateCall(push_fn, {arr, tmp});
+    // saga_array_push takes a void* to the element and memcpy's
+    // elem_size bytes from it.  For struct elements we pass the alloca
+    // pointer directly; for SSA values we spill to a temp first.
+    if (elem_ll_type->isStructTy()) {
+      llvm::Value *src = val;
+      if (val->getType()->isStructTy()) {
+        auto *tmp = create_entry_alloca(func, "elem.tmp", elem_ll_type);
+        builder.CreateStore(val, tmp);
+        src = tmp;
+      }
+      builder.CreateCall(push_fn, {arr, src});
+    } else {
+      auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
+      builder.CreateStore(val, tmp);
+      builder.CreateCall(push_fn, {arr, tmp});
+    }
   }
 
   return arr;
@@ -1102,24 +556,20 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     if (key_sem) {
       key_ll_type = llvm_type(key_sem);
       string_keys = is_string_key_type(key_sem);
-      if (key_ll_type->isDoubleTy())
-        key_size = 8;
+      if (key_ll_type->isStructTy())
+        key_size = module->getDataLayout().getTypeAllocSize(key_ll_type);
       else if (key_ll_type->isIntegerTy(1))
         key_size = 1;
-      else if (key_ll_type->isIntegerTy(64))
-        key_size = 8;
-      else if (key_ll_type->isPointerTy())
+      else
         key_size = 8;
     }
     if (val_sem) {
       val_ll_type = llvm_type(val_sem);
-      if (val_ll_type->isDoubleTy())
-        val_size = 8;
+      if (val_ll_type->isStructTy())
+        val_size = module->getDataLayout().getTypeAllocSize(val_ll_type);
       else if (val_ll_type->isIntegerTy(1))
         val_size = 1;
-      else if (val_ll_type->isIntegerTy(64))
-        val_size = 8;
-      else if (val_ll_type->isPointerTy())
+      else
         val_size = 8;
     }
   }
@@ -1143,13 +593,28 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     if (!key_val || !val_val)
       continue;
 
-    // Store key and value to temporaries for passing by pointer.
+    // Key spill (struct keys not supported here yet; default scalar path).
     auto *key_tmp = create_entry_alloca(func, "map.key.tmp", key_val->getType());
     builder.CreateStore(key_val, key_tmp);
-    auto *val_tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
-    builder.CreateStore(val_val, val_tmp);
 
-    builder.CreateCall(set_fn, {map, key_tmp, val_tmp});
+    // Value: for struct values, pass the struct alloca pointer directly
+    // so the runtime memcpy's val_size bytes of struct contents.
+    llvm::Value *val_ptr = nullptr;
+    if (val_ll_type->isStructTy()) {
+      if (val_val->getType()->isStructTy()) {
+        auto *tmp = create_entry_alloca(func, "map.val.tmp", val_ll_type);
+        builder.CreateStore(val_val, tmp);
+        val_ptr = tmp;
+      } else {
+        val_ptr = val_val; // already a pointer to a struct alloca
+      }
+    } else {
+      auto *tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
+      builder.CreateStore(val_val, tmp);
+      val_ptr = tmp;
+    }
+
+    builder.CreateCall(set_fn, {map, key_tmp, val_ptr});
   }
 
   return map;
@@ -1466,12 +931,12 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
     return nullptr;
 
   auto &info = std::get<StructTypeInfo>(sem->detail);
-  auto st_it = struct_types.find(info.name);
+  std::string skey = key_for(info.origin_package, info.name);
+  auto st_it = struct_types.find(skey);
   if (st_it == struct_types.end())
     return nullptr;
 
   auto *st = st_it->second;
-  auto &fields = struct_fields[info.name];
 
   // Allocate the struct on the stack.
   auto *func = builder.GetInsertBlock()->getParent();
@@ -1480,26 +945,32 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node) {
   // Zero-initialize all fields.
   builder.CreateStore(llvm::Constant::getNullValue(st), alloca);
 
-  // Store each provided field value.
+  // Store each provided field value. For a literal that addresses a
+  // promoted field (the field lives on an embedded struct), reuse
+  // struct_field_gep — it already walks the embed layout and hands back
+  // a pointer into the right inner slot.
   for (auto &fa : node.fields) {
     std::string fname(fa.name.name);
-    // Find the field index.
-    int idx = -1;
-    for (size_t i = 0; i < fields.size(); ++i) {
-      if (fields[i] == fname) {
-        idx = static_cast<int>(i);
-        break;
-      }
-    }
-    if (idx < 0)
-      continue;
 
     auto *val = emit_expr(*fa.value);
     if (!val)
       continue;
 
-    auto *gep = builder.CreateStructGEP(st, alloca, idx, fname);
-    builder.CreateStore(val, gep);
+    auto [gep, field_ll] = struct_field_gep(alloca, sem, fname);
+    if (!gep)
+      continue;
+
+    // D1: aggregate fields are stored inline. If the rhs is a pointer to
+    // a struct (e.g. from a nested struct literal), memcpy the bytes
+    // rather than storing the pointer into the struct slot.
+    if (field_ll && field_ll->isStructTy() && val->getType()->isPointerTy()) {
+      auto &dl = module->getDataLayout();
+      uint64_t sz = dl.getTypeAllocSize(field_ll);
+      llvm::Align al = dl.getABITypeAlign(field_ll);
+      builder.CreateMemCpy(gep, al, val, al, sz);
+    } else {
+      builder.CreateStore(val, gep);
+    }
   }
 
   // Return a pointer to the struct alloca.
@@ -1518,19 +989,53 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
     return {nullptr, nullptr};
 
   auto &info = std::get<StructTypeInfo>(struct_sem_type->detail);
-  auto st_it = struct_types.find(info.name);
+  std::string skey = key_for(info.origin_package, info.name);
+  auto st_it = struct_types.find(skey);
   if (st_it == struct_types.end())
     return {nullptr, nullptr};
 
   auto *st = st_it->second;
-  auto &fields = struct_fields[info.name];
+  auto &fields = struct_fields[skey];
 
-  for (size_t i = 0; i < fields.size(); ++i) {
+  // Direct field lookup. We restrict to info.fields.size() so that the
+  // synthetic `__embed_<Name>` slots appended after the own fields are
+  // not addressable by name from user code — they are reachable only via
+  // promoted-field access (handled below).
+  for (size_t i = 0; i < info.fields.size() && i < fields.size(); ++i) {
     if (fields[i] == field_name) {
       auto *gep = builder.CreateStructGEP(st, struct_ptr, i, field_name);
-      return {gep, st->getElementType(i)};
+      // Prefer the semantic field type's LLVM lowering so generic
+      // instantiations (e.g. Box<Int>) read/write at the right element
+      // type even when the underlying LLVM struct was emitted with a
+      // ptr-typed slot for the unsubstituted template field. Sizes must
+      // match the slot for this to be safe; aggregate type arguments
+      // wider than a pointer are tracked as P8 tech debt.
+      llvm::Type *field_ll = st->getElementType(i);
+      if (info.fields[i].type) {
+        if (auto *sem_ll = llvm_type(info.fields[i].type))
+          field_ll = sem_ll;
+      }
+      return {gep, field_ll};
     }
   }
+
+  // Promoted-field access: the field lives on one of the embedded structs.
+  // Walk each embed in declaration order and recurse into its layout.
+  // Layout invariant: embed slots are appended to `fields` after the
+  // owner's own fields, in the same order as `info.embeds`.
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= fields.size()) break;
+
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                             embed_slot_name(einfo));
+    auto inner = struct_field_gep(slot_gep, embed, field_name);
+    if (inner.first) return inner;
+  }
+
   return {nullptr, nullptr};
 }
 

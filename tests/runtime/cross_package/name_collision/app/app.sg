@@ -1,0 +1,10 @@
+import "io"
+import "pka"
+import "pkb"
+
+pub fn Main() Void {
+  ta := pka.Thing{a: 1}
+  tb := pkb.Thing{b: 2}
+  io.Println(ta.a.String())
+  io.Println(tb.b.String())
+}

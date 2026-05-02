@@ -1,0 +1,10 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  io.Println(lib.ColorName(lib.Color.Red))
+  io.Println(lib.ColorName(lib.Color.Green))
+  io.Println(lib.ColorName(lib.Color.Blue))
+  io.Println((lib.Color.Red == lib.Color.Red).String())
+  io.Println((lib.Color.Red == lib.Color.Blue).String())
+}

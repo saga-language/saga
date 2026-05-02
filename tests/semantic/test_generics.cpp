@@ -219,4 +219,56 @@ TEST(Generics, SpawnWithGeneric) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// P5: type-parameter shadowing (method on generic struct must not reuse the
+// struct's type-param names in its own |...| clause)
+// ===========================================================================
+
+TEST(Generics, MethodTypeParamShadowsStructParam) {
+  auto r = GR::from(
+      "struct |T| Box {\n"
+      "  value T\n"
+      "  fn |T| Map(x T) Void { }\n"
+      "}");
+  EXPECT_TRUE(r.has_err("shadows enclosing struct type parameter"));
+}
+
+TEST(Generics, StandaloneReceiverMethodReusingStructParamIsOk) {
+  // Standalone receiver methods may reuse the struct's type-param name in
+  // their own |...| clause — that's the binding point for the receiver's T.
+  auto r = GR::from(
+      "struct |T| Box { value T }\n"
+      "pub fn |T| (b |T| Box) Get() T { b.value }");
+  EXPECT_TRUE(r.ok());
+}
+
+// P5 invariant: instantiating a generic struct must preserve the
+// origin_package on every method. Without this, codegen mangles
+// imported method calls against the caller's package, which would
+// produce undefined symbols at link time across packages.
+TEST(Generics, InstantiatingGenericStructPreservesMethodOrigin) {
+  auto r = GR::from(
+      "struct |T| Box { value T }\n"
+      "pub fn |T| (b |T| Box) Get() T { b.value }\n"
+      "pub fn Main() Void { b := Box{value: 1}; v := b.Get() }");
+  ASSERT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
+
+  // Find the Box struct type in the package scope and confirm every
+  // method has origin_package set. We don't pin a specific value here
+  // (single-package tests use an empty current_package_name) — the
+  // contract is "non-empty if the type was declared in this analyzer".
+  auto sym = r.analyzer->package_scope_->symbols.find("Box");
+  ASSERT_NE(sym, r.analyzer->package_scope_->symbols.end());
+  ASSERT_TRUE(sym->second.type);
+  auto &si = std::get<StructTypeInfo>(sym->second.type->detail);
+  ASSERT_FALSE(si.methods.empty());
+  std::string expected_origin = si.origin_package;
+  for (auto &m : si.methods) {
+    EXPECT_EQ(m.origin_package, expected_origin)
+        << "method '" << m.name
+        << "' lost its origin_package — instantiate_generic_struct or a "
+           "method-construction site is dropping the field";
+  }
+}
+
 } // namespace mc

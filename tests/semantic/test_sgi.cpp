@@ -133,7 +133,7 @@ TEST(Sgi, GenerateAndParseFuncExport) {
   std::string sgi = generate_sgi("hello", {}, exports);
 
   // Verify the generated text looks right
-  EXPECT_NE(sgi.find("sgi 1"), std::string::npos);
+  EXPECT_NE(sgi.find("sgi 2"), std::string::npos);
   EXPECT_NE(sgi.find("package hello"), std::string::npos);
   EXPECT_NE(sgi.find("// Writes a greeting."), std::string::npos);
   EXPECT_NE(sgi.find("func Greet(String)"), std::string::npos);
@@ -141,7 +141,7 @@ TEST(Sgi, GenerateAndParseFuncExport) {
   // Parse it back
   auto parsed = parse_sgi(sgi);
   ASSERT_TRUE(parsed.has_value());
-  EXPECT_EQ(parsed->version, 1);
+  EXPECT_EQ(parsed->version, kSgiVersion);
   EXPECT_EQ(parsed->package_name, "hello");
   ASSERT_EQ(parsed->exports.size(), 1u);
   EXPECT_EQ(parsed->exports[0].name, "Greet");
@@ -156,7 +156,7 @@ TEST(Sgi, GenerateAndParseStructExport) {
       {FieldInfo{"x", make_int_type(), true},
        FieldInfo{"y", make_int_type(), true}},
       {MethodInfo{"Translate", make_func_type({make_int_type(), make_int_type()},
-                                               {make_void_type()}), true}});
+                                               {make_void_type()}), true, ""}});
 
   std::vector<SgiExport> exports = {
       {"A 2D point.", "Point", point_type, true},
@@ -369,7 +369,7 @@ TEST(Sgi, GenericStructRoundTrip) {
   std::vector<SgiExport> exports = {{"A generic list.", "List", t, true}};
   std::string sgi = generate_sgi("collections", {}, exports);
 
-  EXPECT_NE(sgi.find("struct List|T|"), std::string::npos);
+  EXPECT_NE(sgi.find("struct |T#0| List"), std::string::npos);
 
   auto parsed = parse_sgi(sgi);
   ASSERT_TRUE(parsed.has_value());
@@ -377,6 +377,7 @@ TEST(Sgi, GenericStructRoundTrip) {
   EXPECT_EQ(st.name, "List");
   EXPECT_EQ(st.type_params.size(), 1u);
   EXPECT_EQ(st.type_params[0].name, "T");
+  EXPECT_EQ(st.type_params[0].id, 0u);
 }
 
 // ===========================================================================
@@ -398,6 +399,12 @@ TEST(Sgi, InvalidSgiMagic) {
 
 TEST(Sgi, InvalidSgiVersion) {
   auto parsed = parse_sgi("sgi 99\npackage foo\n");
+  EXPECT_FALSE(parsed.has_value());
+}
+
+TEST(Sgi, RejectV1Header) {
+  // v1 is a hard break (D6): readers must refuse to load pre-v2 SGI files.
+  auto parsed = parse_sgi("sgi 1\npackage foo\n");
   EXPECT_FALSE(parsed.has_value());
 }
 
@@ -543,7 +550,7 @@ TEST(SgiNamedTypeResolution, ConstTypeHasMethods) {
   // Parsing "const Stdout File" should yield a File type WITH Write,
   // not an empty stub.
   const std::string sgi_text = R"(
-sgi 1
+sgi 2
 package os
 
 struct File {
@@ -586,7 +593,7 @@ TEST(SgiNamedTypeResolution, ModuleExportPropagatesMethods) {
   // After sgi_to_module_type(), accessing Stdout through the module should
   // still expose Write.
   const std::string sgi_text = R"(
-sgi 1
+sgi 2
 package os
 
 struct File {

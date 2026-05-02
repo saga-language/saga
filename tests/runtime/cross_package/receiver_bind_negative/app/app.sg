@@ -1,0 +1,11 @@
+import "io"
+import "lib"
+
+pub fn (p lib.Point) Draw() Void {
+  io.Println("drawing")
+}
+
+pub fn Main() Void {
+  p := lib.Point{x: 1, y: 2}
+  p.Draw()
+}

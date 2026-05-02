@@ -1,0 +1,18 @@
+import "io"
+
+struct Greeter {
+  prefix String
+}
+
+fn (g Greeter) Greet(name String) String {
+  g.prefix + " " + name
+}
+
+struct U < Greeter {
+  who String
+}
+
+pub fn Main() Void {
+  u := U{who: "world", prefix: "hello"}
+  io.Println(u.Greet(u.who))
+}

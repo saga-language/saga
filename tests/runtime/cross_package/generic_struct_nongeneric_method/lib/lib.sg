@@ -1,0 +1,5 @@
+pub struct |T| Box {
+  value T
+}
+
+pub fn |T| (b |T| Box) Get() T { b.value }

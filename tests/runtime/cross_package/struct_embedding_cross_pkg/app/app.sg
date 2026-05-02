@@ -1,0 +1,13 @@
+import "io"
+import "lib"
+
+struct User < lib.Timestamps {
+  name String
+}
+
+pub fn Main() Void {
+  u := User{name: "alice", created: 1, updated: 2}
+  io.Println(u.name)
+  io.Println(u.created.String())
+  io.Println(u.updated.String())
+}

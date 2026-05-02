@@ -1,0 +1,8 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  io.Println(lib.Pi.String())
+  io.Println(lib.Max.String())
+  io.Println(lib.Greeting)
+}

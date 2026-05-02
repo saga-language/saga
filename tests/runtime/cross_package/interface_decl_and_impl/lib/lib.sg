@@ -1,0 +1,5 @@
+pub interface Drawable {
+  Draw() String
+}
+
+pub fn Render(d Drawable) String { d.Draw() }

@@ -28,6 +28,11 @@ Analyzer::Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver)
   register_builtins(global_scope, builtins);
 }
 
+std::string Analyzer::current_package_name() const {
+  if (current_package_dir.empty()) return "";
+  return std::filesystem::path(current_package_dir).filename().string();
+}
+
 // ===========================================================================
 // PackageResolver
 // ===========================================================================
@@ -769,114 +774,181 @@ void Analyzer::process_imports(const std::vector<NodePtr> &declarations) {
   }
 }
 
-TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
-  // Check mock packages first (for testing).
-  if (package_resolver) {
-    auto mock_it = package_resolver->mock_packages.find(import_path);
-    if (mock_it != package_resolver->mock_packages.end()) {
-      return mock_it->second;
-    }
-  }
+std::optional<TypePtr>
+Analyzer::resolve_import_cached(const std::string &import_path, Span span) {
+  if (!package_resolver)
+    return std::nullopt;
 
-  // Check cache.
-  if (package_resolver) {
-    auto cache_it = package_resolver->cache.find(import_path);
-    if (cache_it != package_resolver->cache.end()) {
-      return cache_it->second;
-    }
-  }
+  auto mock_it = package_resolver->mock_packages.find(import_path);
+  if (mock_it != package_resolver->mock_packages.end())
+    return mock_it->second;
 
-  // Cycle detection.
-  if (package_resolver && package_resolver->in_progress.count(import_path)) {
+  auto cache_it = package_resolver->cache.find(import_path);
+  if (cache_it != package_resolver->cache.end())
+    return cache_it->second;
+
+  if (package_resolver->in_progress.count(import_path)) {
     error(span, std::format("circular import detected: '{}'", import_path));
     return builtins.error_type;
   }
 
-  // Check for pre-compiled .sgi interface file.
-  if (package_resolver) {
-    std::string sgi_path = package_resolver->find_sgi_file(import_path);
-    if (!sgi_path.empty()) {
-      auto sgi = load_sgi(sgi_path);
-      if (sgi) {
-        auto module_type = sgi_to_module_type(*sgi, import_path);
-        package_resolver->cache[import_path] = module_type;
-        // Record the directory so the linker can find the .o file.
-        package_resolver->sgi_resolved_dirs[import_path] =
-            fs::path(sgi_path).parent_path().string();
+  return std::nullopt;
+}
 
-        // Populate type_methods_ / kind_methods_ from stdlib receiver methods.
-        auto get_canonical = [this](const std::string &tn) -> const Type * {
-          if (tn == "Int")    return builtins.int_type.get();
-          if (tn == "Int8")   return builtins.int8_type.get();
-          if (tn == "Int16")  return builtins.int16_type.get();
-          if (tn == "Int32")  return builtins.int32_type.get();
-          if (tn == "Int64")  return builtins.int64_type.get();
-          if (tn == "Uint8")  return builtins.uint8_type.get();
-          if (tn == "Uint16") return builtins.uint16_type.get();
-          if (tn == "Uint32") return builtins.uint32_type.get();
-          if (tn == "Uint64") return builtins.uint64_type.get();
-          if (tn == "Float")  return builtins.float_type.get();
-          if (tn == "Bool")   return builtins.bool_type.get();
-          if (tn == "String") return builtins.string_type.get();
-          return nullptr;
-        };
-        auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
-          if (tn == "Array") return TypeKind::Array;
-          if (tn == "Map")   return TypeKind::Map;
-          return std::nullopt;
-        };
-        for (auto &rm : sgi->receiver_methods) {
-          // Scalar types → type_methods_
-          if (const Type *canonical = get_canonical(rm.type_name)) {
-            for (auto &method : rm.methods) {
-              auto &vec = type_methods_[canonical];
-              bool dup = false;
-              for (auto &e : vec) {
-                if (e.name == method.name) { dup = true; break; }
-              }
-              if (!dup)
-                vec.push_back(method);
-            }
-            continue;
-          }
-          // Generic types → kind_methods_ (with sentinel normalization)
-          if (auto kind_opt = get_recv_kind(rm.type_name)) {
-            auto kind = *kind_opt;
-            for (auto &method : rm.methods) {
-              auto sig = normalize_generic_receiver_sig(method.signature, kind);
-              auto &vec = kind_methods_[kind];
-              bool dup = false;
-              for (auto &e : vec)
-                if (e.name == method.name) { dup = true; break; }
-              if (!dup)
-                vec.push_back({method.name, sig, method.is_public});
-            }
-          }
-        }
+void Analyzer::merge_sgi_receiver_methods(const SgiFile &sgi) {
+  auto get_canonical = [this](const std::string &tn) -> const Type * {
+    if (tn == "Int")    return builtins.int_type.get();
+    if (tn == "Int8")   return builtins.int8_type.get();
+    if (tn == "Int16")  return builtins.int16_type.get();
+    if (tn == "Int32")  return builtins.int32_type.get();
+    if (tn == "Int64")  return builtins.int64_type.get();
+    if (tn == "Uint8")  return builtins.uint8_type.get();
+    if (tn == "Uint16") return builtins.uint16_type.get();
+    if (tn == "Uint32") return builtins.uint32_type.get();
+    if (tn == "Uint64") return builtins.uint64_type.get();
+    if (tn == "Float")  return builtins.float_type.get();
+    if (tn == "Bool")   return builtins.bool_type.get();
+    if (tn == "String") return builtins.string_type.get();
+    return nullptr;
+  };
+  auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
+    if (tn == "Array") return TypeKind::Array;
+    if (tn == "Map")   return TypeKind::Map;
+    return std::nullopt;
+  };
+  auto push_unique = [](std::vector<MethodInfo> &vec,
+                        const MethodInfo &method) {
+    for (auto &e : vec)
+      if (e.name == method.name)
+        return;
+    vec.push_back(method);
+  };
 
-        return module_type;
+  for (auto &rm : sgi.receiver_methods) {
+    if (const Type *canonical = get_canonical(rm.type_name)) {
+      for (auto &method : rm.methods)
+        push_unique(type_methods_[canonical], method);
+      continue;
+    }
+    if (auto kind_opt = get_recv_kind(rm.type_name)) {
+      auto kind = *kind_opt;
+      for (auto &method : rm.methods) {
+        auto sig = normalize_generic_receiver_sig(method.signature, kind);
+        push_unique(kind_methods_[kind],
+                    {method.name, sig, method.is_public});
       }
     }
   }
+}
 
-  // Resolve the filesystem path.
+std::optional<TypePtr>
+Analyzer::load_import_from_sgi(const std::string &import_path) {
+  if (!package_resolver)
+    return std::nullopt;
+
+  std::string sgi_path = package_resolver->find_sgi_file(import_path);
+  if (sgi_path.empty())
+    return std::nullopt;
+
+  auto sgi = load_sgi(sgi_path);
+  if (!sgi)
+    return std::nullopt;
+
+  auto module_type = sgi_to_module_type(*sgi, import_path);
+  package_resolver->cache[import_path] = module_type;
+  package_resolver->sgi_resolved_dirs[import_path] =
+      fs::path(sgi_path).parent_path().string();
+  if (!sgi->source_dir.empty()) {
+    auto last_slash = import_path.rfind('/');
+    std::string pkg_short = (last_slash != std::string::npos)
+                                ? import_path.substr(last_slash + 1)
+                                : import_path;
+    package_resolver->source_dirs[pkg_short] = sgi->source_dir;
+    package_resolver->source_dirs[import_path] = sgi->source_dir;
+  }
+  merge_sgi_receiver_methods(*sgi);
+  return module_type;
+}
+
+void Analyzer::merge_sub_analyzer_receiver_methods(const Analyzer &sub) {
+  auto map_scalar_to_canonical =
+      [this](const Type *sub_type_ptr) -> const Type * {
+    switch (sub_type_ptr->kind) {
+    case TypeKind::Int: {
+      auto &ii = std::get<IntType>(sub_type_ptr->detail);
+      if (ii.bits == 0)
+        return builtins.int_type.get();
+      if (ii.is_signed) {
+        switch (ii.bits) {
+        case 8:  return builtins.int8_type.get();
+        case 16: return builtins.int16_type.get();
+        case 32: return builtins.int32_type.get();
+        case 64: return builtins.int64_type.get();
+        }
+      } else {
+        switch (ii.bits) {
+        case 8:  return builtins.uint8_type.get();
+        case 16: return builtins.uint16_type.get();
+        case 32: return builtins.uint32_type.get();
+        case 64: return builtins.uint64_type.get();
+        }
+      }
+      return nullptr;
+    }
+    case TypeKind::Float:  return builtins.float_type.get();
+    case TypeKind::Bool:   return builtins.bool_type.get();
+    case TypeKind::String: return builtins.string_type.get();
+    default: return nullptr;
+    }
+  };
+  auto push_unique = [](std::vector<MethodInfo> &vec,
+                        const MethodInfo &method) {
+    for (auto &e : vec)
+      if (e.name == method.name)
+        return;
+    vec.push_back(method);
+  };
+
+  for (auto &[sub_type_ptr, methods] : sub.type_methods_) {
+    const Type *our_type = map_scalar_to_canonical(sub_type_ptr);
+    if (!our_type)
+      continue;
+    for (auto &method : methods)
+      push_unique(type_methods_[our_type], method);
+  }
+
+  for (auto &[kind, methods] : sub.kind_methods_)
+    for (auto &method : methods)
+      push_unique(kind_methods_[kind], method);
+}
+
+std::vector<ModuleExport>
+Analyzer::extract_module_exports(const Analyzer &sub_analyzer) {
+  std::vector<ModuleExport> exports;
+  if (!sub_analyzer.package_scope_)
+    return exports;
+  for (auto &[sym_name, sym] : sub_analyzer.package_scope_->symbols)
+    if (sym.is_public && !sym.is_builtin && sym.type)
+      exports.push_back({sym_name, sym.type});
+  return exports;
+}
+
+TypePtr
+Analyzer::compile_import_from_source(const std::string &import_path, Span span) {
   if (!package_resolver) {
     error(span, std::format("cannot resolve import '{}': no package resolver",
                             import_path));
     return builtins.error_type;
   }
 
-  // For relative imports, resolve against the current package directory.
   std::string pkg_dir;
   if (import_path.starts_with("./") || import_path.starts_with("../")) {
     if (!current_package_dir.empty()) {
       pkg_dir = current_package_dir + "/" + import_path;
-      // Normalize the path.
-      if (std::filesystem::exists(pkg_dir)) {
+      if (std::filesystem::exists(pkg_dir))
         pkg_dir = std::filesystem::canonical(pkg_dir).string();
-      } else {
+      else
         pkg_dir.clear();
-      }
     }
   } else {
     pkg_dir = package_resolver->find_package_dir(import_path);
@@ -887,7 +959,6 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
     return builtins.error_type;
   }
 
-  // List source files.
   auto source_files = package_resolver->list_source_files(pkg_dir);
   if (source_files.empty()) {
     error(span,
@@ -895,10 +966,8 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
     return builtins.error_type;
   }
 
-  // Mark as in-progress for cycle detection.
   package_resolver->in_progress.insert(import_path);
 
-  // Parse the sub-package.
   FileSet sub_fileset;
   for (auto &f : source_files) {
     auto file = File::from_path(f);
@@ -915,7 +984,6 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
 
   Parser sub_parser(sub_fileset);
   auto sub_ast = sub_parser.parse();
-
   if (!sub_ast || !sub_parser.errors.errors.empty()) {
     error(span,
           std::format("parse errors in imported package '{}'", import_path));
@@ -923,100 +991,174 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
     return builtins.error_type;
   }
 
-  // Analyze the sub-package with a shared resolver.
   Analyzer sub_analyzer(sub_fileset, package_resolver);
   sub_analyzer.current_package_dir = pkg_dir;
   sub_analyzer.analyze(*sub_ast);
 
   if (!sub_analyzer.errors.errors.empty()) {
     error(span, std::format("errors in imported package '{}'", import_path));
-    // Forward sub-errors as additional context.
-    for (auto &e : sub_analyzer.errors.errors) {
+    for (auto &e : sub_analyzer.errors.errors)
       errors.errors.push_back(e);
-    }
     package_resolver->in_progress.erase(import_path);
     return builtins.error_type;
   }
 
-  // Merge receiver methods from stdlib sub-packages into this analyzer.
-  // The sub-analyzer's type pointers differ from ours; map by type identity.
-  for (auto &[sub_type_ptr, methods] : sub_analyzer.type_methods_) {
-    const Type *our_type = nullptr;
-    switch (sub_type_ptr->kind) {
-    case TypeKind::Int: {
-      auto &ii = std::get<IntType>(sub_type_ptr->detail);
-      if (ii.bits == 0)
-        our_type = builtins.int_type.get();
-      else if (ii.is_signed) {
-        switch (ii.bits) {
-        case 8:  our_type = builtins.int8_type.get(); break;
-        case 16: our_type = builtins.int16_type.get(); break;
-        case 32: our_type = builtins.int32_type.get(); break;
-        case 64: our_type = builtins.int64_type.get(); break;
-        }
-      } else {
-        switch (ii.bits) {
-        case 8:  our_type = builtins.uint8_type.get(); break;
-        case 16: our_type = builtins.uint16_type.get(); break;
-        case 32: our_type = builtins.uint32_type.get(); break;
-        case 64: our_type = builtins.uint64_type.get(); break;
-        }
-      }
-      break;
-    }
-    case TypeKind::Float:  our_type = builtins.float_type.get();  break;
-    case TypeKind::Bool:   our_type = builtins.bool_type.get();   break;
-    case TypeKind::String: our_type = builtins.string_type.get(); break;
-    default: break;
-    }
-    if (!our_type)
-      continue;
-    for (auto &method : methods) {
-      auto &vec = type_methods_[our_type];
-      bool dup = false;
-      for (auto &e : vec) {
-        if (e.name == method.name) { dup = true; break; }
-      }
-      if (!dup)
-        vec.push_back(method);
-    }
-  }
+  merge_sub_analyzer_receiver_methods(sub_analyzer);
 
-  // Merge generic receiver methods (Array, Map) from sub-analyzer.
-  for (auto &[kind, methods] : sub_analyzer.kind_methods_) {
-    for (auto &method : methods) {
-      auto &vec = kind_methods_[kind];
-      bool dup = false;
-      for (auto &e : vec)
-        if (e.name == method.name) { dup = true; break; }
-      if (!dup)
-        vec.push_back(method);
-    }
-  }
-
-  // Extract public symbols from the sub-package's module scope.
   auto last_slash = import_path.rfind('/');
   std::string pkg_name = (last_slash != std::string::npos)
                              ? import_path.substr(last_slash + 1)
                              : import_path;
-
-  std::vector<ModuleExport> exports;
-  if (sub_analyzer.package_scope_) {
-    for (auto &[sym_name, sym] : sub_analyzer.package_scope_->symbols) {
-      if (sym.is_public && !sym.is_builtin && sym.type) {
-        exports.push_back({sym_name, sym.type});
-      }
-    }
-  }
-
+  auto exports = extract_module_exports(sub_analyzer);
   auto module_type =
       make_module_type(pkg_name, import_path, std::move(exports));
 
-  // Cache and unmark.
   package_resolver->cache[import_path] = module_type;
   package_resolver->in_progress.erase(import_path);
 
+  // Record the source directory under both the short package name and the
+  // full import path so codegen can find generic method bodies later.
+  std::error_code abs_ec;
+  std::string abs_pkg_dir =
+      fs::absolute(pkg_dir, abs_ec).lexically_normal().string();
+  if (!abs_ec) {
+    package_resolver->source_dirs[pkg_name] = abs_pkg_dir;
+    package_resolver->source_dirs[import_path] = abs_pkg_dir;
+  }
   return module_type;
+}
+
+TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
+  if (auto cached = resolve_import_cached(import_path, span))
+    return *cached;
+  if (auto from_sgi = load_import_from_sgi(import_path))
+    return *from_sgi;
+  return compile_import_from_source(import_path, span);
+}
+
+// ===========================================================================
+// Cross-package generic method body loading (D8)
+// ===========================================================================
+
+Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
+  if (origin.empty()) return nullptr;
+  auto it = loaded_source_packages_.find(origin);
+  if (it != loaded_source_packages_.end())
+    return it->second.sub_analyzer.get();
+
+  if (!package_resolver) return nullptr;
+  std::string source_dir;
+  auto dir_it = package_resolver->source_dirs.find(origin);
+  if (dir_it != package_resolver->source_dirs.end())
+    source_dir = dir_it->second;
+  else
+    source_dir = package_resolver->find_package_dir(origin);
+  if (source_dir.empty() || !fs::is_directory(source_dir))
+    return nullptr;
+
+  auto source_files = package_resolver->list_source_files(source_dir);
+  if (source_files.empty())
+    return nullptr;
+
+  auto loaded_fileset = std::make_unique<FileSet>();
+  for (auto &f : source_files) {
+    auto file = File::from_path(f);
+    if (file)
+      loaded_fileset->add_file(std::move(file));
+  }
+  if (loaded_fileset->files.empty())
+    return nullptr;
+
+  Parser sub_parser(*loaded_fileset);
+  auto sub_ast = sub_parser.parse();
+  if (!sub_ast || !sub_parser.errors.errors.empty())
+    return nullptr;
+
+  auto sub_analyzer =
+      std::make_unique<Analyzer>(*loaded_fileset, package_resolver);
+  sub_analyzer->current_package_dir = source_dir;
+  sub_analyzer->analyze(*sub_ast);
+  if (!sub_analyzer->errors.errors.empty())
+    return nullptr;
+
+  auto *sub_ptr = sub_analyzer.get();
+
+  // Merge node-keyed tables. Keys are pointers into the sub-AST that we
+  // hold alive in loaded_source_packages_, so they remain valid for the
+  // lifetime of this analyzer.
+  for (auto &[k, v] : sub_ptr->node_types) node_types.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->node_symbols) node_symbols.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->node_captures) node_captures.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->node_type_args) node_type_args.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->iterable_next_elem_type)
+    iterable_next_elem_type.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->spawn_channel_elem_types)
+    spawn_channel_elem_types.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->spawn_captures) spawn_captures.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->struct_operator_methods)
+    struct_operator_methods.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->generic_templates_)
+    generic_templates_.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->func_decl_by_type_)
+    func_decl_by_type_.emplace(k, v);
+
+  loaded_source_packages_.emplace(
+      origin,
+      LoadedSourcePackage{std::move(loaded_fileset), std::move(sub_ast),
+                          std::move(sub_analyzer)});
+  return sub_ptr;
+}
+
+Analyzer::ImportedMethodDecl
+Analyzer::load_imported_method_decl(const std::string &origin,
+                                     const std::string &struct_name,
+                                     const std::string &method_name,
+                                     const std::vector<TypePtr> &type_args) {
+  ImportedMethodDecl result;
+  auto *sub = ensure_source_loaded(origin);
+  if (!sub || !sub->package_scope_) return result;
+
+  auto sym_it = sub->package_scope_->symbols.find(struct_name);
+  if (sym_it == sub->package_scope_->symbols.end()) return result;
+  auto struct_type = sym_it->second.type;
+  if (!struct_type || struct_type->kind != TypeKind::Struct) return result;
+
+  auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
+  for (auto &m : sinfo.methods) {
+    if (m.name != method_name || !m.signature) continue;
+    auto fd_it = sub->func_decl_by_type_.find(m.signature.get());
+    if (fd_it == sub->func_decl_by_type_.end()) return result;
+    result.decl = fd_it->second;
+    result.template_signature = m.signature;
+    result.struct_type_params = sinfo.type_params;
+    break;
+  }
+  if (!result.decl) return result;
+
+  // Drive body type-checking under the caller's bindings so codegen can
+  // read concrete TypePtrs out of the resulting BodyInstantiation. Bind by
+  // the function's GenericTemplate IDs (which P5's receiver remap aligned
+  // with the struct's type-param IDs).
+  auto tpl_it = sub->generic_templates_.find(result.decl);
+  if (tpl_it != sub->generic_templates_.end()) {
+    auto &tpl_params = tpl_it->second.type_params;
+    size_t n = std::min(tpl_params.size(), type_args.size());
+    for (size_t i = 0; i < n; ++i)
+      result.bindings[tpl_params[i].id] = type_args[i];
+  } else {
+    // Fall back to positional alignment with the struct's type params if
+    // the template wasn't recorded (e.g. non-generic receiver method).
+    size_t n =
+        std::min(result.struct_type_params.size(), type_args.size());
+    for (size_t i = 0; i < n; ++i)
+      result.bindings[result.struct_type_params[i].id] = type_args[i];
+  }
+  if (!result.bindings.empty() && result.decl->body) {
+    result.instantiation =
+        sub->instantiate_generic_body(*result.decl, result.bindings,
+                                       *result.decl->body);
+  }
+  return result;
 }
 
 // ===========================================================================
@@ -1184,10 +1326,12 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   std::vector<MethodInfo> new_methods;
   for (auto &m : info.methods)
     new_methods.push_back(
-        {m.name, substitute(m.signature, bindings), m.is_public});
+        {m.name, substitute(m.signature, bindings), m.is_public,
+         m.origin_package});
 
   auto result =
-      make_struct_type(info.name, std::move(new_fields), std::move(new_methods));
+      make_struct_type(info.name, std::move(new_fields), std::move(new_methods),
+                       {}, info.origin_package);
   auto &ri = std::get<StructTypeInfo>(result->detail);
   ri.type_params = info.type_params;
   ri.type_args = std::move(args);
@@ -1268,17 +1412,90 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // receiver types like [T] can resolve T as the function's type parameter.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
-    if (auto *ident = std::get_if<IdentifierNode>(&recv_type_node->data)) {
+    // Helper: check D4 — cannot bind a receiver to a type from another package.
+    auto check_recv_origin = [&](const std::string &origin,
+                                 const std::string &type_name) -> bool {
+      if (!origin.empty() && origin != current_package_name()) {
+        error(fn.receiver->name.span,
+              std::format("cannot bind receiver method to type '{}' from "
+                          "another package",
+                          type_name));
+        return false;
+      }
+      return true;
+    };
+
+    if (auto *gapp =
+            std::get_if<GenericTypeAppNode>(&recv_type_node->data)) {
+      // Generic type application receiver: pub fn |T| (b |T| Box) Method(...)
+      // Attach the method to the base struct type (ignoring the type args).
+      if (auto *base_ident =
+              std::get_if<IdentifierNode>(&gapp->base_type->data)) {
+        auto recv_sym = lookup(std::string(base_ident->name));
+        if (recv_sym && recv_sym->type &&
+            recv_sym->type->kind == TypeKind::Struct) {
+          auto &struct_info =
+              std::get<StructTypeInfo>(recv_sym->type->detail);
+          if (check_recv_origin(struct_info.origin_package,
+                                struct_info.name)) {
+            // Remap the function's TypeParam IDs to the struct's TypeParam IDs
+            // so that instantiate_generic_struct can substitute them correctly.
+            // e.g. fn |T#5| (b |T#5| Box) Get() T#5  →  Get() T#0 (struct's T)
+            TypePtr stored_sig = fn_type;
+            std::unordered_map<uint32_t, uint32_t> id_remap;
+            if (!struct_info.type_params.empty() &&
+                gapp->type_args.size() == struct_info.type_params.size()) {
+              std::unordered_map<uint32_t, TypePtr> remap;
+              for (size_t i = 0; i < gapp->type_args.size(); ++i) {
+                auto arg_t = resolve_type(*gapp->type_args[i]);
+                if (arg_t && arg_t->kind == TypeKind::TypeParam) {
+                  auto &tp = std::get<TypeParamInfo>(arg_t->detail);
+                  remap[tp.param.id] =
+                      make_type_param(struct_info.type_params[i].id,
+                                      struct_info.type_params[i].name);
+                  id_remap[tp.param.id] = struct_info.type_params[i].id;
+                }
+              }
+              if (!remap.empty())
+                stored_sig = substitute(fn_type, remap);
+            }
+            // Apply the same remap to the function's generic_params so that
+            // generic_templates_[&fn] uses struct-aligned IDs. This keeps
+            // bindings derived from the struct (instantiate_generic_struct,
+            // cross-package method specialisation) keyed compatibly with the
+            // GenericTemplate, both for ordered-args lookup in
+            // emit_specialisation and for substitute() over the stored sig.
+            for (auto &gp : generic_params) {
+              auto it = id_remap.find(gp.id);
+              if (it != id_remap.end())
+                gp.id = it->second;
+            }
+            // Also register the struct-aligned signature so that
+            // load_imported_method_decl (which iterates the struct's methods)
+            // can resolve back to this FuncDeclNode.
+            if (stored_sig && stored_sig.get() != fn_type.get())
+              func_decl_by_type_[stored_sig.get()] = &fn;
+            struct_info.methods.push_back(
+                {std::string(fn.name.name), stored_sig, fn.is_public,
+                 current_package_name()});
+          }
+        }
+      }
+    } else if (auto *ident =
+                   std::get_if<IdentifierNode>(&recv_type_node->data)) {
       auto recv_sym = lookup(std::string(ident->name));
       if (recv_sym && recv_sym->type) {
         if (recv_sym->type->kind == TypeKind::Struct) {
           auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
-          struct_info.methods.push_back(
-              {std::string(fn.name.name), fn_type, fn.is_public});
+          if (check_recv_origin(struct_info.origin_package, struct_info.name))
+            struct_info.methods.push_back(
+                {std::string(fn.name.name), fn_type, fn.is_public,
+                 current_package_name()});
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
           alias_info.methods.push_back(
-              {std::string(fn.name.name), fn_type, fn.is_public});
+              {std::string(fn.name.name), fn_type, fn.is_public,
+               current_package_name()});
         } else if (recv_sym->type->kind == TypeKind::Enum) {
           // Enums can also have methods bound to them.
           // Store in the type_methods side table.
@@ -1299,6 +1516,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
           }
         }
       }
+    } else if (std::get_if<SelectorNode>(&recv_type_node->data)) {
+      // Qualified receiver: pub fn (self pkg.Type) Method(...)
+      // D4: types from other packages always have a different origin — reject.
+      error(fn.receiver->name.span,
+            "cannot bind receiver method to type from another package");
     } else if (auto *arr_tn =
                    std::get_if<ArrayTypeNode>(&recv_type_node->data)) {
       // Generic array receiver: pub fn (self [T]) Method(...) ...
@@ -1407,32 +1629,51 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
                      }
                    },
                    [&](const FuncDeclNode &fn) {
+                     // Shadowing check: method-level type params must not
+                     // reuse names from the enclosing struct's type params.
+                     if (fn.generic && !type_params.empty()) {
+                       for (auto &tp_node : fn.generic->type_params) {
+                         auto &tp_ident =
+                             std::get<IdentifierNode>(tp_node->data);
+                         for (auto &stp : type_params) {
+                           if (stp.name == std::string(tp_ident.name)) {
+                             error(tp_node->span,
+                                   std::format("type parameter '{}' shadows "
+                                               "enclosing struct type "
+                                               "parameter",
+                                               tp_ident.name));
+                           }
+                         }
+                       }
+                     }
                      auto fn_type = resolve_signature(fn.signature);
                      methods.push_back({std::string(fn.name.name), fn_type,
-                                        member.is_public});
+                                        member.is_public,
+                                        current_package_name()});
                    },
                    [&](const auto &) {},
                },
                member.member->data);
   }
 
-  // Resolve embeds.
+  // Resolve embeds. Each entry is an IdentifierNode (local) or a
+  // SelectorNode (`pkg.Name`); resolve_type handles both, so we get
+  // qualified-name support for free.
   std::vector<TypePtr> embeds;
-  for (auto &embed_ident : s.embeds) {
-    auto sym = lookup(std::string(embed_ident.name));
-    if (!sym) {
-      undefined_error(embed_ident.span, std::string(embed_ident.name));
-    } else if (sym->kind != SymbolKind::Type) {
-      error(embed_ident.span,
-            std::format("'{}' is not a type", std::string(embed_ident.name)));
-    } else if (sym->type) {
-      embeds.push_back(sym->type);
+  for (auto &embed_node : s.embeds) {
+    auto et = resolve_type(*embed_node);
+    if (!et || et->kind == TypeKind::Error) continue;
+    if (et->kind != TypeKind::Struct) {
+      error(embed_node->span, "embedded type must be a struct");
+      continue;
     }
+    embeds.push_back(et);
   }
 
   auto struct_type =
       make_struct_type(std::string(s.name.name), std::move(fields),
-                       std::move(methods), std::move(type_params));
+                       std::move(methods), std::move(type_params),
+                       current_package_name());
   // Set embeds on the created type.
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   info.embeds = std::move(embeds);
@@ -1478,7 +1719,8 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
   }
 
   auto enum_type =
-      make_enum_type(std::string(e.name.name), std::move(variants));
+      make_enum_type(std::string(e.name.name), std::move(variants),
+                     current_package_name());
 
   auto sym_it = current_scope->symbols.find(std::string(e.name.name));
   if (sym_it != current_scope->symbols.end()) {
@@ -1498,11 +1740,13 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
 
   for (auto &field : i.methods) {
     auto fn_type = resolve_signature(field.signature);
-    methods.push_back({std::string(field.name.name), fn_type, field.is_public});
+    methods.push_back({std::string(field.name.name), fn_type, field.is_public,
+                       current_package_name()});
   }
 
   auto iface_type = make_interface_type(
-      std::string(i.name.name), std::move(methods), std::move(type_params));
+      std::string(i.name.name), std::move(methods), std::move(type_params),
+      current_package_name());
 
   auto &target_scope = has_generics ? current_scope->parent : current_scope;
   auto sym_it = target_scope->symbols.find(std::string(i.name.name));
@@ -1558,7 +1802,8 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
     if (alias_underlying) {
       // Create a unique alias type that inherits the underlying type's methods.
       auto alias_type = make_alias_type(
-          std::string(c.name.name), alias_underlying);
+          std::string(c.name.name), alias_underlying, {},
+          current_package_name());
       auto sym_it = current_scope->symbols.find(std::string(c.name.name));
       if (sym_it != current_scope->symbols.end()) {
         sym_it->second.type = alias_type;
@@ -2955,111 +3200,118 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
   }
 }
 
-TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
-  auto obj_type = check_expr(*node.object);
-  if (is_error_type(obj_type))
-    return builtins.error_type;
+TypePtr Analyzer::resolve_module_selector(const ModuleTypeInfo &mod,
+                                          const std::string &field_name,
+                                          Span field_span) {
+  for (auto &exp : mod.exports)
+    if (exp.name == field_name)
+      return exp.type ? exp.type : builtins.error_type;
+  error(field_span,
+        std::format("package '{}' has no exported member '{}'", mod.name,
+                    field_name));
+  return builtins.error_type;
+}
 
-  std::string field_name(node.field.name);
+namespace {
 
-  // Module selector: look up exported symbols.
-  if (obj_type->kind == TypeKind::Module) {
-    auto &mod = std::get<ModuleTypeInfo>(obj_type->detail);
-    for (auto &exp : mod.exports) {
-      if (exp.name == field_name) {
-        return exp.type ? exp.type : builtins.error_type;
-      }
+// Returns the (substituted) member signature for an Array/Map kind method.
+TypePtr substitute_kind_method(TypeKind kind, const TypePtr &effective_type,
+                               const TypePtr &sig) {
+  if (kind == TypeKind::Map) {
+    auto &map_info = std::get<MapTypeInfo>(effective_type->detail);
+    std::unordered_map<uint32_t, TypePtr> bindings;
+    bindings[9991] = map_info.key;
+    bindings[9992] = map_info.value;
+    return substitute(sig, bindings);
+  }
+  if (kind == TypeKind::Array) {
+    auto &arr_info = std::get<ArrayTypeInfo>(effective_type->detail);
+    std::unordered_map<uint32_t, TypePtr> bindings;
+    bindings[9990] = arr_info.element;
+    return substitute(sig, bindings);
+  }
+  return sig;
+}
+
+} // namespace
+
+TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
+                                        const std::string &field_name,
+                                        Span field_span) {
+  auto &info = std::get<StructTypeInfo>(owner_type->detail);
+  for (auto &f : info.fields)
+    if (f.name == field_name)
+      return f.type ? f.type : builtins.error_type;
+
+  for (auto &m : info.methods) {
+    if (m.name != field_name)
+      continue;
+    auto sig = m.signature ? m.signature : builtins.error_type;
+    if (!info.origin_package.empty() &&
+        info.origin_package != current_package_name() &&
+        has_type_params(sig)) {
+      error(field_span,
+            std::format("cannot call generic method '{}' across packages "
+                        "(D3: generic method bodies are not cross-package "
+                        "in this version)",
+                        field_name));
+      return builtins.error_type;
     }
-    error(node.field.span,
-          std::format("package '{}' has no exported member '{}'", mod.name,
-                      field_name));
-    return builtins.error_type;
+    return sig;
   }
 
-  // Look up fields and methods on the type.
-  if (obj_type->kind == TypeKind::Struct) {
-    auto &info = std::get<StructTypeInfo>(obj_type->detail);
-    for (auto &f : info.fields) {
+  for (auto &embed : info.embeds) {
+    if (!embed || embed->kind != TypeKind::Struct)
+      continue;
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    for (auto &f : einfo.fields)
       if (f.name == field_name)
         return f.type ? f.type : builtins.error_type;
-    }
-    for (auto &m : info.methods) {
+    for (auto &m : einfo.methods)
       if (m.name == field_name)
         return m.signature ? m.signature : builtins.error_type;
-    }
-    // Check embedded types.
-    for (auto &embed : info.embeds) {
-      if (embed && embed->kind == TypeKind::Struct) {
-        auto &embed_info = std::get<StructTypeInfo>(embed->detail);
-        for (auto &f : embed_info.fields) {
-          if (f.name == field_name)
-            return f.type ? f.type : builtins.error_type;
+  }
+  return nullptr;
+}
+
+TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
+                                           const std::string &field_name) {
+  auto canonicalize_intrinsic = [this](const TypePtr &t) -> const Type * {
+    switch (t->kind) {
+    case TypeKind::Int: {
+      auto &ii = std::get<IntType>(t->detail);
+      if (ii.bits == 0) return builtins.int_type.get();
+      if (ii.is_signed) {
+        switch (ii.bits) {
+        case 8:  return builtins.int8_type.get();
+        case 16: return builtins.int16_type.get();
+        case 32: return builtins.int32_type.get();
+        case 64: return builtins.int64_type.get();
         }
-        for (auto &m : embed_info.methods) {
-          if (m.name == field_name)
-            return m.signature ? m.signature : builtins.error_type;
-        }
-      }
-    }
-  }
-
-  // Interface methods.
-  if (obj_type->kind == TypeKind::Interface) {
-    auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
-    for (auto &m : info.methods) {
-      if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
-    }
-  }
-
-  if (obj_type->kind == TypeKind::Enum) {
-    auto &info = std::get<EnumTypeInfo>(obj_type->detail);
-    for (auto &v : info.variants) {
-      if (v.name == field_name)
-        return obj_type; // Enum.Variant has the enum type itself.
-    }
-  }
-
-  // Alias types: check alias's own methods, then fall through to the
-  // underlying type's methods.
-  if (obj_type->kind == TypeKind::Alias) {
-    auto &alias_info = std::get<AliasTypeInfo>(obj_type->detail);
-    // Check alias's own user-bound methods.
-    for (auto &m : alias_info.methods) {
-      if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
-    }
-    // Check the underlying type's struct fields/methods if it's a struct.
-    auto underlying = unwrap_alias(obj_type);
-    if (underlying && underlying->kind == TypeKind::Struct) {
-      auto &info = std::get<StructTypeInfo>(underlying->detail);
-      for (auto &f : info.fields) {
-        if (f.name == field_name)
-          return f.type ? f.type : builtins.error_type;
-      }
-      for (auto &m : info.methods) {
-        if (m.name == field_name)
-          return m.signature ? m.signature : builtins.error_type;
-      }
-      for (auto &embed : info.embeds) {
-        if (embed && embed->kind == TypeKind::Struct) {
-          auto &embed_info = std::get<StructTypeInfo>(embed->detail);
-          for (auto &f : embed_info.fields) {
-            if (f.name == field_name)
-              return f.type ? f.type : builtins.error_type;
-          }
-          for (auto &m : embed_info.methods) {
-            if (m.name == field_name)
-              return m.signature ? m.signature : builtins.error_type;
-          }
+      } else {
+        switch (ii.bits) {
+        case 8:  return builtins.uint8_type.get();
+        case 16: return builtins.uint16_type.get();
+        case 32: return builtins.uint32_type.get();
+        case 64: return builtins.uint64_type.get();
         }
       }
+      return nullptr;
     }
-    // Fall through to builtin methods on the underlying type.
-  }
+    case TypeKind::Float: {
+      auto &fi = std::get<FloatType>(t->detail);
+      if (fi.bits == 0) return builtins.float_type.get();
+      if (fi.bits == 32) return builtins.float32_type.get();
+      if (fi.bits == 64) return builtins.float64_type.get();
+      return nullptr;
+    }
+    case TypeKind::Bool:   return builtins.bool_type.get();
+    case TypeKind::String: return builtins.string_type.get();
+    default: return nullptr;
+    }
+  };
 
-  // Check user-bound methods in the type_methods_ side table.
-  {
+  auto find_user_methods = [&]() -> const std::vector<MethodInfo> * {
     auto it = type_methods_.find(obj_type.get());
     if (it == type_methods_.end() && obj_type->kind == TypeKind::Alias) {
       auto underlying = unwrap_alias(obj_type);
@@ -3067,109 +3319,93 @@ TypePtr Analyzer::check_selector(const SelectorNode &node, const Node &parent) {
         it = type_methods_.find(underlying.get());
     }
     if (it == type_methods_.end()) {
-      // Fall back to the canonical builtin pointer for intrinsic types.
-      // SGI-parsed types may produce distinct TypePtr values for the same
-      // logical type (e.g. Int64 from make_int_type vs builtins.int64_type).
-      const Type *canonical = nullptr;
-      switch (obj_type->kind) {
-      case TypeKind::Int: {
-        auto &ii = std::get<IntType>(obj_type->detail);
-        if (ii.bits == 0) canonical = builtins.int_type.get();
-        else if (ii.is_signed) {
-          switch (ii.bits) {
-          case 8:  canonical = builtins.int8_type.get(); break;
-          case 16: canonical = builtins.int16_type.get(); break;
-          case 32: canonical = builtins.int32_type.get(); break;
-          case 64: canonical = builtins.int64_type.get(); break;
-          }
-        } else {
-          switch (ii.bits) {
-          case 8:  canonical = builtins.uint8_type.get(); break;
-          case 16: canonical = builtins.uint16_type.get(); break;
-          case 32: canonical = builtins.uint32_type.get(); break;
-          case 64: canonical = builtins.uint64_type.get(); break;
-          }
-        }
-        break;
-      }
-      case TypeKind::Float: {
-        auto &fi = std::get<FloatType>(obj_type->detail);
-        if (fi.bits == 0) canonical = builtins.float_type.get();
-        else if (fi.bits == 32) canonical = builtins.float32_type.get();
-        else if (fi.bits == 64) canonical = builtins.float64_type.get();
-        break;
-      }
-      case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
-      case TypeKind::String: canonical = builtins.string_type.get(); break;
-      default: break;
-      }
+      const Type *canonical = canonicalize_intrinsic(obj_type);
       if (canonical && canonical != obj_type.get())
         it = type_methods_.find(canonical);
     }
-    if (it != type_methods_.end()) {
-      for (auto &m : it->second) {
-        if (m.name == field_name)
-          return m.signature ? m.signature : builtins.error_type;
-      }
-    }
-  }
+    return it == type_methods_.end() ? nullptr : &it->second;
+  };
 
-  // Check built-in methods for the type kind (unwrapping aliases).
+  if (auto *vec = find_user_methods())
+    for (auto &m : *vec)
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+
   auto effective_kind = underlying_kind(obj_type);
+  auto effective_type = unwrap_alias(obj_type);
 
-  // Check stdlib-defined generic receiver methods (Array, Map).
-  // These use the same sentinel type-param IDs as builtin_methods (9990=T,
-  // 9991=K, 9992=V), so the same substitution logic applies.
-  {
-    auto it = kind_methods_.find(effective_kind);
-    if (it != kind_methods_.end()) {
-      auto effective_type = unwrap_alias(obj_type);
-      for (auto &m : it->second) {
-        if (m.name == field_name) {
-          if (!m.signature)
-            return builtins.error_type;
-          if (effective_kind == TypeKind::Map && has_type_params(m.signature)) {
-            auto &map_info = std::get<MapTypeInfo>(effective_type->detail);
-            std::unordered_map<uint32_t, TypePtr> bindings;
-            bindings[9991] = map_info.key;
-            bindings[9992] = map_info.value;
-            return substitute(m.signature, bindings);
-          }
-          if (effective_kind == TypeKind::Array &&
-              has_type_params(m.signature)) {
-            auto &arr_info = std::get<ArrayTypeInfo>(effective_type->detail);
-            std::unordered_map<uint32_t, TypePtr> bindings;
-            bindings[9990] = arr_info.element;
-            return substitute(m.signature, bindings);
-          }
-          return m.signature;
-        }
-      }
-    }
-  }
-  auto methods = builtin_methods(effective_kind, builtins);
-  for (auto &m : methods) {
-    if (m.name == field_name) {
+  auto kind_it = kind_methods_.find(effective_kind);
+  if (kind_it != kind_methods_.end()) {
+    for (auto &m : kind_it->second) {
+      if (m.name != field_name)
+        continue;
       if (!m.signature)
         return builtins.error_type;
-      // For Map and Array methods, substitute concrete type params.
-      auto effective_type = unwrap_alias(obj_type);
-      if (effective_kind == TypeKind::Map && has_type_params(m.signature)) {
-        auto &map_info = std::get<MapTypeInfo>(effective_type->detail);
-        std::unordered_map<uint32_t, TypePtr> bindings;
-        bindings[9991] = map_info.key;   // K
-        bindings[9992] = map_info.value; // V
-        return substitute(m.signature, bindings);
-      }
-      if (effective_kind == TypeKind::Array && has_type_params(m.signature)) {
-        auto &arr_info = std::get<ArrayTypeInfo>(effective_type->detail);
-        std::unordered_map<uint32_t, TypePtr> bindings;
-        bindings[9990] = arr_info.element; // T
-        return substitute(m.signature, bindings);
-      }
+      if (has_type_params(m.signature))
+        return substitute_kind_method(effective_kind, effective_type,
+                                      m.signature);
       return m.signature;
     }
   }
+
+  for (auto &m : builtin_methods(effective_kind, builtins)) {
+    if (m.name != field_name)
+      continue;
+    if (!m.signature)
+      return builtins.error_type;
+    if (has_type_params(m.signature))
+      return substitute_kind_method(effective_kind, effective_type,
+                                    m.signature);
+    return m.signature;
+  }
+  return nullptr;
+}
+
+TypePtr Analyzer::check_selector(const SelectorNode &node,
+                                 const Node & /*parent*/) {
+  auto obj_type = check_expr(*node.object);
+  if (is_error_type(obj_type))
+    return builtins.error_type;
+
+  std::string field_name(node.field.name);
+
+  if (obj_type->kind == TypeKind::Module) {
+    auto &mod = std::get<ModuleTypeInfo>(obj_type->detail);
+    return resolve_module_selector(mod, field_name, node.field.span);
+  }
+
+  if (obj_type->kind == TypeKind::Struct)
+    if (auto t = resolve_struct_member(obj_type, field_name, node.field.span))
+      return t;
+
+  if (obj_type->kind == TypeKind::Interface) {
+    auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
+    for (auto &m : info.methods)
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+  }
+
+  if (obj_type->kind == TypeKind::Enum) {
+    auto &info = std::get<EnumTypeInfo>(obj_type->detail);
+    for (auto &v : info.variants)
+      if (v.name == field_name)
+        return obj_type;
+  }
+
+  if (obj_type->kind == TypeKind::Alias) {
+    auto &alias_info = std::get<AliasTypeInfo>(obj_type->detail);
+    for (auto &m : alias_info.methods)
+      if (m.name == field_name)
+        return m.signature ? m.signature : builtins.error_type;
+    auto underlying = unwrap_alias(obj_type);
+    if (underlying && underlying->kind == TypeKind::Struct)
+      if (auto t =
+              resolve_struct_member(underlying, field_name, node.field.span))
+        return t;
+  }
+
+  if (auto sig = resolve_method_signature(obj_type, field_name))
+    return sig;
 
   error(node.field.span, std::format("type {} has no member '{}'",
                                      type_to_string(obj_type), field_name));
@@ -3593,10 +3829,12 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
         new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
       std::vector<MethodInfo> new_methods;
       for (auto &m : info.methods)
-        new_methods.push_back({m.name, substitute(m.signature, bindings), m.is_public});
+        new_methods.push_back({m.name, substitute(m.signature, bindings),
+                               m.is_public, m.origin_package});
 
       auto result = make_struct_type(info.name, std::move(new_fields),
-                                     std::move(new_methods));
+                                     std::move(new_methods), {},
+                                     info.origin_package);
       auto &ri = std::get<StructTypeInfo>(result->detail);
       ri.type_params = info.type_params;
       ri.type_args.push_back(chan_type);
@@ -4352,11 +4590,13 @@ TypePtr Analyzer::instantiate_generic_struct(
   std::vector<MethodInfo> new_methods;
   for (auto &m : info.methods) {
     new_methods.push_back(
-        {m.name, substitute(m.signature, bindings), m.is_public});
+        {m.name, substitute(m.signature, bindings), m.is_public,
+         m.origin_package});
   }
 
   auto result = make_struct_type(info.name, std::move(new_fields),
-                                 std::move(new_methods));
+                                 std::move(new_methods), {},
+                                 info.origin_package);
   auto &result_info = std::get<StructTypeInfo>(result->detail);
   result_info.type_params = info.type_params;
   // Record the concrete type arguments.

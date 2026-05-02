@@ -95,6 +95,55 @@ const Math = import "std/math"
 
 Mutation of global objects is prohibited.
 
+## Initialisation
+
+Constants whose value can be represented as a single compile-time literal —
+scalars, strings, struct literals built from such values — are stored
+directly in the binary. Constants whose value requires allocation at
+runtime — arrays and maps — are populated before `Main` runs.
+
+```
+pub const Pi Float = 3.14159           // baked into the binary
+pub const Primes [Int] = [2, 3, 5, 7]  // populated before Main
+pub const Ports {String: Int} = {"http": 80, "https": 443}
+```
+
+When a binary imports another package, the imported package's
+initialisation runs first. The order is determined by the import graph: a
+package's constants are guaranteed to be initialised before any package
+that imports it, transitively.
+
+Within a single package, files are processed in alphanumeric order, and
+declarations within a file are processed in textual order. A constant
+initialiser may read another constant declared earlier — earlier in the
+same file, earlier within the package's file order, or in any imported
+package. A constant initialiser must not read a constant declared later
+in the same package; the read will see the type's zero value with no
+diagnostic.
+
+Saga does not provide a user-defined package initialiser (an `init`
+function or block that runs implicitly on import). The omission is
+deliberate. Implicit initialisation is hard to reason about: imports
+become statements that quietly run code, startup ordering depends on a
+graph the reader cannot see at the call site, and side effects detach
+from the call sites that invoke them. Saga's preference is for setup to
+be explicit. If a package needs to validate configuration, open a
+connection, or assemble a registry, expose a function and let `Main` —
+or the caller that needs it — invoke it at a visible point in the
+program.
+
+```
+// Don't reach for a hidden init. Expose what setup needs to happen
+// and let the caller decide when.
+pub fn Connect(url String) Connection { ... }
+```
+
+Saga today does not run any of its own code before `Main` — no
+spawn-driven work, no signal handlers, no threads. A package's
+initialisation can therefore allocate freely without guarding against
+concurrent access. This is a property of the current runtime; it is
+documented here because the initialisation model relies on it.
+
 ## Visibility
 
 Everything is private by default. To make a constant visible outside a file

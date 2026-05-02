@@ -1,0 +1,8 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  p := lib.Point{x: 1, y: 2}
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}

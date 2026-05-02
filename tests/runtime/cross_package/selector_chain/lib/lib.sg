@@ -1,0 +1,9 @@
+pub struct Config {
+  name String
+}
+
+pub struct Registry {
+  default Config
+}
+
+pub const Default Registry = Registry{default: Config{name: "main"}}

@@ -1,0 +1,3 @@
+pub fn Double(n Int) Int { n * 2 }
+pub fn Greet(name String) String { name }
+pub fn Positive(x Float) Bool { x > 0.0 }

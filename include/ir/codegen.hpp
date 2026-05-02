@@ -139,6 +139,17 @@ struct CodeGen {
   /// (triggers executor init/shutdown in main).
   bool has_spawn = false;
 
+  /// True when the package contains at least one constant whose
+  /// initialiser must run at program start (arrays, maps).  Drives
+  /// emission of the per-package `<pkg>__init__` function.
+  bool init_function_needed = false;
+
+  /// Mangled link names of imported packages whose `<pkg>__init__` must be
+  /// invoked before user `Main` runs.  Topological order: deepest dependency
+  /// first.  Populated by the build driver before `emit()` runs; consumed by
+  /// the Main wrapper.  Empty for library mode (no Main).
+  std::vector<std::string> imported_init_symbols;
+
   /// Pending channel alloca from the most recent spawn with a generic type.
   /// Picked up by the next DeclAssign to create a companion ".channel" local.
   llvm::AllocaInst *pending_channel_alloca_ = nullptr;
@@ -208,6 +219,15 @@ struct CodeGen {
                                   const std::string &symbol_name,
                                   const TypePtr &func_type);
 
+  /// Eagerly populate all codegen registries for every export of an
+  /// imported module.  Must be called before any declare_structs/
+  /// declare_functions/etc. pass walks the local source AST.
+  void materialize_import(const TypePtr &module_type);
+
+  /// Scan a SourceNode for import declarations and call materialize_import
+  /// for each resolved module type.
+  void materialize_imports_from_source(const SourceNode &src);
+
   // ── Entry point ──────────────────────────────────────────────────────
 
   void emit(const Node &root);
@@ -233,8 +253,20 @@ private:
   void init_types();
   void declare_runtime();
 
+  /// Form the origin-qualified registry key for a named type.
+  /// Falls back to package_name when origin is empty (local or built-in
+  /// types whose origin_package was not set, e.g. in unit-test contexts).
+  std::string key_for(const std::string &origin,
+                      const std::string &name) const {
+    return mangle(origin.empty() ? package_name : origin, name);
+  }
+
   /// True if a semantic type represents string keys (for mc_map).
   static bool is_string_key_type(const TypePtr &t);
+
+  /// Unescape a raw string fragment (strips surrounding quotes, processes
+  /// backslash sequences).  Shared by emit_string_literal and emit_const_decl.
+  static std::string unescape_fragment(std::string_view raw);
 
   /// Get the LLVM type corresponding to a semantic TypePtr.
   llvm::Type *llvm_type(const TypePtr &t);
@@ -259,6 +291,33 @@ private:
   /// Emit a package-level constant as an LLVM global variable.
   void emit_const_decl(const ConstDeclNode &node);
 
+  /// Emit `<pkg>__init__`: a single-entry void function whose body
+  /// allocates and stores every collection constant whose value cannot
+  /// be expressed as a compile-time LLVM constant.  Called once after
+  /// all source nodes have been processed.
+  void emit_init_function();
+
+  /// Get or forward-declare a `void(void)` function with the given link
+  /// name.  Used by the Main wrapper to call each imported package's
+  /// `<pkg>__init__` symbol.
+  llvm::Function *declare_void_init(const std::string &link_name);
+
+  /// Prepend init calls to the current insertion point: every symbol in
+  /// `imported_init_symbols` (topo order, deps first) followed by this
+  /// package's own `<pkg>__init__` when `init_function_needed` is true.
+  /// Called from the entry block of Main, before any executor setup.
+  void emit_init_calls();
+
+  /// Constants whose initialisers must run at program start, in source
+  /// order.  Populated by emit_const_decl, flushed by emit_init_function.
+  std::vector<const ConstDeclNode *> deferred_const_inits_;
+
+  /// Build an LLVM constant for `val_node` whose Saga type is `expected`.
+  /// Supports integer/float/bool/string literals and nested struct literals.
+  /// Returns nullptr when the expression is not a compile-time constant.
+  llvm::Constant *build_const_value(const Node &val_node,
+                                    const TypePtr &expected);
+
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
   void emit_enum_decl(const EnumDeclNode &node);
@@ -267,8 +326,13 @@ private:
   void declare_interfaces(const SourceNode &src);
   void emit_interface_decl(const InterfaceDeclNode &node);
 
-  /// Declare struct methods as regular functions with mangled names.
-  void declare_struct_methods(const SourceNode &src);
+  /// Forward-declare LLVM Function symbols for every non-generic struct
+  /// method. Does not touch struct_method_links.
+  void declare_struct_method_symbols(const SourceNode &src);
+
+  /// Populate struct_method_links for every non-generic struct method.
+  /// Must run after declare_struct_method_symbols so the symbols exist.
+  void register_struct_method_links(const SourceNode &src);
 
   /// Emit struct method bodies.
   void emit_struct_methods(const SourceNode &src);
@@ -280,8 +344,9 @@ private:
   void emit_intrinsic_methods(const SourceNode &src);
 
   /// Get or create a vtable for a concrete struct implementing an interface.
-  llvm::GlobalVariable *get_or_create_vtable(const std::string &struct_name,
-                                              const std::string &iface_name);
+  /// struct_type and iface_type must be TypeKind::Struct and ::Interface.
+  llvm::GlobalVariable *get_or_create_vtable(const TypePtr &struct_type,
+                                              const TypePtr &iface_type);
 
   /// Box a concrete value into an interface fat pointer.
   llvm::Value *emit_interface_box(llvm::Value *concrete_val,
@@ -290,6 +355,24 @@ private:
 
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
+
+  /// Apply byval/sret/align param attributes to a freshly-created Function
+  /// based on its AST signature.  Must be called once after Function::Create.
+  void apply_func_abi_attrs(llvm::Function *func, const FuncDeclNode &fn);
+
+  /// Build the LLVM FunctionType for a struct method (in-bound or out-bound).
+  /// Also applies byval/sret attrs to the supplied function (after Create).
+  /// Returns the lowered signature and stamps attributes into `out_attrs`.
+  struct MethodSig {
+    llvm::FunctionType *fn_type = nullptr;
+    llvm::Type *sret_struct_ty = nullptr;
+    std::vector<llvm::Type *> byval_struct_tys; // one per regular param
+  };
+  MethodSig build_method_signature(const FuncDeclNode &fn);
+  void apply_method_abi_attrs(llvm::Function *func, const MethodSig &sig);
+  void name_method_args(llvm::Function *func, const MethodSig &sig,
+                        const FuncDeclNode &fn,
+                        std::string_view receiver_name);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
@@ -352,6 +435,40 @@ private:
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
   llvm::Value *emit_for_expr(const ForExprNode &node);
+
+  // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
+  struct ForLoopBlocks {
+    llvm::BasicBlock *cond_bb;
+    llvm::BasicBlock *body_bb;
+    llvm::BasicBlock *update_bb;
+    llvm::BasicBlock *exit_bb;
+  };
+  void emit_for_infinite(const ForExprNode &node, const ForLoopBlocks &bbs);
+  void emit_for_c_style(const ForExprNode &node,
+                        const ForIterClauseNode &iter,
+                        const ForLoopBlocks &bbs);
+  void emit_for_condition(const ForExprNode &node, const Node &mode,
+                          const ForLoopBlocks &bbs);
+  void emit_for_range(const ForExprNode &node,
+                      const ForRangeClauseNode &range,
+                      const ForLoopBlocks &bbs);
+  void emit_for_range_array(const ForExprNode &node,
+                            const ForRangeClauseNode &range,
+                            llvm::Value *iterable, const TypePtr &iter_sem,
+                            const ForLoopBlocks &bbs);
+  void emit_for_range_map(const ForExprNode &node,
+                          const ForRangeClauseNode &range,
+                          llvm::Value *iterable, const TypePtr &iter_sem,
+                          const ForLoopBlocks &bbs);
+  void emit_for_range_task(const ForExprNode &node,
+                           const ForRangeClauseNode &range,
+                           const StructTypeInfo &task_info,
+                           const ForLoopBlocks &bbs);
+  void emit_for_range_iterable_struct(const ForExprNode &node,
+                                      const ForRangeClauseNode &range,
+                                      llvm::Value *iterable,
+                                      const TypePtr &iter_sem,
+                                      const ForLoopBlocks &bbs);
   llvm::Value *emit_struct_literal(const StructLiteralNode &node);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
@@ -362,10 +479,32 @@ private:
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
 
+  // Selector-callee dispatch in code generation: handles every shape of
+  // `obj.method(args)` (module fn, struct method, struct-field call,
+  // task message, context method). Implemented in
+  // codegen_method_dispatch.cpp; call only when the callee is a selector.
+  llvm::Value *emit_method_or_module_call(const CallExprNode &node,
+                                          const Node &parent);
+
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
+  /// Promoted-field access (the field lives on an embedded struct) is
+  /// resolved here too: a two-step GEP through `__embed_<Name>` is emitted
+  /// transparently to the caller.
   std::pair<llvm::Value *, llvm::Type *>
   struct_field_gep(llvm::Value *struct_ptr, const TypePtr &struct_sem_type,
                    const std::string &field_name);
+
+  /// Append one synthetic `__embed_<TypeName>` slot per embed in `info` to
+  /// the given LLVM type/name vectors. Embed slots are laid out after the
+  /// struct's own fields and contain the embedded struct by value, not as
+  /// a pointer (see TD6 in the back-to-green plan).
+  void append_embed_slots(const StructTypeInfo &info,
+                          std::vector<llvm::Type *> &field_types,
+                          std::vector<std::string> &field_names);
+
+  /// Conventional name of the synthetic slot that holds an embedded struct
+  /// by value, e.g. `__embed_Timestamps` for `embed lib.Timestamps`.
+  static std::string embed_slot_name(const StructTypeInfo &embed_info);
 
   // ── Type query helpers ───────────────────────────────────────────────
 

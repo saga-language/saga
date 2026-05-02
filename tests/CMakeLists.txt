@@ -64,3 +64,9 @@ if(RUNTIME_TEST_SOURCES)
 
   gtest_discover_tests(runtime_tests)
 endif()
+
+# Cross-package integration tests (shell-script driven, all red until P1+).
+add_subdirectory(runtime/cross_package)
+
+# Single-package embed integration tests.
+add_subdirectory(runtime/embed)

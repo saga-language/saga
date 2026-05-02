@@ -62,25 +62,30 @@ TypePtr make_func_type(std::vector<TypePtr> params,
 TypePtr make_struct_type(const std::string &name,
                          std::vector<FieldInfo> fields,
                          std::vector<MethodInfo> methods,
-                         std::vector<TypeParam> type_params) {
+                         std::vector<TypeParam> type_params,
+                         std::string origin_package) {
   return std::make_shared<Type>(
       TypeKind::Struct,
-      StructTypeInfo{name, std::move(fields), std::move(methods), {},
-                     std::move(type_params), {}});
+      StructTypeInfo{name, std::move(origin_package), std::move(fields),
+                     std::move(methods), {}, std::move(type_params), {}});
 }
 
 TypePtr make_enum_type(const std::string &name,
-                       std::vector<EnumVariant> variants) {
-  return std::make_shared<Type>(TypeKind::Enum,
-                                EnumTypeInfo{name, std::move(variants)});
+                       std::vector<EnumVariant> variants,
+                       std::string origin_package) {
+  return std::make_shared<Type>(
+      TypeKind::Enum,
+      EnumTypeInfo{name, std::move(origin_package), std::move(variants)});
 }
 
 TypePtr make_interface_type(const std::string &name,
                             std::vector<MethodInfo> methods,
-                            std::vector<TypeParam> type_params) {
+                            std::vector<TypeParam> type_params,
+                            std::string origin_package) {
   return std::make_shared<Type>(
       TypeKind::Interface,
-      InterfaceTypeInfo{name, std::move(methods), std::move(type_params), {}});
+      InterfaceTypeInfo{name, std::move(origin_package), std::move(methods),
+                        std::move(type_params), {}});
 }
 
 TypePtr make_union_type(std::vector<TypePtr> alternatives) {
@@ -96,10 +101,12 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
 }
 
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
-                       std::vector<MethodInfo> methods) {
+                        std::vector<MethodInfo> methods,
+                        std::string origin_package) {
   return std::make_shared<Type>(
       TypeKind::Alias,
-      AliasTypeInfo{name, std::move(underlying), std::move(methods)});
+      AliasTypeInfo{name, std::move(origin_package), std::move(underlying),
+                    std::move(methods)});
 }
 
 TypePtr make_module_type(const std::string &name,
@@ -385,22 +392,22 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
   }
 
   case TypeKind::Struct: {
-    // Nominal — compare by name.
+    // Nominal — compare by (origin_package, name).
     auto &ai = std::get<StructTypeInfo>(a->detail);
     auto &bi = std::get<StructTypeInfo>(b->detail);
-    return ai.name == bi.name;
+    return ai.origin_package == bi.origin_package && ai.name == bi.name;
   }
 
   case TypeKind::Enum: {
     auto &ai = std::get<EnumTypeInfo>(a->detail);
     auto &bi = std::get<EnumTypeInfo>(b->detail);
-    return ai.name == bi.name;
+    return ai.origin_package == bi.origin_package && ai.name == bi.name;
   }
 
   case TypeKind::Interface: {
     auto &ai = std::get<InterfaceTypeInfo>(a->detail);
     auto &bi = std::get<InterfaceTypeInfo>(b->detail);
-    return ai.name == bi.name;
+    return ai.origin_package == bi.origin_package && ai.name == bi.name;
   }
 
   case TypeKind::Union: {
@@ -430,10 +437,10 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
   }
 
   case TypeKind::Alias: {
-    // Nominal — alias types are unique by name.
+    // Nominal — alias types are unique by (origin_package, name).
     auto &ai = std::get<AliasTypeInfo>(a->detail);
     auto &bi = std::get<AliasTypeInfo>(b->detail);
-    return ai.name == bi.name;
+    return ai.origin_package == bi.origin_package && ai.name == bi.name;
   }
 
   case TypeKind::Module: {
@@ -650,7 +657,8 @@ TypePtr substitute(const TypePtr &t,
     auto u = substitute(info.underlying, bindings);
     if (u == info.underlying)
       return t;
-    return make_alias_type(info.name, std::move(u), info.methods);
+    return make_alias_type(info.name, std::move(u), info.methods,
+                           info.origin_package);
   }
 
   default:

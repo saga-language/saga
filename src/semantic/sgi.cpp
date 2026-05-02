@@ -5,10 +5,96 @@
 
 #include <algorithm>
 #include <cassert>
+#include <format>
 #include <fstream>
+#include <iostream>
 #include <sstream>
+#include <stdexcept>
+#include <unordered_set>
 
 namespace mc {
+
+// ===========================================================================
+// Type-param collection (used by the writer to decide which params to
+// declare on a method versus which are inherited from the enclosing struct
+// or interface).
+// ===========================================================================
+
+namespace {
+
+/// Walk a type and collect every TypeParam it transitively references.
+/// The order preserves first-seen occurrence.
+static void collect_type_params(const TypePtr &t,
+                                 std::vector<TypeParam> &out,
+                                 std::unordered_set<uint32_t> &seen) {
+  if (!t)
+    return;
+  switch (t->kind) {
+  case TypeKind::TypeParam: {
+    auto &info = std::get<TypeParamInfo>(t->detail);
+    if (seen.insert(info.param.id).second)
+      out.push_back(info.param);
+    return;
+  }
+  case TypeKind::Array:
+    collect_type_params(std::get<ArrayTypeInfo>(t->detail).element, out, seen);
+    return;
+  case TypeKind::Map: {
+    auto &m = std::get<MapTypeInfo>(t->detail);
+    collect_type_params(m.key, out, seen);
+    collect_type_params(m.value, out, seen);
+    return;
+  }
+  case TypeKind::Range:
+    collect_type_params(std::get<RangeTypeInfo>(t->detail).element, out, seen);
+    return;
+  case TypeKind::Func: {
+    auto &f = std::get<FuncTypeInfo>(t->detail);
+    for (auto &p : f.params) collect_type_params(p, out, seen);
+    for (auto &r : f.returns) collect_type_params(r, out, seen);
+    return;
+  }
+  case TypeKind::Union: {
+    auto &u = std::get<UnionTypeInfo>(t->detail);
+    for (auto &a : u.alternatives) collect_type_params(a, out, seen);
+    return;
+  }
+  case TypeKind::Alias:
+    collect_type_params(std::get<AliasTypeInfo>(t->detail).underlying, out,
+                        seen);
+    return;
+  default:
+    return; // primitives / nominal — type params don't leak out
+  }
+}
+
+/// Return the TypeParams used in `t` that are NOT declared in `declared_ids`.
+static std::vector<TypeParam>
+method_local_params(const TypePtr &t,
+                    const std::unordered_set<uint32_t> &declared_ids) {
+  std::vector<TypeParam> all;
+  std::unordered_set<uint32_t> seen;
+  collect_type_params(t, all, seen);
+  std::vector<TypeParam> result;
+  for (auto &p : all)
+    if (!declared_ids.count(p.id))
+      result.push_back(p);
+  return result;
+}
+
+static void write_type_params_decl(std::ostringstream &os,
+                                    const std::vector<TypeParam> &params) {
+  if (params.empty())
+    return;
+  os << "|";
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (i > 0) os << ", ";
+    os << params[i].name << "#" << params[i].id;
+  }
+  os << "|";
+}
+
+} // anonymous namespace
 
 // ===========================================================================
 // Type serialization → .sgi text
@@ -141,7 +227,14 @@ static void write_func_export(std::ostringstream &os, const std::string &name,
                                const TypePtr &t, const std::string &doc) {
   write_doc(os, doc);
   auto &info = std::get<FuncTypeInfo>(t->detail);
-  os << "func " << name << "(";
+  os << "func ";
+  // Generic free functions: declare all TypeParams found in the signature.
+  auto params_used = method_local_params(t, /*declared*/{});
+  if (!params_used.empty()) {
+    write_type_params_decl(os, params_used);
+    os << " ";
+  }
+  os << name << "(";
   for (size_t i = 0; i < info.params.size(); ++i) {
     if (i > 0)
       os << ", ";
@@ -183,20 +276,15 @@ static void write_struct_export(std::ostringstream &os,
                                  const std::string &doc) {
   write_doc(os, doc);
   auto &info = std::get<StructTypeInfo>(t->detail);
-  os << "struct " << name;
-
-  // Generic parameters
-  if (!info.type_params.empty()) {
-    os << "|";
-    for (size_t i = 0; i < info.type_params.size(); ++i) {
-      if (i > 0)
-        os << ", ";
-      os << info.type_params[i].name;
-    }
-    os << "|";
-  }
+  os << "struct ";
+  write_type_params_decl(os, info.type_params);
+  if (!info.type_params.empty()) os << " ";
+  os << name;
 
   os << " {\n";
+
+  std::unordered_set<uint32_t> struct_param_ids;
+  for (auto &tp : info.type_params) struct_param_ids.insert(tp.id);
 
   // Fields (both public and private, for layout compatibility)
   for (auto &field : info.fields) {
@@ -216,7 +304,13 @@ static void write_struct_export(std::ostringstream &os,
   for (auto &method : info.methods) {
     if (method.is_public) {
       auto &sig = std::get<FuncTypeInfo>(method.signature->detail);
-      os << "  pub fn " << method.name << "(";
+      os << "  pub fn ";
+      auto locals = method_local_params(method.signature, struct_param_ids);
+      if (!locals.empty()) {
+        write_type_params_decl(os, locals);
+        os << " ";
+      }
+      os << method.name << "(";
       for (size_t i = 0; i < sig.params.size(); ++i) {
         if (i > 0)
           os << ", ";
@@ -290,22 +384,25 @@ static void write_interface_export(std::ostringstream &os,
                                     const std::string &doc) {
   write_doc(os, doc);
   auto &info = std::get<InterfaceTypeInfo>(t->detail);
-  os << "interface " << name;
-
-  if (!info.type_params.empty()) {
-    os << "|";
-    for (size_t i = 0; i < info.type_params.size(); ++i) {
-      if (i > 0)
-        os << ", ";
-      os << info.type_params[i].name;
-    }
-    os << "|";
-  }
+  os << "interface ";
+  write_type_params_decl(os, info.type_params);
+  if (!info.type_params.empty()) os << " ";
+  os << name;
 
   os << " {\n";
+
+  std::unordered_set<uint32_t> iface_param_ids;
+  for (auto &tp : info.type_params) iface_param_ids.insert(tp.id);
+
   for (auto &method : info.methods) {
     auto &sig = std::get<FuncTypeInfo>(method.signature->detail);
-    os << "  fn " << method.name << "(";
+    os << "  fn ";
+    auto locals = method_local_params(method.signature, iface_param_ids);
+    if (!locals.empty()) {
+      write_type_params_decl(os, locals);
+      os << " ";
+    }
+    os << method.name << "(";
     for (size_t i = 0; i < sig.params.size(); ++i) {
       if (i > 0)
         os << ", ";
@@ -377,10 +474,13 @@ static void write_receiver_methods(std::ostringstream &os,
 std::string generate_sgi(const std::string &package_name,
                           const std::vector<SgiImport> &imports,
                           const std::vector<SgiExport> &exports,
-                          const std::vector<SgiReceiverMethod> &receiver_methods) {
+                          const std::vector<SgiReceiverMethod> &receiver_methods,
+                          const std::string &source_dir) {
   std::ostringstream os;
-  os << "sgi 1\n";
+  os << "sgi " << kSgiVersion << "\n";
   os << "package " << package_name << "\n";
+  if (!source_dir.empty())
+    os << "source_dir \"" << source_dir << "\"\n";
 
   // Imports
   for (auto &imp : imports) {
@@ -434,6 +534,12 @@ std::string generate_sgi(const std::string &package_name,
     if (si > 0)
       os << "\n";
 
+    // @origin line: where the type/value was originally defined.
+    // Omit when it matches the enclosing file's package_name — the reader
+    // fills that in as the default.
+    if (!exp.origin_path.empty() && exp.origin_path != package_name)
+      os << "@origin \"" << exp.origin_path << "\"\n";
+
     if (exp.is_type) {
       // Type export: serialize the full type definition.
       switch (exp.type->kind) {
@@ -472,11 +578,13 @@ std::string generate_sgi(const std::string &package_name,
 bool write_sgi(const std::string &path, const std::string &package_name,
                const std::vector<SgiImport> &imports,
                const std::vector<SgiExport> &exports,
-               const std::vector<SgiReceiverMethod> &receiver_methods) {
+               const std::vector<SgiReceiverMethod> &receiver_methods,
+               const std::string &source_dir) {
   std::ofstream out(path);
   if (!out)
     return false;
-  out << generate_sgi(package_name, imports, exports, receiver_methods);
+  out << generate_sgi(package_name, imports, exports, receiver_methods,
+                      source_dir);
   return out.good();
 }
 
@@ -494,6 +602,40 @@ struct SgiParser {
   // Types defined so far in this .sgi — lets const/func declarations
   // reference struct/enum/interface types by name without producing stubs.
   std::unordered_map<std::string, TypePtr> defined_types;
+
+  // Lexical scopes of type-parameter names -> TypeParam. A struct pushes its
+  // generic params; each method pushes its own local params. `parse_type`
+  // resolves a bare `T` by walking this stack from innermost outward.
+  std::vector<std::unordered_map<std::string, TypeParam>> type_param_scopes;
+
+  void push_type_param_scope() { type_param_scopes.emplace_back(); }
+  void pop_type_param_scope() {
+    if (!type_param_scopes.empty()) type_param_scopes.pop_back();
+  }
+  void bind_type_param(const TypeParam &tp) {
+    if (type_param_scopes.empty()) push_type_param_scope();
+    // Shadowing check: method-level type params must not reuse names from
+    // enclosing struct/interface type param scopes.
+    if (type_param_scopes.size() > 1) {
+      for (size_t i = 0; i + 1 < type_param_scopes.size(); ++i) {
+        if (type_param_scopes[i].count(tp.name)) {
+          throw std::runtime_error(
+              std::format("type parameter '{}' shadows enclosing struct type "
+                          "parameter",
+                          tp.name));
+        }
+      }
+    }
+    type_param_scopes.back()[tp.name] = tp;
+  }
+  std::optional<TypeParam> lookup_type_param(const std::string &name) const {
+    for (auto it = type_param_scopes.rbegin(); it != type_param_scopes.rend();
+         ++it) {
+      auto found = it->find(name);
+      if (found != it->end()) return found->second;
+    }
+    return std::nullopt;
+  }
 
   bool at_end() const { return pos >= content.size(); }
 
@@ -780,14 +922,59 @@ struct SgiParser {
           {MethodInfo{"Message", make_func_type({}, {make_string_type()}),
                       true}});
 
+    // Bare identifier matching a type-param in scope → TypeParam.
+    if (auto tp = lookup_type_param(name))
+      return make_type_param(tp->id, tp->name);
+
     // Named type reference: check if it was already defined in this .sgi.
     // If so, return the real type so methods/fields are visible.
     auto it = defined_types.find(name);
     if (it != defined_types.end())
       return it->second;
 
-    // Otherwise return a stub with just the name — resolved later if needed.
-    return make_struct_type(name);
+    // Forward reference: create a stub and register it so subsequent
+    // references share the same TypePtr. When the real decl arrives, its
+    // body is filled into this stub via mutate_into (see below), so all
+    // earlier references see the real fields.
+    auto stub = make_struct_type(name);
+    defined_types[name] = stub;
+    return stub;
+  }
+
+  /// Parse an optional `|T#id, U#id, ...|` declaration list. Returns the
+  /// parsed params (empty if no `|` follows). Each parsed param is also
+  /// bound in the current (innermost) type-param scope so subsequent
+  /// `parse_type` calls resolve bare names.
+  std::vector<TypeParam> parse_type_params_decl() {
+    std::vector<TypeParam> params;
+    skip_whitespace();
+    if (at_end() || content[pos] != '|')
+      return params;
+    ++pos; // skip opening '|'
+    uint32_t fallback_id = 0;
+    while (true) {
+      skip_whitespace();
+      if (at_end() || content[pos] == '|') break;
+      std::string pname = read_word();
+      if (pname.empty()) break;
+      uint32_t id = fallback_id++;
+      skip_whitespace();
+      if (!at_end() && content[pos] == '#') {
+        ++pos;
+        size_t start = pos;
+        while (!at_end() && std::isdigit(content[pos])) ++pos;
+        if (pos > start)
+          id = static_cast<uint32_t>(std::stoul(content.substr(start, pos - start)));
+      }
+      TypeParam tp{id, pname};
+      params.push_back(tp);
+      bind_type_param(tp);
+      skip_whitespace();
+      if (at_end() || content[pos] != ',') break;
+      ++pos;
+    }
+    if (!at_end() && content[pos] == '|') ++pos;
+    return params;
   }
 
   TypePtr parse_func_type() {
@@ -864,38 +1051,42 @@ struct SgiParser {
 
   // ── Top-level declaration parsing ─────────────────────────────────
 
-  /// Parse a func declaration.
+  /// Parse a func declaration. Free functions may carry their own generic
+  /// param list: `func |T#id| Name(T) T`.
   SgiExport parse_func_decl(const std::string &doc) {
+    push_type_param_scope();
+    skip_whitespace();
+    // Optional generic parameter list *before* the name.
+    if (!at_end() && content[pos] == '|') parse_type_params_decl();
     std::string name = read_word();
     skip_whitespace();
     auto type = parse_func_type();
     skip_line();
-    return {doc, name, type};
+    pop_type_param_scope();
+    SgiExport exp;
+    exp.doc = doc;
+    exp.name = name;
+    exp.type = type;
+    return exp;
   }
 
   /// Parse a struct declaration block.
   SgiExport parse_struct_decl(const std::string &doc) {
+    push_type_param_scope();
+    skip_whitespace();
+
+    // Generic params may appear before the name (v2) — `struct |T#0| Name`.
+    // Tolerate the pre-v2 position after the name for graceful reading of
+    // tooling-generated inputs, even though writers never emit there.
+    std::vector<TypeParam> type_params;
+    if (!at_end() && content[pos] == '|')
+      type_params = parse_type_params_decl();
+
     std::string name = read_word();
 
-    // Generic parameters
-    std::vector<TypeParam> type_params;
     skip_whitespace();
-    if (!at_end() && content[pos] == '|') {
-      ++pos; // skip |
-      uint32_t param_id = 0;
-      while (true) {
-        skip_whitespace();
-        std::string pname = read_word();
-        if (!pname.empty())
-          type_params.push_back({param_id++, pname});
-        skip_whitespace();
-        if (at_end() || content[pos] != ',')
-          break;
-        ++pos;
-      }
-      if (!at_end() && content[pos] == '|')
-        ++pos;
-    }
+    if (!at_end() && content[pos] == '|' && type_params.empty())
+      type_params = parse_type_params_decl();
 
     skip_whitespace();
     if (!at_end() && content[pos] == '{')
@@ -921,12 +1112,16 @@ struct SgiParser {
         skip_whitespace();
         std::string next = read_word();
         if (next == "fn") {
-          // Method
+          // Method may have its own `|...|` list before the name.
+          push_type_param_scope();
+          skip_whitespace();
+          if (!at_end() && content[pos] == '|') parse_type_params_decl();
           std::string mname = read_word();
           skip_whitespace();
           auto sig = parse_func_type();
           skip_line();
-          methods.push_back({mname, sig, true});
+          pop_type_param_scope();
+          methods.push_back({mname, sig, true, ""});
         } else {
           // Field: "pub <name> <type>"
           std::string fname = next;
@@ -941,10 +1136,14 @@ struct SgiParser {
           embeds.push_back(etype);
       } else if (kw == "fn") {
         // Private method — skip
+        push_type_param_scope();
+        skip_whitespace();
+        if (!at_end() && content[pos] == '|') parse_type_params_decl();
         read_word(); // method name
         skip_whitespace();
         parse_func_type();
         skip_line();
+        pop_type_param_scope();
       } else if (!kw.empty() && kw != "}") {
         // Private field: "<name> <type>"
         std::string fname = kw;
@@ -956,13 +1155,33 @@ struct SgiParser {
       }
     }
 
-    auto t = make_struct_type(name, std::move(fields), std::move(methods),
-                               std::move(type_params));
-    // Set embeds
-    auto &info = std::get<StructTypeInfo>(t->detail);
-    info.embeds = std::move(embeds);
+    // Reuse a previously-emitted forward stub if one exists, mutating its
+    // detail in-place so all earlier references see the real fields.
+    TypePtr t;
+    auto stub_it = defined_types.find(name);
+    if (stub_it != defined_types.end() &&
+        stub_it->second->kind == TypeKind::Struct) {
+      t = stub_it->second;
+      auto &info = std::get<StructTypeInfo>(t->detail);
+      info.name = name;
+      info.fields = std::move(fields);
+      info.methods = std::move(methods);
+      info.type_params = std::move(type_params);
+      info.embeds = std::move(embeds);
+    } else {
+      t = make_struct_type(name, std::move(fields), std::move(methods),
+                           std::move(type_params));
+      auto &info = std::get<StructTypeInfo>(t->detail);
+      info.embeds = std::move(embeds);
+    }
 
-    return {doc, name, t};
+    pop_type_param_scope();
+
+    SgiExport exp;
+    exp.doc = doc;
+    exp.name = name;
+    exp.type = t;
+    return exp;
   }
 
   /// Parse an enum declaration.
@@ -971,6 +1190,7 @@ struct SgiParser {
     skip_whitespace();
     if (!at_end() && content[pos] == '{')
       ++pos;
+  // (Enum does not currently support generic type parameters.)
 
     std::vector<EnumVariant> variants;
     while (true) {
@@ -1045,26 +1265,19 @@ struct SgiParser {
 
   /// Parse an interface declaration block.
   SgiExport parse_interface_decl(const std::string &doc) {
+    push_type_param_scope();
+    skip_whitespace();
+
+    // v2: `interface |T#0| Name`. Tolerate post-name form as well.
+    std::vector<TypeParam> type_params;
+    if (!at_end() && content[pos] == '|')
+      type_params = parse_type_params_decl();
+
     std::string name = read_word();
 
-    std::vector<TypeParam> type_params;
     skip_whitespace();
-    if (!at_end() && content[pos] == '|') {
-      ++pos;
-      uint32_t param_id = 0;
-      while (true) {
-        skip_whitespace();
-        std::string pname = read_word();
-        if (!pname.empty())
-          type_params.push_back({param_id++, pname});
-        skip_whitespace();
-        if (at_end() || content[pos] != ',')
-          break;
-        ++pos;
-      }
-      if (!at_end() && content[pos] == '|')
-        ++pos;
-    }
+    if (!at_end() && content[pos] == '|' && type_params.empty())
+      type_params = parse_type_params_decl();
 
     skip_whitespace();
     if (!at_end() && content[pos] == '{')
@@ -1083,11 +1296,15 @@ struct SgiParser {
 
       std::string kw = read_word();
       if (kw == "fn") {
+        push_type_param_scope();
+        skip_whitespace();
+        if (!at_end() && content[pos] == '|') parse_type_params_decl();
         std::string mname = read_word();
         skip_whitespace();
         auto sig = parse_func_type();
         skip_line();
-        methods.push_back({mname, sig, true});
+        pop_type_param_scope();
+        methods.push_back({mname, sig, true, ""});
       } else {
         skip_line();
       }
@@ -1095,7 +1312,13 @@ struct SgiParser {
 
     auto t = make_interface_type(name, std::move(methods),
                                   std::move(type_params));
-    return {doc, name, t};
+    pop_type_param_scope();
+
+    SgiExport exp;
+    exp.doc = doc;
+    exp.name = name;
+    exp.type = t;
+    return exp;
   }
 
   /// Parse a const declaration.
@@ -1103,10 +1326,16 @@ struct SgiParser {
     std::string name = read_word();
     auto type = parse_type();
     skip_line();
-    return {doc, name, type};
+    SgiExport exp;
+    exp.doc = doc;
+    exp.name = name;
+    exp.type = type;
+    return exp;
   }
 
-  /// Parse a "methods TypeName { ... }" block.
+  /// Parse a "methods TypeName { ... }" block. Inside, bare T/K/V resolve
+  /// to the established sentinel TypeParam IDs for Array/Map receivers
+  /// (see analyzer: 9990/9991/9992).
   SgiReceiverMethod parse_receiver_methods_decl() {
     SgiReceiverMethod rm;
     rm.type_name = read_word();
@@ -1114,6 +1343,14 @@ struct SgiParser {
     if (!at_end() && content[pos] == '{')
       ++pos;
     skip_line();
+
+    push_type_param_scope();
+    if (rm.type_name == "Array") {
+      bind_type_param({9990, "T"});
+    } else if (rm.type_name == "Map") {
+      bind_type_param({9991, "K"});
+      bind_type_param({9992, "V"});
+    }
 
     while (true) {
       skip_whitespace();
@@ -1129,25 +1366,34 @@ struct SgiParser {
         skip_whitespace();
         std::string next = read_word();
         if (next == "fn") {
+          push_type_param_scope();
+          skip_whitespace();
+          if (!at_end() && content[pos] == '|') parse_type_params_decl();
           std::string mname = read_word();
           skip_whitespace();
           auto sig = parse_func_type();
           skip_line();
-          rm.methods.push_back({mname, sig, true});
+          pop_type_param_scope();
+          rm.methods.push_back({mname, sig, true, ""});
         } else {
           skip_line();
         }
       } else if (kw == "fn") {
         // Private method — skip.
+        push_type_param_scope();
+        skip_whitespace();
+        if (!at_end() && content[pos] == '|') parse_type_params_decl();
         read_word();
         skip_whitespace();
         parse_func_type();
         skip_line();
+        pop_type_param_scope();
       } else {
         skip_line();
       }
     }
 
+    pop_type_param_scope();
     return rm;
   }
 };
@@ -1155,6 +1401,7 @@ struct SgiParser {
 } // anonymous namespace
 
 std::optional<SgiFile> parse_sgi(const std::string &content) {
+  try {
   SgiParser p;
   p.content = content;
   p.pos = 0;
@@ -1168,7 +1415,7 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
     return std::nullopt;
   sgi.version = p.read_int();
   p.skip_line();
-  if (sgi.version != 1)
+  if (sgi.version != kSgiVersion)
     return std::nullopt;
 
   // Package name
@@ -1179,14 +1426,44 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
   sgi.package_name = p.read_word();
   p.skip_line();
 
+  // Optional source_dir line — present when the SGI was written by a
+  // build that knows where the .sg sources live; the importer's codegen
+  // uses it to lazily load generic method bodies.
+  p.skip_blank_lines();
+  if (!p.at_end()) {
+    size_t saved = p.pos;
+    std::string maybe = p.read_word();
+    if (maybe == "source_dir") {
+      sgi.source_dir = p.read_quoted();
+      p.skip_line();
+    } else {
+      p.pos = saved;
+    }
+  }
+
   // Parse imports and exports
   while (!p.at_end()) {
     p.skip_blank_lines();
     if (p.at_end())
       break;
 
-    // Read doc comments
+    // Read doc comments, then an optional `@origin "..."` annotation.
     std::string doc = p.read_doc_comment();
+
+    std::string origin_path;
+    p.skip_whitespace();
+    if (!p.at_end() && p.content[p.pos] == '@') {
+      size_t saved = p.pos;
+      ++p.pos;
+      std::string tag = p.read_word();
+      if (tag == "origin") {
+        origin_path = p.read_quoted();
+        p.skip_line();
+      } else {
+        p.pos = saved;
+        p.skip_line();
+      }
+    }
 
     p.skip_whitespace();
     if (p.at_end())
@@ -1196,27 +1473,41 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
     if (kw.empty())
       break;
 
+    auto attach_origin = [&](SgiExport &&exp) -> SgiExport {
+      exp.origin_path = origin_path;
+      return std::move(exp);
+    };
+
     if (kw == "import") {
       std::string imp_name = p.read_word();
       std::string imp_path = p.read_quoted();
       p.skip_line();
       sgi.imports.push_back({imp_name, imp_path});
     } else if (kw == "func") {
-      sgi.exports.push_back(p.parse_func_decl(doc));
+      sgi.exports.push_back(attach_origin(p.parse_func_decl(doc)));
     } else if (kw == "struct") {
-      auto exp = p.parse_struct_decl(doc);
-      if (exp.type) p.defined_types[exp.name] = exp.type; // register for forward refs
+      auto exp = attach_origin(p.parse_struct_decl(doc));
+      if (exp.type) {
+        exp.is_type = true;
+        p.defined_types[exp.name] = exp.type;
+      }
       sgi.exports.push_back(std::move(exp));
     } else if (kw == "enum") {
-      auto exp = p.parse_enum_decl(doc);
-      if (exp.type) p.defined_types[exp.name] = exp.type;
+      auto exp = attach_origin(p.parse_enum_decl(doc));
+      if (exp.type) {
+        exp.is_type = true;
+        p.defined_types[exp.name] = exp.type;
+      }
       sgi.exports.push_back(std::move(exp));
     } else if (kw == "interface") {
-      auto exp = p.parse_interface_decl(doc);
-      if (exp.type) p.defined_types[exp.name] = exp.type;
+      auto exp = attach_origin(p.parse_interface_decl(doc));
+      if (exp.type) {
+        exp.is_type = true;
+        p.defined_types[exp.name] = exp.type;
+      }
       sgi.exports.push_back(std::move(exp));
     } else if (kw == "const") {
-      sgi.exports.push_back(p.parse_const_decl(doc));
+      sgi.exports.push_back(attach_origin(p.parse_const_decl(doc)));
     } else if (kw == "methods") {
       sgi.receiver_methods.push_back(p.parse_receiver_methods_decl());
     } else {
@@ -1224,7 +1515,48 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
     }
   }
 
+  // Stamp origin_package on every reconstructed nominal type. Exports with
+  // an explicit `@origin` use that; others default to the file's package.
+  // Method origin_package mirrors the enclosing type's origin so that
+  // method-link mangling at the importer always targets the defining
+  // package's symbol, not the caller's.
+  for (auto &exp : sgi.exports) {
+    if (!exp.type) continue;
+    std::string origin = exp.origin_path.empty()
+                             ? sgi.package_name
+                             : exp.origin_path;
+    switch (exp.type->kind) {
+    case TypeKind::Struct: {
+      auto &si = std::get<StructTypeInfo>(exp.type->detail);
+      si.origin_package = origin;
+      for (auto &m : si.methods) m.origin_package = origin;
+      break;
+    }
+    case TypeKind::Enum:
+      std::get<EnumTypeInfo>(exp.type->detail).origin_package = origin;
+      break;
+    case TypeKind::Interface: {
+      auto &ii = std::get<InterfaceTypeInfo>(exp.type->detail);
+      ii.origin_package = origin;
+      for (auto &m : ii.methods) m.origin_package = origin;
+      break;
+    }
+    case TypeKind::Alias: {
+      auto &ai = std::get<AliasTypeInfo>(exp.type->detail);
+      ai.origin_package = origin;
+      for (auto &m : ai.methods) m.origin_package = origin;
+      break;
+    }
+    default:
+      break;
+    }
+  }
+
   return sgi;
+  } catch (const std::exception &e) {
+    std::cerr << "sgi parse error: " << e.what() << "\n";
+    return std::nullopt;
+  }
 }
 
 std::optional<SgiFile> load_sgi(const std::string &path) {
@@ -1251,6 +1583,16 @@ TypePtr sgi_to_type(const std::string &text) {
   p.content = text;
   p.pos = 0;
   return p.parse_type();
+}
+
+bool sgi_needs_init(const SgiFile &sgi) {
+  for (auto &exp : sgi.exports) {
+    if (exp.is_type || !exp.type) continue;
+    if (exp.type->kind == TypeKind::Array ||
+        exp.type->kind == TypeKind::Map)
+      return true;
+  }
+  return false;
 }
 
 } // namespace mc

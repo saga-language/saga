@@ -181,7 +181,7 @@ llvm::Value *CodeGen::emit_bool_literal(const BoolLiteralNode &node) {
 // String literals
 // ===========================================================================
 
-static std::string unescape_fragment(std::string_view raw) {
+std::string CodeGen::unescape_fragment(std::string_view raw) {
   if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
     raw = raw.substr(1, raw.size() - 2);
   else if (raw.size() >= 1 && raw.front() == '"')

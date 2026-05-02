@@ -16,11 +16,13 @@ namespace mc {
 llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
   if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
     std::string tname(ident->name);
-    if (struct_types.count(tname))
-      return llvm::PointerType::getUnqual(context); // struct as ptr
-    if (enum_types.count(tname))
+    // Keys are qualified (pkg__Name), so fall back via key_for when origin is unknown.
+    auto sit = struct_types.find(key_for("", tname));
+    if (sit != struct_types.end())
+      return sit->second; // struct value type
+    if (enum_types.count(key_for("", tname)))
       return i64_type; // enum as i64 tag
-    if (iface_vtable_types.count(tname))
+    if (iface_vtable_types.count(key_for("", tname)))
       return llvm::PointerType::getUnqual(context); // interface as ptr to fat ptr
   }
   // Fall back to analyzer resolve (works for builtins).
@@ -32,12 +34,20 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   bool is_main = (fn.name.name == "Main");
   std::string link_name = is_main ? "main" : mangle(std::string(fn.name.name));
 
-  // Return type.
+  // Determine semantic-level return.  Struct returns are lowered to sret:
+  // a hidden first parameter `ptr sret(%T)`, the LLVM return type is void.
   llvm::Type *ret_type = void_ll_type;
+  llvm::Type *sret_struct_ty = nullptr;
   if (is_main) {
     ret_type = llvm::Type::getInt32Ty(context);
   } else if (fn.signature.returns.size() == 1) {
-    ret_type = resolve_type_node(*fn.signature.returns[0]);
+    auto *r_ll = resolve_type_node(*fn.signature.returns[0]);
+    if (r_ll && r_ll->isStructTy()) {
+      sret_struct_ty = r_ll;
+      ret_type = void_ll_type;
+    } else {
+      ret_type = r_ll;
+    }
   } else if (fn.signature.returns.size() > 1) {
     // Multiple return values → pack into an LLVM struct.
     std::vector<llvm::Type *> ret_fields;
@@ -50,13 +60,19 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
     ret_type = st;
   }
 
-  // Parameter types.
+  // Parameter types.  Structs are lowered to `ptr` for byval.
   std::vector<llvm::Type *> param_types;
+  if (sret_struct_ty)
+    param_types.push_back(llvm::PointerType::getUnqual(context));
   if (!is_main) {
     for (auto &param : fn.signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
       // Variadic params are arrays at the LLVM level (ptr to mc_array).
       if (param.is_variadic)
+        ll_type = llvm::PointerType::getUnqual(context);
+      // Struct params: byval lowering.  At the LLVM level the param slot
+      // is `ptr`; the byval(%T) attribute is attached separately.
+      else if (ll_type && ll_type->isStructTy())
         ll_type = llvm::PointerType::getUnqual(context);
       for (size_t i = 0; i < param.names.identifiers.size(); ++i)
         param_types.push_back(ll_type);
@@ -64,6 +80,40 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   }
 
   return llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
+}
+
+void CodeGen::apply_func_abi_attrs(llvm::Function *func,
+                                    const FuncDeclNode &fn) {
+  if (fn.name.name == "Main")
+    return;
+  unsigned idx = 0;
+  // Sret return
+  if (fn.signature.returns.size() == 1) {
+    auto *r_ll = resolve_type_node(*fn.signature.returns[0]);
+    if (r_ll && r_ll->isStructTy()) {
+      llvm::AttrBuilder ab(context);
+      ab.addStructRetAttr(r_ll);
+      ab.addAlignmentAttr(
+          module->getDataLayout().getABITypeAlign(r_ll));
+      func->addParamAttrs(idx, ab);
+      ++idx;
+    }
+  }
+  // Byval struct params
+  for (auto &param : fn.signature.params) {
+    auto *p_ll = resolve_type_node(*param.type);
+    bool byval = p_ll && p_ll->isStructTy() && !param.is_variadic;
+    for (size_t i = 0; i < param.names.identifiers.size(); ++i) {
+      if (byval) {
+        llvm::AttrBuilder ab(context);
+        ab.addByValAttr(p_ll);
+        ab.addAlignmentAttr(
+            module->getDataLayout().getABITypeAlign(p_ll));
+        func->addParamAttrs(idx, ab);
+      }
+      ++idx;
+    }
+  }
 }
 
 // ===========================================================================
@@ -121,16 +171,33 @@ void CodeGen::emit_function_body_inner(
   managed_locals.clear();
   current_func_is_main = is_main;
 
+  // Main begins with package initialisation: every imported package's
+  // `<pkg>__init__` (topo order, deps first) plus this package's own
+  // init.  Runs before saga_executor_init so init code never observes
+  // a live executor (TD4).
+  if (is_main)
+    emit_init_calls();
+
   // If this is Main and we have spawn expressions, init the executor.
   if (is_main && has_spawn) {
     builder.CreateCall(module->getFunction("saga_executor_init"),
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
+  // Skip the hidden sret arg if present.
+  size_t arg_idx = 0;
+  bool has_sret = false;
+  if (!is_main && fn.signature.returns.size() == 1) {
+    auto *r_ll = resolve_type_node(*fn.signature.returns[0]);
+    if (r_ll && r_ll->isStructTy()) {
+      has_sret = true;
+      ++arg_idx; // arg 0 is the sret pointer
+    }
+  }
+
   // Create allocas for parameters and store the incoming argument values.
   // param_ll has one entry per flattened parameter name so variadic /
   // multi-name params are already expanded.
-  size_t arg_idx = 0;
   size_t ll_idx = 0;
   for (auto &param : fn.signature.params) {
     for (auto &ident : param.names.identifiers) {
@@ -138,12 +205,23 @@ void CodeGen::emit_function_body_inner(
                           ? param_ll[ll_idx]
                           : llvm::PointerType::getUnqual(context);
       std::string pname(ident.name);
+      auto *arg = func->getArg(arg_idx++);
       auto *alloca = create_entry_alloca(func, pname, ll_type);
-      builder.CreateStore(func->getArg(arg_idx++), alloca);
+      if (ll_type && ll_type->isStructTy()) {
+        // Byval struct param: arg is a `ptr` to a stable caller-provided
+        // copy.  Memcpy its bytes into the local alloca so subsequent
+        // mutations stay local to this frame.
+        auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
+        auto al = module->getDataLayout().getABITypeAlign(ll_type);
+        builder.CreateMemCpy(alloca, al, arg, al, sz);
+      } else {
+        builder.CreateStore(arg, alloca);
+      }
       locals[pname] = alloca;
       ++ll_idx;
     }
   }
+  (void)has_sret;
 
   // Emit body.
   auto &block = std::get<BlockNode>(fn.body->data);
@@ -158,6 +236,23 @@ void CodeGen::emit_function_body_inner(
         builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
+    } else if (has_sret) {
+      // Struct return via sret.  tail_val is either a pointer to a struct
+      // alloca (struct literal, identifier, byval param) or a struct SSA
+      // value (loaded from an alloca).  Copy into the sret slot.
+      auto *sret_arg = func->getArg(0);
+      llvm::Type *struct_ty =
+          resolve_type_node(*fn.signature.returns[0]);
+      if (tail_val && struct_ty && struct_ty->isStructTy()) {
+        if (tail_val->getType()->isPointerTy()) {
+          auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
+          auto al = module->getDataLayout().getABITypeAlign(struct_ty);
+          builder.CreateMemCpy(sret_arg, al, tail_val, al, sz);
+        } else if (tail_val->getType() == struct_ty) {
+          builder.CreateStore(tail_val, sret_arg);
+        }
+      }
+      builder.CreateRetVoid();
     } else if (ret_type->isVoidTy()) {
       builder.CreateRetVoid();
     } else if (tail_val && tail_val->getType() == ret_type) {
@@ -324,15 +419,29 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       }
     }
 
-    // If the init is a struct alloca, alias it directly.
-    if (val && llvm::isa<llvm::AllocaInst>(val)) {
+    // Struct init: copy into a fresh local alloca to preserve value
+    // semantics.  RHS may be either a pointer (alloca / sret slot) or a
+    // struct SSA value.
+    {
       auto sem = semantic_type(**node.init);
-      if (sem && sem->kind == TypeKind::Struct) {
-        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-        alloca->setName(name);
-        locals[name] = alloca;
-        track_managed(name, sem);
-        return;
+      if (val && sem && sem->kind == TypeKind::Struct) {
+        auto &sinfo = std::get<StructTypeInfo>(sem->detail);
+        std::string skey = key_for(sinfo.origin_package, sinfo.name);
+        auto st_it = struct_types.find(skey);
+        if (st_it != struct_types.end()) {
+          auto *st_type = st_it->second;
+          auto *alloca = create_entry_alloca(func, name, st_type);
+          if (val->getType()->isPointerTy()) {
+            auto sz = module->getDataLayout().getTypeAllocSize(st_type);
+            auto al = module->getDataLayout().getABITypeAlign(st_type);
+            builder.CreateMemCpy(alloca, al, val, al, sz);
+          } else if (val->getType() == st_type) {
+            builder.CreateStore(val, alloca);
+          }
+          locals[name] = alloca;
+          track_managed(name, sem);
+          return;
+        }
       }
     }
 
@@ -422,7 +531,8 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct) {
       // Struct zero value: allocate struct, zero-initialize all fields.
       auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
-      auto st_it = struct_types.find(info.name);
+      std::string skey = key_for(info.origin_package, info.name);
+      auto st_it = struct_types.find(skey);
       if (st_it != struct_types.end()) {
         auto *st_type = st_it->second;
         auto *alloca = create_entry_alloca(func, name, st_type);
@@ -498,18 +608,42 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
 
-    // If the value is a struct, union, or closure alloca, alias it directly.
+    // Struct values: copy into a fresh local alloca to preserve value
+    // semantics under D1 ABI. Source may be a pointer (alloca/sret slot)
+    // or an SSA struct value.
+    {
+      auto sem = semantic_type(*node.value);
+      if (val && sem && sem->kind == TypeKind::Struct) {
+        auto &sinfo = std::get<StructTypeInfo>(sem->detail);
+        std::string skey = key_for(sinfo.origin_package, sinfo.name);
+        auto st_it = struct_types.find(skey);
+        if (st_it != struct_types.end()) {
+          auto *st_type = st_it->second;
+          auto *alloca = create_entry_alloca(func, name, st_type);
+          if (val->getType()->isPointerTy()) {
+            auto sz = module->getDataLayout().getTypeAllocSize(st_type);
+            auto al = module->getDataLayout().getABITypeAlign(st_type);
+            builder.CreateMemCpy(alloca, al, val, al, sz);
+          } else if (val->getType() == st_type) {
+            builder.CreateStore(val, alloca);
+          }
+          locals[name] = alloca;
+          track_managed(name, sem);
+          continue;
+        }
+      }
+    }
+
+    // Union and closure alloca: alias directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
       auto *alloca = llvm::cast<llvm::AllocaInst>(val);
       auto sem = semantic_type(*node.value);
-      if (sem && (sem->kind == TypeKind::Struct ||
-                  sem->kind == TypeKind::Union)) {
+      if (sem && sem->kind == TypeKind::Union) {
         alloca->setName(name);
         locals[name] = alloca;
         track_managed(name, sem);
         continue;
       }
-      // Closure fat pointer — alias directly.
       if (alloca->getAllocatedType() == closure_fat_ptr_type) {
         alloca->setName(name);
         locals[name] = alloca;
@@ -673,6 +807,25 @@ void CodeGen::emit_return(const ReturnNode &node) {
     auto *val = emit_expr(*node.values[0]);
     auto *func = builder.GetInsertBlock()->getParent();
     auto *ret_type = func->getReturnType();
+
+    // Sret return: copy struct value/alloca into the hidden first arg.
+    if (ret_type->isVoidTy() && func->arg_size() > 0 &&
+        func->getArg(0)->hasStructRetAttr()) {
+      auto *sret_arg = func->getArg(0);
+      auto *struct_ty = func->getParamStructRetType(0);
+      if (val && struct_ty) {
+        if (val->getType()->isPointerTy()) {
+          auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
+          auto al = module->getDataLayout().getABITypeAlign(struct_ty);
+          builder.CreateMemCpy(sret_arg, al, val, al, sz);
+        } else if (val->getType() == struct_ty) {
+          builder.CreateStore(val, sret_arg);
+        }
+      }
+      emit_release_locals();
+      builder.CreateRetVoid();
+      return;
+    }
 
     // Handle union return types: wrap concrete values or load from alloca.
     if (val && ret_type->isStructTy() && val->getType()->isPointerTy()) {

@@ -1,0 +1,9 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  io.Println(lib.StateName(lib.State.Stopped))
+  io.Println(lib.StateName(lib.State.Running))
+  io.Println((lib.State.Stopped == lib.State.Stopped).String())
+  io.Println((lib.State.Stopped == lib.State.Running).String())
+}

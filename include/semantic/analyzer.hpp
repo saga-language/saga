@@ -42,6 +42,13 @@ struct PackageResolver {
   /// Populated when a package is resolved via .sgi.
   std::unordered_map<std::string, std::string> sgi_resolved_dirs;
 
+  /// Maps short package name → absolute directory containing the package's
+  /// .sg sources. Populated by both the SGI loader (from the SGI's
+  /// `source_dir` line) and the source compiler (from the resolved
+  /// package directory). Used by codegen to lazily load generic method
+  /// bodies that the origin package could not pre-instantiate.
+  std::unordered_map<std::string, std::string> source_dirs;
+
   /// Find the filesystem directory for the given import path.
   /// Returns empty string if not found.
   std::string find_package_dir(const std::string &import_path) const;
@@ -231,6 +238,18 @@ struct Analyzer {
   std::unordered_map<const FuncDeclNode *, std::list<BodyInstantiation>>
       instantiations_;
 
+  /// Origin packages whose source was lazily loaded so codegen can emit
+  /// generic method bodies that the origin's compiled .o does not contain
+  /// (D8). Each entry retains the FileSet, AST, and a sub-analyzer whose
+  /// node-keyed tables have been merged into ours; this keeps every node
+  /// pointer alive for as long as the parent analyzer survives.
+  struct LoadedSourcePackage {
+    std::unique_ptr<FileSet> fileset;
+    NodePtr ast;
+    std::unique_ptr<Analyzer> sub_analyzer;
+  };
+  std::unordered_map<std::string, LoadedSourcePackage> loaded_source_packages_;
+
   /// The BodyInstantiation whose side-tables should receive writes (and
   /// satisfy reads) during the current Phase 3/4 pass.  nullptr when
   /// analysing non-generic code.
@@ -261,6 +280,10 @@ struct Analyzer {
   explicit Analyzer(FileSet &fs);
   explicit Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver);
 
+  /// Return the short package name derived from current_package_dir.
+  /// Returns "" when no package directory is set (top-level compilation).
+  std::string current_package_name() const;
+
   // ── Entry point ──────────────────────────────────────────────────────
 
   /// Analyze an entire package (PackageNode at root).
@@ -279,6 +302,70 @@ struct Analyzer {
 
   /// Process all import declarations in a source after names are collected.
   void process_imports(const std::vector<NodePtr> &declarations);
+
+  // ── Cross-package generic method body loading (D8) ────────────────────
+
+  /// Result of `load_imported_method_decl`: enough information for codegen
+  /// to emit a per-importer specialisation of a generic method whose body
+  /// lives in another package. The instantiation pointer drives body
+  /// codegen via current_instantiation_; the bindings are keyed by the
+  /// origin package's TypeParam IDs (struct-aligned) so emit_specialisation
+  /// can substitute and mangle correctly.
+  struct ImportedMethodDecl {
+    const FuncDeclNode *decl = nullptr;
+    TypePtr template_signature;
+    std::vector<TypeParam> struct_type_params;
+    std::unordered_map<uint32_t, TypePtr> bindings;
+    BodyInstantiation *instantiation = nullptr;
+  };
+
+  /// Lazily load and analyse the origin package's source so codegen can
+  /// emit a generic method body that the origin's compiled .o does not
+  /// contain. The caller supplies the concrete type arguments (positionally
+  /// aligned with the struct's type parameters) so this method can drive
+  /// per-binding body type-checking in the sub-analyzer. Returns
+  /// `decl == nullptr` if the source cannot be located or the requested
+  /// method cannot be found.
+  ImportedMethodDecl
+  load_imported_method_decl(const std::string &origin,
+                             const std::string &struct_name,
+                             const std::string &method_name,
+                             const std::vector<TypePtr> &type_args);
+
+private:
+  /// Return a cached/mock TypePtr for `import_path` if present, or nullopt
+  /// to signal the caller to continue with sgi/source resolution. Returns
+  /// builtins.error_type wrapped in optional on cycle detection.
+  std::optional<TypePtr> resolve_import_cached(const std::string &import_path,
+                                               Span span);
+
+  /// Try loading the import from a pre-compiled .sgi file. Returns the
+  /// constructed module TypePtr on success, nullopt if no .sgi was found.
+  std::optional<TypePtr> load_import_from_sgi(const std::string &import_path);
+
+  /// Parse and analyze the import's source files. Returns the constructed
+  /// module TypePtr on success, builtins.error_type on failure.
+  TypePtr compile_import_from_source(const std::string &import_path,
+                                     Span span);
+
+  /// Build the public-export list from a fully-analyzed sub-package scope.
+  std::vector<ModuleExport>
+  extract_module_exports(const Analyzer &sub_analyzer);
+
+  /// Merge stdlib receiver methods from a sub-analyzer or sgi into our
+  /// own type_methods_ / kind_methods_ tables.
+  void merge_sgi_receiver_methods(const struct SgiFile &sgi);
+  void merge_sub_analyzer_receiver_methods(const Analyzer &sub);
+
+  /// Ensure the origin package's source has been parsed and analysed,
+  /// retaining the sub-analyzer in `loaded_source_packages_` and merging
+  /// its node-keyed tables (node_types/symbols/captures, generic
+  /// templates, …) into ours so codegen can emit specialisations of
+  /// methods that template through the imported struct's type
+  /// parameters. Returns nullptr if the source cannot be located.
+  Analyzer *ensure_source_loaded(const std::string &origin);
+
+public:
 
   // ── Scope helpers ────────────────────────────────────────────────────
 
@@ -446,6 +533,16 @@ private:
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
+
+  // ── check_selector helpers ──────────────────────────────────────────
+  TypePtr resolve_module_selector(const ModuleTypeInfo &mod,
+                                  const std::string &field_name,
+                                  Span field_span);
+  TypePtr resolve_struct_member(const TypePtr &owner_type,
+                                const std::string &field_name,
+                                Span field_span);
+  TypePtr resolve_method_signature(const TypePtr &obj_type,
+                                   const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,

@@ -1,0 +1,8 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  sz := lib.Default.default.name.Bytes().Size()
+  io.Println(sz.String())
+  io.Println(lib.Default.default.name.Upper())
+}

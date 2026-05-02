@@ -502,7 +502,7 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
                << " \"" << n.name.name << "\"\n";
             dump_opt_generic(n.generic, os, c);
             for (const auto &e : n.embeds)
-              dump_identifier(e, os, c);
+              dump_ptr(e, os, c);
             for (const auto &m : n.members)
               dump_struct_member(m, os, c);
           },

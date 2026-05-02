@@ -207,6 +207,11 @@ private:
   CaseArmNode parse_case_arm();
   std::optional<ReceiverNode> parse_receiver();
 
+  /// EmbedName = Identifier [ "." Identifier ]
+  /// Returns IdentifierNode for "Foo" or SelectorNode for "lib.Foo".
+  /// Generic-typed embeds are not yet permitted.
+  NodePtr parse_embed_name();
+
   // ── Module / Program ─────────────────────────────────────────────────
 
   NodePtr parse_package();
