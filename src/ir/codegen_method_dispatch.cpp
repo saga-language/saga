@@ -24,154 +24,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   auto obj_sem = semantic_type(*sel->object);
 
   // ── Module function call: mod.Func(args) ────────────────────────
-  if (obj_sem && obj_sem->kind == TypeKind::Module) {
-    auto &mod = std::get<ModuleTypeInfo>(obj_sem->detail);
-    // Find the export.
-    TypePtr func_type;
-    for (auto &exp : mod.exports) {
-      if (exp.name == method) {
-        func_type = exp.type;
-        break;
-      }
-    }
-    if (!func_type || func_type->kind != TypeKind::Func)
-      return nullptr;
+  if (obj_sem && obj_sem->kind == TypeKind::Module)
+    return emit_module_function_call(node, method, obj_sem);
 
-    auto *callee = declare_import(mod.name, method, func_type);
-    if (!callee)
-      return nullptr;
-
-    auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
-    std::vector<llvm::Value *> args;
-
-    // Sret lowering: if callee returns a struct via sret, alloca the
-    // result struct and pass as the hidden first argument.
-    auto *parent_fn = builder.GetInsertBlock()->getParent();
-    llvm::Value *sret_slot = nullptr;
-    llvm::Type *sret_struct_ty = nullptr;
-    if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
-      sret_struct_ty = callee->getParamStructRetType(0);
-      sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
-      args.push_back(sret_slot);
-    }
-
-    if (fn_info.is_variadic && !fn_info.params.empty()) {
-      // Pack variadic arguments: non-variadic params are emitted
-      // normally, then the remaining args are packed into an saga_runtime_array.
-      size_t fixed_count = fn_info.params.size() - 1;
-      for (size_t i = 0; i < fixed_count && i < node.args.size(); ++i) {
-        auto *val = emit_expr(*node.args[i]);
-        if (val) args.push_back(val);
-      }
-      // Build the variadic array.
-      size_t var_count = node.args.size() > fixed_count
-                             ? node.args.size() - fixed_count : 0;
-      auto *arr = builder.CreateCall(
-          module->getFunction("saga_array_new"),
-          {llvm::ConstantInt::get(i64_type, 8),
-           llvm::ConstantInt::get(i64_type, var_count)}, "varargs");
-      auto *func = builder.GetInsertBlock()->getParent();
-      for (size_t i = 0; i < var_count; ++i) {
-        auto *val = emit_expr(*node.args[fixed_count + i]);
-        if (!val) continue;
-        auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
-        builder.CreateStore(val, tmp);
-        builder.CreateCall(module->getFunction("saga_array_push"),
-                           {arr, tmp});
-      }
-      args.push_back(arr);
-    } else {
-      for (size_t i = 0; i < node.args.size(); ++i) {
-        auto *val = emit_expr(*node.args[i]);
-        if (!val) continue;
-        // If the parameter type is a union but the argument is
-        // concrete, wrap the value into the union struct (yields a ptr
-        // to the union alloca).
-        if (i < fn_info.params.size() &&
-            fn_info.params[i]->kind == TypeKind::Union) {
-          auto arg_sem = semantic_type(*node.args[i]);
-          if (arg_sem && arg_sem->kind != TypeKind::Union) {
-            auto *wrapped = emit_union_wrap(val, arg_sem, fn_info.params[i]);
-            if (wrapped)
-              val = wrapped; // keep as pointer for byval lowering
-          }
-        }
-        // Interface boxing: param expects an interface, arg is a concrete
-        // struct.  Spill struct SSA values, then wrap the struct pointer
-        // in a fat pointer { data, vtable }.
-        if (i < fn_info.params.size() && fn_info.params[i] &&
-            fn_info.params[i]->kind == TypeKind::Interface) {
-          auto arg_sem = semantic_type(*node.args[i]);
-          if (arg_sem && arg_sem->kind == TypeKind::Struct) {
-            llvm::Value *struct_ptr = val;
-            if (val->getType()->isStructTy()) {
-              auto *p_ll = llvm_type(arg_sem);
-              auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill",
-                                               p_ll);
-              builder.CreateStore(val, tmp);
-              struct_ptr = tmp;
-            }
-            auto *boxed = emit_interface_box(struct_ptr, arg_sem,
-                                              fn_info.params[i]);
-            if (boxed)
-              val = boxed;
-          }
-        }
-        // Byval struct/union param: ensure val is a pointer to the
-        // struct/union alloca.  If it's an SSA struct value, spill.
-        if (i < fn_info.params.size() && fn_info.params[i] &&
-            (fn_info.params[i]->kind == TypeKind::Struct ||
-             fn_info.params[i]->kind == TypeKind::Union)) {
-          auto *p_ll = llvm_type(fn_info.params[i]);
-          if (p_ll && p_ll->isStructTy()) {
-            if (val->getType()->isStructTy()) {
-              auto *tmp = create_entry_alloca(parent_fn, "arg.spill",
-                                               p_ll);
-              builder.CreateStore(val, tmp);
-              val = tmp;
-            }
-            // else val is already a pointer to a struct alloca.
-          }
-        }
-        args.push_back(val);
-      }
-    }
-
-    auto *call = builder.CreateCall(callee, args,
-        callee->getReturnType()->isVoidTy() ? "" : "pkg.call");
-
-    // Mirror sret/byval attrs on the call site so LLVM lowers correctly.
-    unsigned idx = 0;
-    if (sret_slot) {
-      call->addParamAttr(idx,
-          llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
-      call->addParamAttr(idx,
-          llvm::Attribute::getWithAlignment(context,
-              module->getDataLayout().getABITypeAlign(sret_struct_ty)));
-      ++idx;
-    }
-    for (size_t i = 0; i < fn_info.params.size(); ++i) {
-      if (fn_info.params[i] &&
-          (fn_info.params[i]->kind == TypeKind::Struct ||
-           fn_info.params[i]->kind == TypeKind::Union)) {
-        auto *p_ll = llvm_type(fn_info.params[i]);
-        if (p_ll && p_ll->isStructTy()) {
-          call->addParamAttr(idx,
-              llvm::Attribute::getWithByValType(context, p_ll));
-          call->addParamAttr(idx,
-              llvm::Attribute::getWithAlignment(context,
-                  module->getDataLayout().getABITypeAlign(p_ll)));
-        }
-      }
-      ++idx;
-    }
-
-    if (sret_slot)
-      return sret_slot;
-    if (callee->getReturnType()->isVoidTy())
-      return nullptr;
-    return call;
-  }
 
   // ── Struct-field function call: r.handler(args) where `handler` is a
   //    field of function type.  Load the fn pointer from the field, then
@@ -932,98 +787,246 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   }
 
   // Interface dynamic dispatch: obj.Method(args) via vtable.
-  if (obj_sem && obj_sem->kind == TypeKind::Interface) {
-    auto &iface_info = std::get<InterfaceTypeInfo>(obj_sem->detail);
-    // key_for falls back to package_name for local types; bare "Error" stays
-    // bare since its origin_package is empty and the built-in uses bare key.
-    std::string iface_key = key_for(iface_info.origin_package, iface_info.name);
+  if (obj_sem && obj_sem->kind == TypeKind::Interface)
+    return emit_interface_dispatch(node, *sel, method, obj_sem, obj);
 
-    auto mn_it = iface_method_names.find(iface_key);
-    auto vt_it = iface_vtable_types.find(iface_key);
-    if (mn_it != iface_method_names.end() &&
-        vt_it != iface_vtable_types.end()) {
-      auto &methods = mn_it->second;
-      auto *vtable_st = vt_it->second;
+  return nullptr;
+}
 
-      // Find the method index.
-      int method_idx = -1;
-      for (size_t i = 0; i < methods.size(); ++i) {
-        if (methods[i] == method) {
-          method_idx = static_cast<int>(i);
-          break;
+// ─────────────────────────────────────────────────────────────────────────
+// Per-callee helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
+                                                const std::string &method,
+                                                const TypePtr &obj_sem) {
+  auto &mod = std::get<ModuleTypeInfo>(obj_sem->detail);
+  TypePtr func_type;
+  for (auto &exp : mod.exports) {
+    if (exp.name == method) {
+      func_type = exp.type;
+      break;
+    }
+  }
+  if (!func_type || func_type->kind != TypeKind::Func)
+    return nullptr;
+
+  auto *callee = declare_import(mod.name, method, func_type);
+  if (!callee)
+    return nullptr;
+
+  auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
+  std::vector<llvm::Value *> args;
+
+  // Sret lowering: if callee returns a struct via sret, alloca the
+  // result struct and pass as the hidden first argument.
+  auto *parent_fn = builder.GetInsertBlock()->getParent();
+  llvm::Value *sret_slot = nullptr;
+  llvm::Type *sret_struct_ty = nullptr;
+  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
+    sret_struct_ty = callee->getParamStructRetType(0);
+    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
+    args.push_back(sret_slot);
+  }
+
+  if (fn_info.is_variadic && !fn_info.params.empty()) {
+    // Pack variadic arguments: non-variadic params are emitted normally,
+    // then the remaining args are packed into a saga_runtime array.
+    size_t fixed_count = fn_info.params.size() - 1;
+    for (size_t i = 0; i < fixed_count && i < node.args.size(); ++i) {
+      auto *val = emit_expr(*node.args[i]);
+      if (val) args.push_back(val);
+    }
+    size_t var_count = node.args.size() > fixed_count
+                           ? node.args.size() - fixed_count : 0;
+    auto *arr = builder.CreateCall(
+        module->getFunction("saga_array_new"),
+        {llvm::ConstantInt::get(i64_type, 8),
+         llvm::ConstantInt::get(i64_type, var_count)}, "varargs");
+    auto *func = builder.GetInsertBlock()->getParent();
+    for (size_t i = 0; i < var_count; ++i) {
+      auto *val = emit_expr(*node.args[fixed_count + i]);
+      if (!val) continue;
+      auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
+      builder.CreateStore(val, tmp);
+      builder.CreateCall(module->getFunction("saga_array_push"),
+                         {arr, tmp});
+    }
+    args.push_back(arr);
+  } else {
+    for (size_t i = 0; i < node.args.size(); ++i) {
+      auto *val = emit_expr(*node.args[i]);
+      if (!val) continue;
+      // Union wrap: param is union, arg is concrete.
+      if (i < fn_info.params.size() &&
+          fn_info.params[i]->kind == TypeKind::Union) {
+        auto arg_sem = semantic_type(*node.args[i]);
+        if (arg_sem && arg_sem->kind != TypeKind::Union) {
+          auto *wrapped = emit_union_wrap(val, arg_sem, fn_info.params[i]);
+          if (wrapped)
+            val = wrapped;
         }
       }
-      if (method_idx >= 0) {
-        // obj is a ptr to saga_runtime_iface { ptr data, ptr vtable }.
-        // Load data and vtable pointers.
-        auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-        // If obj is an identifier, get the alloca for the fat pointer.
-        llvm::Value *fat_ptr = obj;
-        if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
-          auto local_it = locals.find(std::string(id->name));
-          if (local_it != locals.end()) {
-            auto *alloca = local_it->second;
-            if (alloca->getAllocatedType() == iface_fat_ptr_type) {
-              fat_ptr = alloca;
-            } else if (alloca->getAllocatedType()->isPointerTy()) {
-              fat_ptr = builder.CreateLoad(ptr_type, alloca, "fat.load");
-            }
+      // Interface boxing: param expects interface, arg is concrete struct.
+      if (i < fn_info.params.size() && fn_info.params[i] &&
+          fn_info.params[i]->kind == TypeKind::Interface) {
+        auto arg_sem = semantic_type(*node.args[i]);
+        if (arg_sem && arg_sem->kind == TypeKind::Struct) {
+          llvm::Value *struct_ptr = val;
+          if (val->getType()->isStructTy()) {
+            auto *p_ll = llvm_type(arg_sem);
+            auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill",
+                                             p_ll);
+            builder.CreateStore(val, tmp);
+            struct_ptr = tmp;
+          }
+          auto *boxed = emit_interface_box(struct_ptr, arg_sem,
+                                            fn_info.params[i]);
+          if (boxed)
+            val = boxed;
+        }
+      }
+      // Byval struct/union param: pass pointer to alloca, spill SSA values.
+      if (i < fn_info.params.size() && fn_info.params[i] &&
+          (fn_info.params[i]->kind == TypeKind::Struct ||
+           fn_info.params[i]->kind == TypeKind::Union)) {
+        auto *p_ll = llvm_type(fn_info.params[i]);
+        if (p_ll && p_ll->isStructTy()) {
+          if (val->getType()->isStructTy()) {
+            auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+            builder.CreateStore(val, tmp);
+            val = tmp;
           }
         }
+      }
+      args.push_back(val);
+    }
+  }
 
-        auto *data_gep = builder.CreateStructGEP(
-            iface_fat_ptr_type, fat_ptr, 0, "iface.data.ptr");
-        auto *data_ptr = builder.CreateLoad(ptr_type, data_gep, "data");
+  auto *call = builder.CreateCall(callee, args,
+      callee->getReturnType()->isVoidTy() ? "" : "pkg.call");
 
-        auto *vtable_gep = builder.CreateStructGEP(
-            iface_fat_ptr_type, fat_ptr, 1, "iface.vtable.ptr");
-        auto *vtable_ptr = builder.CreateLoad(ptr_type, vtable_gep, "vtable");
+  // Mirror sret/byval attrs on the call site so LLVM lowers correctly.
+  unsigned idx = 0;
+  if (sret_slot) {
+    call->addParamAttr(idx,
+        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
+    call->addParamAttr(idx,
+        llvm::Attribute::getWithAlignment(context,
+            module->getDataLayout().getABITypeAlign(sret_struct_ty)));
+    ++idx;
+  }
+  for (size_t i = 0; i < fn_info.params.size(); ++i) {
+    if (fn_info.params[i] &&
+        (fn_info.params[i]->kind == TypeKind::Struct ||
+         fn_info.params[i]->kind == TypeKind::Union)) {
+      auto *p_ll = llvm_type(fn_info.params[i]);
+      if (p_ll && p_ll->isStructTy()) {
+        call->addParamAttr(idx,
+            llvm::Attribute::getWithByValType(context, p_ll));
+        call->addParamAttr(idx,
+            llvm::Attribute::getWithAlignment(context,
+                module->getDataLayout().getABITypeAlign(p_ll)));
+      }
+    }
+    ++idx;
+  }
 
-        // Load the function pointer from the vtable.
-        auto *fn_gep = builder.CreateStructGEP(
-            vtable_st, vtable_ptr, method_idx, "vfn.ptr");
-        auto *fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "vfn");
+  if (sret_slot)
+    return sret_slot;
+  if (callee->getReturnType()->isVoidTy())
+    return nullptr;
+  return call;
+}
 
-        // Build the function type for the indirect call.
-        // First param is the data pointer (self), then explicit args.
-        std::vector<llvm::Type *> param_ll_types;
-        param_ll_types.push_back(ptr_type); // self
+llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
+                                              const SelectorNode &sel,
+                                              const std::string &method,
+                                              const TypePtr &obj_sem,
+                                              llvm::Value *obj) {
+  auto &iface_info = std::get<InterfaceTypeInfo>(obj_sem->detail);
+  // key_for falls back to package_name for local types; bare "Error" stays
+  // bare since its origin_package is empty and the built-in uses bare key.
+  std::string iface_key = key_for(iface_info.origin_package, iface_info.name);
 
-        std::vector<llvm::Value *> args;
-        args.push_back(data_ptr);
+  auto mn_it = iface_method_names.find(iface_key);
+  auto vt_it = iface_vtable_types.find(iface_key);
+  if (mn_it == iface_method_names.end() ||
+      vt_it == iface_vtable_types.end())
+    return nullptr;
 
-        for (auto &arg_node : node.args) {
-          auto *val = emit_expr(*arg_node);
-          if (val) {
-            args.push_back(val);
-            param_ll_types.push_back(val->getType());
-          }
-        }
+  auto &methods = mn_it->second;
+  auto *vtable_st = vt_it->second;
 
-        // Determine return type from the interface method signature.
-        llvm::Type *ret_ll = void_ll_type;
-        for (auto &im : iface_info.methods) {
-          if (im.name == method && im.signature) {
-            auto &fi = std::get<FuncTypeInfo>(im.signature->detail);
-            if (!fi.returns.empty())
-              ret_ll = llvm_type(fi.returns[0]);
-            break;
-          }
-        }
+  int method_idx = -1;
+  for (size_t i = 0; i < methods.size(); ++i) {
+    if (methods[i] == method) {
+      method_idx = static_cast<int>(i);
+      break;
+    }
+  }
+  if (method_idx < 0)
+    return nullptr;
 
-        auto *fn_type = llvm::FunctionType::get(ret_ll, param_ll_types, false);
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
 
-        if (ret_ll->isVoidTy()) {
-          builder.CreateCall(fn_type, fn_ptr, args);
-          return nullptr;
-        }
-        return builder.CreateCall(fn_type, fn_ptr, args, "iface.call");
+  // If obj is an identifier, get the alloca for the fat pointer.
+  llvm::Value *fat_ptr = obj;
+  if (auto *id = std::get_if<IdentifierNode>(&sel.object->data)) {
+    auto local_it = locals.find(std::string(id->name));
+    if (local_it != locals.end()) {
+      auto *alloca = local_it->second;
+      if (alloca->getAllocatedType() == iface_fat_ptr_type) {
+        fat_ptr = alloca;
+      } else if (alloca->getAllocatedType()->isPointerTy()) {
+        fat_ptr = builder.CreateLoad(ptr_type, alloca, "fat.load");
       }
     }
   }
 
-  return nullptr;
+  auto *data_gep = builder.CreateStructGEP(
+      iface_fat_ptr_type, fat_ptr, 0, "iface.data.ptr");
+  auto *data_ptr = builder.CreateLoad(ptr_type, data_gep, "data");
+
+  auto *vtable_gep = builder.CreateStructGEP(
+      iface_fat_ptr_type, fat_ptr, 1, "iface.vtable.ptr");
+  auto *vtable_ptr = builder.CreateLoad(ptr_type, vtable_gep, "vtable");
+
+  auto *fn_gep = builder.CreateStructGEP(
+      vtable_st, vtable_ptr, method_idx, "vfn.ptr");
+  auto *fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "vfn");
+
+  std::vector<llvm::Type *> param_ll_types;
+  param_ll_types.push_back(ptr_type); // self
+
+  std::vector<llvm::Value *> args;
+  args.push_back(data_ptr);
+
+  for (auto &arg_node : node.args) {
+    auto *val = emit_expr(*arg_node);
+    if (val) {
+      args.push_back(val);
+      param_ll_types.push_back(val->getType());
+    }
+  }
+
+  llvm::Type *ret_ll = void_ll_type;
+  for (auto &im : iface_info.methods) {
+    if (im.name == method && im.signature) {
+      auto &fi = std::get<FuncTypeInfo>(im.signature->detail);
+      if (!fi.returns.empty())
+        ret_ll = llvm_type(fi.returns[0]);
+      break;
+    }
+  }
+
+  auto *fn_type = llvm::FunctionType::get(ret_ll, param_ll_types, false);
+
+  if (ret_ll->isVoidTy()) {
+    builder.CreateCall(fn_type, fn_ptr, args);
+    return nullptr;
+  }
+  return builder.CreateCall(fn_type, fn_ptr, args, "iface.call");
 }
 
 } // namespace saga

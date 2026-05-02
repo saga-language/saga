@@ -492,6 +492,18 @@ private:
   llvm::Value *emit_method_or_module_call(const CallExprNode &node,
                                           const Node &parent);
 
+  // Per-callee helpers used by emit_method_or_module_call. Each handles one
+  // dispatch shape; the dispatcher gates on `obj_sem->kind` (and the struct
+  // discriminator for Task vs user struct) before delegating.
+  llvm::Value *emit_module_function_call(const CallExprNode &node,
+                                         const std::string &method,
+                                         const TypePtr &obj_sem);
+  llvm::Value *emit_interface_dispatch(const CallExprNode &node,
+                                       const SelectorNode &sel,
+                                       const std::string &method,
+                                       const TypePtr &obj_sem,
+                                       llvm::Value *obj);
+
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   /// Promoted-field access (the field lives on an embedded struct) is
   /// resolved here too: a two-step GEP through `__embed_<Name>` is emitted
