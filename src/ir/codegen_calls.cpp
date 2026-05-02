@@ -9,7 +9,7 @@
 #include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/Verifier.h>
 
-namespace mc {
+namespace saga {
 
 // Parse an integer literal (decimal only; for intrinsic argument indices).
 static int64_t parse_int_literal(std::string_view lit) {
@@ -126,7 +126,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     unsigned field_idx = static_cast<unsigned>(parse_int_literal(idx_node->literal));
 
     // The value must be a pointer; determine the backing struct type.
-    // For String (mc_string*), use the string_type struct.
+    // For String (saga_runtime_string*), use the string_type struct.
     auto arg_sem = semantic_type(*node.args[0]);
     llvm::StructType *backing_st = nullptr;
     if (arg_sem && arg_sem->kind == TypeKind::String) {
@@ -343,14 +343,14 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto *num = emit_expr(*node.args[0]);
     auto *arr = emit_expr(*node.args[1]);
 
-    // Load up to 6 elements from the array. mc_array is { i64*, i64, i64 }
+    // Load up to 6 elements from the array. saga_runtime_array is { i64*, i64, i64 }
     // where field 0 = data ptr, field 1 = length.
-    auto *arr_struct = llvm::StructType::getTypeByName(context, "mc_array");
+    auto *arr_struct = llvm::StructType::getTypeByName(context, "saga_runtime_array");
     if (!arr_struct)
       arr_struct = llvm::StructType::create(
           context,
           {llvm::PointerType::getUnqual(context), i64_type, i64_type},
-          "mc_array");
+          "saga_runtime_array");
     auto *data_gep = builder.CreateStructGEP(arr_struct, arr, 0, "arr.data.ptr");
     auto *data_ptr = builder.CreateLoad(
         llvm::PointerType::getUnqual(context), data_gep, "arr.data");
@@ -386,7 +386,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // intrinsic_ptr(value) → load the data pointer from the backing
     // buffer.  The argument is String | [Byte] (a union). We need
     // to extract the payload pointer and then load field 0 of
-    // mc_string (the data pointer).
+    // saga_runtime_string (the data pointer).
     auto *val = emit_expr(*node.args[0]);
     auto arg_sem = semantic_type(*node.args[0]);
     llvm::Value *str_ptr = val;
@@ -611,7 +611,7 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   auto *enclosing_func = builder.GetInsertBlock()->getParent();
 
   // Generate a unique name for this closure.
-  std::string closure_name = "mc.closure." + std::to_string(next_closure_id++);
+  std::string closure_name = "saga.closure." + std::to_string(next_closure_id++);
 
   // ── Look up captured variables ─────────────────────────────────────
   std::vector<Analyzer::CaptureInfo> captures;
@@ -782,7 +782,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   auto *enclosing_func = builder.GetInsertBlock()->getParent();
 
   // Generate a unique name for this spawn's outlined function.
-  std::string spawn_name = "mc.spawn." + std::to_string(next_spawn_id++);
+  std::string spawn_name = "saga.spawn." + std::to_string(next_spawn_id++);
 
   // ── Look up captured variables ─────────────────────────────────────
   std::vector<Analyzer::SpawnCaptureInfo> captures;
@@ -807,7 +807,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
     closure_size = module->getDataLayout().getTypeAllocSize(closure_st);
   }
 
-  // ── Build the outlined function: void(mc_actor*) ───────────────────
+  // ── Build the outlined function: void(saga_runtime_actor*) ───────────────────
   auto *outlined_fn_type = llvm::FunctionType::get(
       void_ll_type, {ptr_type}, false);
   auto *outlined_fn = llvm::Function::Create(
@@ -833,42 +833,42 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
 
   // Unpack closure data from actor->closure_data.
   // The runtime copies the closure struct into the actor's arena, so we
-  // just read it back from the pointer stored in the mc_actor.  However,
+  // just read it back from the pointer stored in the saga_runtime_actor.  However,
   // we don't have the C struct layout in LLVM IR, so the runtime passes
   // the closure_data pointer.  We store it in a local and GEP into the
   // closure struct type.
   //
-  // The mc_actor struct has closure_data at a known offset.  We'll use
-  // a dedicated runtime helper or a fixed byte offset.  Since mc_actor
+  // The saga_runtime_actor struct has closure_data at a known offset.  We'll use
+  // a dedicated runtime helper or a fixed byte offset.  Since saga_runtime_actor
   // is opaque to codegen, we pass the closure_data as the entry arg's
   // associated data.  The runtime stores it in actor->closure_data and
   // the worker loop calls entry(actor).  We load it via:
-  //   closure_data = *(void**)(actor + offsetof(mc_actor, closure_data))
+  //   closure_data = *(void**)(actor + offsetof(saga_runtime_actor, closure_data))
   //
-  // offsetof(mc_actor, closure_data) needs to match the C struct.
-  // mc_actor layout (64-bit): refcount(8) result(8) result_size(8)
+  // offsetof(saga_runtime_actor, closure_data) needs to match the C struct.
+  // saga_runtime_actor layout (64-bit): refcount(8) result(8) result_size(8)
   //   status(8) cancelled(8) lock(40) done_cond(48) arena(8)
   //   entry(8) closure_data(8) ...
   // That's fragile.  Instead, generate a tiny C helper.
   //
-  // Simpler approach: add a runtime function mc_actor_closure_data(actor)
+  // Simpler approach: add a runtime function saga_runtime_actor_closure_data(actor)
   // that returns actor->closure_data.
   //
-  // For now, let's define the offset based on the mc_actor C struct.
-  // A more robust approach: declare mc_actor_closure_data as a runtime fn.
+  // For now, let's define the offset based on the saga_runtime_actor C struct.
+  // A more robust approach: declare saga_runtime_actor_closure_data as a runtime fn.
   //
   // Actually, the cleanest approach: we already have the closure_data
-  // pointer passed via mc_actor_new.  The outlined function receives the
+  // pointer passed via saga_runtime_actor_new.  The outlined function receives the
   // actor*, and the closure_data was memcpy'd into the arena.
   // We need to access it.  Let's add a trivial runtime accessor.
 
   if (closure_st && !captures.empty()) {
-    // Declare or get the accessor: void* mc_actor_get_closure(mc_actor*)
-    auto *accessor = module->getFunction("mc_actor_get_closure");
+    // Declare or get the accessor: void* saga_runtime_actor_get_closure(saga_runtime_actor*)
+    auto *accessor = module->getFunction("saga_runtime_actor_get_closure");
     if (!accessor) {
       accessor = llvm::Function::Create(
           llvm::FunctionType::get(ptr_type, {ptr_type}, false),
-          llvm::Function::ExternalLinkage, "mc_actor_get_closure",
+          llvm::Function::ExternalLinkage, "saga_runtime_actor_get_closure",
           module.get());
     }
 
@@ -994,18 +994,18 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   // Attach channel to actor if present.
   // We need to store ch into actor->channel.  Use a runtime helper.
   if (channel_ptr) {
-    auto *attach_fn = module->getFunction("mc_actor_set_channel");
+    auto *attach_fn = module->getFunction("saga_runtime_actor_set_channel");
     if (!attach_fn) {
       attach_fn = llvm::Function::Create(
           llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
-          llvm::Function::ExternalLinkage, "mc_actor_set_channel",
+          llvm::Function::ExternalLinkage, "saga_runtime_actor_set_channel",
           module.get());
     }
     builder.CreateCall(attach_fn, {actor, channel_ptr});
   }
 
   // ── Store the actor ptr as the Task handle ─────────────────────────
-  // The actor ptr IS the Task — mc_actor* is our runtime Task handle.
+  // The actor ptr IS the Task — saga_runtime_actor* is our runtime Task handle.
   // Store it in a local alloca (caller will bind it via DeclAssign).
 
   // If there's a channel, also store it as a companion local so the
@@ -1092,4 +1092,4 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   return nullptr;
 }
 
-} // namespace mc
+} // namespace saga

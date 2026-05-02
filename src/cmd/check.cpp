@@ -58,12 +58,12 @@ int cmd_check(const char *prog, int argc, char **argv) {
   apply_manifest_deps(prog, fs::current_path().string(), search_paths,
                       sgi_search_paths);
 
-  mc::FileSet fileset;
+  saga::FileSet fileset;
   std::string package_dir = load_sources(source_path, fileset);
   if (package_dir.empty() && fileset.files.empty())
     return 1;
 
-  mc::Parser parser(fileset);
+  saga::Parser parser(fileset);
   auto ast = parser.parse();
   if (!ast) {
     std::cerr << "Error: parse failed\n";
@@ -74,7 +74,7 @@ int cmd_check(const char *prog, int argc, char **argv) {
     return 1;
   }
 
-  mc::Analyzer analyzer(fileset);
+  saga::Analyzer analyzer(fileset);
   setup_analyzer_paths(analyzer, package_dir, search_paths, sgi_search_paths,
                        prog);
   analyzer.analyze(*ast);

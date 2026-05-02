@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // SGI — Saga Interface Files (.sgi)
@@ -158,4 +158,4 @@ std::string type_to_sgi(const TypePtr &t);
 /// Returns nullptr on parse failure.
 TypePtr sgi_to_type(const std::string &text);
 
-} // namespace mc
+} // namespace saga

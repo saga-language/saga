@@ -3,7 +3,7 @@
 
 #include "semantic/builtins.hpp"
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // BuiltinTypes::init
@@ -315,4 +315,4 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       make_func_type({types.string_type}, {types.any_type}, true)));
 }
 
-} // namespace mc
+} // namespace saga

@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace mc {
+namespace saga {
 struct File {
   std::string filename;
   std::string source;
@@ -30,4 +30,4 @@ struct File {
   /// Read a file from disk.  Returns nullptr if the file cannot be opened.
   static std::unique_ptr<File> from_path(const std::string &path);
 };
-} // namespace mc
+} // namespace saga

@@ -6,7 +6,7 @@
 #include "semantic/scope.hpp"
 #include "semantic/types.hpp"
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Built-in type registry
@@ -82,4 +82,4 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
 /// Call once at the start of analysis.
 void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types);
 
-} // namespace mc
+} // namespace saga

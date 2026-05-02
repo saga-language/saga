@@ -7,7 +7,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 
-namespace mc {
+namespace saga {
 TEST(File, FromSource_CreatesFile) {
   std::unique_ptr<File> f = File::from_source("file.txt", "src");
 
@@ -69,4 +69,4 @@ TEST(File, PositionAt_MultiLine_OffsetTen) {
   GTEST_ASSERT_EQ(p.line, 2);
 }
 
-} // namespace mc
+} // namespace saga

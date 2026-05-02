@@ -8,7 +8,7 @@
 
 #include <charconv>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Expression emission
@@ -213,7 +213,7 @@ std::string CodeGen::unescape_fragment(std::string_view raw) {
   return out;
 }
 
-/// Convert an LLVM value to an mc_string* based on its semantic type.
+/// Convert an LLVM value to an saga_runtime_string* based on its semantic type.
 llvm::Value *CodeGen::emit_to_string(llvm::Value *val, const TypePtr &sem) {
   if (!val || !sem)
     return val;
@@ -317,7 +317,7 @@ llvm::Value *CodeGen::make_string_constant(const std::string &text) {
 
   auto *str_global = new llvm::GlobalVariable(
       *module, string_type, true,
-      llvm::GlobalValue::PrivateLinkage, str_const, ".mc_str");
+      llvm::GlobalValue::PrivateLinkage, str_const, ".saga_runtime_str");
   str_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
 
   string_constants[text] = str_global;
@@ -850,4 +850,4 @@ llvm::Value *CodeGen::emit_unary_expr(const UnaryExprNode &node) {
 }
 
 
-} // namespace mc
+} // namespace saga

@@ -10,7 +10,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 
-namespace mc {
+namespace saga {
 
 llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
                                     const Node &parent) {
@@ -141,4 +141,4 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
   return nullptr;
 }
 
-} // namespace mc
+} // namespace saga

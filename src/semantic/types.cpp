@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <sstream>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Factory helpers
@@ -772,4 +772,4 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
   }
 }
 
-} // namespace mc
+} // namespace saga

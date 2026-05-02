@@ -14,7 +14,7 @@
 
 namespace fs = std::filesystem;
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // FNV-1a 64-bit hash
@@ -469,4 +469,4 @@ std::vector<const BuildGraph::Node *> BuildGraph::sorted() const {
   return result;
 }
 
-} // namespace mc
+} // namespace saga

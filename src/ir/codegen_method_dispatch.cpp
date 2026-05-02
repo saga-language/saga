@@ -14,7 +14,7 @@
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Verifier.h>
 
-namespace mc {
+namespace saga {
 
 llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
                                                  const Node &parent) {
@@ -57,7 +57,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
 
     if (fn_info.is_variadic && !fn_info.params.empty()) {
       // Pack variadic arguments: non-variadic params are emitted
-      // normally, then the remaining args are packed into an mc_array.
+      // normally, then the remaining args are packed into an saga_runtime_array.
       size_t fixed_count = fn_info.params.size() - 1;
       for (size_t i = 0; i < fixed_count && i < node.args.size(); ++i) {
         auto *val = emit_expr(*node.args[i]);
@@ -374,7 +374,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   }
 
   // ── Task method calls ─────────────────────────────────────────────
-  // Task is a semantic struct wrapping mc_actor*.  obj is the actor ptr.
+  // Task is a semantic struct wrapping saga_runtime_actor*.  obj is the actor ptr.
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {
     auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
     if (sinfo.name == "Task") {
@@ -424,7 +424,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         auto *status = builder.CreateLoad(i64_type, status_alloca,
                                            "wait.status.val");
         auto *is_ok = builder.CreateICmpEQ(status,
-            llvm::ConstantInt::get(i64_type, /*MC_ACTOR_COMPLETED=*/2),
+            llvm::ConstantInt::get(i64_type, /*SAGA_RUNTIME_ACTOR_COMPLETED=*/2),
             "wait.ok");
 
         auto *bb_ok = llvm::BasicBlock::Create(context, "wait.ok.bb", func);
@@ -954,7 +954,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
       }
       if (method_idx >= 0) {
-        // obj is a ptr to mc_iface { ptr data, ptr vtable }.
+        // obj is a ptr to saga_runtime_iface { ptr data, ptr vtable }.
         // Load data and vtable pointers.
         auto *ptr_type = llvm::PointerType::getUnqual(context);
 
@@ -1026,4 +1026,4 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   return nullptr;
 }
 
-} // namespace mc
+} // namespace saga

@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // BuildGraph — dependency graph for incremental multi-package compilation.
@@ -96,4 +96,4 @@ struct BuildGraph {
   static std::string compute_hash(const std::vector<std::string> &file_paths);
 };
 
-} // namespace mc
+} // namespace saga

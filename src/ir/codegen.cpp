@@ -22,7 +22,7 @@
 #include <charconv>
 #include <format>
 
-namespace mc {
+namespace saga {
 
 bool CodeGen::is_string_key_type(const TypePtr &t) {
   return t && t->kind == TypeKind::String;
@@ -88,7 +88,7 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
       for (auto &r : fi.returns)
         ret_types.push_back(llvm_type(r));
       auto *st = llvm::StructType::create(context, ret_types,
-                                           "mc.ret." + link_name);
+                                           "saga.ret." + link_name);
       multi_return_types[link_name] = st;
       multi_return_counts[link_name] = fi.returns.size();
       ret_ll = st;
@@ -146,20 +146,20 @@ void CodeGen::init_types() {
   i1_type = llvm::Type::getInt1Ty(context);
   void_ll_type = llvm::Type::getVoidTy(context);
 
-  // mc_string = { i8*, i64, i64 }  — data, len, refcount
+  // saga_runtime_string = { i8*, i64, i64 }  — data, len, refcount
   string_type = llvm::StructType::create(
       context,
       {llvm::PointerType::getUnqual(context), i64_type, i64_type},
-      "mc_string");
+      "saga_runtime_string");
 
   // Interface fat pointer: { ptr data, ptr vtable }
   auto *ptr_ty = llvm::PointerType::getUnqual(context);
   iface_fat_ptr_type = llvm::StructType::create(
-      context, {ptr_ty, ptr_ty}, "mc_iface");
+      context, {ptr_ty, ptr_ty}, "saga_runtime_iface");
 
   // Closure fat pointer: { ptr fn, ptr env }
   closure_fat_ptr_type = llvm::StructType::create(
-      context, {ptr_ty, ptr_ty}, "mc_closure");
+      context, {ptr_ty, ptr_ty}, "saga_runtime_closure");
 
   // Register built-in enums with the current package as origin key.
   // key_for("", "Comparison") resolves to mangle(package_name, "Comparison").
@@ -182,7 +182,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   case TypeKind::Bool:
     return i1_type;
   case TypeKind::String:
-    return llvm::PointerType::getUnqual(context); // ptr to mc_string
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_string
   case TypeKind::Void:
     return void_ll_type;
   case TypeKind::Enum:
@@ -199,7 +199,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     } else {
       // Forward declare opaque first; insert before recursing into fields
       // so any self-reference resolves to this same opaque shell.
-      st = llvm::StructType::create(context, "mc." + key);
+      st = llvm::StructType::create(context, "saga." + key);
       struct_types[key] = st;
     }
     // Fill body eagerly using semantic field info, so callers that need
@@ -219,7 +219,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   }
   case TypeKind::Interface:
     // Interfaces are represented as a fat pointer struct.
-    return llvm::PointerType::getUnqual(context); // ptr to mc_iface
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_iface
   case TypeKind::Union: {
     auto *st = get_union_llvm_type(t);
     if (st)
@@ -227,11 +227,11 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return void_ll_type;
   }
   case TypeKind::Array:
-    return llvm::PointerType::getUnqual(context); // ptr to mc_array
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_array
   case TypeKind::Map:
-    return llvm::PointerType::getUnqual(context); // ptr to mc_map
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_map
   case TypeKind::Func:
-    return llvm::PointerType::getUnqual(context); // ptr to mc_closure
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_closure
   case TypeKind::TypeParam:
     // Unresolved generic type parameter (e.g. T in stdlib [T] methods).
     // At runtime, generic values are passed as opaque pointers.
@@ -501,4 +501,4 @@ bool CodeGen::write_object(const std::string &path) {
   return true;
 }
 
-} // namespace mc
+} // namespace saga

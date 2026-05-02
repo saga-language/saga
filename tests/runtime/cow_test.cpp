@@ -4,20 +4,20 @@
 #include <gtest/gtest.h>
 #include <cstring>
 
-/* Helper: allocate a heap mc_string (mimics mc_alloc_string). */
-static mc_string *heap_string(const char *buf, int64_t len) {
+/* Helper: allocate a heap saga_runtime_string (mimics saga_runtime_alloc_string). */
+static saga_runtime_string *heap_string(const char *buf, int64_t len) {
   char *data = (char *)malloc((size_t)len);
   if (len > 0) memcpy(data, buf, (size_t)len);
-  mc_string *s = (mc_string *)malloc(sizeof(mc_string));
+  saga_runtime_string *s = (saga_runtime_string *)malloc(sizeof(saga_runtime_string));
   s->data = data;
   s->len = len;
   s->refcount = 1;
   return s;
 }
 
-/* Helper: allocate a heap mc_array. */
-static mc_array *heap_array(int64_t elem_size, int64_t cap) {
-  mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
+/* Helper: allocate a heap saga_runtime_array. */
+static saga_runtime_array *heap_array(int64_t elem_size, int64_t cap) {
+  saga_runtime_array *arr = (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
   arr->data = malloc((size_t)(elem_size * cap));
   arr->len = 0;
   arr->cap = cap;
@@ -31,11 +31,11 @@ static mc_array *heap_array(int64_t elem_size, int64_t cap) {
 // ─────────────────────────────────────────────────────────────────────────
 
 TEST(CowTest, StringCopyIntoArena) {
-  mc_arena *a = mc_arena_new(0);
-  mc_string *src = heap_string("hello", 5);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_string *src = heap_string("hello", 5);
   saga_retain_string(src); // refcount = 2 (shared)
 
-  mc_string *copy = mc_cow_copy_string(a, src);
+  saga_runtime_string *copy = saga_runtime_cow_copy_string(a, src);
   ASSERT_NE(copy, nullptr);
   EXPECT_NE(copy, src);  // different object
   EXPECT_EQ(copy->len, 5);
@@ -46,35 +46,35 @@ TEST(CowTest, StringCopyIntoArena) {
   EXPECT_EQ(src->refcount, 1);
 
   saga_release_string(src); // free the original
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 TEST(CowTest, StringCopyNullArena) {
-  mc_string *src = heap_string("test", 4);
-  mc_string *result = mc_cow_copy_string(nullptr, src);
+  saga_runtime_string *src = heap_string("test", 4);
+  saga_runtime_string *result = saga_runtime_cow_copy_string(nullptr, src);
   EXPECT_EQ(result, src); // returns original on null arena
   saga_release_string(src);
 }
 
 TEST(CowTest, StringCopyNullSrc) {
-  mc_arena *a = mc_arena_new(0);
-  mc_string *result = mc_cow_copy_string(a, nullptr);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_string *result = saga_runtime_cow_copy_string(a, nullptr);
   EXPECT_EQ(result, nullptr);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 TEST(CowTest, StringCopyEmpty) {
-  mc_arena *a = mc_arena_new(0);
-  mc_string *src = heap_string("", 0);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_string *src = heap_string("", 0);
   saga_retain_string(src);
 
-  mc_string *copy = mc_cow_copy_string(a, src);
+  saga_runtime_string *copy = saga_runtime_cow_copy_string(a, src);
   ASSERT_NE(copy, nullptr);
   EXPECT_EQ(copy->len, 0);
   EXPECT_EQ(copy->refcount, -1);
 
   saga_release_string(src);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -82,8 +82,8 @@ TEST(CowTest, StringCopyEmpty) {
 // ─────────────────────────────────────────────────────────────────────────
 
 TEST(CowTest, ArrayCopyIntoArena) {
-  mc_arena *a = mc_arena_new(0);
-  mc_array *src = heap_array(sizeof(int64_t), 8);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_array *src = heap_array(sizeof(int64_t), 8);
 
   // Push some data.
   for (int64_t i = 0; i < 5; i++) {
@@ -93,7 +93,7 @@ TEST(CowTest, ArrayCopyIntoArena) {
 
   saga_retain_array(src); // refcount = 2
 
-  mc_array *copy = mc_cow_copy_array(a, src);
+  saga_runtime_array *copy = saga_runtime_cow_copy_array(a, src);
   ASSERT_NE(copy, nullptr);
   EXPECT_NE(copy, src);
   EXPECT_EQ(copy->len, 5);
@@ -111,35 +111,35 @@ TEST(CowTest, ArrayCopyIntoArena) {
   EXPECT_EQ(src->refcount, 1);
 
   saga_release_array(src);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 TEST(CowTest, ArrayCopyNullArena) {
-  mc_array *src = heap_array(sizeof(int64_t), 4);
-  mc_array *result = mc_cow_copy_array(nullptr, src);
+  saga_runtime_array *src = heap_array(sizeof(int64_t), 4);
+  saga_runtime_array *result = saga_runtime_cow_copy_array(nullptr, src);
   EXPECT_EQ(result, src);
   saga_release_array(src);
 }
 
 TEST(CowTest, ArrayCopyNullSrc) {
-  mc_arena *a = mc_arena_new(0);
-  mc_array *result = mc_cow_copy_array(a, nullptr);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_array *result = saga_runtime_cow_copy_array(a, nullptr);
   EXPECT_EQ(result, nullptr);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 TEST(CowTest, ArrayCopyEmpty) {
-  mc_arena *a = mc_arena_new(0);
-  mc_array *src = heap_array(sizeof(int64_t), 4);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_array *src = heap_array(sizeof(int64_t), 4);
   saga_retain_array(src);
 
-  mc_array *copy = mc_cow_copy_array(a, src);
+  saga_runtime_array *copy = saga_runtime_cow_copy_array(a, src);
   ASSERT_NE(copy, nullptr);
   EXPECT_EQ(copy->len, 0);
   EXPECT_EQ(copy->refcount, -1);
 
   saga_release_array(src);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -147,29 +147,29 @@ TEST(CowTest, ArrayCopyEmpty) {
 // ─────────────────────────────────────────────────────────────────────────
 
 TEST(CowTest, BarrierSkipsWhenUnique) {
-  mc_arena *a = mc_arena_new(0);
-  mc_string *src = heap_string("unique", 6);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_string *src = heap_string("unique", 6);
   // refcount == 1 (only one owner) — no COW needed.
   // The codegen barrier is: if (refcount > 1) cow_copy else use directly.
   EXPECT_EQ(src->refcount, 1);
   // Simulate: no copy needed, just use src directly.
   EXPECT_EQ(src->len, 6);
   saga_release_string(src);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }
 
 TEST(CowTest, BarrierCopiesWhenShared) {
-  mc_arena *a = mc_arena_new(0);
-  mc_string *src = heap_string("shared", 6);
+  saga_runtime_arena *a = saga_runtime_arena_new(0);
+  saga_runtime_string *src = heap_string("shared", 6);
   saga_retain_string(src); // refcount = 2
 
   // Simulate the barrier: refcount > 1 → copy.
   EXPECT_GT(src->refcount, 1);
-  mc_string *copy = mc_cow_copy_string(a, src);
+  saga_runtime_string *copy = saga_runtime_cow_copy_string(a, src);
   EXPECT_NE(copy, src);
   EXPECT_EQ(copy->refcount, -1);
   EXPECT_EQ(src->refcount, 1); // original now unique
 
   saga_release_string(src);
-  mc_arena_destroy(a);
+  saga_runtime_arena_destroy(a);
 }

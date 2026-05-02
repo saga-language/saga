@@ -11,7 +11,7 @@
 #include <variant>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -325,4 +325,4 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
 /// least one TypeParam node.
 bool has_type_params(const TypePtr &t);
 
-} // namespace mc
+} // namespace saga

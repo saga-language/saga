@@ -6,7 +6,7 @@
 
 #include <llvm/IR/Constants.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // materialize_imports_from_source
@@ -87,7 +87,7 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
         st = exist->second;
         st->setBody(ftypes);
       } else {
-        st = llvm::StructType::create(context, ftypes, "mc." + key);
+        st = llvm::StructType::create(context, ftypes, "saga." + key);
         struct_types[key] = st;
       }
       struct_fields[key] = std::move(fnames);
@@ -197,7 +197,7 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
         method_names.push_back(m.name);
       }
       auto *vtable_st = llvm::StructType::create(context, vtable_fields,
-                                                  "mc.vtable." + key);
+                                                  "saga.vtable." + key);
       iface_vtable_types[key] = vtable_st;
       iface_method_names[key] = std::move(method_names);
       named_sem_types[key] = exp.type;
@@ -215,4 +215,4 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
   }
 }
 
-} // namespace mc
+} // namespace saga

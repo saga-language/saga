@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <string>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // SymbolKind — what a name refers to.
@@ -61,4 +61,4 @@ struct Symbol {
   static Symbol builtin(const std::string &name, SymbolKind kind, TypePtr type);
 };
 
-} // namespace mc
+} // namespace saga

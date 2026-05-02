@@ -7,7 +7,7 @@
 
 #include <algorithm>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Group expression
@@ -645,7 +645,7 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     return builder.CreateLoad(elem_ll, elem_ptr, "elem");
   }
 
-  // Map indexing: map[key] → loads value from mc_map_get.
+  // Map indexing: map[key] → loads value from saga_runtime_map_get.
   if (obj_sem && obj_sem->kind == TypeKind::Map) {
     auto *idx = emit_expr(*node.index);
     if (!idx)
@@ -1040,4 +1040,4 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
 }
 
 
-} // namespace mc
+} // namespace saga

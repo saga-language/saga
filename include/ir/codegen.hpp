@@ -16,7 +16,21 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mc {
+namespace saga {
+
+// Lowered LLVM signature for a Saga method (receiver + params), including
+// any byval/sret aggregate types attached at call boundaries.
+struct MethodSig {
+  llvm::FunctionType *fn_type = nullptr;
+  llvm::Type *sret_struct_ty = nullptr;
+  std::vector<llvm::Type *> byval_struct_tys; // one per regular param
+};
+
+// Stamp argument names onto an already-created LLVM function based on its
+// Saga signature. Pure mechanical helper — does not need CodeGen state.
+void name_method_args(llvm::Function *func, const MethodSig &sig,
+                      const FuncDeclNode &fn,
+                      std::string_view receiver_name);
 
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
@@ -132,7 +146,7 @@ struct CodeGen {
   // ── Spawn support ─────────────────────────────────────────────────────
 
   /// When non-null, we are inside a spawn outlined function.
-  /// Points to the mc_actor* parameter of the outlined function.
+  /// Points to the saga_runtime_actor* parameter of the outlined function.
   llvm::Value *current_actor = nullptr;
 
   /// True if the current module contains any spawn expressions
@@ -261,7 +275,7 @@ private:
     return mangle(origin.empty() ? package_name : origin, name);
   }
 
-  /// True if a semantic type represents string keys (for mc_map).
+  /// True if a semantic type represents string keys (for saga_runtime_map).
   static bool is_string_key_type(const TypePtr &t);
 
   /// Unescape a raw string fragment (strips surrounding quotes, processes
@@ -363,16 +377,8 @@ private:
   /// Build the LLVM FunctionType for a struct method (in-bound or out-bound).
   /// Also applies byval/sret attrs to the supplied function (after Create).
   /// Returns the lowered signature and stamps attributes into `out_attrs`.
-  struct MethodSig {
-    llvm::FunctionType *fn_type = nullptr;
-    llvm::Type *sret_struct_ty = nullptr;
-    std::vector<llvm::Type *> byval_struct_tys; // one per regular param
-  };
   MethodSig build_method_signature(const FuncDeclNode &fn);
   void apply_method_abi_attrs(llvm::Function *func, const MethodSig &sig);
-  void name_method_args(llvm::Function *func, const MethodSig &sig,
-                        const FuncDeclNode &fn,
-                        std::string_view receiver_name);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
@@ -577,7 +583,7 @@ private:
 
   llvm::Value *make_string_constant(const std::string &text);
 
-  /// Convert a value to an mc_string* based on its semantic type.
+  /// Convert a value to an saga_runtime_string* based on its semantic type.
   llvm::Value *emit_to_string(llvm::Value *val, const TypePtr &sem);
 
   // ── Reference counting helpers ───────────────────────────────────────
@@ -595,4 +601,4 @@ private:
   void emit_release_locals();
 };
 
-} // namespace mc
+} // namespace saga

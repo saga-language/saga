@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 TEST(Builtins, TypesInit) {
   BuiltinTypes types;
@@ -231,4 +231,4 @@ TEST(Builtins, MapMethodsOnlyString) {
   EXPECT_EQ(methods[0].name, "String");
 }
 
-} // namespace mc
+} // namespace saga

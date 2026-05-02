@@ -13,7 +13,7 @@
 #include <variant>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Forward declaration — all node types are owned via NodePtr.
@@ -621,4 +621,4 @@ NodePtr make_node(Span span, Args &&...args) {
 // ---------------------------------------------------------------------------
 void dump_ast(const Node &node, std::ostream &os, int indent = 0);
 
-} // namespace mc
+} // namespace saga

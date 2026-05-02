@@ -5,7 +5,7 @@
 
 #include <iostream>
 
-namespace mc {
+namespace saga {
 void ErrorList::report_error(Position p, std::string message) {
   if (!max_reached()) {
     errors.push_back(Error{p, std::move(message)});
@@ -23,4 +23,4 @@ void ErrorList::print_errors(std::ostream &os) const {
     os << "Max errors reached. Further messages suppressed.\n";
   }
 }
-} // namespace mc
+} // namespace saga

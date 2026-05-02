@@ -10,7 +10,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helper — parse source text and run the analyzer, returning both.
@@ -818,4 +818,4 @@ pub fn Main() Void {
     std::cerr << "  " << e.message << "\n";
 }
 
-} // namespace mc
+} // namespace saga

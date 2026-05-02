@@ -36,7 +36,7 @@ namespace fs = std::filesystem;
 struct McpPackage {
   std::string name;
   std::string group; // "std" | "project" | "deps"
-  mc::SgiFile sgi;
+  saga::SgiFile sgi;
 };
 
 static void scan_sgi_dir_mcp(const std::string &dir,
@@ -45,7 +45,7 @@ static void scan_sgi_dir_mcp(const std::string &dir,
   std::error_code ec;
   for (auto &entry : fs::directory_iterator(dir, ec)) {
     if (entry.path().extension() != ".sgi") continue;
-    auto sgi = mc::load_sgi(entry.path().string());
+    auto sgi = saga::load_sgi(entry.path().string());
     if (!sgi) continue;
     McpPackage p;
     p.name  = entry.path().stem().string();
@@ -62,7 +62,7 @@ static std::vector<McpPackage> discover_packages_mcp(const char *prog) {
   if (fs::is_directory(std_sgi))
     scan_sgi_dir_mcp(std_sgi, "std", pkgs);
 
-  auto manifest_path = mc::find_manifest(fs::current_path().string());
+  auto manifest_path = saga::find_manifest(fs::current_path().string());
   if (manifest_path) {
     fs::path build_dir = fs::path(*manifest_path).parent_path() / ".build";
     std::error_code ec;
@@ -221,7 +221,7 @@ static json::Value tool_get_package_docs(const std::vector<McpPackage> &pkgs,
         out += "---\n";
         if (!exp.doc.empty())
           out += exp.doc + "\n";
-        out += std::format("{} {}\n", exp.name, mc::type_to_string(exp.type));
+        out += std::format("{} {}\n", exp.name, saga::type_to_string(exp.type));
       }
     }
     return text_content(out);
@@ -240,7 +240,7 @@ static json::Value tool_get_symbol_docs(const std::vector<McpPackage> &pkgs,
       if (!exp.doc.empty())
         out += exp.doc + "\n\n";
       out += std::format("{}::{} {}\n", pkg.name, exp.name,
-                          mc::type_to_string(exp.type));
+                          saga::type_to_string(exp.type));
       return text_content(out);
     }
     return text_content(
@@ -266,7 +266,7 @@ static json::Value tool_search_docs(const std::vector<McpPackage> &pkgs,
       if (name_lower.find(q) == std::string::npos) continue;
 
       out += std::format("{}::{} {}\n", pkg.name, exp.name,
-                          mc::type_to_string(exp.type));
+                          saga::type_to_string(exp.type));
       if (!exp.doc.empty()) {
         // Show only the first line of the doc comment.
         size_t nl = exp.doc.find('\n');

@@ -8,7 +8,7 @@
 #include "fileset.hpp"
 #include "lexer.hpp"
 
-namespace mc {
+namespace saga {
 struct Parser {
   Lexer lexer;
   FileSet &fileset;
@@ -217,4 +217,4 @@ private:
   NodePtr parse_package();
   NodePtr parse_source();
 };
-} // namespace mc
+} // namespace saga

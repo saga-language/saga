@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <format>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Construction
@@ -4684,4 +4684,4 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
   return true;
 }
 
-} // namespace mc
+} // namespace saga

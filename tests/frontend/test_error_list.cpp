@@ -7,7 +7,7 @@
 #include <gtest/gtest.h>
 #include <sstream>
 
-namespace mc {
+namespace saga {
 
 TEST(ErrorList, ReportError_AppendsError) {
   Position p = {"file.txt", 1, 1};
@@ -80,4 +80,4 @@ TEST(ErrorList, PrintErrors_OutputsMultipleErrors) {
               testing::HasSubstr("[file.txt:1:1] Error: message2\n"));
 }
 
-} // namespace mc
+} // namespace saga

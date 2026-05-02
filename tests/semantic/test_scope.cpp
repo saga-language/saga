@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 TEST(Scope, DeclareAndLookup) {
   auto scope = std::make_shared<Scope>(ScopeKind::Global);
@@ -139,4 +139,4 @@ TEST(Scope, TypeBindingsInnerOverrides) {
   EXPECT_EQ(all[0]->kind, TypeKind::String);
 }
 
-} // namespace mc
+} // namespace saga

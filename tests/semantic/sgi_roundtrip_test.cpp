@@ -15,7 +15,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 namespace {
 
@@ -382,4 +382,4 @@ TEST(SgiRoundtrip, MapReceiverMethodsUseSentinelKV) {
   EXPECT_EQ(std::get<TypeParamInfo>(sig.params[1]->detail).param.id, 9992u);
 }
 
-} // namespace mc
+} // namespace saga

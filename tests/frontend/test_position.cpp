@@ -6,7 +6,7 @@
 #include <format>
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 TEST(Position, Format) {
   Position p = {"file.txt", 1, 2};
@@ -14,4 +14,4 @@ TEST(Position, Format) {
   GTEST_ASSERT_EQ(std::format("{}", p), "file.txt:1:2");
 }
 
-} // namespace mc
+} // namespace saga

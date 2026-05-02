@@ -13,7 +13,7 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Module.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helper — parse + analyze + codegen in one step.
@@ -125,7 +125,7 @@ TEST(CodeGen, ModuleHasCorrectName) {
 
 TEST(CodeGen, StringTypeExists) {
   auto r = CG::from("pub fn Main() Void {}");
-  auto *st = llvm::StructType::getTypeByName(r.mod().getContext(), "mc_string");
+  auto *st = llvm::StructType::getTypeByName(r.mod().getContext(), "saga_runtime_string");
   ASSERT_NE(st, nullptr);
   // { ptr data, i64 len, i64 refcount }
   EXPECT_EQ(st->getNumElements(), 3u);
@@ -145,8 +145,8 @@ TEST(CodeGen, StringConstantEmitted) {
       "pub fn Main() Void {\n"
       "  intrinsic_print(\"hello\")\n"
       "}");
-  // There should be a global named .mc_str.
-  auto *g = r.mod().getNamedGlobal(".mc_str");
+  // There should be a global named .saga_runtime_str.
+  auto *g = r.mod().getNamedGlobal(".saga_runtime_str");
   ASSERT_NE(g, nullptr);
   EXPECT_TRUE(g->isConstant());
 }
@@ -1207,7 +1207,7 @@ TEST(CodeGen, StructTypeCreated) {
       "struct Point { x, y Int }\n"
       "pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc." + CG::mangled("Point"));
+      r.mod().getContext(), "saga." + CG::mangled("Point"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
   EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
@@ -1286,7 +1286,7 @@ TEST(CodeGen, StructMixedFieldTypes) {
       "  u := User{name: \"Alice\", age: 30}\n"
       "}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc." + CG::mangled("User"));
+      r.mod().getContext(), "saga." + CG::mangled("User"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
   // name is ptr (string), age is i64.
@@ -1313,9 +1313,9 @@ TEST(CodeGen, MultipleStructTypes) {
       "struct A { x Int }\n"
       "struct B { y Float }\n"
       "pub fn Main() Void {}");
-  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc." + CG::mangled("A")),
+  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "saga." + CG::mangled("A")),
             nullptr);
-  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "mc." + CG::mangled("B")),
+  EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "saga." + CG::mangled("B")),
             nullptr);
 }
 
@@ -1648,7 +1648,7 @@ TEST(CodeGen, InterpStringVariable) {
 TEST(CodeGen, StringRefcountField) {
   auto r = CG::from("pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc_string");
+      r.mod().getContext(), "saga_runtime_string");
   ASSERT_NE(st, nullptr);
   // { ptr data, i64 len, i64 refcount }
   EXPECT_EQ(st->getNumElements(), 3u);
@@ -1660,7 +1660,7 @@ TEST(CodeGen, StaticStringRefcountMinusOne) {
       "pub fn Main() Void {\n"
       "  intrinsic_print(\"hello\")\n"
       "}");
-  auto *g = r.mod().getNamedGlobal(".mc_str");
+  auto *g = r.mod().getNamedGlobal(".saga_runtime_str");
   ASSERT_NE(g, nullptr);
   auto *init = g->getInitializer();
   ASSERT_NE(init, nullptr);
@@ -2233,7 +2233,7 @@ TEST(CodeGen, MultiReturnStructName) {
       "pub fn Main() Void {}");
   // Should have a named struct type for multi-return.
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.ret." + CG::mangled("Pair"));
+      r.mod().getContext(), "saga.ret." + CG::mangled("Pair"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
 }
@@ -2431,7 +2431,7 @@ TEST(CodeGen, InterfaceVtableTypeCreated) {
       "interface Greeter { Greet() String }\n"
       "pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.vtable." + CG::mangled("Greeter"));
+      r.mod().getContext(), "saga.vtable." + CG::mangled("Greeter"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 1u) << "Vtable should have 1 fn ptr";
   EXPECT_TRUE(st->getElementType(0)->isPointerTy());
@@ -2445,7 +2445,7 @@ TEST(CodeGen, InterfaceVtableMultipleMethods) {
       "}\n"
       "pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc.vtable." + CG::mangled("ReadWriter"));
+      r.mod().getContext(), "saga.vtable." + CG::mangled("ReadWriter"));
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
 }
@@ -2453,7 +2453,7 @@ TEST(CodeGen, InterfaceVtableMultipleMethods) {
 TEST(CodeGen, InterfaceFatPtrTypeExists) {
   auto r = CG::from("pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc_iface");
+      r.mod().getContext(), "saga_runtime_iface");
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u); // { ptr data, ptr vtable }
   EXPECT_TRUE(st->getElementType(0)->isPointerTy());
@@ -2525,7 +2525,7 @@ TEST(CodeGen, VtableGlobalCreated) {
       "  s Speaker = d\n"
       "}");
   // Should have a vtable global for Dog implementing Speaker.
-  auto *vtable = r.mod().getNamedGlobal("mc.vtable." + CG::mangled("Dog") + "." + CG::mangled("Speaker"));
+  auto *vtable = r.mod().getNamedGlobal("saga.vtable." + CG::mangled("Dog") + "." + CG::mangled("Speaker"));
   ASSERT_NE(vtable, nullptr) << "Should create vtable for Dog::Speaker";
   EXPECT_TRUE(vtable->isConstant());
 }
@@ -2995,7 +2995,7 @@ TEST(CodeGen, MapLiteralCreated) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should call mc_map_new.
+  // Should call saga_runtime_map_new.
   bool found = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
@@ -3066,7 +3066,7 @@ TEST(CodeGen, MapIndexAssignment) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should have 2 mc_map_set calls: one from literal, one from assignment.
+  // Should have 2 saga_runtime_map_set calls: one from literal, one from assignment.
   int set_count = 0;
   for (auto &bb : *main)
     for (auto &inst : bb)
@@ -3188,7 +3188,7 @@ TEST(CodeGen, MapForRangeValue) {
     if (bb.getName().starts_with("for.cond"))
       found_cond = true;
   EXPECT_TRUE(found_cond);
-  // Should call mc_map_value_at in the body.
+  // Should call saga_runtime_map_value_at in the body.
   bool found_val_at = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
@@ -3209,7 +3209,7 @@ TEST(CodeGen, MapForRangeKeyValue) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should call both mc_map_key_at and mc_map_value_at.
+  // Should call both saga_runtime_map_key_at and saga_runtime_map_value_at.
   bool found_key = false, found_val = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
@@ -3226,7 +3226,7 @@ TEST(CodeGen, MapForRangeKeyValue) {
 }
 
 TEST(CodeGen, MapMultipleEntries) {
-  // A map with multiple entries should call mc_map_set for each.
+  // A map with multiple entries should call saga_runtime_map_set for each.
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  m := {\"a\": 1, \"b\": 2, \"c\": 3}\n"
@@ -3312,7 +3312,7 @@ TEST(CodeGen, FuncExprGeneratesTrampolineFunction) {
   // Should have a trampoline function (internal linkage).
   bool found = false;
   for (auto &fn : r.mod()) {
-    if (fn.getName().starts_with("mc.closure."))
+    if (fn.getName().starts_with("saga.closure."))
       found = true;
   }
   EXPECT_TRUE(found) << "Should generate a trampoline function for the closure";
@@ -3348,7 +3348,7 @@ TEST(CodeGen, FuncExprWithParams) {
   // The trampoline should have 3 params: env + a + b.
   llvm::Function *tramp = nullptr;
   for (auto &fn : r.mod())
-    if (fn.getName().starts_with("mc.closure."))
+    if (fn.getName().starts_with("saga.closure."))
       tramp = &fn;
   ASSERT_NE(tramp, nullptr);
   EXPECT_EQ(tramp->arg_size(), 3u)
@@ -3385,7 +3385,7 @@ TEST(CodeGen, ClosureCapturesMultipleVars) {
   // The env struct should have 2 fields.
   llvm::StructType *env_st = nullptr;
   for (auto &fn : r.mod()) {
-    if (fn.getName().starts_with("mc.closure.")) {
+    if (fn.getName().starts_with("saga.closure.")) {
       // First param is env ptr.
       // Find the env struct type from GEP instructions in the body.
       for (auto &bb : fn)
@@ -3413,7 +3413,7 @@ TEST(CodeGen, ClosureWithParamsAndCaptures) {
   // Trampoline should have 2 params: env + x.
   llvm::Function *tramp = nullptr;
   for (auto &fn : r.mod())
-    if (fn.getName().starts_with("mc.closure."))
+    if (fn.getName().starts_with("saga.closure."))
       tramp = &fn;
   ASSERT_NE(tramp, nullptr);
   EXPECT_EQ(tramp->arg_size(), 2u);
@@ -3444,7 +3444,7 @@ TEST(CodeGen, ClosureReturnVoid) {
   ASSERT_NE(main, nullptr);
   llvm::Function *tramp = nullptr;
   for (auto &fn : r.mod())
-    if (fn.getName().starts_with("mc.closure."))
+    if (fn.getName().starts_with("saga.closure."))
       tramp = &fn;
   ASSERT_NE(tramp, nullptr);
   EXPECT_TRUE(tramp->getReturnType()->isVoidTy());
@@ -3453,7 +3453,7 @@ TEST(CodeGen, ClosureReturnVoid) {
 TEST(CodeGen, ClosureFatPtrTypeExists) {
   auto r = CG::from("pub fn Main() Void {}");
   auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "mc_closure");
+      r.mod().getContext(), "saga_runtime_closure");
   ASSERT_NE(st, nullptr);
   EXPECT_EQ(st->getNumElements(), 2u);
   EXPECT_TRUE(st->getElementType(0)->isPointerTy());
@@ -3466,7 +3466,7 @@ TEST(CodeGen, ClosureTrampolineHasInternalLinkage) {
       "  f := fn () Int { 1 }\n"
       "}");
   for (auto &fn : r.mod()) {
-    if (fn.getName().starts_with("mc.closure.")) {
+    if (fn.getName().starts_with("saga.closure.")) {
       EXPECT_EQ(fn.getLinkage(), llvm::Function::InternalLinkage)
           << "Closure trampolines should have internal linkage";
     }
@@ -3485,7 +3485,7 @@ TEST(CodeGen, ClosureStringCapture) {
   // The trampoline should call saga_intrinsic_print.
   llvm::Function *tramp = nullptr;
   for (auto &fn : r.mod())
-    if (fn.getName().starts_with("mc.closure."))
+    if (fn.getName().starts_with("saga.closure."))
       tramp = &fn;
   ASSERT_NE(tramp, nullptr);
   bool found_print = false;
@@ -3788,7 +3788,7 @@ TEST(CodeGen, SpawnEmitsOutlinedFunction) {
   // An outlined function should exist (named spawn_entry or similar).
   bool found_outlined = false;
   for (auto &fn : r.mod()) {
-    if (fn.getName().starts_with("mc.spawn."))
+    if (fn.getName().starts_with("saga.spawn."))
       found_outlined = true;
   }
   EXPECT_TRUE(found_outlined);
@@ -4095,7 +4095,7 @@ TEST(CodeGen, StringIntrinsicMethodDeclared) {
       "pub fn Main() Void {}", true);
   auto *func = r.mod().getFunction("test__String__TestSize");
   ASSERT_NE(func, nullptr);
-  // First param is ptr (String = mc_string*), return type is i64.
+  // First param is ptr (String = saga_runtime_string*), return type is i64.
   EXPECT_EQ(func->arg_size(), 1u);
   EXPECT_TRUE(func->getArg(0)->getType()->isPointerTy());
   EXPECT_TRUE(func->getReturnType()->isIntegerTy(64));
@@ -4367,7 +4367,7 @@ TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
       << "Expected saga_channel_new called with elem_size=16 for Msg{Int,String}";
 }
 
-} // namespace mc
+} // namespace saga
 
 
 

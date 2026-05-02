@@ -36,7 +36,7 @@ namespace fs = std::filesystem;
 struct PackageDoc {
   std::string name;        // e.g. "io"
   std::string group;       // e.g. "std", "deps", "project"
-  mc::SgiFile sgi;
+  saga::SgiFile sgi;
 };
 
 // Scan a directory for .sgi files and parse them.
@@ -46,7 +46,7 @@ static void scan_sgi_dir(const std::string &dir,
   std::error_code ec;
   for (auto &entry : fs::directory_iterator(dir, ec)) {
     if (entry.path().extension() != ".sgi") continue;
-    auto sgi = mc::load_sgi(entry.path().string());
+    auto sgi = saga::load_sgi(entry.path().string());
     if (!sgi) continue;
     PackageDoc pd;
     pd.name  = entry.path().stem().string();
@@ -66,7 +66,7 @@ static std::vector<PackageDoc> discover_packages(const char *prog) {
     scan_sgi_dir(std_sgi, "std", pkgs);
 
   // Project .build/<name>/<name>.sgi
-  auto manifest_path = mc::find_manifest(fs::current_path().string());
+  auto manifest_path = saga::find_manifest(fs::current_path().string());
   if (manifest_path) {
     fs::path build_dir = fs::path(*manifest_path).parent_path() / ".build";
     std::error_code ec;
@@ -221,7 +221,7 @@ static std::string render_package(const PackageDoc &pkg) {
     body += "<p><em>No exported symbols.</em></p>";
   } else {
     for (auto &exp : pkg.sgi.exports) {
-      std::string type_str = mc::type_to_string(exp.type);
+      std::string type_str = saga::type_to_string(exp.type);
       body += "<div class='symbol'>"
               "<code>" + html_escape(exp.name) + " " +
               html_escape(type_str) + "</code>";
@@ -265,7 +265,7 @@ static std::string render_search(const std::vector<PackageDoc> &pkgs,
                 "<code><a href='/" + pkg.name + "'>" +
                 html_escape(pkg.name) + "</a>." +
                 html_escape(exp.name) + " " +
-                html_escape(mc::type_to_string(exp.type)) + "</code>";
+                html_escape(saga::type_to_string(exp.type)) + "</code>";
         if (!exp.doc.empty())
           body += "<div class='doc'>" + doc_to_html(exp.doc) + "</div>";
         body += "</div>";

@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <unordered_set>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Type-param collection (used by the writer to decide which params to
@@ -1595,4 +1595,4 @@ bool sgi_needs_init(const SgiFile &sgi) {
   return false;
 }
 
-} // namespace mc
+} // namespace saga

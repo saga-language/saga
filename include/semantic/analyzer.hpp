@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // PackageResolver — resolves import paths to filesystem directories,
@@ -629,4 +629,4 @@ private:
                    const std::string &context = "condition");
 };
 
-} // namespace mc
+} // namespace saga

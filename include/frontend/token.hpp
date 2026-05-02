@@ -5,7 +5,7 @@
 
 #include <string_view>
 
-namespace mc {
+namespace saga {
 struct Token {
   enum class Kind {
     // Special characters
@@ -102,4 +102,4 @@ struct Token {
   std::string_view literal;
   size_t offset;
 };
-} // namespace mc
+} // namespace saga

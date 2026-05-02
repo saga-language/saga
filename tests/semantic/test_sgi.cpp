@@ -12,7 +12,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Type serialization round-trip
@@ -675,4 +675,4 @@ TEST(Sgi, ReceiverMethodsPrivateSkipped) {
   EXPECT_EQ(text.find("privateHelper"), std::string::npos);
 }
 
-} // namespace mc
+} // namespace saga

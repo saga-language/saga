@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -271,4 +271,4 @@ TEST(Generics, InstantiatingGenericStructPreservesMethodOrigin) {
   }
 }
 
-} // namespace mc
+} // namespace saga

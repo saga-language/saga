@@ -7,7 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
-namespace mc {
+namespace saga {
 struct Symbol {
   std::string name;
 };
@@ -20,4 +20,4 @@ struct Scope {
 
   std::optional<Symbol> lookup(const std::string &name) const;
 };
-} // namespace mc
+} // namespace saga

@@ -8,8 +8,8 @@
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
-using mc::Manifest;
-using mc::ManifestDep;
+using saga::Manifest;
+using saga::ManifestDep;
 
 // ---------------------------------------------------------------------------
 // Temp-directory fixture
@@ -313,7 +313,7 @@ TEST_F(ManifestTest, FindDepConst) {
 
 TEST_F(ManifestTest, FindManifestInCurrentDir) {
   write("project.saga", "[package]\nname = \"x\"\nkind = \"binary\"\n");
-  auto found = mc::find_manifest(tmp.string());
+  auto found = saga::find_manifest(tmp.string());
   ASSERT_TRUE(found.has_value());
   EXPECT_EQ(fs::path(*found).filename().string(), "project.saga");
 }
@@ -324,7 +324,7 @@ TEST_F(ManifestTest, FindManifestInParentDir) {
   fs::path sub = tmp / "src" / "nested";
   fs::create_directories(sub);
 
-  auto found = mc::find_manifest(sub.string());
+  auto found = saga::find_manifest(sub.string());
   ASSERT_TRUE(found.has_value());
   EXPECT_EQ(fs::path(*found).parent_path(), tmp);
 }
@@ -332,7 +332,7 @@ TEST_F(ManifestTest, FindManifestInParentDir) {
 TEST_F(ManifestTest, FindManifestNotFound) {
   // No project.saga in tmp or any parent (unlikely, but safe in /tmp).
   // Use a path we know won't have project.saga ancestors.
-  auto found = mc::find_manifest("/");
+  auto found = saga::find_manifest("/");
   EXPECT_FALSE(found.has_value());
 }
 
@@ -345,7 +345,7 @@ TEST(PkgCacheDir, StructureFromRemoteDep) {
   dep.url    = "github.com/user/mathlib";
   dep.commit = "abc123def456";
 
-  auto dir = mc::pkg_cache_dir(dep);
+  auto dir = saga::pkg_cache_dir(dep);
   // Should contain the URL path segments.
   std::string s = dir.string();
   EXPECT_NE(s.find("github.com"), std::string::npos);
@@ -360,7 +360,7 @@ TEST(PkgCacheDir, ShortCommitUsed) {
   dep.url    = "github.com/user/pkg";
   dep.commit = "0123456789abcdef";
 
-  auto dir = mc::pkg_cache_dir(dep);
+  auto dir = saga::pkg_cache_dir(dep);
   // Last component should be first 8 chars of commit.
   EXPECT_EQ(dir.filename().string(), "01234567");
 }
@@ -370,7 +370,7 @@ TEST(PkgCacheDir, EmptyCommitUsesHEAD) {
   dep.url    = "github.com/user/pkg";
   dep.commit = "";
 
-  auto dir = mc::pkg_cache_dir(dep);
+  auto dir = saga::pkg_cache_dir(dep);
   EXPECT_EQ(dir.filename().string(), "HEAD");
 }
 
@@ -379,15 +379,15 @@ TEST(PkgCacheDir, EmptyCommitUsesHEAD) {
 // ===========================================================================
 
 TEST(PkgNameFromUrl, SimpleUrl) {
-  EXPECT_EQ(mc::pkg_name_from_url("github.com/user/mathlib"), "mathlib");
+  EXPECT_EQ(saga::pkg_name_from_url("github.com/user/mathlib"), "mathlib");
 }
 
 TEST(PkgNameFromUrl, StripsGitSuffix) {
-  EXPECT_EQ(mc::pkg_name_from_url("github.com/user/repo.git"), "repo");
+  EXPECT_EQ(saga::pkg_name_from_url("github.com/user/repo.git"), "repo");
 }
 
 TEST(PkgNameFromUrl, NoSlash) {
-  EXPECT_EQ(mc::pkg_name_from_url("mathlib"), "mathlib");
+  EXPECT_EQ(saga::pkg_name_from_url("mathlib"), "mathlib");
 }
 
 // ===========================================================================
@@ -395,25 +395,25 @@ TEST(PkgNameFromUrl, NoSlash) {
 // ===========================================================================
 
 TEST(ParsePkgUrl, NoRef) {
-  auto [url, ref] = mc::parse_pkg_url("github.com/user/pkg");
+  auto [url, ref] = saga::parse_pkg_url("github.com/user/pkg");
   EXPECT_EQ(url, "github.com/user/pkg");
   EXPECT_TRUE(ref.empty());
 }
 
 TEST(ParsePkgUrl, WithBranch) {
-  auto [url, ref] = mc::parse_pkg_url("github.com/user/pkg@main");
+  auto [url, ref] = saga::parse_pkg_url("github.com/user/pkg@main");
   EXPECT_EQ(url, "github.com/user/pkg");
   EXPECT_EQ(ref, "main");
 }
 
 TEST(ParsePkgUrl, WithTag) {
-  auto [url, ref] = mc::parse_pkg_url("github.com/user/pkg@v1.2.3");
+  auto [url, ref] = saga::parse_pkg_url("github.com/user/pkg@v1.2.3");
   EXPECT_EQ(url, "github.com/user/pkg");
   EXPECT_EQ(ref, "v1.2.3");
 }
 
 TEST(ParsePkgUrl, WithCommit) {
-  auto [url, ref] = mc::parse_pkg_url("github.com/user/pkg@abc123def");
+  auto [url, ref] = saga::parse_pkg_url("github.com/user/pkg@abc123def");
   EXPECT_EQ(url, "github.com/user/pkg");
   EXPECT_EQ(ref, "abc123def");
 }

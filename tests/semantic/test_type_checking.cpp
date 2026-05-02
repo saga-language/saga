@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -1432,4 +1432,4 @@ TEST(TypeCheck, TypeAliasMultipleMethods) {
   EXPECT_TRUE(r.ok());
 }
 
-} // namespace mc
+} // namespace saga
