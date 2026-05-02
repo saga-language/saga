@@ -474,10 +474,13 @@ static void write_receiver_methods(std::ostringstream &os,
 std::string generate_sgi(const std::string &package_name,
                           const std::vector<SgiImport> &imports,
                           const std::vector<SgiExport> &exports,
-                          const std::vector<SgiReceiverMethod> &receiver_methods) {
+                          const std::vector<SgiReceiverMethod> &receiver_methods,
+                          const std::string &source_dir) {
   std::ostringstream os;
   os << "sgi " << kSgiVersion << "\n";
   os << "package " << package_name << "\n";
+  if (!source_dir.empty())
+    os << "source_dir \"" << source_dir << "\"\n";
 
   // Imports
   for (auto &imp : imports) {
@@ -575,11 +578,13 @@ std::string generate_sgi(const std::string &package_name,
 bool write_sgi(const std::string &path, const std::string &package_name,
                const std::vector<SgiImport> &imports,
                const std::vector<SgiExport> &exports,
-               const std::vector<SgiReceiverMethod> &receiver_methods) {
+               const std::vector<SgiReceiverMethod> &receiver_methods,
+               const std::string &source_dir) {
   std::ofstream out(path);
   if (!out)
     return false;
-  out << generate_sgi(package_name, imports, exports, receiver_methods);
+  out << generate_sgi(package_name, imports, exports, receiver_methods,
+                      source_dir);
   return out.good();
 }
 
@@ -1420,6 +1425,21 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
     return std::nullopt;
   sgi.package_name = p.read_word();
   p.skip_line();
+
+  // Optional source_dir line — present when the SGI was written by a
+  // build that knows where the .sg sources live; the importer's codegen
+  // uses it to lazily load generic method bodies.
+  p.skip_blank_lines();
+  if (!p.at_end()) {
+    size_t saved = p.pos;
+    std::string maybe = p.read_word();
+    if (maybe == "source_dir") {
+      sgi.source_dir = p.read_quoted();
+      p.skip_line();
+    } else {
+      p.pos = saved;
+    }
+  }
 
   // Parse imports and exports
   while (!p.at_end()) {

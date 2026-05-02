@@ -1006,7 +1006,18 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
   for (size_t i = 0; i < fields.size(); ++i) {
     if (fields[i] == field_name) {
       auto *gep = builder.CreateStructGEP(st, struct_ptr, i, field_name);
-      return {gep, st->getElementType(i)};
+      // Prefer the semantic field type's LLVM lowering so generic
+      // instantiations (e.g. Box<Int>) read/write at the right element
+      // type even when the underlying LLVM struct was emitted with a
+      // ptr-typed slot for the unsubstituted template field. Sizes must
+      // match the slot for this to be safe; aggregate type arguments
+      // wider than a pointer are tracked as P8 tech debt.
+      llvm::Type *field_ll = st->getElementType(i);
+      if (i < info.fields.size() && info.fields[i].type) {
+        if (auto *sem_ll = llvm_type(info.fields[i].type))
+          field_ll = sem_ll;
+      }
+      return {gep, field_ll};
     }
   }
   return {nullptr, nullptr};

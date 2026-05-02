@@ -858,6 +858,14 @@ Analyzer::load_import_from_sgi(const std::string &import_path) {
   package_resolver->cache[import_path] = module_type;
   package_resolver->sgi_resolved_dirs[import_path] =
       fs::path(sgi_path).parent_path().string();
+  if (!sgi->source_dir.empty()) {
+    auto last_slash = import_path.rfind('/');
+    std::string pkg_short = (last_slash != std::string::npos)
+                                ? import_path.substr(last_slash + 1)
+                                : import_path;
+    package_resolver->source_dirs[pkg_short] = sgi->source_dir;
+    package_resolver->source_dirs[import_path] = sgi->source_dir;
+  }
   merge_sgi_receiver_methods(*sgi);
   return module_type;
 }
@@ -1007,6 +1015,16 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
 
   package_resolver->cache[import_path] = module_type;
   package_resolver->in_progress.erase(import_path);
+
+  // Record the source directory under both the short package name and the
+  // full import path so codegen can find generic method bodies later.
+  std::error_code abs_ec;
+  std::string abs_pkg_dir =
+      fs::absolute(pkg_dir, abs_ec).lexically_normal().string();
+  if (!abs_ec) {
+    package_resolver->source_dirs[pkg_name] = abs_pkg_dir;
+    package_resolver->source_dirs[import_path] = abs_pkg_dir;
+  }
   return module_type;
 }
 
@@ -1016,6 +1034,131 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   if (auto from_sgi = load_import_from_sgi(import_path))
     return *from_sgi;
   return compile_import_from_source(import_path, span);
+}
+
+// ===========================================================================
+// Cross-package generic method body loading (D8)
+// ===========================================================================
+
+Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
+  if (origin.empty()) return nullptr;
+  auto it = loaded_source_packages_.find(origin);
+  if (it != loaded_source_packages_.end())
+    return it->second.sub_analyzer.get();
+
+  if (!package_resolver) return nullptr;
+  std::string source_dir;
+  auto dir_it = package_resolver->source_dirs.find(origin);
+  if (dir_it != package_resolver->source_dirs.end())
+    source_dir = dir_it->second;
+  else
+    source_dir = package_resolver->find_package_dir(origin);
+  if (source_dir.empty() || !fs::is_directory(source_dir))
+    return nullptr;
+
+  auto source_files = package_resolver->list_source_files(source_dir);
+  if (source_files.empty())
+    return nullptr;
+
+  auto loaded_fileset = std::make_unique<FileSet>();
+  for (auto &f : source_files) {
+    auto file = File::from_path(f);
+    if (file)
+      loaded_fileset->add_file(std::move(file));
+  }
+  if (loaded_fileset->files.empty())
+    return nullptr;
+
+  Parser sub_parser(*loaded_fileset);
+  auto sub_ast = sub_parser.parse();
+  if (!sub_ast || !sub_parser.errors.errors.empty())
+    return nullptr;
+
+  auto sub_analyzer =
+      std::make_unique<Analyzer>(*loaded_fileset, package_resolver);
+  sub_analyzer->current_package_dir = source_dir;
+  sub_analyzer->analyze(*sub_ast);
+  if (!sub_analyzer->errors.errors.empty())
+    return nullptr;
+
+  auto *sub_ptr = sub_analyzer.get();
+
+  // Merge node-keyed tables. Keys are pointers into the sub-AST that we
+  // hold alive in loaded_source_packages_, so they remain valid for the
+  // lifetime of this analyzer.
+  for (auto &[k, v] : sub_ptr->node_types) node_types.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->node_symbols) node_symbols.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->node_captures) node_captures.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->node_type_args) node_type_args.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->iterable_next_elem_type)
+    iterable_next_elem_type.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->spawn_channel_elem_types)
+    spawn_channel_elem_types.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->spawn_captures) spawn_captures.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->struct_operator_methods)
+    struct_operator_methods.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->generic_templates_)
+    generic_templates_.emplace(k, v);
+  for (auto &[k, v] : sub_ptr->func_decl_by_type_)
+    func_decl_by_type_.emplace(k, v);
+
+  loaded_source_packages_.emplace(
+      origin,
+      LoadedSourcePackage{std::move(loaded_fileset), std::move(sub_ast),
+                          std::move(sub_analyzer)});
+  return sub_ptr;
+}
+
+Analyzer::ImportedMethodDecl
+Analyzer::load_imported_method_decl(const std::string &origin,
+                                     const std::string &struct_name,
+                                     const std::string &method_name,
+                                     const std::vector<TypePtr> &type_args) {
+  ImportedMethodDecl result;
+  auto *sub = ensure_source_loaded(origin);
+  if (!sub || !sub->package_scope_) return result;
+
+  auto sym_it = sub->package_scope_->symbols.find(struct_name);
+  if (sym_it == sub->package_scope_->symbols.end()) return result;
+  auto struct_type = sym_it->second.type;
+  if (!struct_type || struct_type->kind != TypeKind::Struct) return result;
+
+  auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
+  for (auto &m : sinfo.methods) {
+    if (m.name != method_name || !m.signature) continue;
+    auto fd_it = sub->func_decl_by_type_.find(m.signature.get());
+    if (fd_it == sub->func_decl_by_type_.end()) return result;
+    result.decl = fd_it->second;
+    result.template_signature = m.signature;
+    result.struct_type_params = sinfo.type_params;
+    break;
+  }
+  if (!result.decl) return result;
+
+  // Drive body type-checking under the caller's bindings so codegen can
+  // read concrete TypePtrs out of the resulting BodyInstantiation. Bind by
+  // the function's GenericTemplate IDs (which P5's receiver remap aligned
+  // with the struct's type-param IDs).
+  auto tpl_it = sub->generic_templates_.find(result.decl);
+  if (tpl_it != sub->generic_templates_.end()) {
+    auto &tpl_params = tpl_it->second.type_params;
+    size_t n = std::min(tpl_params.size(), type_args.size());
+    for (size_t i = 0; i < n; ++i)
+      result.bindings[tpl_params[i].id] = type_args[i];
+  } else {
+    // Fall back to positional alignment with the struct's type params if
+    // the template wasn't recorded (e.g. non-generic receiver method).
+    size_t n =
+        std::min(result.struct_type_params.size(), type_args.size());
+    for (size_t i = 0; i < n; ++i)
+      result.bindings[result.struct_type_params[i].id] = type_args[i];
+  }
+  if (!result.bindings.empty() && result.decl->body) {
+    result.instantiation =
+        sub->instantiate_generic_body(*result.decl, result.bindings,
+                                       *result.decl->body);
+  }
+  return result;
 }
 
 // ===========================================================================
@@ -1299,6 +1442,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             // so that instantiate_generic_struct can substitute them correctly.
             // e.g. fn |T#5| (b |T#5| Box) Get() T#5  →  Get() T#0 (struct's T)
             TypePtr stored_sig = fn_type;
+            std::unordered_map<uint32_t, uint32_t> id_remap;
             if (!struct_info.type_params.empty() &&
                 gapp->type_args.size() == struct_info.type_params.size()) {
               std::unordered_map<uint32_t, TypePtr> remap;
@@ -1309,11 +1453,28 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                   remap[tp.param.id] =
                       make_type_param(struct_info.type_params[i].id,
                                       struct_info.type_params[i].name);
+                  id_remap[tp.param.id] = struct_info.type_params[i].id;
                 }
               }
               if (!remap.empty())
                 stored_sig = substitute(fn_type, remap);
             }
+            // Apply the same remap to the function's generic_params so that
+            // generic_templates_[&fn] uses struct-aligned IDs. This keeps
+            // bindings derived from the struct (instantiate_generic_struct,
+            // cross-package method specialisation) keyed compatibly with the
+            // GenericTemplate, both for ordered-args lookup in
+            // emit_specialisation and for substitute() over the stored sig.
+            for (auto &gp : generic_params) {
+              auto it = id_remap.find(gp.id);
+              if (it != id_remap.end())
+                gp.id = it->second;
+            }
+            // Also register the struct-aligned signature so that
+            // load_imported_method_decl (which iterates the struct's methods)
+            // can resolve back to this FuncDeclNode.
+            if (stored_sig && stored_sig.get() != fn_type.get())
+              func_decl_by_type_[stored_sig.get()] = &fn;
             struct_info.methods.push_back(
                 {std::string(fn.name.name), stored_sig, fn.is_public,
                  current_package_name()});

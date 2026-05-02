@@ -87,6 +87,11 @@ struct SgiReceiverMethod {
 struct SgiFile {
   int version = 2;
   std::string package_name;
+  /// Absolute path to the directory containing the package's .sg sources.
+  /// Empty if not recorded (e.g. older SGI or stdlib without a registered
+  /// path). Used by the importer's codegen to lazily parse generic method
+  /// bodies that the origin package could not pre-instantiate.
+  std::string source_dir;
   std::vector<SgiImport> imports;
   std::vector<SgiExport> exports;
   std::vector<SgiReceiverMethod> receiver_methods; // stdlib intrinsic methods
@@ -104,17 +109,22 @@ constexpr int kSgiVersion = 2;
 /// `imports` records which packages this package depends on.
 /// `exports` is the list of public symbols to serialize.
 /// `receiver_methods` is the list of intrinsic receiver methods (stdlib only).
+/// `source_dir` is the absolute path to the package's source directory; when
+/// non-empty, the importer can use it to load generic method bodies that
+/// could not be pre-instantiated.
 std::string generate_sgi(const std::string &package_name,
                           const std::vector<SgiImport> &imports,
                           const std::vector<SgiExport> &exports,
-                          const std::vector<SgiReceiverMethod> &receiver_methods = {});
+                          const std::vector<SgiReceiverMethod> &receiver_methods = {},
+                          const std::string &source_dir = "");
 
 /// Write a .sgi file to disk. Returns true on success.
 bool write_sgi(const std::string &path,
                const std::string &package_name,
                const std::vector<SgiImport> &imports,
                const std::vector<SgiExport> &exports,
-               const std::vector<SgiReceiverMethod> &receiver_methods = {});
+               const std::vector<SgiReceiverMethod> &receiver_methods = {},
+               const std::string &source_dir = "");
 
 // ---------------------------------------------------------------------------
 // Reader — parse a .sgi file back into a ModuleType.

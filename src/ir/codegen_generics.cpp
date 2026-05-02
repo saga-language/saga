@@ -132,8 +132,24 @@ std::string CodeGen::mangle_type(const TypePtr &t) const {
 std::string CodeGen::mangle_specialisation(
     const FuncDeclNode &fn,
     const std::vector<TypePtr> &ordered_type_args) const {
-  std::string base = mangle(std::string(fn.name.name));
-  std::string out = "gen__" + base;
+  // For receiver methods, include the receiver struct's name so two
+  // generic methods with the same simple name on different structs do
+  // not collide on a single LinkOnceODR symbol (e.g. Box.Get vs
+  // Container.Get specialised to the same type argument).
+  std::string base(fn.name.name);
+  if (fn.receiver) {
+    std::string recv_name;
+    const auto &type_node = *fn.receiver->type;
+    if (auto *gt = std::get_if<GenericTypeAppNode>(&type_node.data)) {
+      if (gt->base_type)
+        if (auto *id = std::get_if<IdentifierNode>(&gt->base_type->data))
+          recv_name = std::string(id->name);
+    } else if (auto *id = std::get_if<IdentifierNode>(&type_node.data)) {
+      recv_name = std::string(id->name);
+    }
+    if (!recv_name.empty()) base = recv_name + "__" + base;
+  }
+  std::string out = "gen__" + mangle(base);
   for (auto &t : ordered_type_args) {
     out += "__" + mangle_type(t);
   }

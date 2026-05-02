@@ -163,7 +163,12 @@ static bool compile_package(const std::string &source_dir,
   }
   auto receiver_methods = collect_receiver_methods(analyzer);
   std::string sgi_path = output_dir + "/" + pkg_name + ".sgi";
-  if (!mc::write_sgi(sgi_path, pkg_name, imports, exports, receiver_methods)) {
+  std::error_code abs_ec;
+  std::string abs_source_dir =
+      fs::absolute(source_dir, abs_ec).lexically_normal().string();
+  if (abs_ec) abs_source_dir.clear();
+  if (!mc::write_sgi(sgi_path, pkg_name, imports, exports, receiver_methods,
+                     abs_source_dir)) {
     std::cerr << std::format("Error: cannot write interface to '{}'\n",
                              sgi_path);
     return false;
@@ -435,7 +440,15 @@ int cmd_build(const char *prog, int argc, char **argv) {
     auto receiver_methods = collect_receiver_methods(analyzer);
     fs::path op(obj_path);
     std::string sgi_path = (op.parent_path() / op.stem()).string() + ".sgi";
-    if (!mc::write_sgi(sgi_path, module_name, imports, exports, receiver_methods)) {
+    std::string abs_source_dir;
+    if (!package_dir.empty()) {
+      std::error_code abs_ec;
+      abs_source_dir =
+          fs::absolute(package_dir, abs_ec).lexically_normal().string();
+      if (abs_ec) abs_source_dir.clear();
+    }
+    if (!mc::write_sgi(sgi_path, module_name, imports, exports,
+                       receiver_methods, abs_source_dir)) {
       std::cerr << std::format("Error: cannot write interface to '{}'\n",
                                sgi_path);
       return 1;

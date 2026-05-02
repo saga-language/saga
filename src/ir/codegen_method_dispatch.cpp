@@ -723,6 +723,22 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     std::string link_name = mangle(struct_origin, info.name + "__" + method);
     auto *callee = module->getFunction(link_name);
 
+    // Cross-package generic method body emission (D8/P8). When the
+    // struct is an instantiation of a generic from another package,
+    // the origin's compiled .o has no symbol for this method — the
+    // origin never instantiated the generic with the importer's type
+    // arguments. Lazily load the origin's source, find the method
+    // decl, and emit a LinkOnceODR specialisation locally.
+    if (!callee && struct_origin != package_name &&
+        !info.type_args.empty() && !info.type_params.empty()) {
+      auto loaded = analyzer.load_imported_method_decl(
+          struct_origin, info.name, method, info.type_args);
+      if (loaded.decl && loaded.template_signature) {
+        callee = emit_specialisation(*loaded.decl, loaded.template_signature,
+                                      loaded.bindings, loaded.instantiation);
+      }
+    }
+
     // If the method isn't forward-declared yet (shouldn't happen after
     // materialize_import, but guard for non-imported local types), declare it.
     if (!callee) {
