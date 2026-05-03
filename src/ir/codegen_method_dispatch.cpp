@@ -180,13 +180,15 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
 
           llvm::Value *result = builder.CreateCall(callee, args, "kmcall");
 
-          // Unbox: if callee returns ptr but the concrete return type
-          // (after substituting type params) is a scalar, load it.
+          // Unbox: if callee returns ptr (the runtime's slot address) and
+          // the function's declared return type is a TypeParam, dereference
+          // the slot to recover the element value at the concrete type.
+          // Pointer-typed elements (String, Array, Map) also need this
+          // load — the slot stores the pointer itself.
           if (result->getType()->isPointerTy() && m.signature) {
             auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
             if (!fi.returns.empty() &&
                 fi.returns[0]->kind == TypeKind::TypeParam) {
-              // Resolve the concrete type from the receiver.
               TypePtr concrete_ret;
               if (obj_sem->kind == TypeKind::Array) {
                 auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
@@ -201,8 +203,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
               }
               if (concrete_ret) {
                 auto *concrete_ll = llvm_type(concrete_ret);
-                if (!concrete_ll->isPointerTy() &&
-                    !concrete_ll->isVoidTy()) {
+                if (!concrete_ll->isVoidTy()) {
                   result = builder.CreateLoad(concrete_ll, result, "unbox");
                 }
               }

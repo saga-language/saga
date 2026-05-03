@@ -1,0 +1,14 @@
+// Verify Array.Equals: byte-equal element comparison.
+import "std/io"
+
+pub fn Main() Void {
+  a := [1, 2, 3]
+  b := [1, 2, 3]
+  c := [1, 2, 4]
+  d := [1, 2]
+
+  io.Println(a.Equals(b).String())
+  io.Println(a.Equals(c).String())
+  io.Println(a.Equals(d).String())
+  io.Println(a.Equals(a).String())
+}

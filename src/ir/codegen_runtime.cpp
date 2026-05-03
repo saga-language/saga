@@ -51,6 +51,41 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_upper", module.get());
 
+  // saga_runtime_string* saga_string_trim(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_trim", module.get());
+
+  // saga_runtime_string* saga_string_capitalize(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_capitalize", module.get());
+
+  // saga_runtime_string* saga_string_title(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_title", module.get());
+
+  // i64 saga_string_has_prefix(saga_runtime_string* s, saga_runtime_string* prefix)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_has_prefix", module.get());
+
+  // i64 saga_string_has_suffix(saga_runtime_string* s, saga_runtime_string* suffix)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_has_suffix", module.get());
+
+  // i64 saga_string_contains(saga_runtime_string* s, saga_runtime_string* needle)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_contains", module.get());
+
+  // saga_runtime_array* saga_string_split(saga_runtime_string* s, saga_runtime_string* sep)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_split", module.get());
+
   // saga_runtime_array* saga_string_bytes(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
@@ -131,6 +166,11 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {ptr_type, i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_set", module.get());
 
+  // i64 saga_array_equals(saga_runtime_array* a, saga_runtime_array* b)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_array_equals", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -195,6 +235,11 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_keys", module.get());
+
+  // i64 saga_map_equals(saga_runtime_map* a, saga_runtime_map* b)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_equals", module.get());
 
   // void saga_retain_map(saga_runtime_map* m)
   llvm::Function::Create(

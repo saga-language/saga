@@ -29,3 +29,7 @@ pub fn |T| (a [T]) Set(index Int, elem T) Void {
 pub fn |T| (a [T]) Find(elem T) Int | Missing {
   intrinsic_runtime_try("saga_array_find", a, elem)
 }
+
+pub fn |T| (a [T]) Equals(other [T]) Bool {
+  intrinsic_runtime("saga_array_equals", a, other)
+}

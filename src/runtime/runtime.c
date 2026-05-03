@@ -1495,6 +1495,140 @@ saga_runtime_array *saga_string_runes(const saga_runtime_string *s) {
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* String: predicates and substring search                                  */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+int64_t saga_string_has_prefix(const saga_runtime_string *s,
+                               const saga_runtime_string *prefix) {
+  if (!prefix || prefix->len == 0) return 1;
+  if (!s || s->len < prefix->len) return 0;
+  return memcmp(s->data, prefix->data, (size_t)prefix->len) == 0 ? 1 : 0;
+}
+
+int64_t saga_string_has_suffix(const saga_runtime_string *s,
+                               const saga_runtime_string *suffix) {
+  if (!suffix || suffix->len == 0) return 1;
+  if (!s || s->len < suffix->len) return 0;
+  return memcmp(s->data + (s->len - suffix->len), suffix->data,
+                (size_t)suffix->len) == 0 ? 1 : 0;
+}
+
+/* Naive O(n*m) substring search.  Returns the byte offset of the first       */
+/* occurrence, or -1 if absent.                                               */
+static int64_t saga_runtime_string_find(const saga_runtime_string *s,
+                                        const saga_runtime_string *needle) {
+  if (!needle || needle->len == 0) return 0;
+  if (!s || s->len < needle->len) return -1;
+  int64_t last = s->len - needle->len;
+  for (int64_t i = 0; i <= last; i++) {
+    if (memcmp(s->data + i, needle->data, (size_t)needle->len) == 0)
+      return i;
+  }
+  return -1;
+}
+
+int64_t saga_string_contains(const saga_runtime_string *s,
+                             const saga_runtime_string *needle) {
+  return saga_runtime_string_find(s, needle) >= 0 ? 1 : 0;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: trimming and casing                                              */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+static int saga_runtime_is_ascii_space(unsigned char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+         c == '\f';
+}
+
+saga_runtime_string *saga_string_trim(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
+  int64_t start = 0;
+  int64_t end = s->len;
+  while (start < end && saga_runtime_is_ascii_space((unsigned char)s->data[start]))
+    start++;
+  while (end > start && saga_runtime_is_ascii_space((unsigned char)s->data[end - 1]))
+    end--;
+  return saga_runtime_alloc_string(s->data + start, end - start);
+}
+
+saga_runtime_string *saga_string_capitalize(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  unsigned char c0 = (unsigned char)s->data[0];
+  buf[0] = (c0 >= 'a' && c0 <= 'z') ? (char)(c0 - 32) : (char)c0;
+  for (int64_t i = 1; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+  }
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
+saga_runtime_string *saga_string_title(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  int at_word_start = 1;
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (saga_runtime_is_ascii_space(c)) {
+      buf[i] = (char)c;
+      at_word_start = 1;
+    } else if (at_word_start) {
+      buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+      at_word_start = 0;
+    } else {
+      buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+  }
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: split                                                            */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/* Split returns an array of saga_runtime_string* fragments.  An empty       */
+/* separator returns a single-element array containing the input string.     */
+saga_runtime_array *saga_string_split(const saga_runtime_string *s,
+                                      const saga_runtime_string *sep) {
+  saga_runtime_array *arr = saga_array_new_internal(
+      (int64_t)sizeof(saga_runtime_string *), 4);
+  if (!s || s->len == 0) {
+    saga_runtime_string *empty = saga_runtime_alloc_string("", 0);
+    saga_array_push_internal(arr, &empty);
+    return arr;
+  }
+  if (!sep || sep->len == 0) {
+    saga_runtime_string *copy = saga_runtime_alloc_string(s->data, s->len);
+    saga_array_push_internal(arr, &copy);
+    return arr;
+  }
+  /* Back-to-back separators produce empty fragments (matches Go's          */
+  /* strings.Split).                                                         */
+  int64_t start = 0;
+  int64_t i = 0;
+  while (i <= s->len - sep->len) {
+    if (memcmp(s->data + i, sep->data, (size_t)sep->len) == 0) {
+      saga_runtime_string *frag =
+          saga_runtime_alloc_string(s->data + start, i - start);
+      saga_array_push_internal(arr, &frag);
+      i += sep->len;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  saga_runtime_string *tail =
+      saga_runtime_alloc_string(s->data + start, s->len - start);
+  saga_array_push_internal(arr, &tail);
+  return arr;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* String: parsing (try-style: returns 0 on success, non-zero on failure)   */
 /* ───────────────────────────────────────────────────────────────────────── */
 
@@ -1763,6 +1897,20 @@ void saga_array_set(saga_runtime_array *arr, int64_t index, const void *elem) {
   if (!arr || !elem || index < 0 || index >= arr->len) return;
   memcpy((char *)arr->data + arr->elem_size * index, elem,
          (size_t)arr->elem_size);
+}
+
+/* Element-wise byte comparison.  Matches saga_array_find semantics: arrays  */
+/* of strings/structs compare by stored bytes (pointer or aggregate value),  */
+/* not by deep content.                                                      */
+int64_t saga_array_equals(const saga_runtime_array *a,
+                          const saga_runtime_array *b) {
+  if (a == b) return 1;
+  if (!a || !b) return 0;
+  if (a->len != b->len) return 0;
+  if (a->elem_size != b->elem_size) return 0;
+  if (a->len == 0) return 1;
+  return memcmp(a->data, b->data,
+                (size_t)(a->len * a->elem_size)) == 0 ? 1 : 0;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -2146,6 +2294,25 @@ saga_runtime_array *saga_map_keys(saga_runtime_map *m) {
     saga_array_push_internal(arr, m->entries[i].key);
   }
   return arr;
+}
+
+/* Order-independent equality: same size, same key/value layout, every key   */
+/* in `a` exists in `b` with byte-equal values.  Keys are compared via the   */
+/* same path saga_map_get uses, so string keys compare by content.  Values   */
+/* compare by stored bytes — string-valued maps compare by pointer.          */
+int64_t saga_map_equals(saga_runtime_map *a, saga_runtime_map *b) {
+  if (a == b) return 1;
+  if (!a || !b) return 0;
+  if (a->len != b->len) return 0;
+  if (a->key_size != b->key_size) return 0;
+  if (a->val_size != b->val_size) return 0;
+  if (a->is_string_key != b->is_string_key) return 0;
+  for (int64_t i = 0; i < a->len; i++) {
+    void *bv = saga_map_get(b, a->entries[i].key);
+    if (!bv) return 0;
+    if (memcmp(a->entries[i].value, bv, (size_t)a->val_size) != 0) return 0;
+  }
+  return 1;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */

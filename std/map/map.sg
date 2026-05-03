@@ -24,3 +24,7 @@ pub fn |K, V| (m {K:V}) Remove(key K) Void {
 pub fn |K, V| (m {K:V}) Keys() [K] {
   intrinsic_runtime("saga_map_keys", m)
 }
+
+pub fn |K, V| (m {K:V}) Equals(other {K:V}) Bool {
+  intrinsic_runtime("saga_map_equals", m, other)
+}

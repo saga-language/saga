@@ -1,0 +1,42 @@
+// Verify the new String methods: Trim, Capitalize, Title, HasPrefix,
+// HasSuffix, Contains, Split.
+import "std/io"
+
+pub fn Main() Void {
+  // Trim
+  io.Println("[" + "  hello  ".Trim() + "]")
+  io.Println("[" + "\t\nworld\n\t".Trim() + "]")
+  io.Println("[" + "".Trim() + "]")
+
+  // Capitalize
+  io.Println("hello world".Capitalize())
+  io.Println("HELLO".Capitalize())
+
+  // Title
+  io.Println("hello world from saga".Title())
+  io.Println("AlReAdY MiXeD".Title())
+
+  // HasPrefix / HasSuffix
+  io.Println("foobar".HasPrefix("foo").String())
+  io.Println("foobar".HasPrefix("bar").String())
+  io.Println("foobar".HasSuffix("bar").String())
+  io.Println("foobar".HasSuffix("foo").String())
+  io.Println("any".HasPrefix("").String())  // empty prefix is always present
+
+  // Contains
+  io.Println("hello world".Contains("lo wo").String())
+  io.Println("hello world".Contains("xyz").String())
+  io.Println("hello world".Contains("").String())
+
+  // Split
+  parts := "a,b,c,d".Split(",")
+  io.Println(parts.Size().String())
+  io.Println(parts.At(0))
+  io.Println(parts.At(3))
+
+  // Empty fragments at boundaries are preserved.
+  edges := ",x,".Split(",")
+  io.Println(edges.Size().String())
+  io.Println("[" + edges.At(0) + "]")
+  io.Println("[" + edges.At(2) + "]")
+}

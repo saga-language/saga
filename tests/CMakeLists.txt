@@ -76,3 +76,6 @@ add_subdirectory(runtime/generic_aggregate)
 
 # Integer conversion regression tests (exercises Phase 6 sext/zext path).
 add_subdirectory(runtime/integer_conversion)
+
+# Stdlib method coverage (Array.Equals, Map.Equals, string predicates/Split).
+add_subdirectory(runtime/stdlib_methods)
