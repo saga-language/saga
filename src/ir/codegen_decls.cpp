@@ -10,7 +10,7 @@
 
 #include <charconv>
 
-namespace mc {
+namespace saga {
 
 /// Return true if the name refers to a scalar intrinsic type.
 static bool is_intrinsic_type_name(std::string_view name) {
@@ -148,7 +148,7 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
     st = it->second;
     st->setBody(field_types);
   } else {
-    st = llvm::StructType::create(context, field_types, "mc." + key);
+    st = llvm::StructType::create(context, field_types, "saga." + key);
     struct_types[key] = st;
   }
   struct_fields[key] = std::move(field_names);
@@ -289,7 +289,7 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
     if (!std::holds_alternative<StructTypeInfo>(expected->detail))
       return nullptr;
     auto &sinfo = std::get<StructTypeInfo>(expected->detail);
-    std::string skey = key_for(sinfo.origin_package, sinfo.name);
+    std::string skey = struct_cache_key(sinfo);
     auto st_it = struct_types.find(skey);
     if (st_it == struct_types.end()) return nullptr;
     auto *st = st_it->second;
@@ -383,7 +383,7 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
   }
 
   auto *vtable_st = llvm::StructType::create(
-      context, vtable_fields, "mc.vtable." + key);
+      context, vtable_fields, "saga.vtable." + key);
   iface_vtable_types[key] = vtable_st;
   iface_method_names[key] = std::move(method_names);
 
@@ -413,8 +413,7 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
 // Struct method declarations
 // ===========================================================================
 
-CodeGen::MethodSig
-CodeGen::build_method_signature(const FuncDeclNode &fn) {
+MethodSig CodeGen::build_method_signature(const FuncDeclNode &fn) {
   MethodSig sig;
   auto *ptr_type = llvm::PointerType::getUnqual(context);
 
@@ -468,9 +467,9 @@ void CodeGen::apply_method_abi_attrs(llvm::Function *func,
   }
 }
 
-void CodeGen::name_method_args(llvm::Function *func, const MethodSig &sig,
-                               const FuncDeclNode &fn,
-                               std::string_view receiver_name) {
+void name_method_args(llvm::Function *func, const MethodSig &sig,
+                      const FuncDeclNode &fn,
+                      std::string_view receiver_name) {
   unsigned aidx = 0;
   if (sig.sret_struct_ty)
     func->getArg(aidx++)->setName("sret.out");
@@ -945,4 +944,4 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
   }
 }
 
-} // namespace mc
+} // namespace saga

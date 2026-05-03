@@ -644,6 +644,37 @@ name := map["name"] or {} // name == "jane" but would default to an empty string
 email := map["email"] or { "unknown" } // defaults to "unknown"
 ```
 
+### `arr[i]` vs `arr.At(i)`
+
+**Default to `arr[i]`.** It is the canonical, recommended way to read an
+element of an array or map. It returns `T | Error` and the compiler
+forces you to resolve the error with `or`, which keeps out-of-bounds
+bugs out of the language by construction. ~90% of indexed accesses in
+real Saga code should use this form.
+
+```
+arr := [10, 20, 30]
+
+n := arr[idx] or { 0 }                  // resolve to a default
+v := arr[idx] or |err| { return err }   // propagate the error
+i := arr[99] or {}                      // shorthand: zero value of T
+```
+
+`arr.At(i)` is an escape hatch. It returns `T` directly and does not
+involve the error type, so the caller assumes responsibility for the
+index being in bounds — out-of-range access is undefined behaviour at
+the language level (the runtime currently traps the actor, but do not
+rely on that). Reach for it only when the `or` clause is genuinely
+adding noise without adding safety:
+
+- A tight inner loop where profiling has shown the error union is the
+  bottleneck.
+- A small, local proof-by-construction that the index is in range and
+  the `or` clause would be unreachable noise.
+
+Even then, prefer iterating directly (`for x : arr`) over indexing.
+`At()` should be a last resort, not a habit.
+
 ## Strings
 
 Strings behave like most language. They're wrapped in double quotes and can

@@ -6,7 +6,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
 
-namespace mc {
+namespace saga {
 
 
 // ===========================================================================
@@ -54,7 +54,7 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
     for (auto &r : fn.signature.returns)
       ret_fields.push_back(resolve_type_node(*r));
     auto *st = llvm::StructType::create(context, ret_fields,
-                                        "mc.ret." + link_name);
+                                        "saga.ret." + link_name);
     multi_return_types[link_name] = st;
     multi_return_counts[link_name] = fn.signature.returns.size();
     ret_type = st;
@@ -67,7 +67,7 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   if (!is_main) {
     for (auto &param : fn.signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
-      // Variadic params are arrays at the LLVM level (ptr to mc_array).
+      // Variadic params are arrays at the LLVM level (ptr to saga_runtime_array).
       if (param.is_variadic)
         ll_type = llvm::PointerType::getUnqual(context);
       // Struct params: byval lowering.  At the LLVM level the param slot
@@ -426,7 +426,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       auto sem = semantic_type(**node.init);
       if (val && sem && sem->kind == TypeKind::Struct) {
         auto &sinfo = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = key_for(sinfo.origin_package, sinfo.name);
+        std::string skey = struct_cache_key(sinfo);
         auto st_it = struct_types.find(skey);
         if (st_it != struct_types.end()) {
           auto *st_type = st_it->second;
@@ -531,7 +531,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct) {
       // Struct zero value: allocate struct, zero-initialize all fields.
       auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
-      std::string skey = key_for(info.origin_package, info.name);
+      std::string skey = struct_cache_key(info);
       auto st_it = struct_types.find(skey);
       if (st_it != struct_types.end()) {
         auto *st_type = st_it->second;
@@ -615,7 +615,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       auto sem = semantic_type(*node.value);
       if (val && sem && sem->kind == TypeKind::Struct) {
         auto &sinfo = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = key_for(sinfo.origin_package, sinfo.name);
+        std::string skey = struct_cache_key(sinfo);
         auto st_it = struct_types.find(skey);
         if (st_it != struct_types.end()) {
           auto *st_type = st_it->second;
@@ -696,7 +696,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
         builder.CreateCall(set_fn, {obj, key_tmp, val_tmp});
       } else if (obj_sem && obj_sem->kind == TypeKind::Array) {
         // Array index assignment: arr[idx] = rhs
-        // TODO: implement mc_array_set when available
+        // TODO: implement saga_runtime_array_set when available
       }
       continue;
     }
@@ -925,4 +925,4 @@ void CodeGen::emit_decrement(const DecrementNode &node) {
 }
 
 
-} // namespace mc
+} // namespace saga

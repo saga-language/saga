@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -663,16 +663,57 @@ TEST(TypeCheck, CharTypeExists) {
 }
 
 TEST(TypeCheck, CharNotDirectlyAssignableFromInt) {
-  // Int and Char are different integer types (signed vs unsigned, different
-  // bit widths).  Per the spec, types must be converted, not cast.
-  auto r = TC::from("fn f() {\n  c Char = 65\n}");
-  EXPECT_FALSE(r.ok()) << "Int should not be directly assignable to Char";
+  // A *typed* Int variable is not directly assignable to Char — even
+  // though both are integer kinds, narrowing requires a conversion.
+  // (A bare integer literal is "untyped" and may flow into any integer
+  // width; that case is exercised separately.)
+  auto r = TC::from("fn f() {\n  x := 65\n  c Char = x\n}");
+  EXPECT_FALSE(r.ok()) << "typed Int should not be directly assignable to Char";
   EXPECT_TRUE(r.has_err("variable initializer"));
 }
 
 TEST(TypeCheck, IntCharConversion) {
   auto r = TC::from("fn f() {\n  x := 65\n  x.Char()\n}");
   EXPECT_TRUE(r.ok()) << "Int should have a .Char() method";
+}
+
+// ===========================================================================
+// Untyped integer literal coercion (Phase 6a)
+// ===========================================================================
+
+TEST(TypeCheck, IntLiteralAssignsToNarrowInt) {
+  // Bare literal flows into a narrow Int annotation.
+  auto r = TC::from("fn f() {\n  x Int64 = 5\n  y Int32 = 7\n  z Int8 = 1\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntLiteralPassesAsNarrowParam) {
+  auto r = TC::from(
+      "fn Take(n Int32) {}\n"
+      "fn f() { Take(7) }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntLiteralBinaryOpWithNarrowInt) {
+  // `x + 5` keeps x's narrow Int width when 5 is an untyped literal.
+  auto r = TC::from(
+      "fn f() {\n  x Int32 = 1\n  y Int32 = x + 5\n}");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, IntLiteralInStructFieldOfNarrowInt) {
+  auto r = TC::from(
+      "struct Header { len Int32 }\n"
+      "fn f() { h := Header{len: 42} }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypedIntNotAssignableToNarrowInt) {
+  // Without an explicit annotation `:=` materializes to plain Int, which
+  // is then *not* implicitly assignable to a narrower width.
+  auto r = TC::from("fn f() {\n  x := 5\n  y Int32 = x\n}");
+  EXPECT_FALSE(r.ok());
+  EXPECT_TRUE(r.has_err("variable initializer"));
 }
 
 // ===========================================================================
@@ -1432,4 +1473,4 @@ TEST(TypeCheck, TypeAliasMultipleMethods) {
   EXPECT_TRUE(r.ok());
 }
 
-} // namespace mc
+} // namespace saga

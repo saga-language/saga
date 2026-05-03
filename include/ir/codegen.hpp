@@ -16,7 +16,21 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mc {
+namespace saga {
+
+// Lowered LLVM signature for a Saga method (receiver + params), including
+// any byval/sret aggregate types attached at call boundaries.
+struct MethodSig {
+  llvm::FunctionType *fn_type = nullptr;
+  llvm::Type *sret_struct_ty = nullptr;
+  std::vector<llvm::Type *> byval_struct_tys; // one per regular param
+};
+
+// Stamp argument names onto an already-created LLVM function based on its
+// Saga signature. Pure mechanical helper — does not need CodeGen state.
+void name_method_args(llvm::Function *func, const MethodSig &sig,
+                      const FuncDeclNode &fn,
+                      std::string_view receiver_name);
 
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
@@ -132,7 +146,7 @@ struct CodeGen {
   // ── Spawn support ─────────────────────────────────────────────────────
 
   /// When non-null, we are inside a spawn outlined function.
-  /// Points to the mc_actor* parameter of the outlined function.
+  /// Points to the saga_runtime_actor* parameter of the outlined function.
   llvm::Value *current_actor = nullptr;
 
   /// True if the current module contains any spawn expressions
@@ -219,6 +233,12 @@ struct CodeGen {
                                   const std::string &symbol_name,
                                   const TypePtr &func_type);
 
+  /// Forward-declare a struct method by link name, lowering its FuncTypeInfo
+  /// with the standard sret/byval ABI plus an implicit `self` pointer.
+  /// Returns the existing function if one with the same name already exists.
+  llvm::Function *forward_declare_method(const std::string &link_name,
+                                          const FuncTypeInfo &fi);
+
   /// Eagerly populate all codegen registries for every export of an
   /// imported module.  Must be called before any declare_structs/
   /// declare_functions/etc. pass walks the local source AST.
@@ -261,7 +281,16 @@ private:
     return mangle(origin.empty() ? package_name : origin, name);
   }
 
-  /// True if a semantic type represents string keys (for mc_map).
+  /// Canonical LLVM-struct cache key for a struct semantic type. Templates
+  /// (no concrete type args) key as `(origin, name)`. Instantiations append
+  /// `<arg1,arg2,...>` so each instantiation gets its own LLVM struct sized
+  /// for its substituted fields.  Without this, a generic struct holding an
+  /// aggregate type argument wider than a pointer would lower to a slot
+  /// sized for the template's `ptr`, corrupting adjacent memory on field
+  /// store.
+  std::string struct_cache_key(const StructTypeInfo &info) const;
+
+  /// True if a semantic type represents string keys (for saga_runtime_map).
   static bool is_string_key_type(const TypePtr &t);
 
   /// Unescape a raw string fragment (strips surrounding quotes, processes
@@ -363,16 +392,8 @@ private:
   /// Build the LLVM FunctionType for a struct method (in-bound or out-bound).
   /// Also applies byval/sret attrs to the supplied function (after Create).
   /// Returns the lowered signature and stamps attributes into `out_attrs`.
-  struct MethodSig {
-    llvm::FunctionType *fn_type = nullptr;
-    llvm::Type *sret_struct_ty = nullptr;
-    std::vector<llvm::Type *> byval_struct_tys; // one per regular param
-  };
   MethodSig build_method_signature(const FuncDeclNode &fn);
   void apply_method_abi_attrs(llvm::Function *func, const MethodSig &sig);
-  void name_method_args(llvm::Function *func, const MethodSig &sig,
-                        const FuncDeclNode &fn,
-                        std::string_view receiver_name);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
@@ -469,7 +490,8 @@ private:
                                       llvm::Value *iterable,
                                       const TypePtr &iter_sem,
                                       const ForLoopBlocks &bbs);
-  llvm::Value *emit_struct_literal(const StructLiteralNode &node);
+  llvm::Value *emit_struct_literal(const StructLiteralNode &node,
+                                   const Node &parent);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
@@ -485,6 +507,18 @@ private:
   // codegen_method_dispatch.cpp; call only when the callee is a selector.
   llvm::Value *emit_method_or_module_call(const CallExprNode &node,
                                           const Node &parent);
+
+  // Per-callee helpers used by emit_method_or_module_call. Each handles one
+  // dispatch shape; the dispatcher gates on `obj_sem->kind` (and the struct
+  // discriminator for Task vs user struct) before delegating.
+  llvm::Value *emit_module_function_call(const CallExprNode &node,
+                                         const std::string &method,
+                                         const TypePtr &obj_sem);
+  llvm::Value *emit_interface_dispatch(const CallExprNode &node,
+                                       const SelectorNode &sel,
+                                       const std::string &method,
+                                       const TypePtr &obj_sem,
+                                       llvm::Value *obj);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   /// Promoted-field access (the field lives on an embedded struct) is
@@ -577,7 +611,7 @@ private:
 
   llvm::Value *make_string_constant(const std::string &text);
 
-  /// Convert a value to an mc_string* based on its semantic type.
+  /// Convert a value to an saga_runtime_string* based on its semantic type.
   llvm::Value *emit_to_string(llvm::Value *val, const TypePtr &sem);
 
   // ── Reference counting helpers ───────────────────────────────────────
@@ -595,4 +629,4 @@ private:
   void emit_release_locals();
 };
 
-} // namespace mc
+} // namespace saga

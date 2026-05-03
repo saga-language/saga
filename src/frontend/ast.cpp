@@ -6,7 +6,7 @@
 #include <ostream>
 #include <string>
 
-namespace mc {
+namespace saga {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -541,4 +541,4 @@ void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
 }
 
-} // namespace mc
+} // namespace saga

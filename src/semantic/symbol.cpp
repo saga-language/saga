@@ -3,7 +3,7 @@
 
 #include "semantic/symbol.hpp"
 
-namespace mc {
+namespace saga {
 
 Symbol Symbol::variable(const std::string &name, TypePtr type, Span span,
                         bool is_public) {
@@ -62,4 +62,4 @@ Symbol Symbol::builtin(const std::string &name, SymbolKind kind,
   return Symbol{name, kind, std::move(type), {0, 0}, true, false, true};
 }
 
-} // namespace mc
+} // namespace saga

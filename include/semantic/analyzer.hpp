@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // PackageResolver — resolves import paths to filesystem directories,
@@ -112,6 +112,13 @@ struct Analyzer {
 
   /// The directory of the package currently being analyzed (for relative imports).
   std::string current_package_dir;
+
+  /// Authoritative name of the package currently being analyzed.  Set by
+  /// the build driver from the manifest or import path.  When empty,
+  /// current_package_name() falls back to the basename of
+  /// current_package_dir; new call sites should prefer setting this
+  /// explicitly so package identity is not bound to filesystem layout.
+  std::string current_package_name_override;
 
   /// True when compiling a stdlib package (permits intrinsic_* calls and
   /// receiver methods on intrinsic types).
@@ -341,7 +348,10 @@ private:
 
   /// Try loading the import from a pre-compiled .sgi file. Returns the
   /// constructed module TypePtr on success, nullopt if no .sgi was found.
-  std::optional<TypePtr> load_import_from_sgi(const std::string &import_path);
+  /// On parse failure, emits a diagnostic at `span` and returns nullopt
+  /// without falling through to source compilation.
+  std::optional<TypePtr> load_import_from_sgi(const std::string &import_path,
+                                               Span span);
 
   /// Parse and analyze the import's source files. Returns the constructed
   /// module TypePtr on success, builtins.error_type on failure.
@@ -629,4 +639,4 @@ private:
                    const std::string &context = "condition");
 };
 
-} // namespace mc
+} // namespace saga

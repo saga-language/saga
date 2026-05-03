@@ -13,7 +13,7 @@
 #include <string>
 
 namespace fs = std::filesystem;
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Minimal TOML-subset parser
@@ -316,4 +316,4 @@ std::pair<std::string, std::string> parse_pkg_url(const std::string &raw) {
   return {raw.substr(0, at), raw.substr(at + 1)};
 }
 
-} // namespace mc
+} // namespace saga

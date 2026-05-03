@@ -8,7 +8,7 @@
 #include <gtest/gtest.h>
 
 namespace fs = std::filesystem;
-using mc::BuildGraph;
+using saga::BuildGraph;
 
 // ---------------------------------------------------------------------------
 // Temp directory fixture — creates a clean dir per test, removes on teardown.

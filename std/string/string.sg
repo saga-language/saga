@@ -1,24 +1,52 @@
 // Package string provides methods on the String intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-pub fn (self String) String() String {
-  self
+pub fn (s String) String() String {
+  s
 }
 
-pub fn (self String) Size() Int {
-  intrinsic_field(self, 1)
+pub fn (s String) Size() Int {
+  intrinsic_field(s, 1)
 }
 
-pub fn (self String) Lower() String {
-  intrinsic_runtime("saga_string_lower", self)
+pub fn (s String) Lower() String {
+  intrinsic_runtime("saga_string_lower", s)
 }
 
-pub fn (self String) Upper() String {
-  intrinsic_runtime("saga_string_upper", self)
+pub fn (s String) Upper() String {
+  intrinsic_runtime("saga_string_upper", s)
 }
 
-pub fn (self String) Compare(other String) Comparison {
-  v := intrinsic_runtime("saga_string_compare", self, other)
+pub fn (s String) Trim() String {
+  intrinsic_runtime("saga_string_trim", s)
+}
+
+pub fn (s String) Capitalize() String {
+  intrinsic_runtime("saga_string_capitalize", s)
+}
+
+pub fn (s String) Title() String {
+  intrinsic_runtime("saga_string_title", s)
+}
+
+pub fn (s String) HasPrefix(prefix String) Bool {
+  intrinsic_runtime("saga_string_has_prefix", s, prefix)
+}
+
+pub fn (s String) HasSuffix(suffix String) Bool {
+  intrinsic_runtime("saga_string_has_suffix", s, suffix)
+}
+
+pub fn (s String) Contains(needle String) Bool {
+  intrinsic_runtime("saga_string_contains", s, needle)
+}
+
+pub fn (s String) Split(sep String) [String] {
+  intrinsic_runtime("saga_string_split", s, sep)
+}
+
+pub fn (s String) Compare(other String) Comparison {
+  v := intrinsic_runtime("saga_string_compare", s, other)
   if v < 0 {
     Comparison.Less
   } else {
@@ -27,30 +55,30 @@ pub fn (self String) Compare(other String) Comparison {
   }
 }
 
-pub fn (self String) Equals(other String) Bool {
-  intrinsic_runtime("saga_string_compare", self, other) == 0
+pub fn (s String) Equals(other String) Bool {
+  intrinsic_runtime("saga_string_compare", s, other) == 0
 }
 
-pub fn (self String) Bytes() [Byte] {
-  intrinsic_runtime("saga_string_bytes", self)
+pub fn (s String) Bytes() [Byte] {
+  intrinsic_runtime("saga_string_bytes", s)
 }
 
-pub fn (self String) Count() Int {
-  intrinsic_runtime("saga_string_count", self)
+pub fn (s String) Count() Int {
+  intrinsic_runtime("saga_string_count", s)
 }
 
-pub fn (self String) Runes() [Int32] {
-  intrinsic_runtime("saga_string_runes", self)
+pub fn (s String) Runes() [Int32] {
+  intrinsic_runtime("saga_string_runes", s)
 }
 
-pub fn (self String) Format(fmt String) String {
-  intrinsic_runtime("saga_string_format", self, fmt)
+pub fn (s String) Format(fmt String) String {
+  intrinsic_runtime("saga_string_format", s, fmt)
 }
 
-pub fn (self String) Int() Int | Error {
-  intrinsic_runtime_try("saga_string_to_int", self)
+pub fn (s String) Int() Int | Error {
+  intrinsic_runtime_try("saga_string_to_int", s)
 }
 
-pub fn (self String) Float() Float | Error {
-  intrinsic_runtime_try("saga_string_to_float", self)
+pub fn (s String) Float() Float | Error {
+  intrinsic_runtime_try("saga_string_to_float", s)
 }

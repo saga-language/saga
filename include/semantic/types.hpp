@@ -11,7 +11,7 @@
 #include <variant>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -65,6 +65,12 @@ struct BoolType {};
 struct IntType {
   uint8_t bits;          // 8, 16, 32, 64; 0 = platform word size (Int)
   bool is_signed;        // false for Uint variants and Byte
+  // True for the type of a bare integer literal (e.g. `42`). Such a value
+  // is assignable to any integer type whose range contains it; once it
+  // enters a typed context it materializes at the target's width.  Always
+  // appears with bits=0, is_signed=true.  Ignored by types_equal so it
+  // unifies with plain Int for nominal queries.
+  bool is_untyped = false;
 };
 
 struct FloatType {
@@ -206,7 +212,17 @@ struct Type {
 
 TypePtr make_void_type();
 TypePtr make_bool_type();
-TypePtr make_int_type(uint8_t bits = 0, bool is_signed = true);
+TypePtr make_int_type(uint8_t bits = 0, bool is_signed = true,
+                      bool is_untyped = false);
+
+/// Construct the "untyped integer literal" type — the type of a bare
+/// integer literal before context-driven materialization.
+TypePtr make_untyped_int_type();
+
+/// If `t` is the untyped integer literal type, return plain `Int`.
+/// Used at materialization points (`:=` and `var x = ...` without an
+/// explicit type) so a stored variable carries a concrete width.
+TypePtr materialize_untyped(const TypePtr &t);
 TypePtr make_float_type(uint8_t bits = 0);
 TypePtr make_string_type();
 TypePtr make_error_type();
@@ -325,4 +341,4 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
 /// least one TypeParam node.
 bool has_type_params(const TypePtr &t);
 
-} // namespace mc
+} // namespace saga

@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <format>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Construction
@@ -29,6 +29,8 @@ Analyzer::Analyzer(FileSet &fs, std::shared_ptr<PackageResolver> resolver)
 }
 
 std::string Analyzer::current_package_name() const {
+  if (!current_package_name_override.empty())
+    return current_package_name_override;
   if (current_package_dir.empty()) return "";
   return std::filesystem::path(current_package_dir).filename().string();
 }
@@ -842,7 +844,7 @@ void Analyzer::merge_sgi_receiver_methods(const SgiFile &sgi) {
 }
 
 std::optional<TypePtr>
-Analyzer::load_import_from_sgi(const std::string &import_path) {
+Analyzer::load_import_from_sgi(const std::string &import_path, Span span) {
   if (!package_resolver)
     return std::nullopt;
 
@@ -850,9 +852,14 @@ Analyzer::load_import_from_sgi(const std::string &import_path) {
   if (sgi_path.empty())
     return std::nullopt;
 
-  auto sgi = load_sgi(sgi_path);
-  if (!sgi)
+  std::string parse_err;
+  auto sgi = load_sgi(sgi_path, &parse_err);
+  if (!sgi) {
+    error(span, std::format("failed to load interface for '{}' from '{}': {}",
+                            import_path, sgi_path,
+                            parse_err.empty() ? "unknown error" : parse_err));
     return std::nullopt;
+  }
 
   auto module_type = sgi_to_module_type(*sgi, import_path);
   package_resolver->cache[import_path] = module_type;
@@ -991,8 +998,14 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
     return builtins.error_type;
   }
 
+  auto pkg_last_slash = import_path.rfind('/');
+  std::string pkg_short = (pkg_last_slash != std::string::npos)
+                              ? import_path.substr(pkg_last_slash + 1)
+                              : import_path;
+
   Analyzer sub_analyzer(sub_fileset, package_resolver);
   sub_analyzer.current_package_dir = pkg_dir;
+  sub_analyzer.current_package_name_override = pkg_short;
   sub_analyzer.analyze(*sub_ast);
 
   if (!sub_analyzer.errors.errors.empty()) {
@@ -1005,10 +1018,7 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
 
   merge_sub_analyzer_receiver_methods(sub_analyzer);
 
-  auto last_slash = import_path.rfind('/');
-  std::string pkg_name = (last_slash != std::string::npos)
-                             ? import_path.substr(last_slash + 1)
-                             : import_path;
+  const std::string &pkg_name = pkg_short;
   auto exports = extract_module_exports(sub_analyzer);
   auto module_type =
       make_module_type(pkg_name, import_path, std::move(exports));
@@ -1031,8 +1041,14 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
 TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   if (auto cached = resolve_import_cached(import_path, span))
     return *cached;
-  if (auto from_sgi = load_import_from_sgi(import_path))
+  size_t err_count_before = errors.errors.size();
+  if (auto from_sgi = load_import_from_sgi(import_path, span))
     return *from_sgi;
+  // If load_import_from_sgi reported a parse error, don't fall through to
+  // source compilation — surface the diagnostic instead of silently masking
+  // a malformed .sgi with a fresh source build.
+  if (errors.errors.size() > err_count_before)
+    return builtins.error_type;
   return compile_import_from_source(import_path, span);
 }
 
@@ -1077,6 +1093,9 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   auto sub_analyzer =
       std::make_unique<Analyzer>(*loaded_fileset, package_resolver);
   sub_analyzer->current_package_dir = source_dir;
+  // ensure_source_loaded is keyed by origin (package name), so it doubles
+  // as the authoritative name for the loaded sub-analyzer.
+  sub_analyzer->current_package_name_override = origin;
   sub_analyzer->analyze(*sub_ast);
   if (!sub_analyzer->errors.errors.empty())
     return nullptr;
@@ -2608,7 +2627,7 @@ TypePtr Analyzer::check_bool_literal(const BoolLiteralNode &) {
 }
 
 TypePtr Analyzer::check_int_literal(const IntegerLiteralNode &) {
-  return builtins.int_type;
+  return make_untyped_int_type();
 }
 
 TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
@@ -4059,7 +4078,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
                         "variable initializer");
     }
     if (!final_type)
-      final_type = init_type;
+      final_type = materialize_untyped(init_type);
   }
 
   // Update or create the symbol in the current scope.
@@ -4074,7 +4093,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 }
 
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
-  auto rhs_type = check_expr(*decl.value);
+  auto rhs_type = materialize_untyped(check_expr(*decl.value));
 
   // ── Multi-return unpacking ───────────────────────────────────────────
   // If there are multiple targets and the RHS is a call to a function with
@@ -4684,4 +4703,4 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
   return true;
 }
 
-} // namespace mc
+} // namespace saga

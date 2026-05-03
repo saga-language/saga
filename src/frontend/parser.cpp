@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ============================================================================
 // File-local helpers
@@ -2974,4 +2974,4 @@ NodePtr Parser::parse_struct_literal(NodePtr type_expr) {
                                       std::move(fields));
 }
 
-} // namespace mc
+} // namespace saga

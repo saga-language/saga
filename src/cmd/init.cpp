@@ -61,7 +61,7 @@ int cmd_init(const char * /*prog*/, int argc, char **argv) {
   }
 
   // Write project.saga.
-  mc::Manifest m;
+  saga::Manifest m;
   m.name = name;
   m.kind = kind;
 

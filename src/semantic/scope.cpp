@@ -3,7 +3,7 @@
 
 #include "semantic/scope.hpp"
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Construction
@@ -68,4 +68,4 @@ std::unordered_map<uint32_t, TypePtr> Scope::all_type_bindings() const {
   return result;
 }
 
-} // namespace mc
+} // namespace saga

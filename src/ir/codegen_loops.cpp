@@ -5,7 +5,7 @@
 
 #include <llvm/IR/Constants.h>
 
-namespace mc {
+namespace saga {
 
 namespace {
 
@@ -516,4 +516,4 @@ void CodeGen::emit_for_range_iterable_struct(const ForExprNode &node,
   builder.CreateBr(bbs.cond_bb);
 }
 
-} // namespace mc
+} // namespace saga

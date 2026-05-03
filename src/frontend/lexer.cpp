@@ -7,7 +7,7 @@
 #include <string_view>
 #include <unordered_map>
 
-namespace mc {
+namespace saga {
 
 inline static const std::unordered_map<std::string_view, Token::Kind> keywords =
     {{"break", Token::Kind::Break},
@@ -403,4 +403,4 @@ Token::Kind Lexer::kind_for_alphanumeric(std::string_view literal) {
 
   return Token::Kind::Identifier;
 }
-} // namespace mc
+} // namespace saga

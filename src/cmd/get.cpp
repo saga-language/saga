@@ -89,10 +89,10 @@ static std::string git_stdout(const std::string &cmd) {
 static int install_remote(const char *prog,
                            const std::string &raw_url,
                            const std::string &alias,
-                           mc::Manifest &manifest,
+                           saga::Manifest &manifest,
                            bool verbose) {
-  auto [url, ref] = mc::parse_pkg_url(raw_url);
-  std::string pkg_name = alias.empty() ? mc::pkg_name_from_url(url) : alias;
+  auto [url, ref] = saga::parse_pkg_url(raw_url);
+  std::string pkg_name = alias.empty() ? saga::pkg_name_from_url(url) : alias;
 
   // Build clone URL.
   std::string clone_url = "https://" + url;
@@ -130,13 +130,13 @@ static int install_remote(const char *prog,
   }
 
   // Build final cache dir and move source there.
-  mc::ManifestDep dep;
+  saga::ManifestDep dep;
   dep.name   = pkg_name;
   dep.url    = url;
   dep.commit = commit;
   dep.branch = ref;
 
-  fs::path cache = mc::pkg_cache_dir(dep);
+  fs::path cache = saga::pkg_cache_dir(dep);
   fs::path src_in_cache = cache / "src";
 
   if (!fs::is_directory(src_in_cache)) {
@@ -188,7 +188,7 @@ static int install_remote(const char *prog,
 
 static int install_local(const std::string &raw_path,
                           const std::string &alias,
-                          mc::Manifest &manifest,
+                          saga::Manifest &manifest,
                           const std::string &manifest_dir,
                           bool verbose) {
   fs::path abs_path = fs::weakly_canonical(raw_path);
@@ -205,7 +205,7 @@ static int install_local(const std::string &raw_path,
                                fs::path(manifest_dir), ec);
   std::string store_path = ec ? raw_path : rel.string();
 
-  mc::ManifestDep dep;
+  saga::ManifestDep dep;
   dep.name = pkg_name;
   dep.path = store_path;
 
@@ -227,7 +227,7 @@ static int install_local(const std::string &raw_path,
 // ---------------------------------------------------------------------------
 
 static int install_all(const char *prog,
-                        mc::Manifest &manifest,
+                        saga::Manifest &manifest,
                         const std::string &manifest_dir,
                         bool verbose) {
   if (manifest.dependencies.empty() && manifest.tools.empty()) {
@@ -251,7 +251,7 @@ static int install_all(const char *prog,
     }
 
     // Remote dep: ensure compiled.
-    fs::path cache = mc::pkg_cache_dir(dep);
+    fs::path cache = saga::pkg_cache_dir(dep);
     std::string sgi_path = (cache / (dep.name + ".sgi")).string();
     std::string obj_path = (cache / (dep.name + ".o")).string();
 
@@ -265,7 +265,7 @@ static int install_all(const char *prog,
     std::string raw = dep.branch.empty()
                           ? dep.url
                           : dep.url + "@" + dep.branch;
-    mc::Manifest tmp = manifest;
+    saga::Manifest tmp = manifest;
     int rc = install_remote(prog, raw, dep.name, tmp, verbose);
     if (rc != 0) ++failures;
     else {
@@ -300,13 +300,13 @@ int cmd_get(const char *prog, int argc, char **argv) {
   }
 
   // Find nearest project.saga.
-  auto manifest_path_opt = mc::find_manifest(fs::current_path().string());
+  auto manifest_path_opt = saga::find_manifest(fs::current_path().string());
   std::string manifest_path;
-  mc::Manifest manifest;
+  saga::Manifest manifest;
 
   if (manifest_path_opt) {
     manifest_path = *manifest_path_opt;
-    auto m = mc::Manifest::load(manifest_path);
+    auto m = saga::Manifest::load(manifest_path);
     if (m) manifest = std::move(*m);
   } else {
     // No manifest found — create one in CWD if we're adding a new dep.

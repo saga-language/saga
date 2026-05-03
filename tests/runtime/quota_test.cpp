@@ -11,9 +11,9 @@
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 TEST(ReductionTickTest, IncrementsCounter) {
-  mc_actor *a = mc_actor_new([](mc_actor *){}, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_runtime_actor_new([](saga_runtime_actor *){}, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
-  a->status = MC_ACTOR_RUNNING;
+  a->status = SAGA_RUNTIME_ACTOR_RUNNING;
 
   /* Set up jmp_buf so longjmp doesn't crash. */
   if (setjmp(a->trap) == 0) {
@@ -25,14 +25,14 @@ TEST(ReductionTickTest, IncrementsCounter) {
     FAIL() << "Should not have longjmp'd";
   }
 
-  mc_actor_release(a);
-  mc_actor_release(a);
+  saga_runtime_actor_release(a);
+  saga_runtime_actor_release(a);
 }
 
 TEST(ReductionTickTest, UpdatesLastCycle) {
-  mc_actor *a = mc_actor_new([](mc_actor *){}, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_runtime_actor_new([](saga_runtime_actor *){}, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
-  a->status = MC_ACTOR_RUNNING;
+  a->status = SAGA_RUNTIME_ACTOR_RUNNING;
   a->last_cycle = 0;
 
   if (setjmp(a->trap) == 0) {
@@ -40,14 +40,14 @@ TEST(ReductionTickTest, UpdatesLastCycle) {
     EXPECT_GT(a->last_cycle, 0);
   }
 
-  mc_actor_release(a);
-  mc_actor_release(a);
+  saga_runtime_actor_release(a);
+  saga_runtime_actor_release(a);
 }
 
 TEST(ReductionTickTest, StatusPoisoningTriggersLongjmp) {
-  mc_actor *a = mc_actor_new([](mc_actor *){}, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_runtime_actor_new([](saga_runtime_actor *){}, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
-  a->status = MC_ACTOR_KILLED; /* poisoned */
+  a->status = SAGA_RUNTIME_ACTOR_KILLED; /* poisoned */
 
   bool jumped = false;
   if (setjmp(a->trap) == 0) {
@@ -58,8 +58,8 @@ TEST(ReductionTickTest, StatusPoisoningTriggersLongjmp) {
   }
   EXPECT_TRUE(jumped);
 
-  mc_actor_release(a);
-  mc_actor_release(a);
+  saga_runtime_actor_release(a);
+  saga_runtime_actor_release(a);
 }
 
 TEST(ReductionTickTest, NullActorIsSafe) {
@@ -77,25 +77,25 @@ protected:
 };
 
 /* An actor that loops calling saga_reduction_tick until killed. */
-static void infinite_tick_loop(mc_actor *a) {
+static void infinite_tick_loop(saga_runtime_actor *a) {
   while (1) {
     saga_reduction_tick(a);
   }
 }
 
 TEST_F(QuotaTest, ReductionCounterKillsInfiniteLoop) {
-  mc_actor *a = saga_executor_spawn(infinite_tick_loop, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(infinite_tick_loop, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
   saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_KILLED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_KILLED);
   saga_task_drop(a);
 }
 
 /* An actor that does a fixed amount of work (well under the limit). */
-static void bounded_tick_loop(mc_actor *a) {
+static void bounded_tick_loop(saga_runtime_actor *a) {
   for (int i = 0; i < 100; i++) {
     saga_reduction_tick(a);
   }
@@ -103,25 +103,25 @@ static void bounded_tick_loop(mc_actor *a) {
 }
 
 TEST_F(QuotaTest, BoundedWorkCompletes) {
-  mc_actor *a = saga_executor_spawn(bounded_tick_loop, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(bounded_tick_loop, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
   saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
   EXPECT_EQ(a->arena, nullptr);
   saga_task_drop(a);
 }
 
 /* An actor that exceeds the memory quota. */
-static void memory_hog_entry(mc_actor *a) {
+static void memory_hog_entry(saga_runtime_actor *a) {
   /* Allocate in a loop until the arena rejects us. */
   while (1) {
-    void *p = mc_arena_alloc(a->arena, 64 * 1024); /* 64 KB chunks */
+    void *p = saga_runtime_arena_alloc(a->arena, 64 * 1024); /* 64 KB chunks */
     if (!p) {
       /* Quota exceeded — kill ourselves. */
-      a->status = MC_ACTOR_KILLED;
+      a->status = SAGA_RUNTIME_ACTOR_KILLED;
       longjmp(a->trap, 1);
     }
     saga_reduction_tick(a);
@@ -130,21 +130,21 @@ static void memory_hog_entry(mc_actor *a) {
 
 TEST_F(QuotaTest, MemoryQuotaKillsActor) {
   /* Use a small arena limit. */
-  mc_actor *a = mc_actor_new(memory_hog_entry, nullptr, 0, 256 * 1024);
+  saga_runtime_actor *a = saga_runtime_actor_new(memory_hog_entry, nullptr, 0, 256 * 1024);
   ASSERT_NE(a, nullptr);
   saga_executor_schedule(a);
 
   int64_t status;
   saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_KILLED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_KILLED);
   saga_task_drop(a);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
 /* Heartbeat monitor tests                                                */
 /*                                                                        */
-/* These use a custom-compiled timeout.  Since MC_HEARTBEAT_TIMEOUT_MS    */
+/* These use a custom-compiled timeout.  Since SAGA_RUNTIME_HEARTBEAT_TIMEOUT_MS    */
 /* defaults to 5000, and we can't change it at runtime, we test that the  */
 /* monitor's status poisoning mechanism works by simulating what it does:  */
 /* setting status to KILLED while an actor is running with reduction      */
@@ -154,31 +154,31 @@ TEST_F(QuotaTest, MemoryQuotaKillsActor) {
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 /* An actor that spins with reduction ticks. Can be killed externally. */
-static void spin_with_ticks(mc_actor *a) {
+static void spin_with_ticks(saga_runtime_actor *a) {
   while (1) {
     saga_reduction_tick(a); /* checks status poisoning */
   }
 }
 
 TEST_F(QuotaTest, ExternalStatusPoisoningKillsActor) {
-  mc_actor *a = saga_executor_spawn(spin_with_ticks, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(spin_with_ticks, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   /* Give the actor time to start spinning. */
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
   /* Simulate what the heartbeat monitor does. */
-  __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+  __atomic_store_n(&a->status, SAGA_RUNTIME_ACTOR_KILLED, __ATOMIC_RELEASE);
 
   int64_t status;
   saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_KILLED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_KILLED);
   saga_task_drop(a);
 }
 
 /* Verify that channel send resets the reduction counter. */
-static void send_resets_reduction(mc_actor *a) {
+static void send_resets_reduction(saga_runtime_actor *a) {
   /* Tick up the counter. */
   for (int i = 0; i < 100; i++)
     saga_reduction_tick(a);
@@ -189,14 +189,14 @@ static void send_resets_reduction(mc_actor *a) {
   int64_t val = 42;
   saga_context_send(a, &val);
 
-  /* reduction_count is reset to 0 by mc_channel_send. */
+  /* reduction_count is reset to 0 by saga_runtime_channel_send. */
   /* We can't easily check from here because the test asserts from
      outside.  Instead we verify the actor completes without being
      killed, proving the counter was reset. */
 }
 
 TEST_F(QuotaTest, ChannelSendResetsReductionCounter) {
-  mc_actor *a = mc_actor_new(send_resets_reduction, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_runtime_actor_new(send_resets_reduction, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   a->channel = saga_channel_new(sizeof(int64_t), 8);
   saga_executor_schedule(a);
@@ -208,7 +208,7 @@ TEST_F(QuotaTest, ChannelSendResetsReductionCounter) {
 
   int64_t status;
   saga_task_wait(a, &status);
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
 
   saga_channel_destroy(a->channel);
   a->channel = nullptr;

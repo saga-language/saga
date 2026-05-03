@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // ScopeKind — distinguishes scope levels for semantic rules.
@@ -94,4 +94,4 @@ struct Scope : public std::enable_shared_from_this<Scope> {
   std::unordered_map<uint32_t, TypePtr> all_type_bindings() const;
 };
 
-} // namespace mc
+} // namespace saga

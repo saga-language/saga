@@ -117,10 +117,10 @@ struct DocumentState {
   std::string content;
 
   // Populated after analysis.
-  mc::FileSet fileset;
-  mc::ErrorList parse_errors;
-  std::unique_ptr<mc::Node> ast;
-  std::unique_ptr<mc::Analyzer> analyzer;
+  saga::FileSet fileset;
+  saga::ErrorList parse_errors;
+  std::unique_ptr<saga::Node> ast;
+  std::unique_ptr<saga::Analyzer> analyzer;
 };
 
 // ---------------------------------------------------------------------------
@@ -131,9 +131,9 @@ struct DocumentState {
 // all spans are relative to that file's source (offset 0).
 // ---------------------------------------------------------------------------
 
-static const mc::Node *
-find_node_at(const mc::Analyzer &az, size_t offset) {
-  const mc::Node *best = nullptr;
+static const saga::Node *
+find_node_at(const saga::Analyzer &az, size_t offset) {
+  const saga::Node *best = nullptr;
   size_t best_len = SIZE_MAX;
   for (auto &[node, _] : az.node_types) {
     if (node->span.start <= offset && offset < node->span.end) {
@@ -149,9 +149,9 @@ find_node_at(const mc::Analyzer &az, size_t offset) {
 
 // Check the auxiliary span_types vector for a match tighter than best_len.
 // Returns the type if found, nullptr otherwise.
-static mc::TypePtr
-find_span_type_at(const mc::Analyzer &az, size_t offset, size_t best_len) {
-  mc::TypePtr best = nullptr;
+static saga::TypePtr
+find_span_type_at(const saga::Analyzer &az, size_t offset, size_t best_len) {
+  saga::TypePtr best = nullptr;
   for (auto &[span, type] : az.span_types) {
     if (span.start <= offset && offset < span.end) {
       size_t len = span.end - span.start;
@@ -170,7 +170,7 @@ find_span_type_at(const mc::Analyzer &az, size_t offset, size_t best_len) {
 
 // LSP positions are 0-based (line, character).
 // File::line_offsets[i] is the byte offset of the start of line i (0-based).
-static size_t lsp_to_offset(const mc::File &file, int line, int character) {
+static size_t lsp_to_offset(const saga::File &file, int line, int character) {
   if (line < 0) return 0;
   size_t li = static_cast<size_t>(line);
   if (li >= file.line_offsets.size()) return file.source.size();
@@ -179,7 +179,7 @@ static size_t lsp_to_offset(const mc::File &file, int line, int character) {
 }
 
 // Byte offset → LSP {line, character} (0-based).
-static std::pair<int, int> offset_to_lsp(const mc::File &file, size_t offset) {
+static std::pair<int, int> offset_to_lsp(const saga::File &file, size_t offset) {
   // Binary search: find the last line_offset <= offset.
   const auto &lo = file.line_offsets;
   size_t line = 0;
@@ -196,21 +196,21 @@ static std::pair<int, int> offset_to_lsp(const mc::File &file, size_t offset) {
 // ---------------------------------------------------------------------------
 
 static void run_analysis(DocumentState &doc, const char *prog) {
-  doc.fileset = mc::FileSet{};
-  doc.parse_errors = mc::ErrorList{};
+  doc.fileset = saga::FileSet{};
+  doc.parse_errors = saga::ErrorList{};
   doc.ast.reset();
   doc.analyzer.reset();
 
   std::string path = uri_to_path(doc.uri);
-  auto file = mc::File::from_source(path, doc.content);
+  auto file = saga::File::from_source(path, doc.content);
   doc.fileset.add_file(std::move(file));
 
-  mc::Parser parser(doc.fileset);
+  saga::Parser parser(doc.fileset);
   doc.ast = parser.parse();
   doc.parse_errors = std::move(parser.errors);
   if (!doc.ast || !doc.parse_errors.errors.empty()) return;
 
-  doc.analyzer = std::make_unique<mc::Analyzer>(doc.fileset);
+  doc.analyzer = std::make_unique<saga::Analyzer>(doc.fileset);
 
   std::string dir = fs::path(path).parent_path().string();
   doc.analyzer->current_package_dir = dir;
@@ -239,8 +239,8 @@ static void run_analysis(DocumentState &doc, const char *prog) {
 // Diagnostic emission
 // ---------------------------------------------------------------------------
 
-static json::Value errors_to_diagnostics(const mc::FileSet &fileset,
-                                          const mc::ErrorList &errors) {
+static json::Value errors_to_diagnostics(const saga::FileSet &fileset,
+                                          const saga::ErrorList &errors) {
   json::Value diags = json::make_array();
   for (auto &err : errors.errors) {
     // Position is 1-based; LSP wants 0-based.
@@ -391,7 +391,7 @@ struct LspServer {
     auto &file = *doc.fileset.files[0];
 
     size_t offset = lsp_to_offset(file, line, col);
-    const mc::Node *node = find_node_at(*doc.analyzer, offset);
+    const saga::Node *node = find_node_at(*doc.analyzer, offset);
 
     if (!node) { send_response(id, json::Value{}); return; }
 
@@ -404,7 +404,7 @@ struct LspServer {
     size_t node_len = node->span.end - node->span.start;
     auto span_type = find_span_type_at(*doc.analyzer, offset, node_len);
 
-    std::string type_str = mc::type_to_string(
+    std::string type_str = saga::type_to_string(
         span_type ? span_type : type_it->second);
 
     // Include symbol name if available.
@@ -446,7 +446,7 @@ struct LspServer {
     auto &file = *doc.fileset.files[0];
 
     size_t offset = lsp_to_offset(file, line, col);
-    const mc::Node *node = find_node_at(*doc.analyzer, offset);
+    const saga::Node *node = find_node_at(*doc.analyzer, offset);
     if (!node) { send_response(id, json::Value{}); return; }
 
     auto sym_it = doc.analyzer->node_symbols.find(node);
@@ -512,15 +512,15 @@ struct LspServer {
         auto sym_it = doc.analyzer->package_scope_->symbols.find(member_of);
         if (sym_it != doc.analyzer->package_scope_->symbols.end()) {
           auto &sym = sym_it->second;
-          if (sym.type && sym.type->kind == mc::TypeKind::Module) {
-            auto &mod = std::get<mc::ModuleTypeInfo>(sym.type->detail);
+          if (sym.type && sym.type->kind == saga::TypeKind::Module) {
+            auto &mod = std::get<saga::ModuleTypeInfo>(sym.type->detail);
             for (auto &exp : mod.exports) {
               // completionItem kind: 3=Function, 5=Field, 6=Variable
-              int item_kind = exp.type && exp.type->kind == mc::TypeKind::Func ? 3 : 5;
+              int item_kind = exp.type && exp.type->kind == saga::TypeKind::Func ? 3 : 5;
               items.push(json::obj({
                   {"label",  exp.name},
                   {"kind",   item_kind},
-                  {"detail", mc::type_to_string(exp.type)},
+                  {"detail", saga::type_to_string(exp.type)},
               }));
             }
           }
@@ -535,18 +535,18 @@ struct LspServer {
           int item_kind = 6;
           if (sym.type) {
             switch (sym.type->kind) {
-            case mc::TypeKind::Func:      item_kind = 3; break;
-            case mc::TypeKind::Struct:    item_kind = 7; break;
-            case mc::TypeKind::Interface: item_kind = 8; break;
-            case mc::TypeKind::Enum:      item_kind = 13; break;
-            case mc::TypeKind::Module:    item_kind = 9; break;
+            case saga::TypeKind::Func:      item_kind = 3; break;
+            case saga::TypeKind::Struct:    item_kind = 7; break;
+            case saga::TypeKind::Interface: item_kind = 8; break;
+            case saga::TypeKind::Enum:      item_kind = 13; break;
+            case saga::TypeKind::Module:    item_kind = 9; break;
             default: break;
             }
           }
           items.push(json::obj({
               {"label",  name},
               {"kind",   item_kind},
-              {"detail", sym.type ? mc::type_to_string(sym.type) : ""},
+              {"detail", sym.type ? saga::type_to_string(sym.type) : ""},
           }));
         }
       }

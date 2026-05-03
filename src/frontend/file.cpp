@@ -9,7 +9,7 @@
 #include <sstream>
 #include <string>
 
-namespace mc {
+namespace saga {
 void File::add_file_newline(size_t offset) { line_offsets.push_back(offset); }
 
 Position File::position_at(std::size_t offset) const {
@@ -33,4 +33,4 @@ std::unique_ptr<File> File::from_path(const std::string &path) {
   buf << in.rdbuf();
   return from_source(path, buf.str());
 }
-} // namespace mc
+} // namespace saga

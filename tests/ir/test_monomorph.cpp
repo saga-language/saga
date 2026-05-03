@@ -11,7 +11,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -324,4 +324,4 @@ TEST(Monomorph, RecursionGuard) {
   EXPECT_TRUE(r.ok()) << r.all_errors();
 }
 
-} // namespace mc
+} // namespace saga

@@ -29,7 +29,7 @@
 #include <string>
 #include <vector>
 
-namespace mc {
+namespace saga {
 
 // A single dependency or tool entry.
 struct ManifestDep {
@@ -85,4 +85,4 @@ std::string pkg_name_from_url(const std::string &url);
 // Returns {url_without_ref, ref}.
 std::pair<std::string, std::string> parse_pkg_url(const std::string &raw);
 
-} // namespace mc
+} // namespace saga

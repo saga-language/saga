@@ -10,7 +10,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 
-namespace mc {
+namespace saga {
 
 llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
                                     const Node &parent) {
@@ -83,7 +83,7 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
       auto sem = semantic_type(*node.object);
       if (sem && sem->kind == TypeKind::Struct) {
         auto &info = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = key_for(info.origin_package, info.name);
+        std::string skey = struct_cache_key(info);
         auto st_it = struct_types.find(skey);
         if (st_it != struct_types.end()) {
           // The alloca might be a ptr to struct (if stored from a literal)
@@ -141,4 +141,4 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
   return nullptr;
 }
 
-} // namespace mc
+} // namespace saga

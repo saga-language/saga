@@ -109,7 +109,7 @@ inline std::vector<fs::path> collect_sg_files(const fs::path &dir) {
 #include "pkg/manifest.hpp"
 
 inline std::string load_sources(const std::string &source_path,
-                                 mc::FileSet &fileset) {
+                                 saga::FileSet &fileset) {
   fs::path input(source_path);
   std::string package_dir;
 
@@ -121,7 +121,7 @@ inline std::string load_sources(const std::string &source_path,
       return {};
     }
     for (auto &sg : sg_files) {
-      auto file = mc::File::from_path(sg.string());
+      auto file = saga::File::from_path(sg.string());
       if (!file) {
         std::cerr << std::format("Error: cannot open '{}'\n", sg.string());
         return {};
@@ -129,7 +129,7 @@ inline std::string load_sources(const std::string &source_path,
       fileset.add_file(std::move(file));
     }
   } else {
-    auto file = mc::File::from_path(source_path);
+    auto file = saga::File::from_path(source_path);
     if (!file) {
       std::cerr << std::format("Error: cannot open '{}'\n", source_path);
       return {};
@@ -180,10 +180,10 @@ inline void apply_manifest_deps(const char *prog,
                                  const std::string &start_dir,
                                  std::vector<std::string> &search_paths,
                                  std::vector<std::string> &sgi_search_paths) {
-  auto manifest_path = mc::find_manifest(start_dir);
+  auto manifest_path = saga::find_manifest(start_dir);
   if (!manifest_path) return;
 
-  auto manifest = mc::Manifest::load(*manifest_path);
+  auto manifest = saga::Manifest::load(*manifest_path);
   if (!manifest) return;
 
   fs::path project_dir = fs::path(*manifest_path).parent_path();
@@ -211,7 +211,7 @@ inline void apply_manifest_deps(const char *prog,
         sgi_search_paths.push_back(dep_out.string());
 
     } else if (dep.is_remote() && !dep.commit.empty()) {
-      fs::path cache = mc::pkg_cache_dir(dep);
+      fs::path cache = saga::pkg_cache_dir(dep);
       if (fs::is_directory(cache) &&
           std::find(sgi_search_paths.begin(), sgi_search_paths.end(),
                     cache.string()) == sgi_search_paths.end())
@@ -220,7 +220,7 @@ inline void apply_manifest_deps(const char *prog,
   }
 }
 
-inline void setup_analyzer_paths(mc::Analyzer &analyzer,
+inline void setup_analyzer_paths(saga::Analyzer &analyzer,
                                   const std::string &package_dir,
                                   const std::vector<std::string> &search_paths,
                                   const std::vector<std::string> &sgi_paths,

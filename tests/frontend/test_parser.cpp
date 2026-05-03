@@ -20,7 +20,7 @@
 // the phase it corresponds to in docs/parser-plan.md.
 // =============================================================================
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // ParseResult — owns the FileSet (and therefore all string_view lifetimes),
@@ -294,7 +294,7 @@ TEST(ParserDeclaration, Dispatch_Fn) {
   auto r = ParseResult::from("fn Foo() Void {}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
-  auto *fn = std::get_if<mc::FuncDeclNode>(
+  auto *fn = std::get_if<saga::FuncDeclNode>(
       &r.source_node().declarations[0]->data);
   ASSERT_NE(fn, nullptr);
   EXPECT_FALSE(fn->is_public);
@@ -308,7 +308,7 @@ TEST(ParserDeclaration, Dispatch_PubFn) {
   auto r = ParseResult::from("pub fn Bar() Void {}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
-  auto *fn = std::get_if<mc::FuncDeclNode>(
+  auto *fn = std::get_if<saga::FuncDeclNode>(
       &r.source_node().declarations[0]->data);
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->is_public);
@@ -320,12 +320,12 @@ TEST(ParserDeclaration, Dispatch_Const) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *c =
-      std::get_if<mc::ConstDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::ConstDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(c, nullptr);
   EXPECT_FALSE(c->is_public);
   EXPECT_EQ(c->name.name, "Pi");
   EXPECT_FALSE(c->type.has_value());
-  auto *val = std::get_if<mc::FloatLiteralNode>(&c->value->data);
+  auto *val = std::get_if<saga::FloatLiteralNode>(&c->value->data);
   ASSERT_NE(val, nullptr);
   EXPECT_EQ(val->literal, "3.14");
 }
@@ -335,15 +335,15 @@ TEST(ParserDeclaration, Const_WithType) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *c =
-      std::get_if<mc::ConstDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::ConstDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(c, nullptr);
   EXPECT_TRUE(c->is_public);
   EXPECT_EQ(c->name.name, "MaxSize");
   ASSERT_TRUE(c->type.has_value());
-  auto *ty = std::get_if<mc::IdentifierNode>(&(*c->type)->data);
+  auto *ty = std::get_if<saga::IdentifierNode>(&(*c->type)->data);
   ASSERT_NE(ty, nullptr);
   EXPECT_EQ(ty->name, "Int");
-  auto *val = std::get_if<mc::IntegerLiteralNode>(&c->value->data);
+  auto *val = std::get_if<saga::IntegerLiteralNode>(&c->value->data);
   ASSERT_NE(val, nullptr);
   EXPECT_EQ(val->literal, "1024");
 }
@@ -353,11 +353,11 @@ TEST(ParserDeclaration, Const_TypeAlias) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *c =
-      std::get_if<mc::ConstDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::ConstDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(c, nullptr);
   EXPECT_EQ(c->name.name, "MyType");
   EXPECT_FALSE(c->type.has_value());
-  auto *val = std::get_if<mc::IdentifierNode>(&c->value->data);
+  auto *val = std::get_if<saga::IdentifierNode>(&c->value->data);
   ASSERT_NE(val, nullptr);
   EXPECT_EQ(val->name, "Int");
 }
@@ -367,7 +367,7 @@ TEST(ParserDeclaration, Dispatch_Struct) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *s =
-      std::get_if<mc::StructDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::StructDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(s, nullptr);
   EXPECT_FALSE(s->is_public);
   EXPECT_EQ(s->name.name, "Point");
@@ -375,7 +375,7 @@ TEST(ParserDeclaration, Dispatch_Struct) {
   EXPECT_TRUE(s->embeds.empty());
   ASSERT_EQ(s->members.size(), 1);
   EXPECT_FALSE(s->members[0].is_public);
-  auto *field = std::get_if<mc::FieldSpecNode>(&s->members[0].member->data);
+  auto *field = std::get_if<saga::FieldSpecNode>(&s->members[0].member->data);
   ASSERT_NE(field, nullptr);
   ASSERT_EQ(field->names.identifiers.size(), 2);
   EXPECT_EQ(field->names.identifiers[0].name, "x");
@@ -391,25 +391,25 @@ TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *s =
-      std::get_if<mc::StructDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::StructDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(s, nullptr);
   EXPECT_TRUE(s->is_public);
   EXPECT_EQ(s->name.name, "Node");
   EXPECT_TRUE(s->generic.has_value());
   ASSERT_EQ(s->generic->type_params.size(), 1);
   ASSERT_EQ(s->embeds.size(), 2);
-  auto *e0 = std::get_if<mc::IdentifierNode>(&s->embeds[0]->data);
+  auto *e0 = std::get_if<saga::IdentifierNode>(&s->embeds[0]->data);
   ASSERT_NE(e0, nullptr);
   EXPECT_EQ(e0->name, "Base");
-  auto *e1 = std::get_if<mc::IdentifierNode>(&s->embeds[1]->data);
+  auto *e1 = std::get_if<saga::IdentifierNode>(&s->embeds[1]->data);
   ASSERT_NE(e1, nullptr);
   EXPECT_EQ(e1->name, "Mixin");
   ASSERT_EQ(s->members.size(), 2);
   EXPECT_TRUE(s->members[0].is_public);
-  auto *field = std::get_if<mc::FieldSpecNode>(&s->members[0].member->data);
+  auto *field = std::get_if<saga::FieldSpecNode>(&s->members[0].member->data);
   ASSERT_NE(field, nullptr);
   EXPECT_FALSE(s->members[1].is_public);
-  auto *method = std::get_if<mc::FuncDeclNode>(&s->members[1].member->data);
+  auto *method = std::get_if<saga::FuncDeclNode>(&s->members[1].member->data);
   ASSERT_NE(method, nullptr);
   EXPECT_EQ(method->name.name, "Get");
 }
@@ -419,7 +419,7 @@ TEST(ParserDeclaration, Dispatch_Enum) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *e =
-      std::get_if<mc::EnumDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::EnumDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(e, nullptr);
   EXPECT_FALSE(e->is_public);
   EXPECT_EQ(e->name.name, "Colors");
@@ -440,7 +440,7 @@ TEST(ParserDeclaration, Enum_WithInitializer) {
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *e =
-      std::get_if<mc::EnumDeclNode>(&r.source_node().declarations[0]->data);
+      std::get_if<saga::EnumDeclNode>(&r.source_node().declarations[0]->data);
   ASSERT_NE(e, nullptr);
   EXPECT_TRUE(e->is_public);
   EXPECT_EQ(e->name.name, "Suits");
@@ -458,7 +458,7 @@ TEST(ParserDeclaration, Dispatch_Interface) {
   auto r = ParseResult::from("interface Foo {}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
-  auto *iface = std::get_if<mc::InterfaceDeclNode>(
+  auto *iface = std::get_if<saga::InterfaceDeclNode>(
       &r.source_node().declarations[0]->data);
   ASSERT_NE(iface, nullptr);
   EXPECT_FALSE(iface->is_public);
@@ -475,7 +475,7 @@ TEST(ParserDeclaration, Interface_WithMethods) {
       "}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
-  auto *iface = std::get_if<mc::InterfaceDeclNode>(
+  auto *iface = std::get_if<saga::InterfaceDeclNode>(
       &r.source_node().declarations[0]->data);
   ASSERT_NE(iface, nullptr);
   EXPECT_TRUE(iface->is_public);
@@ -2323,7 +2323,7 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
   ASSERT_NE(s, nullptr);
   EXPECT_EQ(s->name.name, "Child");
   ASSERT_EQ(s->embeds.size(), 1);
-  auto *e0 = std::get_if<mc::IdentifierNode>(&s->embeds[0]->data);
+  auto *e0 = std::get_if<saga::IdentifierNode>(&s->embeds[0]->data);
   ASSERT_NE(e0, nullptr);
   EXPECT_EQ(e0->name, "Parent");
   EXPECT_TRUE(s->members.empty());
@@ -2335,9 +2335,9 @@ TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
   auto *s = r.decl_as<StructDeclNode>(0);
   ASSERT_NE(s, nullptr);
   ASSERT_EQ(s->embeds.size(), 1);
-  auto *sel = std::get_if<mc::SelectorNode>(&s->embeds[0]->data);
+  auto *sel = std::get_if<saga::SelectorNode>(&s->embeds[0]->data);
   ASSERT_NE(sel, nullptr);
-  auto *obj = std::get_if<mc::IdentifierNode>(&sel->object->data);
+  auto *obj = std::get_if<saga::IdentifierNode>(&sel->object->data);
   ASSERT_NE(obj, nullptr);
   EXPECT_EQ(obj->name, "lib");
   EXPECT_EQ(sel->field.name, "Timestamps");
@@ -2629,4 +2629,4 @@ TEST_F(ParserTypeCoverageTest, SelectorType) {
   EXPECT_EQ(obj->name, "pkg");
 }
 
-} // namespace mc
+} // namespace saga

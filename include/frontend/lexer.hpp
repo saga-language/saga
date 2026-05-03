@@ -8,7 +8,7 @@
 #include "token.hpp"
 #include <string_view>
 
-namespace mc {
+namespace saga {
 
 enum class LexerState { Default, InString, InMultiLineString };
 
@@ -55,4 +55,4 @@ private:
 
   Token::Kind kind_for_alphanumeric(std::string_view literal);
 };
-} // namespace mc
+} // namespace saga

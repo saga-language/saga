@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace mc {
+namespace saga {
 struct Error {
   Position p;
   std::string message;
@@ -23,4 +23,4 @@ struct ErrorList {
   void print_errors(std::ostream &os = std::cerr) const;
   void report_error(Position p, std::string message);
 };
-} // namespace mc
+} // namespace saga

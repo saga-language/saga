@@ -30,23 +30,23 @@
 /*           i64 max_limit }                                                */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-#ifndef MC_MAX_ARENA_SIZE
-#define MC_MAX_ARENA_SIZE (64 * 1024 * 1024) /* 64 MB default */
+#ifndef SAGA_RUNTIME_MAX_ARENA_SIZE
+#define SAGA_RUNTIME_MAX_ARENA_SIZE (64 * 1024 * 1024) /* 64 MB default */
 #endif
 
-#ifndef MC_MAX_REDUCTIONS
-#define MC_MAX_REDUCTIONS 1000000
+#ifndef SAGA_RUNTIME_MAX_REDUCTIONS
+#define SAGA_RUNTIME_MAX_REDUCTIONS 1000000
 #endif
 
-#ifndef MC_HEARTBEAT_TIMEOUT_MS
-#define MC_HEARTBEAT_TIMEOUT_MS 5000
+#ifndef SAGA_RUNTIME_HEARTBEAT_TIMEOUT_MS
+#define SAGA_RUNTIME_HEARTBEAT_TIMEOUT_MS 5000
 #endif
 
-#ifndef MC_ARENA_INITIAL_COMMIT
-#define MC_ARENA_INITIAL_COMMIT (64 * 1024) /* 64 KB initial commit */
+#ifndef SAGA_RUNTIME_ARENA_INITIAL_COMMIT
+#define SAGA_RUNTIME_ARENA_INITIAL_COMMIT (64 * 1024) /* 64 KB initial commit */
 #endif
 
-#define MC_ARENA_ALIGN 16
+#define SAGA_RUNTIME_ARENA_ALIGN 16
 
 typedef struct {
   char    *base;      /* mmap'd region — never moves                       */
@@ -54,36 +54,36 @@ typedef struct {
   int64_t  committed; /* bytes currently backed by physical pages          */
   int64_t  reserved;  /* total virtual reservation                         */
   int64_t  max_limit; /* hard quota — allocation fails if exceeded         */
-} mc_arena;
+} saga_runtime_arena;
 
 /* Round `n` up to the nearest multiple of `align` (must be power of 2). */
-static inline int64_t mc_align_up(int64_t n, int64_t align) {
+static inline int64_t saga_runtime_align_up(int64_t n, int64_t align) {
   return (n + align - 1) & ~(align - 1);
 }
 
 /* Return the system page size, cached after first call. */
-static inline int64_t mc_page_size(void) {
+static inline int64_t saga_runtime_page_size(void) {
   static int64_t ps = 0;
   if (ps == 0) ps = (int64_t)sysconf(_SC_PAGESIZE);
   return ps;
 }
 
 /*
- * mc_arena_new  —  reserve virtual address space and commit an initial chunk.
+ * saga_runtime_arena_new  —  reserve virtual address space and commit an initial chunk.
  *
  * `max_limit` is the hard memory quota for this arena.  If 0 the compile-time
- * default MC_MAX_ARENA_SIZE is used.  The virtual reservation is the larger of
- * max_limit and MC_MAX_ARENA_SIZE (virtual space is free on 64-bit).
+ * default SAGA_RUNTIME_MAX_ARENA_SIZE is used.  The virtual reservation is the larger of
+ * max_limit and SAGA_RUNTIME_MAX_ARENA_SIZE (virtual space is free on 64-bit).
  *
  * Returns NULL if the mmap or initial commit fails.
  */
-mc_arena *mc_arena_new(int64_t max_limit) {
-  if (max_limit <= 0) max_limit = MC_MAX_ARENA_SIZE;
+saga_runtime_arena *saga_runtime_arena_new(int64_t max_limit) {
+  if (max_limit <= 0) max_limit = SAGA_RUNTIME_MAX_ARENA_SIZE;
 
-  int64_t page = mc_page_size();
+  int64_t page = saga_runtime_page_size();
   int64_t reserved = max_limit;
-  if (reserved < MC_MAX_ARENA_SIZE) reserved = MC_MAX_ARENA_SIZE;
-  reserved = mc_align_up(reserved, page);
+  if (reserved < SAGA_RUNTIME_MAX_ARENA_SIZE) reserved = SAGA_RUNTIME_MAX_ARENA_SIZE;
+  reserved = saga_runtime_align_up(reserved, page);
 
   /* Reserve the entire virtual region with no access permissions. */
   void *base = mmap(NULL, (size_t)reserved,
@@ -93,15 +93,15 @@ mc_arena *mc_arena_new(int64_t max_limit) {
   if (base == MAP_FAILED) return NULL;
 
   /* Commit the initial chunk so early allocations don't page-fault. */
-  int64_t initial = MC_ARENA_INITIAL_COMMIT;
+  int64_t initial = SAGA_RUNTIME_ARENA_INITIAL_COMMIT;
   if (initial > reserved) initial = reserved;
-  initial = mc_align_up(initial, page);
+  initial = saga_runtime_align_up(initial, page);
   if (mprotect(base, (size_t)initial, PROT_READ | PROT_WRITE) != 0) {
     munmap(base, (size_t)reserved);
     return NULL;
   }
 
-  mc_arena *a = (mc_arena *)malloc(sizeof(mc_arena));
+  saga_runtime_arena *a = (saga_runtime_arena *)malloc(sizeof(saga_runtime_arena));
   if (!a) {
     munmap(base, (size_t)reserved);
     return NULL;
@@ -115,15 +115,15 @@ mc_arena *mc_arena_new(int64_t max_limit) {
 }
 
 /*
- * mc_arena_alloc  —  bump-allocate `size` bytes from the arena.
+ * saga_runtime_arena_alloc  —  bump-allocate `size` bytes from the arena.
  *
  * Returns a 16-byte-aligned pointer, or NULL if the allocation would exceed
  * the arena's max_limit (the caller is expected to kill the actor).
  */
-void *mc_arena_alloc(mc_arena *a, int64_t size) {
+void *saga_runtime_arena_alloc(saga_runtime_arena *a, int64_t size) {
   if (!a || size <= 0) return NULL;
 
-  int64_t aligned = mc_align_up(size, MC_ARENA_ALIGN);
+  int64_t aligned = saga_runtime_align_up(size, SAGA_RUNTIME_ARENA_ALIGN);
   int64_t new_offset = a->offset + aligned;
 
   /* Hard quota check. */
@@ -131,13 +131,13 @@ void *mc_arena_alloc(mc_arena *a, int64_t size) {
 
   /* Commit more pages if needed. */
   if (new_offset > a->committed) {
-    int64_t page = mc_page_size();
+    int64_t page = saga_runtime_page_size();
     /* Commit in chunks: at least double current committed or enough for the
      * request, whichever is larger, capped at reserved. */
     int64_t want = a->committed * 2;
-    if (want < new_offset) want = mc_align_up(new_offset, page);
+    if (want < new_offset) want = saga_runtime_align_up(new_offset, page);
     if (want > a->reserved) want = a->reserved;
-    want = mc_align_up(want, page);
+    want = saga_runtime_align_up(want, page);
 
     if (want > a->committed) {
       if (mprotect(a->base, (size_t)want, PROT_READ | PROT_WRITE) != 0)
@@ -155,11 +155,11 @@ void *mc_arena_alloc(mc_arena *a, int64_t size) {
 }
 
 /*
- * mc_arena_destroy  —  release the entire virtual region in one call.
+ * saga_runtime_arena_destroy  —  release the entire virtual region in one call.
  *
  * After this call every pointer into the arena is invalid.
  */
-void mc_arena_destroy(mc_arena *a) {
+void saga_runtime_arena_destroy(saga_runtime_arena *a) {
   if (!a) return;
   if (a->base) munmap(a->base, (size_t)a->reserved);
   a->base = NULL;
@@ -175,7 +175,7 @@ void mc_arena_destroy(mc_arena *a) {
 /* An actor is the unit of concurrent execution.  It owns an arena for its  */
 /* working memory and is scheduled by the executor on a pool of OS threads. */
 /*                                                                          */
-/* The mc_actor struct itself is heap-allocated (malloc) and refcounted so   */
+/* The saga_runtime_actor struct itself is heap-allocated (malloc) and refcounted so   */
 /* it outlives the arena.  The worker holds one ref, the parent's Task      */
 /* handle holds another.  The struct is freed when refcount reaches 0.      */
 /*                                                                          */
@@ -183,70 +183,70 @@ void mc_arena_destroy(mc_arena *a) {
 /* ───────────────────────────────────────────────────────────────────────── */
 
 enum {
-  MC_ACTOR_PENDING   = 0,
-  MC_ACTOR_RUNNING   = 1,
-  MC_ACTOR_COMPLETED = 2,
-  MC_ACTOR_CANCELLED = 3,
-  MC_ACTOR_KILLED    = 4,
-  MC_ACTOR_ZOMBIE    = 5
+  SAGA_RUNTIME_ACTOR_PENDING   = 0,
+  SAGA_RUNTIME_ACTOR_RUNNING   = 1,
+  SAGA_RUNTIME_ACTOR_COMPLETED = 2,
+  SAGA_RUNTIME_ACTOR_CANCELLED = 3,
+  SAGA_RUNTIME_ACTOR_KILLED    = 4,
+  SAGA_RUNTIME_ACTOR_ZOMBIE    = 5
 };
 
 /* Forward declarations — full definitions follow below. */
-typedef struct mc_actor   mc_actor;
-typedef struct mc_channel mc_channel;
-void saga_channel_close(mc_channel *ch);
-int  mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor);
+typedef struct saga_runtime_actor   saga_runtime_actor;
+typedef struct saga_runtime_channel saga_runtime_channel;
+void saga_channel_close(saga_runtime_channel *ch);
+int  saga_runtime_channel_send(saga_runtime_channel *ch, const void *data, saga_runtime_actor *actor);
 
-typedef struct mc_actor {
+typedef struct saga_runtime_actor {
   /* -- Stable fields (malloc'd, outlive the arena) ---------------------- */
   int64_t          refcount;       /* 1 worker + 1 parent Task handle      */
   void            *result;         /* exit value, copied out before arena   */
   int64_t          result_size;    /*   dies — always malloc'd             */
-  int64_t          status;         /* MC_ACTOR_{PENDING,RUNNING,...}        */
+  int64_t          status;         /* SAGA_RUNTIME_ACTOR_{PENDING,RUNNING,...}        */
   int64_t          cancelled;      /* set by parent Cancel(), read by actor */
   pthread_mutex_t  lock;           /* guards status transitions             */
   pthread_cond_t   done_cond;      /* signalled on completion (for Wait())  */
 
   /* -- Arena-lifetime fields -------------------------------------------- */
-  mc_arena        *arena;
-  void           (*entry)(struct mc_actor *);
+  saga_runtime_arena        *arena;
+  void           (*entry)(struct saga_runtime_actor *);
   void            *closure_data;   /* captured vars packed by codegen       */
   int64_t          closure_size;
   int64_t          reduction_count;
   int64_t          last_cycle;     /* monotonic ns timestamp                */
-  mc_channel      *channel;        /* typed channel for Send() / iteration  */
+  saga_runtime_channel      *channel;        /* typed channel for Send() / iteration  */
   void            *result_in_arena;/* set by context_exit, lives in arena   */
   jmp_buf          trap;           /* setjmp target for panic / quota       */
-} mc_actor;
+} saga_runtime_actor;
 
 /* Monotonic clock helper (nanoseconds). */
-static int64_t mc_monotonic_now(void) {
+static int64_t saga_runtime_monotonic_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
-mc_actor *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
+saga_runtime_actor *saga_runtime_actor_new(void (*entry)(saga_runtime_actor *), void *closure_data,
                        int64_t closure_size, int64_t arena_max) {
-  mc_actor *a = (mc_actor *)calloc(1, sizeof(mc_actor));
+  saga_runtime_actor *a = (saga_runtime_actor *)calloc(1, sizeof(saga_runtime_actor));
   if (!a) return NULL;
 
   a->refcount      = 2; /* one for worker, one for parent Task handle */
-  a->status        = MC_ACTOR_PENDING;
+  a->status        = SAGA_RUNTIME_ACTOR_PENDING;
   a->cancelled     = 0;
   a->result        = NULL;
   a->result_size   = 0;
   a->entry         = entry;
   a->closure_size  = closure_size;
   a->reduction_count = 0;
-  a->last_cycle    = mc_monotonic_now();
+  a->last_cycle    = saga_runtime_monotonic_now();
   a->channel       = NULL;
 
   pthread_mutex_init(&a->lock, NULL);
   pthread_cond_init(&a->done_cond, NULL);
 
   /* Create the actor's arena. */
-  a->arena = mc_arena_new(arena_max);
+  a->arena = saga_runtime_arena_new(arena_max);
   if (!a->arena) {
     pthread_mutex_destroy(&a->lock);
     pthread_cond_destroy(&a->done_cond);
@@ -256,9 +256,9 @@ mc_actor *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
 
   /* Copy closure data into the actor's arena so it's fully owned. */
   if (closure_data && closure_size > 0) {
-    a->closure_data = mc_arena_alloc(a->arena, closure_size);
+    a->closure_data = saga_runtime_arena_alloc(a->arena, closure_size);
     if (!a->closure_data) {
-      mc_arena_destroy(a->arena);
+      saga_runtime_arena_destroy(a->arena);
       pthread_mutex_destroy(&a->lock);
       pthread_cond_destroy(&a->done_cond);
       free(a);
@@ -274,22 +274,22 @@ mc_actor *mc_actor_new(void (*entry)(mc_actor *), void *closure_data,
 
 /* Runtime accessor for closure_data — used by codegen to unpack captures
    without hardcoding struct offsets in LLVM IR. */
-void *mc_actor_get_closure(mc_actor *a) {
+void *saga_runtime_actor_get_closure(saga_runtime_actor *a) {
   return a ? a->closure_data : NULL;
 }
 
 /* Runtime setter for channel — used by codegen to attach a channel after
    saga_executor_spawn() returns the actor. */
-void mc_actor_set_channel(mc_actor *a, mc_channel *ch) {
+void saga_runtime_actor_set_channel(saga_runtime_actor *a, saga_runtime_channel *ch) {
   if (a) a->channel = ch;
 }
 
-void mc_actor_retain(mc_actor *a) {
+void saga_runtime_actor_retain(saga_runtime_actor *a) {
   if (!a) return;
   __atomic_add_fetch(&a->refcount, 1, __ATOMIC_SEQ_CST);
 }
 
-void mc_actor_release(mc_actor *a) {
+void saga_runtime_actor_release(saga_runtime_actor *a) {
   if (!a) return;
   int64_t rc = __atomic_sub_fetch(&a->refcount, 1, __ATOMIC_SEQ_CST);
   if (rc <= 0) {
@@ -311,20 +311,20 @@ void mc_actor_release(mc_actor *a) {
  * it longjmps out immediately.  If the reduction counter exceeds the
  * compile-time limit, the actor is killed.
  */
-void saga_reduction_tick(mc_actor *a) {
+void saga_reduction_tick(saga_runtime_actor *a) {
   if (!a) return;
 
   /* Status poisoning — killed externally? */
-  if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == MC_ACTOR_KILLED)
+  if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == SAGA_RUNTIME_ACTOR_KILLED)
     longjmp(a->trap, 1);
 
   a->reduction_count++;
-  if (a->reduction_count > MC_MAX_REDUCTIONS) {
-    __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+  if (a->reduction_count > SAGA_RUNTIME_MAX_REDUCTIONS) {
+    __atomic_store_n(&a->status, SAGA_RUNTIME_ACTOR_KILLED, __ATOMIC_RELEASE);
     longjmp(a->trap, 1);
   }
 
-  a->last_cycle = mc_monotonic_now();
+  a->last_cycle = saga_runtime_monotonic_now();
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -334,44 +334,44 @@ void saga_reduction_tick(mc_actor *a) {
 /* the tail (LIFO for cache locality); thieves steal from the head (FIFO).  */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-#ifndef MC_DEQUE_INITIAL_CAP
-#define MC_DEQUE_INITIAL_CAP 256
+#ifndef SAGA_RUNTIME_DEQUE_INITIAL_CAP
+#define SAGA_RUNTIME_DEQUE_INITIAL_CAP 256
 #endif
 
 typedef struct {
-  mc_actor      **buffer;
+  saga_runtime_actor      **buffer;
   int64_t         head;  /* steal from here (FIFO end) */
   int64_t         tail;  /* push/pop here  (LIFO end)  */
   int64_t         cap;
   pthread_mutex_t lock;
-} mc_deque;
+} saga_runtime_deque;
 
-static void mc_deque_init(mc_deque *d) {
-  d->buffer = (mc_actor **)calloc((size_t)MC_DEQUE_INITIAL_CAP,
-                                  sizeof(mc_actor *));
+static void saga_runtime_deque_init(saga_runtime_deque *d) {
+  d->buffer = (saga_runtime_actor **)calloc((size_t)SAGA_RUNTIME_DEQUE_INITIAL_CAP,
+                                  sizeof(saga_runtime_actor *));
   d->head = 0;
   d->tail = 0;
-  d->cap  = MC_DEQUE_INITIAL_CAP;
+  d->cap  = SAGA_RUNTIME_DEQUE_INITIAL_CAP;
   pthread_mutex_init(&d->lock, NULL);
 }
 
-static void mc_deque_destroy(mc_deque *d) {
+static void saga_runtime_deque_destroy(saga_runtime_deque *d) {
   if (!d) return;
   free(d->buffer);
   d->buffer = NULL;
   pthread_mutex_destroy(&d->lock);
 }
 
-static int64_t mc_deque_size_locked(mc_deque *d) {
+static int64_t saga_runtime_deque_size_locked(saga_runtime_deque *d) {
   return d->tail - d->head;
 }
 
 /* Grow the ring buffer (caller must hold the lock). */
-static void mc_deque_grow(mc_deque *d) {
+static void saga_runtime_deque_grow(saga_runtime_deque *d) {
   int64_t new_cap = d->cap * 2;
-  mc_actor **new_buf = (mc_actor **)calloc((size_t)new_cap,
-                                           sizeof(mc_actor *));
-  int64_t n = mc_deque_size_locked(d);
+  saga_runtime_actor **new_buf = (saga_runtime_actor **)calloc((size_t)new_cap,
+                                           sizeof(saga_runtime_actor *));
+  int64_t n = saga_runtime_deque_size_locked(d);
   for (int64_t i = 0; i < n; i++)
     new_buf[i] = d->buffer[(d->head + i) % d->cap];
   free(d->buffer);
@@ -382,36 +382,36 @@ static void mc_deque_grow(mc_deque *d) {
 }
 
 /* Push an actor onto the tail (owner side). */
-void mc_deque_push(mc_deque *d, mc_actor *actor) {
+void saga_runtime_deque_push(saga_runtime_deque *d, saga_runtime_actor *actor) {
   pthread_mutex_lock(&d->lock);
-  if (mc_deque_size_locked(d) >= d->cap)
-    mc_deque_grow(d);
+  if (saga_runtime_deque_size_locked(d) >= d->cap)
+    saga_runtime_deque_grow(d);
   d->buffer[d->tail % d->cap] = actor;
   d->tail++;
   pthread_mutex_unlock(&d->lock);
 }
 
 /* Pop from the tail (owner side, LIFO). Returns NULL if empty. */
-mc_actor *mc_deque_pop(mc_deque *d) {
+saga_runtime_actor *saga_runtime_deque_pop(saga_runtime_deque *d) {
   pthread_mutex_lock(&d->lock);
-  if (mc_deque_size_locked(d) <= 0) {
+  if (saga_runtime_deque_size_locked(d) <= 0) {
     pthread_mutex_unlock(&d->lock);
     return NULL;
   }
   d->tail--;
-  mc_actor *a = d->buffer[d->tail % d->cap];
+  saga_runtime_actor *a = d->buffer[d->tail % d->cap];
   pthread_mutex_unlock(&d->lock);
   return a;
 }
 
 /* Steal from the head (thief side, FIFO). Returns NULL if empty. */
-mc_actor *mc_deque_steal(mc_deque *d) {
+saga_runtime_actor *saga_runtime_deque_steal(saga_runtime_deque *d) {
   pthread_mutex_lock(&d->lock);
-  if (mc_deque_size_locked(d) <= 0) {
+  if (saga_runtime_deque_size_locked(d) <= 0) {
     pthread_mutex_unlock(&d->lock);
     return NULL;
   }
-  mc_actor *a = d->buffer[d->head % d->cap];
+  saga_runtime_actor *a = d->buffer[d->head % d->cap];
   d->head++;
   pthread_mutex_unlock(&d->lock);
   return a;
@@ -419,14 +419,14 @@ mc_actor *mc_deque_steal(mc_deque *d) {
 
 /* Drain all actors from `src` into `dst`.  Used during worker replacement  */
 /* to rescue stranded actors before detaching a stuck thread.               */
-void mc_deque_drain(mc_deque *src, mc_deque *dst) {
+void saga_runtime_deque_drain(saga_runtime_deque *src, saga_runtime_deque *dst) {
   pthread_mutex_lock(&src->lock);
-  while (mc_deque_size_locked(src) > 0) {
-    mc_actor *a = src->buffer[src->head % src->cap];
+  while (saga_runtime_deque_size_locked(src) > 0) {
+    saga_runtime_actor *a = src->buffer[src->head % src->cap];
     src->head++;
     /* Push into dst (acquires dst lock internally). */
     pthread_mutex_unlock(&src->lock);
-    mc_deque_push(dst, a);
+    saga_runtime_deque_push(dst, a);
     pthread_mutex_lock(&src->lock);
   }
   pthread_mutex_unlock(&src->lock);
@@ -435,18 +435,18 @@ void mc_deque_drain(mc_deque *src, mc_deque *dst) {
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Current-actor thread-local                                               */
 /*                                                                          */
-/* Each worker thread publishes the mc_actor* it is currently executing     */
+/* Each worker thread publishes the saga_runtime_actor* it is currently executing     */
 /* here so that intrinsics (trap, yield) can locate it from any call depth  */
 /* without a compile-time reference to the actor pointer.                   */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-static __thread mc_actor *mc_current_actor = NULL;
+static __thread saga_runtime_actor *saga_runtime_current_actor = NULL;
 
-mc_actor *mc_get_current_actor(void) { return mc_current_actor; }
+saga_runtime_actor *saga_runtime_get_current_actor(void) { return saga_runtime_current_actor; }
 
 /* Test hook — lets unit tests bypass the worker loop and exercise
    intrinsics that depend on the thread-local current actor. */
-void mc_set_current_actor_for_test(mc_actor *a) { mc_current_actor = a; }
+void saga_runtime_set_current_actor_for_test(saga_runtime_actor *a) { saga_runtime_current_actor = a; }
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Executor                                                                 */
@@ -458,49 +458,49 @@ void mc_set_current_actor_for_test(mc_actor *a) { mc_current_actor = a; }
 
 typedef struct {
   int64_t          id;       /* index into executor arrays                  */
-  void            *executor; /* back-pointer (cast to mc_executor*)         */
-} mc_worker_ctx;
+  void            *executor; /* back-pointer (cast to saga_runtime_executor*)         */
+} saga_runtime_worker_ctx;
 
 /* ── Active actor list (for heartbeat monitor) ─────────────────────────── */
 /* A simple array-based list of actors currently being executed.  Protected */
 /* by its own mutex so the monitor thread can scan without contending on    */
 /* the work-stealing deques.                                                */
 
-#ifndef MC_ACTIVE_LIST_CAP
-#define MC_ACTIVE_LIST_CAP 1024
+#ifndef SAGA_RUNTIME_ACTIVE_LIST_CAP
+#define SAGA_RUNTIME_ACTIVE_LIST_CAP 1024
 #endif
 
 typedef struct {
-  mc_actor       **actors;
+  saga_runtime_actor       **actors;
   int64_t          len;
   int64_t          cap;
   pthread_mutex_t  lock;
-} mc_active_list;
+} saga_runtime_active_list;
 
-static void mc_active_list_init(mc_active_list *l) {
-  l->actors = (mc_actor **)calloc(MC_ACTIVE_LIST_CAP, sizeof(mc_actor *));
+static void saga_runtime_active_list_init(saga_runtime_active_list *l) {
+  l->actors = (saga_runtime_actor **)calloc(SAGA_RUNTIME_ACTIVE_LIST_CAP, sizeof(saga_runtime_actor *));
   l->len    = 0;
-  l->cap    = MC_ACTIVE_LIST_CAP;
+  l->cap    = SAGA_RUNTIME_ACTIVE_LIST_CAP;
   pthread_mutex_init(&l->lock, NULL);
 }
 
-static void mc_active_list_destroy(mc_active_list *l) {
+static void saga_runtime_active_list_destroy(saga_runtime_active_list *l) {
   free(l->actors);
   pthread_mutex_destroy(&l->lock);
 }
 
-static void mc_active_list_add(mc_active_list *l, mc_actor *a) {
+static void saga_runtime_active_list_add(saga_runtime_active_list *l, saga_runtime_actor *a) {
   pthread_mutex_lock(&l->lock);
   if (l->len >= l->cap) {
     l->cap *= 2;
-    l->actors = (mc_actor **)realloc(l->actors,
-                                     (size_t)l->cap * sizeof(mc_actor *));
+    l->actors = (saga_runtime_actor **)realloc(l->actors,
+                                     (size_t)l->cap * sizeof(saga_runtime_actor *));
   }
   l->actors[l->len++] = a;
   pthread_mutex_unlock(&l->lock);
 }
 
-static void mc_active_list_remove(mc_active_list *l, mc_actor *a) {
+static void saga_runtime_active_list_remove(saga_runtime_active_list *l, saga_runtime_actor *a) {
   pthread_mutex_lock(&l->lock);
   for (int64_t i = 0; i < l->len; i++) {
     if (l->actors[i] == a) {
@@ -512,26 +512,26 @@ static void mc_active_list_remove(mc_active_list *l, mc_actor *a) {
   pthread_mutex_unlock(&l->lock);
 }
 
-typedef struct mc_executor {
+typedef struct saga_runtime_executor {
   pthread_t       *threads;
-  mc_worker_ctx   *worker_ctxs;
-  mc_deque        *deques;          /* one per worker slot                  */
+  saga_runtime_worker_ctx   *worker_ctxs;
+  saga_runtime_deque        *deques;          /* one per worker slot                  */
   int64_t          num_workers;
-  mc_deque         inject_queue;    /* global queue for newly spawned actors*/
+  saga_runtime_deque         inject_queue;    /* global queue for newly spawned actors*/
   pthread_mutex_t  work_avail_lock;
   pthread_cond_t   work_avail_cond; /* workers sleep here when idle         */
   int64_t          shutdown;        /* flag, checked by workers             */
-  mc_active_list   active;          /* actors currently executing           */
+  saga_runtime_active_list   active;          /* actors currently executing           */
   pthread_t        monitor_thread;  /* heartbeat monitor                    */
   pthread_mutex_t  monitor_lock;    /* protects monitor condvar             */
   pthread_cond_t   monitor_cond;    /* woken on shutdown for fast exit      */
-} mc_executor;
+} saga_runtime_executor;
 
 /* Singleton executor — initialised by saga_executor_init(). */
-static mc_executor *g_executor = NULL;
+static saga_runtime_executor *g_executor = NULL;
 
 /* Random peer selection for stealing. */
-static uint32_t mc_xorshift32(uint32_t *state) {
+static uint32_t saga_runtime_xorshift32(uint32_t *state) {
   uint32_t x = *state;
   x ^= x << 13;
   x ^= x >> 17;
@@ -542,11 +542,11 @@ static uint32_t mc_xorshift32(uint32_t *state) {
 
 /* ── Worker thread entry point ─────────────────────────────────────────── */
 
-static void *mc_worker_loop(void *arg) {
-  mc_worker_ctx *ctx = (mc_worker_ctx *)arg;
-  mc_executor *ex = (mc_executor *)ctx->executor;
+static void *saga_runtime_worker_loop(void *arg) {
+  saga_runtime_worker_ctx *ctx = (saga_runtime_worker_ctx *)arg;
+  saga_runtime_executor *ex = (saga_runtime_executor *)ctx->executor;
   int64_t my_id = ctx->id;
-  mc_deque *my_deque = &ex->deques[my_id];
+  saga_runtime_deque *my_deque = &ex->deques[my_id];
 
   /* Seed the PRNG with something unique per worker. */
   uint32_t rng = (uint32_t)(my_id + 1) * 2654435761u;
@@ -557,18 +557,18 @@ static void *mc_worker_loop(void *arg) {
       break;
 
     /* 1. Try own deque. */
-    mc_actor *actor = mc_deque_pop(my_deque);
+    saga_runtime_actor *actor = saga_runtime_deque_pop(my_deque);
 
     /* 2. Try the global inject queue. */
     if (!actor)
-      actor = mc_deque_steal(&ex->inject_queue);
+      actor = saga_runtime_deque_steal(&ex->inject_queue);
 
     /* 3. Try stealing from a random peer. */
     if (!actor && ex->num_workers > 1) {
-      int64_t victim = (int64_t)(mc_xorshift32(&rng) % (uint32_t)ex->num_workers);
+      int64_t victim = (int64_t)(saga_runtime_xorshift32(&rng) % (uint32_t)ex->num_workers);
       if (victim == my_id)
         victim = (victim + 1) % ex->num_workers;
-      actor = mc_deque_steal(&ex->deques[victim]);
+      actor = saga_runtime_deque_steal(&ex->deques[victim]);
     }
 
     /* 4. No work — sleep until signalled. */
@@ -581,7 +581,7 @@ static void *mc_worker_loop(void *arg) {
         break;
       }
       /* Quick non-blocking peek at the inject queue before sleeping. */
-      actor = mc_deque_steal(&ex->inject_queue);
+      actor = saga_runtime_deque_steal(&ex->inject_queue);
       if (actor) {
         pthread_mutex_unlock(&ex->work_avail_lock);
       } else {
@@ -592,9 +592,9 @@ static void *mc_worker_loop(void *arg) {
     }
 
     /* ── Execute the actor ──────────────────────────────────────────── */
-    actor->last_cycle = mc_monotonic_now();
+    actor->last_cycle = saga_runtime_monotonic_now();
     actor->reduction_count = 0;
-    mc_active_list_add(&ex->active, actor);
+    saga_runtime_active_list_add(&ex->active, actor);
 
     /* Track the final status locally — only published under the lock
        after cleanup so that waiters never see a terminal status while
@@ -602,11 +602,11 @@ static void *mc_worker_loop(void *arg) {
     int64_t final_status;
 
     /* Set status to RUNNING *before* setjmp so the actor can read it. */
-    __atomic_store_n(&actor->status, MC_ACTOR_RUNNING, __ATOMIC_RELEASE);
+    __atomic_store_n(&actor->status, SAGA_RUNTIME_ACTOR_RUNNING, __ATOMIC_RELEASE);
 
     /* Publish the actor as the thread-local current actor so that
        intrinsics called from any depth can locate it. */
-    mc_current_actor = actor;
+    saga_runtime_current_actor = actor;
 
     if (setjmp(actor->trap) == 0) {
       /* Normal path: run the actor's entry function. */
@@ -614,22 +614,22 @@ static void *mc_worker_loop(void *arg) {
       /* Default to COMPLETED.  context_exit may have set a different
          status — we capture whatever is current. */
       final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
-      if (final_status == MC_ACTOR_RUNNING)
-        final_status = MC_ACTOR_COMPLETED;
+      if (final_status == SAGA_RUNTIME_ACTOR_RUNNING)
+        final_status = SAGA_RUNTIME_ACTOR_COMPLETED;
     } else {
       /* longjmp path — actor was killed, trapped, or exited. */
       final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
-      if (final_status == MC_ACTOR_RUNNING) {
+      if (final_status == SAGA_RUNTIME_ACTOR_RUNNING) {
         /* If result_in_arena is set, context_exit was called — treat as
            completed.  Otherwise default to killed. */
-        final_status = actor->result_in_arena ? MC_ACTOR_COMPLETED
-                                              : MC_ACTOR_KILLED;
+        final_status = actor->result_in_arena ? SAGA_RUNTIME_ACTOR_COMPLETED
+                                              : SAGA_RUNTIME_ACTOR_KILLED;
       }
     }
 
     /* Clear the thread-local so stale reads from idle workers are a
        visible NULL deref rather than a use-after-free on the actor. */
-    mc_current_actor = NULL;
+    saga_runtime_current_actor = NULL;
 
     /* Copy result out of arena BEFORE destroying it. */
     if (actor->result_in_arena && actor->result_size > 0
@@ -641,11 +641,11 @@ static void *mc_worker_loop(void *arg) {
     }
 
     /* Tear down the arena. */
-    mc_arena_destroy(actor->arena);
+    saga_runtime_arena_destroy(actor->arena);
     actor->arena = NULL;
 
     /* Remove from active list before signalling waiters. */
-    mc_active_list_remove(&ex->active, actor);
+    saga_runtime_active_list_remove(&ex->active, actor);
 
     /* Close the channel so any parent iterating via recv sees EOF. */
     if (actor->channel)
@@ -660,7 +660,7 @@ static void *mc_worker_loop(void *arg) {
     pthread_mutex_unlock(&actor->lock);
 
     /* Drop the worker's reference. */
-    mc_actor_release(actor);
+    saga_runtime_actor_release(actor);
   }
 
   return NULL;
@@ -677,19 +677,19 @@ static void *mc_worker_loop(void *arg) {
 /* ── Heartbeat monitor ──────────────────────────────────────────────────── */
 /*                                                                          */
 /* A dedicated thread that periodically scans all active actors.  If an     */
-/* actor's last_cycle timestamp is older than MC_HEARTBEAT_TIMEOUT_MS, the  */
+/* actor's last_cycle timestamp is older than SAGA_RUNTIME_HEARTBEAT_TIMEOUT_MS, the  */
 /* monitor sets its status to KILLED (status poisoning).  The actor will    */
 /* exit on its next reduction tick or blocking channel operation.            */
 /*                                                                          */
 /* If the actor is STILL running after a second timeout period, the monitor */
 /* assumes it is stuck in an FFI/syscall and logs a warning.  The worker    */
-/* replacement mechanism (mc_executor_replace_worker) could be triggered    */
+/* replacement mechanism (saga_runtime_executor_replace_worker) could be triggered    */
 /* here in the future; for now we just poison and warn.                     */
 
-static void *mc_heartbeat_monitor(void *arg) {
-  mc_executor *ex = (mc_executor *)arg;
-  int64_t timeout_ns = (int64_t)MC_HEARTBEAT_TIMEOUT_MS * 1000000LL;
-  int64_t check_interval_ms = MC_HEARTBEAT_TIMEOUT_MS / 2;
+static void *saga_runtime_heartbeat_monitor(void *arg) {
+  saga_runtime_executor *ex = (saga_runtime_executor *)arg;
+  int64_t timeout_ns = (int64_t)SAGA_RUNTIME_HEARTBEAT_TIMEOUT_MS * 1000000LL;
+  int64_t check_interval_ms = SAGA_RUNTIME_HEARTBEAT_TIMEOUT_MS / 2;
   if (check_interval_ms < 100) check_interval_ms = 100;
 
   while (!__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE)) {
@@ -710,20 +710,20 @@ static void *mc_heartbeat_monitor(void *arg) {
     if (__atomic_load_n(&ex->shutdown, __ATOMIC_ACQUIRE))
       break;
 
-    int64_t now = mc_monotonic_now();
+    int64_t now = saga_runtime_monotonic_now();
 
     pthread_mutex_lock(&ex->active.lock);
     for (int64_t i = 0; i < ex->active.len; i++) {
-      mc_actor *a = ex->active.actors[i];
+      saga_runtime_actor *a = ex->active.actors[i];
       int64_t st = __atomic_load_n(&a->status, __ATOMIC_ACQUIRE);
-      if (st != MC_ACTOR_RUNNING) continue;
+      if (st != SAGA_RUNTIME_ACTOR_RUNNING) continue;
 
       int64_t last = __atomic_load_n(&a->last_cycle, __ATOMIC_ACQUIRE);
       int64_t elapsed = now - last;
 
       if (elapsed > timeout_ns) {
         /* First timeout: poison the actor. */
-        __atomic_store_n(&a->status, MC_ACTOR_KILLED, __ATOMIC_RELEASE);
+        __atomic_store_n(&a->status, SAGA_RUNTIME_ACTOR_KILLED, __ATOMIC_RELEASE);
         /* Also close the channel to unblock any waiting send. */
         if (a->channel)
           saga_channel_close(a->channel);
@@ -743,24 +743,24 @@ void saga_executor_init(int64_t num_workers) {
     num_workers = (n > 0) ? (int64_t)n : 4;
   }
 
-  mc_executor *ex = (mc_executor *)calloc(1, sizeof(mc_executor));
+  saga_runtime_executor *ex = (saga_runtime_executor *)calloc(1, sizeof(saga_runtime_executor));
   ex->num_workers = num_workers;
   ex->shutdown    = 0;
 
   pthread_mutex_init(&ex->work_avail_lock, NULL);
   pthread_cond_init(&ex->work_avail_cond, NULL);
 
-  mc_deque_init(&ex->inject_queue);
+  saga_runtime_deque_init(&ex->inject_queue);
 
-  ex->deques = (mc_deque *)calloc((size_t)num_workers, sizeof(mc_deque));
+  ex->deques = (saga_runtime_deque *)calloc((size_t)num_workers, sizeof(saga_runtime_deque));
   for (int64_t i = 0; i < num_workers; i++)
-    mc_deque_init(&ex->deques[i]);
+    saga_runtime_deque_init(&ex->deques[i]);
 
-  ex->worker_ctxs = (mc_worker_ctx *)calloc((size_t)num_workers,
-                                             sizeof(mc_worker_ctx));
+  ex->worker_ctxs = (saga_runtime_worker_ctx *)calloc((size_t)num_workers,
+                                             sizeof(saga_runtime_worker_ctx));
   ex->threads = (pthread_t *)calloc((size_t)num_workers, sizeof(pthread_t));
 
-  mc_active_list_init(&ex->active);
+  saga_runtime_active_list_init(&ex->active);
   pthread_mutex_init(&ex->monitor_lock, NULL);
   pthread_cond_init(&ex->monitor_cond, NULL);
 
@@ -769,12 +769,12 @@ void saga_executor_init(int64_t num_workers) {
   for (int64_t i = 0; i < num_workers; i++) {
     ex->worker_ctxs[i].id = i;
     ex->worker_ctxs[i].executor = ex;
-    pthread_create(&ex->threads[i], NULL, mc_worker_loop,
+    pthread_create(&ex->threads[i], NULL, saga_runtime_worker_loop,
                    &ex->worker_ctxs[i]);
   }
 
   /* Start the heartbeat monitor. */
-  pthread_create(&ex->monitor_thread, NULL, mc_heartbeat_monitor, ex);
+  pthread_create(&ex->monitor_thread, NULL, saga_runtime_heartbeat_monitor, ex);
 }
 
 /*
@@ -783,14 +783,14 @@ void saga_executor_init(int64_t num_workers) {
  * Returns a pointer to the actor (the parent's Task handle).  The caller
  * owns one reference; the worker holds the other.
  */
-mc_actor *saga_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
+saga_runtime_actor *saga_executor_spawn(void (*entry)(saga_runtime_actor *), void *closure_data,
                             int64_t closure_size, int64_t arena_max) {
   if (!g_executor) return NULL;
 
-  mc_actor *actor = mc_actor_new(entry, closure_data, closure_size, arena_max);
+  saga_runtime_actor *actor = saga_runtime_actor_new(entry, closure_data, closure_size, arena_max);
   if (!actor) return NULL;
 
-  mc_deque_push(&g_executor->inject_queue, actor);
+  saga_runtime_deque_push(&g_executor->inject_queue, actor);
 
   /* Wake one idle worker. */
   pthread_mutex_lock(&g_executor->work_avail_lock);
@@ -805,11 +805,11 @@ mc_actor *saga_executor_spawn(void (*entry)(mc_actor *), void *closure_data,
  *
  * Use this when you need to configure the actor (e.g. attach a channel)
  * between creation and scheduling.  The actor must have been created with
- * mc_actor_new().
+ * saga_runtime_actor_new().
  */
-void saga_executor_schedule(mc_actor *actor) {
+void saga_executor_schedule(saga_runtime_actor *actor) {
   if (!g_executor || !actor) return;
-  mc_deque_push(&g_executor->inject_queue, actor);
+  saga_runtime_deque_push(&g_executor->inject_queue, actor);
   pthread_mutex_lock(&g_executor->work_avail_lock);
   pthread_cond_signal(&g_executor->work_avail_cond);
   pthread_mutex_unlock(&g_executor->work_avail_lock);
@@ -820,7 +820,7 @@ void saga_executor_schedule(mc_actor *actor) {
  */
 void saga_executor_shutdown(void) {
   if (!g_executor) return;
-  mc_executor *ex = g_executor;
+  saga_runtime_executor *ex = g_executor;
 
   __atomic_store_n(&ex->shutdown, 1, __ATOMIC_RELEASE);
 
@@ -840,9 +840,9 @@ void saga_executor_shutdown(void) {
 
   /* Clean up. */
   for (int64_t i = 0; i < ex->num_workers; i++)
-    mc_deque_destroy(&ex->deques[i]);
-  mc_deque_destroy(&ex->inject_queue);
-  mc_active_list_destroy(&ex->active);
+    saga_runtime_deque_destroy(&ex->deques[i]);
+  saga_runtime_deque_destroy(&ex->inject_queue);
+  saga_runtime_active_list_destroy(&ex->active);
 
   pthread_mutex_destroy(&ex->monitor_lock);
   pthread_cond_destroy(&ex->monitor_cond);
@@ -857,22 +857,22 @@ void saga_executor_shutdown(void) {
 }
 
 /*
- * mc_executor_replace_worker  —  abandon a stuck worker and spawn a
+ * saga_runtime_executor_replace_worker  —  abandon a stuck worker and spawn a
  * replacement.  The old thread is detached (leaked); its deque is drained
  * into the inject queue first, and a fresh deque is allocated for the
  * replacement so there is no contention.
  */
-void mc_executor_replace_worker(int64_t worker_id) {
+void saga_runtime_executor_replace_worker(int64_t worker_id) {
   if (!g_executor) return;
-  mc_executor *ex = g_executor;
+  saga_runtime_executor *ex = g_executor;
   if (worker_id < 0 || worker_id >= ex->num_workers) return;
 
   /* Drain stranded actors into the global inject queue. */
-  mc_deque_drain(&ex->deques[worker_id], &ex->inject_queue);
+  saga_runtime_deque_drain(&ex->deques[worker_id], &ex->inject_queue);
 
   /* Destroy the old deque and create a fresh one. */
-  mc_deque_destroy(&ex->deques[worker_id]);
-  mc_deque_init(&ex->deques[worker_id]);
+  saga_runtime_deque_destroy(&ex->deques[worker_id]);
+  saga_runtime_deque_init(&ex->deques[worker_id]);
 
   /* Detach the stuck thread — it keeps running but we no longer join it. */
   pthread_detach(ex->threads[worker_id]);
@@ -880,7 +880,7 @@ void mc_executor_replace_worker(int64_t worker_id) {
   /* Spawn a replacement. */
   ex->worker_ctxs[worker_id].id = worker_id;
   ex->worker_ctxs[worker_id].executor = ex;
-  pthread_create(&ex->threads[worker_id], NULL, mc_worker_loop,
+  pthread_create(&ex->threads[worker_id], NULL, saga_runtime_worker_loop,
                  &ex->worker_ctxs[worker_id]);
 
   /* Wake the new worker in case there's work. */
@@ -893,17 +893,17 @@ void mc_executor_replace_worker(int64_t worker_id) {
 /* Task API                                                                 */
 /*                                                                          */
 /* Called from the parent / spawning thread.  These operate on the          */
-/* mc_actor* that saga_executor_spawn() returned (the "Task handle").         */
+/* saga_runtime_actor* that saga_executor_spawn() returned (the "Task handle").         */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /*
  * saga_task_alive  —  returns 1 if the actor is still running or pending.
  */
-int64_t saga_task_alive(mc_actor *a) {
+int64_t saga_task_alive(saga_runtime_actor *a) {
   if (!a) return 0;
   pthread_mutex_lock(&a->lock);
-  int alive = (a->status == MC_ACTOR_PENDING ||
-               a->status == MC_ACTOR_RUNNING);
+  int alive = (a->status == SAGA_RUNTIME_ACTOR_PENDING ||
+               a->status == SAGA_RUNTIME_ACTOR_RUNNING);
   pthread_mutex_unlock(&a->lock);
   return alive ? 1 : 0;
 }
@@ -912,7 +912,7 @@ int64_t saga_task_alive(mc_actor *a) {
  * saga_task_cancel  —  ask the actor to stop.  The actor must poll
  *                    saga_context_cancelled() to honour this.
  */
-void saga_task_cancel(mc_actor *a) {
+void saga_task_cancel(saga_runtime_actor *a) {
   if (!a) return;
   __atomic_store_n(&a->cancelled, 1, __ATOMIC_RELEASE);
 }
@@ -923,11 +923,11 @@ void saga_task_cancel(mc_actor *a) {
  *                  next reduction tick or blocking call it will longjmp
  *                  out (status poisoning).
  */
-void saga_task_term(mc_actor *a) {
+void saga_task_term(saga_runtime_actor *a) {
   if (!a) return;
   pthread_mutex_lock(&a->lock);
-  if (a->status == MC_ACTOR_PENDING || a->status == MC_ACTOR_RUNNING) {
-    a->status = MC_ACTOR_KILLED;
+  if (a->status == SAGA_RUNTIME_ACTOR_PENDING || a->status == SAGA_RUNTIME_ACTOR_RUNNING) {
+    a->status = SAGA_RUNTIME_ACTOR_KILLED;
     if (a->channel)
       saga_channel_close(a->channel);
   }
@@ -943,13 +943,13 @@ void saga_task_term(mc_actor *a) {
  *
  *                  `out_status` is set to the terminal status if non-NULL.
  */
-void *saga_task_wait(mc_actor *a, int64_t *out_status) {
+void *saga_task_wait(saga_runtime_actor *a, int64_t *out_status) {
   if (!a) {
-    if (out_status) *out_status = MC_ACTOR_KILLED;
+    if (out_status) *out_status = SAGA_RUNTIME_ACTOR_KILLED;
     return NULL;
   }
   pthread_mutex_lock(&a->lock);
-  while (a->status < MC_ACTOR_COMPLETED)
+  while (a->status < SAGA_RUNTIME_ACTOR_COMPLETED)
     pthread_cond_wait(&a->done_cond, &a->lock);
   int64_t st = a->status;
   pthread_mutex_unlock(&a->lock);
@@ -962,21 +962,21 @@ void *saga_task_wait(mc_actor *a, int64_t *out_status) {
  * saga_task_drop  —  release the parent's reference.  Called when the Task
  *                  handle goes out of scope in generated code.
  */
-void saga_task_drop(mc_actor *a) {
-  mc_actor_release(a);
+void saga_task_drop(saga_runtime_actor *a) {
+  saga_runtime_actor_release(a);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Context API                                                              */
 /*                                                                          */
 /* Called from inside the spawned actor.  The actor receives a pointer to   */
-/* its own mc_actor as the "context".                                       */
+/* its own saga_runtime_actor as the "context".                                       */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /*
  * saga_context_cancelled  —  returns 1 if the parent called saga_task_cancel.
  */
-int64_t saga_context_cancelled(mc_actor *a) {
+int64_t saga_context_cancelled(saga_runtime_actor *a) {
   if (!a) return 0;
   return __atomic_load_n(&a->cancelled, __ATOMIC_ACQUIRE) ? 1 : 0;
 }
@@ -990,7 +990,7 @@ int64_t saga_context_cancelled(mc_actor *a) {
  *
  * Does not return — calls longjmp.
  */
-void saga_context_exit(mc_actor *a, void *value, int64_t size) {
+void saga_context_exit(saga_runtime_actor *a, void *value, int64_t size) {
   if (!a) return;
   /* Copy the bytes onto the heap BEFORE longjmp.  `value` typically points
      into the actor's stack frame, which is abandoned after longjmp; the
@@ -1018,9 +1018,9 @@ void saga_context_exit(mc_actor *a, void *value, int64_t size) {
  * full, in which case it blocks until a consumer drains an element.
  * Resets the reduction counter (I/O counts as yielding).
  */
-int saga_context_send(mc_actor *a, const void *data) {
+int saga_context_send(saga_runtime_actor *a, const void *data) {
   if (!a || !a->channel) return -1;
-  return mc_channel_send(a->channel, data, a);
+  return saga_runtime_channel_send(a->channel, data, a);
 }
 
 /*
@@ -1030,11 +1030,11 @@ int saga_context_send(mc_actor *a, const void *data) {
 #include <sched.h>
 
 void saga_actor_yield(void) {
-  mc_actor *a = mc_current_actor;
+  saga_runtime_actor *a = saga_runtime_current_actor;
   if (!a) return;
   sched_yield();
   a->reduction_count = 0;
-  a->last_cycle = mc_monotonic_now();
+  a->last_cycle = saga_runtime_monotonic_now();
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -1043,17 +1043,17 @@ void saga_actor_yield(void) {
 /* Fixed-size ring buffer for transferring data between actors.  Data is    */
 /* copied (ownership transfer) — the sender retains no reference.           */
 /*                                                                          */
-/* mc_channel_send blocks if the buffer is full.                            */
+/* saga_runtime_channel_send blocks if the buffer is full.                            */
 /* saga_channel_recv blocks if the buffer is empty.                           */
 /* saga_channel_close wakes all waiters; subsequent recv returns -1 once the  */
 /* buffer drains.                                                           */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-#ifndef MC_CHANNEL_DEFAULT_CAP
-#define MC_CHANNEL_DEFAULT_CAP 64
+#ifndef SAGA_RUNTIME_CHANNEL_DEFAULT_CAP
+#define SAGA_RUNTIME_CHANNEL_DEFAULT_CAP 64
 #endif
 
-struct mc_channel {
+struct saga_runtime_channel {
   char           *buffer;      /* ring buffer: capacity * elem_size bytes  */
   int64_t         elem_size;
   int64_t         capacity;    /* fixed at creation                        */
@@ -1070,13 +1070,13 @@ struct mc_channel {
  * saga_channel_new  —  create a channel with a fixed ring buffer.
  *
  * `elem_size` is the byte size of each element.
- * `capacity`  is the max number of elements; 0 → MC_CHANNEL_DEFAULT_CAP.
+ * `capacity`  is the max number of elements; 0 → SAGA_RUNTIME_CHANNEL_DEFAULT_CAP.
  */
-mc_channel *saga_channel_new(int64_t elem_size, int64_t capacity) {
+saga_runtime_channel *saga_channel_new(int64_t elem_size, int64_t capacity) {
   if (elem_size <= 0) return NULL;
-  if (capacity <= 0) capacity = MC_CHANNEL_DEFAULT_CAP;
+  if (capacity <= 0) capacity = SAGA_RUNTIME_CHANNEL_DEFAULT_CAP;
 
-  mc_channel *ch = (mc_channel *)calloc(1, sizeof(mc_channel));
+  saga_runtime_channel *ch = (saga_runtime_channel *)calloc(1, sizeof(saga_runtime_channel));
   if (!ch) return NULL;
 
   ch->buffer    = (char *)calloc((size_t)capacity, (size_t)elem_size);
@@ -1096,14 +1096,14 @@ mc_channel *saga_channel_new(int64_t elem_size, int64_t capacity) {
 }
 
 /*
- * mc_channel_send  —  copy `data` into the channel (blocking if full).
+ * saga_runtime_channel_send  —  copy `data` into the channel (blocking if full).
  *
  * `actor` may be NULL (for sends from the main thread).  When non-NULL the
  * function checks status poisoning so a killed actor unblocks immediately.
  *
  * Returns  0 on success, -1 if the channel is closed.
  */
-int mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor) {
+int saga_runtime_channel_send(saga_runtime_channel *ch, const void *data, saga_runtime_actor *actor) {
   if (!ch || !data) return -1;
 
   pthread_mutex_lock(&ch->lock);
@@ -1111,7 +1111,7 @@ int mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor) {
   /* Block while full — respect close and actor kill. */
   while (ch->count == ch->capacity && !ch->closed) {
     if (actor && __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE)
-                    == MC_ACTOR_KILLED) {
+                    == SAGA_RUNTIME_ACTOR_KILLED) {
       pthread_mutex_unlock(&ch->lock);
       longjmp(actor->trap, 1);
     }
@@ -1144,7 +1144,7 @@ int mc_channel_send(mc_channel *ch, const void *data, mc_actor *actor) {
  * Returns  0 on success.
  * Returns -1 if the channel is closed AND the buffer is drained (EOF).
  */
-int saga_channel_recv(mc_channel *ch, void *out_buf) {
+int saga_channel_recv(saga_runtime_channel *ch, void *out_buf) {
   if (!ch || !out_buf) return -1;
 
   pthread_mutex_lock(&ch->lock);
@@ -1176,7 +1176,7 @@ int saga_channel_recv(mc_channel *ch, void *out_buf) {
  * Safe to call multiple times.  After close, send returns -1.  recv
  * continues to drain buffered data, then returns -1.
  */
-void saga_channel_close(mc_channel *ch) {
+void saga_channel_close(saga_runtime_channel *ch) {
   if (!ch) return;
 
   pthread_mutex_lock(&ch->lock);
@@ -1191,7 +1191,7 @@ void saga_channel_close(mc_channel *ch) {
  *
  * The channel must already be closed and no threads may be blocked on it.
  */
-void saga_channel_destroy(mc_channel *ch) {
+void saga_channel_destroy(saga_runtime_channel *ch) {
   if (!ch) return;
   free(ch->buffer);
   pthread_mutex_destroy(&ch->lock);
@@ -1212,7 +1212,7 @@ typedef struct {
   const char *data;
   int64_t len;
   int64_t refcount;
-} mc_string;
+} saga_runtime_string;
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* saga_actor_trap  —  transition actor to ZOMBIE state                       */
@@ -1221,24 +1221,24 @@ typedef struct {
 /* Called by the intrinsic_trap() Saga intrinsic from inside a spawn block.  */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void saga_actor_trap(mc_string *reason) {
-  mc_actor *a = mc_current_actor;
+void saga_actor_trap(saga_runtime_string *reason) {
+  saga_runtime_actor *a = saga_runtime_current_actor;
   if (!a) return;
 
-  __atomic_store_n(&a->status, MC_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
+  __atomic_store_n(&a->status, SAGA_RUNTIME_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
 
   /* Store a copy of the reason string in heap memory (outlives arena). */
   if (reason) {
-    mc_string *copy = (mc_string *)malloc(sizeof(mc_string) + reason->len + 1);
+    saga_runtime_string *copy = (saga_runtime_string *)malloc(sizeof(saga_runtime_string) + reason->len + 1);
     if (copy) {
-      char *buf = (char *)copy + sizeof(mc_string);
+      char *buf = (char *)copy + sizeof(saga_runtime_string);
       memcpy(buf, reason->data, reason->len);
       buf[reason->len] = '\0';
       copy->data = buf;
       copy->len = reason->len;
       copy->refcount = 1;
       a->result = copy;
-      a->result_size = sizeof(mc_string);
+      a->result_size = sizeof(saga_runtime_string);
     }
   }
 
@@ -1253,27 +1253,27 @@ void saga_actor_trap(mc_string *reason) {
 /* ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-  mc_string *reason;
-} mc_trap_error;
+  saga_runtime_string *reason;
+} saga_runtime_trap_error;
 
 typedef struct {
   void *message_fn;
-} mc_trap_error_vtable;
+} saga_runtime_trap_error_vtable;
 
 typedef struct {
   void *data;
   void *vtable;
-} mc_iface_fat_ptr;
+} saga_runtime_iface_fat_ptr;
 
 /* Forward declaration for the vtable initializer. */
-static mc_string *saga_trap_error_message(void *self);
+static saga_runtime_string *saga_trap_error_message(void *self);
 
-static const mc_trap_error_vtable saga_trap_error_vtable_instance = {
+static const saga_runtime_trap_error_vtable saga_trap_error_vtable_instance = {
     .message_fn = (void *)saga_trap_error_message,
 };
 
-static mc_string *saga_trap_error_message(void *self) {
-  mc_trap_error *e = (mc_trap_error *)self;
+static saga_runtime_string *saga_trap_error_message(void *self) {
+  saga_runtime_trap_error *e = (saga_runtime_trap_error *)self;
   if (e && e->reason) {
     /* Hand out a retained reference — the caller owns it. */
     if (e->reason->refcount > 0) e->reason->refcount++;
@@ -1283,7 +1283,7 @@ static mc_string *saga_trap_error_message(void *self) {
   static const char kFallback[] = "killed";
   char *heap = (char *)malloc(sizeof(kFallback));
   memcpy(heap, kFallback, sizeof(kFallback));
-  mc_string *s = (mc_string *)malloc(sizeof(mc_string));
+  saga_runtime_string *s = (saga_runtime_string *)malloc(sizeof(saga_runtime_string));
   s->data = heap;
   s->len = sizeof(kFallback) - 1;
   s->refcount = 1;
@@ -1293,19 +1293,19 @@ static mc_string *saga_trap_error_message(void *self) {
 /*
  * saga_error_from_trap — build an Error interface fat pointer from the
  * trapped actor's stashed reason string.  Returns a heap-allocated
- * mc_iface_fat_ptr whose data points to a mc_trap_error and whose vtable
+ * saga_runtime_iface_fat_ptr whose data points to a saga_runtime_trap_error and whose vtable
  * points to saga_trap_error_vtable_instance.
  *
  * Called by the Task.Wait() lowering on the error path.
  */
-void *saga_error_from_trap(mc_actor *a) {
-  mc_trap_error *e = (mc_trap_error *)malloc(sizeof(mc_trap_error));
+void *saga_error_from_trap(saga_runtime_actor *a) {
+  saga_runtime_trap_error *e = (saga_runtime_trap_error *)malloc(sizeof(saga_runtime_trap_error));
   if (!e) return NULL;
-  mc_string *reason = (a && a->result) ? (mc_string *)a->result : NULL;
+  saga_runtime_string *reason = (a && a->result) ? (saga_runtime_string *)a->result : NULL;
   if (reason && reason->refcount > 0) reason->refcount++;
   e->reason = reason;
 
-  mc_iface_fat_ptr *fat = (mc_iface_fat_ptr *)malloc(sizeof(mc_iface_fat_ptr));
+  saga_runtime_iface_fat_ptr *fat = (saga_runtime_iface_fat_ptr *)malloc(sizeof(saga_runtime_iface_fat_ptr));
   if (!fat) { free(e); return NULL; }
   fat->data = e;
   fat->vtable = (void *)&saga_trap_error_vtable_instance;
@@ -1316,12 +1316,12 @@ void *saga_error_from_trap(mc_actor *a) {
 /* String refcounting                                                       */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void saga_retain_string(mc_string *s) {
+void saga_retain_string(saga_runtime_string *s) {
   if (s && s->refcount > 0)
     s->refcount++;
 }
 
-void saga_release_string(mc_string *s) {
+void saga_release_string(saga_runtime_string *s) {
   if (!s || s->refcount < 0) return;   /* static — never free */
   s->refcount--;
   if (s->refcount <= 0) {
@@ -1330,10 +1330,10 @@ void saga_release_string(mc_string *s) {
   }
 }
 
-static mc_string *mc_alloc_string(const char *buf, int64_t len) {
+static saga_runtime_string *saga_runtime_alloc_string(const char *buf, int64_t len) {
   char *heap = (char *)malloc((size_t)len);
   if (len > 0) memcpy(heap, buf, (size_t)len);
-  mc_string *s = (mc_string *)malloc(sizeof(mc_string));
+  saga_runtime_string *s = (saga_runtime_string *)malloc(sizeof(saga_runtime_string));
   s->data = heap;
   s->len = len;
   s->refcount = 1;
@@ -1344,7 +1344,7 @@ static mc_string *mc_alloc_string(const char *buf, int64_t len) {
 /* String helpers                                                           */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-mc_string *saga_string_concat(const mc_string *a, const mc_string *b) {
+saga_runtime_string *saga_string_concat(const saga_runtime_string *a, const saga_runtime_string *b) {
   int64_t new_len = 0;
   if (a) new_len += a->len;
   if (b) new_len += b->len;
@@ -1359,14 +1359,14 @@ mc_string *saga_string_concat(const mc_string *a, const mc_string *b) {
     memcpy(buf + off, b->data, (size_t)b->len);
   }
 
-  mc_string *result = (mc_string *)malloc(sizeof(mc_string));
+  saga_runtime_string *result = (saga_runtime_string *)malloc(sizeof(saga_runtime_string));
   result->data = buf;
   result->len = new_len;
   result->refcount = 1;
   return result;
 }
 
-int64_t saga_string_compare(const mc_string *a, const mc_string *b) {
+int64_t saga_string_compare(const saga_runtime_string *a, const saga_runtime_string *b) {
   if (!a || !a->data) return (b && b->data && b->len > 0) ? -1 : 0;
   if (!b || !b->data) return (a->len > 0) ? 1 : 0;
 
@@ -1382,45 +1382,45 @@ int64_t saga_string_compare(const mc_string *a, const mc_string *b) {
 /* Type-to-string conversions                                               */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-mc_string *saga_int_to_string(int64_t val) {
+saga_runtime_string *saga_int_to_string(int64_t val) {
   char buf[32];
   int n = snprintf(buf, sizeof(buf), "%" PRId64, val);
-  return mc_alloc_string(buf, n);
+  return saga_runtime_alloc_string(buf, n);
 }
 
-mc_string *saga_float_to_string(double val) {
+saga_runtime_string *saga_float_to_string(double val) {
   char buf[64];
   int n = snprintf(buf, sizeof(buf), "%g", val);
-  return mc_alloc_string(buf, n);
+  return saga_runtime_alloc_string(buf, n);
 }
 
-mc_string *saga_bool_to_string(int64_t val) {
-  if (val) return mc_alloc_string("true", 4);
-  return mc_alloc_string("false", 5);
+saga_runtime_string *saga_bool_to_string(int64_t val) {
+  if (val) return saga_runtime_alloc_string("true", 4);
+  return saga_runtime_alloc_string("false", 5);
 }
 
-mc_string *saga_string_lower(const mc_string *s) {
-  if (!s || s->len == 0) return mc_alloc_string("", 0);
+saga_runtime_string *saga_string_lower(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
   char *buf = (char *)malloc((size_t)s->len);
-  if (!buf) return mc_alloc_string("", 0);
+  if (!buf) return saga_runtime_alloc_string("", 0);
   for (int64_t i = 0; i < s->len; i++) {
     unsigned char c = (unsigned char)s->data[i];
     buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
   }
-  mc_string *result = mc_alloc_string(buf, s->len);
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, s->len);
   free(buf);
   return result;
 }
 
-mc_string *saga_string_upper(const mc_string *s) {
-  if (!s || s->len == 0) return mc_alloc_string("", 0);
+saga_runtime_string *saga_string_upper(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
   char *buf = (char *)malloc((size_t)s->len);
-  if (!buf) return mc_alloc_string("", 0);
+  if (!buf) return saga_runtime_alloc_string("", 0);
   for (int64_t i = 0; i < s->len; i++) {
     unsigned char c = (unsigned char)s->data[i];
     buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
   }
-  mc_string *result = mc_alloc_string(buf, s->len);
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, s->len);
   free(buf);
   return result;
 }
@@ -1429,22 +1429,22 @@ mc_string *saga_string_upper(const mc_string *s) {
 /* String: Bytes, Count, Runes                                              */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-/* mc_array typedef needed here for forward declarations below. */
+/* saga_runtime_array typedef needed here for forward declarations below. */
 typedef struct {
   void *data;
   int64_t len;
   int64_t cap;
   int64_t elem_size;
   int64_t refcount;
-} mc_array;
+} saga_runtime_array;
 
 /* Forward declarations for array ops (defined below). */
-static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap);
-static void saga_array_push_internal(mc_array *arr, const void *elem);
+static saga_runtime_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap);
+static void saga_array_push_internal(saga_runtime_array *arr, const void *elem);
 
-mc_array *saga_string_bytes(const mc_string *s) {
+saga_runtime_array *saga_string_bytes(const saga_runtime_string *s) {
   int64_t len = (s && s->data) ? s->len : 0;
-  mc_array *arr = saga_array_new_internal(1, len > 4 ? len : 4);
+  saga_runtime_array *arr = saga_array_new_internal(1, len > 4 ? len : 4);
   for (int64_t i = 0; i < len; i++) {
     uint8_t b = (uint8_t)s->data[i];
     saga_array_push_internal(arr, &b);
@@ -1452,7 +1452,7 @@ mc_array *saga_string_bytes(const mc_string *s) {
   return arr;
 }
 
-int64_t saga_string_count(const mc_string *s) {
+int64_t saga_string_count(const saga_runtime_string *s) {
   if (!s || !s->data || s->len == 0) return 0;
   int64_t count = 0;
   for (int64_t i = 0; i < s->len; ) {
@@ -1466,9 +1466,9 @@ int64_t saga_string_count(const mc_string *s) {
   return count;
 }
 
-mc_array *saga_string_runes(const mc_string *s) {
+saga_runtime_array *saga_string_runes(const saga_runtime_string *s) {
   int64_t len = (s && s->data) ? s->len : 0;
-  mc_array *arr = saga_array_new_internal(4, len > 4 ? len : 4);
+  saga_runtime_array *arr = saga_array_new_internal(4, len > 4 ? len : 4);
   for (int64_t i = 0; i < len; ) {
     unsigned char c = (unsigned char)s->data[i];
     int32_t cp = 0;
@@ -1495,10 +1495,144 @@ mc_array *saga_string_runes(const mc_string *s) {
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* String: predicates and substring search                                  */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+int64_t saga_string_has_prefix(const saga_runtime_string *s,
+                               const saga_runtime_string *prefix) {
+  if (!prefix || prefix->len == 0) return 1;
+  if (!s || s->len < prefix->len) return 0;
+  return memcmp(s->data, prefix->data, (size_t)prefix->len) == 0 ? 1 : 0;
+}
+
+int64_t saga_string_has_suffix(const saga_runtime_string *s,
+                               const saga_runtime_string *suffix) {
+  if (!suffix || suffix->len == 0) return 1;
+  if (!s || s->len < suffix->len) return 0;
+  return memcmp(s->data + (s->len - suffix->len), suffix->data,
+                (size_t)suffix->len) == 0 ? 1 : 0;
+}
+
+/* Naive O(n*m) substring search.  Returns the byte offset of the first       */
+/* occurrence, or -1 if absent.                                               */
+static int64_t saga_runtime_string_find(const saga_runtime_string *s,
+                                        const saga_runtime_string *needle) {
+  if (!needle || needle->len == 0) return 0;
+  if (!s || s->len < needle->len) return -1;
+  int64_t last = s->len - needle->len;
+  for (int64_t i = 0; i <= last; i++) {
+    if (memcmp(s->data + i, needle->data, (size_t)needle->len) == 0)
+      return i;
+  }
+  return -1;
+}
+
+int64_t saga_string_contains(const saga_runtime_string *s,
+                             const saga_runtime_string *needle) {
+  return saga_runtime_string_find(s, needle) >= 0 ? 1 : 0;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: trimming and casing                                              */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+static int saga_runtime_is_ascii_space(unsigned char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
+         c == '\f';
+}
+
+saga_runtime_string *saga_string_trim(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
+  int64_t start = 0;
+  int64_t end = s->len;
+  while (start < end && saga_runtime_is_ascii_space((unsigned char)s->data[start]))
+    start++;
+  while (end > start && saga_runtime_is_ascii_space((unsigned char)s->data[end - 1]))
+    end--;
+  return saga_runtime_alloc_string(s->data + start, end - start);
+}
+
+saga_runtime_string *saga_string_capitalize(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  unsigned char c0 = (unsigned char)s->data[0];
+  buf[0] = (c0 >= 'a' && c0 <= 'z') ? (char)(c0 - 32) : (char)c0;
+  for (int64_t i = 1; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+  }
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
+saga_runtime_string *saga_string_title(const saga_runtime_string *s) {
+  if (!s || s->len == 0) return saga_runtime_alloc_string("", 0);
+  char *buf = (char *)malloc((size_t)s->len);
+  int at_word_start = 1;
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (saga_runtime_is_ascii_space(c)) {
+      buf[i] = (char)c;
+      at_word_start = 1;
+    } else if (at_word_start) {
+      buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+      at_word_start = 0;
+    } else {
+      buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+  }
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, s->len);
+  free(buf);
+  return result;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: split                                                            */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/* Split returns an array of saga_runtime_string* fragments.  An empty       */
+/* separator returns a single-element array containing the input string.     */
+saga_runtime_array *saga_string_split(const saga_runtime_string *s,
+                                      const saga_runtime_string *sep) {
+  saga_runtime_array *arr = saga_array_new_internal(
+      (int64_t)sizeof(saga_runtime_string *), 4);
+  if (!s || s->len == 0) {
+    saga_runtime_string *empty = saga_runtime_alloc_string("", 0);
+    saga_array_push_internal(arr, &empty);
+    return arr;
+  }
+  if (!sep || sep->len == 0) {
+    saga_runtime_string *copy = saga_runtime_alloc_string(s->data, s->len);
+    saga_array_push_internal(arr, &copy);
+    return arr;
+  }
+  /* Back-to-back separators produce empty fragments (matches Go's          */
+  /* strings.Split).                                                         */
+  int64_t start = 0;
+  int64_t i = 0;
+  while (i <= s->len - sep->len) {
+    if (memcmp(s->data + i, sep->data, (size_t)sep->len) == 0) {
+      saga_runtime_string *frag =
+          saga_runtime_alloc_string(s->data + start, i - start);
+      saga_array_push_internal(arr, &frag);
+      i += sep->len;
+      start = i;
+    } else {
+      i++;
+    }
+  }
+  saga_runtime_string *tail =
+      saga_runtime_alloc_string(s->data + start, s->len - start);
+  saga_array_push_internal(arr, &tail);
+  return arr;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* String: parsing (try-style: returns 0 on success, non-zero on failure)   */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-int64_t saga_string_to_int(const mc_string *s, int64_t *out) {
+int64_t saga_string_to_int(const saga_runtime_string *s, int64_t *out) {
   if (!s || !s->data || s->len == 0) return 1;
   /* Copy to null-terminated buffer for strtoll. */
   char buf[64];
@@ -1513,7 +1647,7 @@ int64_t saga_string_to_int(const mc_string *s, int64_t *out) {
   return 0;
 }
 
-int64_t saga_string_to_float(const mc_string *s, double *out) {
+int64_t saga_string_to_float(const saga_runtime_string *s, double *out) {
   if (!s || !s->data || s->len == 0) return 1;
   char buf[256];
   int64_t copy_len = s->len < 255 ? s->len : 255;
@@ -1546,7 +1680,7 @@ typedef struct {
   int scientific;  /* 1 if 'e' present */
 } fmt_spec;
 
-static fmt_spec parse_fmt(const mc_string *fmt) {
+static fmt_spec parse_fmt(const saga_runtime_string *fmt) {
   fmt_spec f = {0, ' ', 0, -1, 0};
   if (!fmt || !fmt->data || fmt->len == 0) return f;
   const char *p = fmt->data;
@@ -1572,8 +1706,8 @@ static fmt_spec parse_fmt(const mc_string *fmt) {
   return f;
 }
 
-static mc_string *apply_padding(const char *raw, int raw_len, fmt_spec *f) {
-  if (raw_len >= f->width) return mc_alloc_string(raw, raw_len);
+static saga_runtime_string *apply_padding(const char *raw, int raw_len, fmt_spec *f) {
+  if (raw_len >= f->width) return saga_runtime_alloc_string(raw, raw_len);
   int pad = f->width - raw_len;
   char *buf = (char *)malloc((size_t)f->width);
   if (f->fill == '0' && (raw[0] == '+' || raw[0] == '-')) {
@@ -1585,12 +1719,12 @@ static mc_string *apply_padding(const char *raw, int raw_len, fmt_spec *f) {
     memset(buf, f->fill, (size_t)pad);
     memcpy(buf + pad, raw, (size_t)raw_len);
   }
-  mc_string *result = mc_alloc_string(buf, f->width);
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, f->width);
   free(buf);
   return result;
 }
 
-mc_string *saga_int_format(int64_t val, const mc_string *fmt) {
+saga_runtime_string *saga_int_format(int64_t val, const saga_runtime_string *fmt) {
   fmt_spec f = parse_fmt(fmt);
   char raw[64];
   int n;
@@ -1601,7 +1735,7 @@ mc_string *saga_int_format(int64_t val, const mc_string *fmt) {
   return apply_padding(raw, n, &f);
 }
 
-mc_string *saga_float_format(double val, const mc_string *fmt) {
+saga_runtime_string *saga_float_format(double val, const saga_runtime_string *fmt) {
   fmt_spec f = parse_fmt(fmt);
   char raw[128];
   int n;
@@ -1623,17 +1757,17 @@ mc_string *saga_float_format(double val, const mc_string *fmt) {
   return apply_padding(raw, n, &f);
 }
 
-mc_string *saga_string_format(const mc_string *self, const mc_string *fmt) {
+saga_runtime_string *saga_string_format(const saga_runtime_string *self, const saga_runtime_string *fmt) {
   fmt_spec f = parse_fmt(fmt);
   int slen = self ? (int)self->len : 0;
   const char *sdata = (self && self->data) ? self->data : "";
-  if (slen >= f.width) return mc_alloc_string(sdata, slen);
+  if (slen >= f.width) return saga_runtime_alloc_string(sdata, slen);
   int pad = f.width - slen;
   char *buf = (char *)malloc((size_t)f.width);
   /* Strings are right-aligned with padding on the left by default. */
   memset(buf, f.fill, (size_t)pad);
   memcpy(buf + pad, sdata, (size_t)slen);
-  mc_string *result = mc_alloc_string(buf, f.width);
+  saga_runtime_string *result = saga_runtime_alloc_string(buf, f.width);
   free(buf);
   return result;
 }
@@ -1642,19 +1776,19 @@ mc_string *saga_string_format(const mc_string *self, const mc_string *fmt) {
 /* Array                                                                    */
 /*                                                                          */
 /* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount }   */
-/* (mc_array typedef is above, before string helpers that use it.)          */
+/* (saga_runtime_array typedef is above, before string helpers that use it.)          */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array refcounting                                                        */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void saga_retain_array(mc_array *arr) {
+void saga_retain_array(saga_runtime_array *arr) {
   if (arr && arr->refcount > 0)
     arr->refcount++;
 }
 
-void saga_release_array(mc_array *arr) {
+void saga_release_array(saga_runtime_array *arr) {
   if (!arr || arr->refcount < 0) return;
   arr->refcount--;
   if (arr->refcount <= 0) {
@@ -1668,9 +1802,9 @@ void saga_release_array(mc_array *arr) {
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /* Internal versions used by string helpers (defined above via forward decl). */
-static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap) {
+static saga_runtime_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap) {
   if (initial_cap < 4) initial_cap = 4;
-  mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
+  saga_runtime_array *arr = (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
   arr->data = malloc((size_t)(elem_size * initial_cap));
   arr->len = 0;
   arr->cap = initial_cap;
@@ -1679,7 +1813,7 @@ static mc_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap)
   return arr;
 }
 
-static void saga_array_push_internal(mc_array *arr, const void *elem) {
+static void saga_array_push_internal(saga_runtime_array *arr, const void *elem) {
   if (!arr) return;
   if (arr->len >= arr->cap) {
     arr->cap = arr->cap * 2;
@@ -1690,9 +1824,9 @@ static void saga_array_push_internal(mc_array *arr, const void *elem) {
   arr->len++;
 }
 
-mc_array *saga_array_new(int64_t elem_size, int64_t initial_cap) {
+saga_runtime_array *saga_array_new(int64_t elem_size, int64_t initial_cap) {
   if (initial_cap < 4) initial_cap = 4;
-  mc_array *arr = (mc_array *)malloc(sizeof(mc_array));
+  saga_runtime_array *arr = (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
   arr->data = malloc((size_t)(elem_size * initial_cap));
   arr->len = 0;
   arr->cap = initial_cap;
@@ -1701,7 +1835,7 @@ mc_array *saga_array_new(int64_t elem_size, int64_t initial_cap) {
   return arr;
 }
 
-void saga_array_push(mc_array *arr, const void *elem) {
+void saga_array_push(saga_runtime_array *arr, const void *elem) {
   if (!arr) return;
   if (arr->len >= arr->cap) {
     arr->cap = arr->cap * 2;
@@ -1712,16 +1846,16 @@ void saga_array_push(mc_array *arr, const void *elem) {
   arr->len++;
 }
 
-void *saga_array_at(mc_array *arr, int64_t index) {
+void *saga_array_at(saga_runtime_array *arr, int64_t index) {
   if (!arr || index < 0 || index >= arr->len) return NULL;
   return (char *)arr->data + arr->elem_size * index;
 }
 
-int64_t saga_array_size(mc_array *arr) {
+int64_t saga_array_size(saga_runtime_array *arr) {
   return arr ? arr->len : 0;
 }
 
-int64_t saga_array_find(mc_array *arr, const void *elem, int64_t *out) {
+int64_t saga_array_find(saga_runtime_array *arr, const void *elem, int64_t *out) {
   if (!arr || !elem) return 1;
   for (int64_t i = 0; i < arr->len; i++) {
     void *cur = (char *)arr->data + arr->elem_size * i;
@@ -1733,7 +1867,7 @@ int64_t saga_array_find(mc_array *arr, const void *elem, int64_t *out) {
   return 1; /* not found */
 }
 
-void saga_array_insert(mc_array *arr, const void *elem, int64_t index) {
+void saga_array_insert(saga_runtime_array *arr, const void *elem, int64_t index) {
   if (!arr || !elem) return;
   if (index < 0) index = 0;
   if (index > arr->len) index = arr->len;
@@ -1753,16 +1887,30 @@ void saga_array_insert(mc_array *arr, const void *elem, int64_t index) {
   arr->len++;
 }
 
-void *saga_array_pop(mc_array *arr) {
+void *saga_array_pop(saga_runtime_array *arr) {
   if (!arr || arr->len == 0) return NULL;
   arr->len--;
   return (char *)arr->data + arr->elem_size * arr->len;
 }
 
-void saga_array_set(mc_array *arr, int64_t index, const void *elem) {
+void saga_array_set(saga_runtime_array *arr, int64_t index, const void *elem) {
   if (!arr || !elem || index < 0 || index >= arr->len) return;
   memcpy((char *)arr->data + arr->elem_size * index, elem,
          (size_t)arr->elem_size);
+}
+
+/* Element-wise byte comparison.  Matches saga_array_find semantics: arrays  */
+/* of strings/structs compare by stored bytes (pointer or aggregate value),  */
+/* not by deep content.                                                      */
+int64_t saga_array_equals(const saga_runtime_array *a,
+                          const saga_runtime_array *b) {
+  if (a == b) return 1;
+  if (!a || !b) return 0;
+  if (a->len != b->len) return 0;
+  if (a->elem_size != b->elem_size) return 0;
+  if (a->len == 0) return 1;
+  return memcmp(a->data, b->data,
+                (size_t)(a->len * a->elem_size)) == 0 ? 1 : 0;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -1781,10 +1929,10 @@ void saga_array_set(mc_array *arr, int64_t index, const void *elem) {
 typedef struct {
   void *key;
   void *value;
-} mc_map_entry;
+} saga_runtime_map_entry;
 
 typedef struct {
-  mc_map_entry *entries;    /* dense array, insertion order                 */
+  saga_runtime_map_entry *entries;    /* dense array, insertion order                 */
   int64_t *indices;         /* hash table: slot → index (-1 empty, -2 del) */
   int64_t len;              /* number of live entries                       */
   int64_t entries_cap;      /* capacity of entries[]                        */
@@ -1792,11 +1940,11 @@ typedef struct {
   int64_t key_size;
   int64_t val_size;
   int64_t refcount;
-  int     is_string_key;    /* 1 if keys are mc_string pointers            */
-} mc_map;
+  int     is_string_key;    /* 1 if keys are saga_runtime_string pointers            */
+} saga_runtime_map;
 
-#define MC_MAP_EMPTY    (-1)
-#define MC_MAP_DELETED  (-2)
+#define SAGA_RUNTIME_MAP_EMPTY    (-1)
+#define SAGA_RUNTIME_MAP_DELETED  (-2)
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* SipHash-1-3                                                              */
@@ -1812,23 +1960,23 @@ typedef struct {
 
 #include <sys/random.h>
 
-static uint64_t mc_sip_k0;
-static uint64_t mc_sip_k1;
+static uint64_t saga_runtime_sip_k0;
+static uint64_t saga_runtime_sip_k1;
 
 __attribute__((constructor))
-static void mc_siphash_init_key(void) {
+static void saga_runtime_siphash_init_key(void) {
   uint8_t buf[16];
   /* getrandom() won't short-read for 16 bytes on Linux. */
   if (getrandom(buf, sizeof(buf), 0) != sizeof(buf)) {
     /* Fallback: mix address-space and time entropy.  Not great, but     */
     /* strictly better than a fixed constant and only hit if getrandom   */
     /* is somehow unavailable.                                           */
-    mc_sip_k0 = (uint64_t)(uintptr_t)&mc_sip_k0 * 6364136223846793005ULL;
-    mc_sip_k1 = (uint64_t)(uintptr_t)&mc_sip_k1 * 1442695040888963407ULL;
+    saga_runtime_sip_k0 = (uint64_t)(uintptr_t)&saga_runtime_sip_k0 * 6364136223846793005ULL;
+    saga_runtime_sip_k1 = (uint64_t)(uintptr_t)&saga_runtime_sip_k1 * 1442695040888963407ULL;
     return;
   }
-  memcpy(&mc_sip_k0, buf,     8);
-  memcpy(&mc_sip_k1, buf + 8, 8);
+  memcpy(&saga_runtime_sip_k0, buf,     8);
+  memcpy(&saga_runtime_sip_k1, buf + 8, 8);
 }
 
 static inline uint64_t sip_rotl(uint64_t x, int b) {
@@ -1853,11 +2001,11 @@ static inline uint64_t sip_rotl(uint64_t x, int b) {
     v2 = sip_rotl(v2, 32);  \
   } while (0)
 
-static uint64_t mc_siphash(const uint8_t *data, int64_t len) {
-  uint64_t v0 = mc_sip_k0 ^ 0x736f6d6570736575ULL;
-  uint64_t v1 = mc_sip_k1 ^ 0x646f72616e646f6dULL;
-  uint64_t v2 = mc_sip_k0 ^ 0x6c7967656e657261ULL;
-  uint64_t v3 = mc_sip_k1 ^ 0x7465646279746573ULL;
+static uint64_t saga_runtime_siphash(const uint8_t *data, int64_t len) {
+  uint64_t v0 = saga_runtime_sip_k0 ^ 0x736f6d6570736575ULL;
+  uint64_t v1 = saga_runtime_sip_k1 ^ 0x646f72616e646f6dULL;
+  uint64_t v2 = saga_runtime_sip_k0 ^ 0x6c7967656e657261ULL;
+  uint64_t v3 = saga_runtime_sip_k1 ^ 0x7465646279746573ULL;
 
   const uint8_t *end = data + (len - (len % 8));
   uint64_t m;
@@ -1896,20 +2044,20 @@ static uint64_t mc_siphash(const uint8_t *data, int64_t len) {
 
 /* ── Key hashing / comparison helpers ──────────────────────────────────── */
 
-static uint64_t mc_map_hash_key(const mc_map *m, const void *key) {
+static uint64_t saga_runtime_map_hash_key(const saga_runtime_map *m, const void *key) {
   if (m->is_string_key) {
-    const mc_string *s = *(const mc_string *const *)key;
+    const saga_runtime_string *s = *(const saga_runtime_string *const *)key;
     if (!s || !s->data || s->len <= 0)
-      return mc_siphash((const uint8_t *)"", 0);
-    return mc_siphash((const uint8_t *)s->data, s->len);
+      return saga_runtime_siphash((const uint8_t *)"", 0);
+    return saga_runtime_siphash((const uint8_t *)s->data, s->len);
   }
-  return mc_siphash((const uint8_t *)key, m->key_size);
+  return saga_runtime_siphash((const uint8_t *)key, m->key_size);
 }
 
-static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b) {
+static int saga_runtime_map_keys_equal(const saga_runtime_map *m, const void *a, const void *b) {
   if (m->is_string_key) {
-    const mc_string *sa = *(const mc_string *const *)a;
-    const mc_string *sb = *(const mc_string *const *)b;
+    const saga_runtime_string *sa = *(const saga_runtime_string *const *)a;
+    const saga_runtime_string *sb = *(const saga_runtime_string *const *)b;
     if (sa == sb) return 1;
     if (!sa || !sb) return 0;
     if (sa->len != sb->len) return 0;
@@ -1926,9 +2074,9 @@ static int mc_map_keys_equal(const mc_map *m, const void *a, const void *b) {
 /* On match, *out_entry_idx is set to the entries[] index.                  */
 /* On empty/deleted, *out_entry_idx is set to -1.                           */
 
-static int64_t mc_map_probe(const mc_map *m, const void *key,
+static int64_t saga_runtime_map_probe(const saga_runtime_map *m, const void *key,
                             int64_t *out_entry_idx) {
-  uint64_t h = mc_map_hash_key(m, key);
+  uint64_t h = saga_runtime_map_hash_key(m, key);
   int64_t mask = m->index_cap - 1; /* index_cap is always a power of 2 */
   int64_t slot = (int64_t)(h & (uint64_t)mask);
   int64_t first_deleted = -1;
@@ -1937,16 +2085,16 @@ static int64_t mc_map_probe(const mc_map *m, const void *key,
     int64_t s = (slot + i) & mask;
     int64_t eidx = m->indices[s];
 
-    if (eidx == MC_MAP_EMPTY) {
+    if (eidx == SAGA_RUNTIME_MAP_EMPTY) {
       *out_entry_idx = -1;
       return (first_deleted >= 0) ? first_deleted : s;
     }
-    if (eidx == MC_MAP_DELETED) {
+    if (eidx == SAGA_RUNTIME_MAP_DELETED) {
       if (first_deleted < 0) first_deleted = s;
       continue;
     }
     /* Occupied — compare keys. */
-    if (mc_map_keys_equal(m, m->entries[eidx].key, key)) {
+    if (saga_runtime_map_keys_equal(m, m->entries[eidx].key, key)) {
       *out_entry_idx = eidx;
       return s;
     }
@@ -1958,14 +2106,14 @@ static int64_t mc_map_probe(const mc_map *m, const void *key,
 
 /* ── Rebuild / resize ──────────────────────────────────────────────────── */
 
-static void mc_map_rebuild_index(mc_map *m) {
+static void saga_runtime_map_rebuild_index(saga_runtime_map *m) {
   /* Reset index table. */
   for (int64_t i = 0; i < m->index_cap; i++)
-    m->indices[i] = MC_MAP_EMPTY;
+    m->indices[i] = SAGA_RUNTIME_MAP_EMPTY;
 
   int64_t mask = m->index_cap - 1;
   for (int64_t ei = 0; ei < m->len; ei++) {
-    uint64_t h = mc_map_hash_key(m, m->entries[ei].key);
+    uint64_t h = saga_runtime_map_hash_key(m, m->entries[ei].key);
     int64_t slot = (int64_t)(h & (uint64_t)mask);
     while (m->indices[slot] >= 0)
       slot = (slot + 1) & mask;
@@ -1973,12 +2121,12 @@ static void mc_map_rebuild_index(mc_map *m) {
   }
 }
 
-static void mc_map_grow(mc_map *m) {
+static void saga_runtime_map_grow(saga_runtime_map *m) {
   /* Double the entries capacity. */
   int64_t new_ecap = m->entries_cap * 2;
   if (new_ecap < 16) new_ecap = 16;
-  m->entries = (mc_map_entry *)realloc(m->entries,
-      (size_t)new_ecap * sizeof(mc_map_entry));
+  m->entries = (saga_runtime_map_entry *)realloc(m->entries,
+      (size_t)new_ecap * sizeof(saga_runtime_map_entry));
   m->entries_cap = new_ecap;
 
   /* Index table should be ~2x the entry count for low load factor. */
@@ -1990,17 +2138,17 @@ static void mc_map_grow(mc_map *m) {
         (size_t)new_icap * sizeof(int64_t));
     m->index_cap = new_icap;
   }
-  mc_map_rebuild_index(m);
+  saga_runtime_map_rebuild_index(m);
 }
 
 /* ── Refcounting ───────────────────────────────────────────────────────── */
 
-void saga_retain_map(mc_map *m) {
+void saga_retain_map(saga_runtime_map *m) {
   if (m && m->refcount > 0)
     m->refcount++;
 }
 
-void saga_release_map(mc_map *m) {
+void saga_release_map(saga_runtime_map *m) {
   if (!m || m->refcount < 0) return;
   m->refcount--;
   if (m->refcount <= 0) {
@@ -2016,16 +2164,16 @@ void saga_release_map(mc_map *m) {
 
 /* ── Public API ────────────────────────────────────────────────────────── */
 
-mc_map *saga_map_new(int64_t key_size, int64_t val_size,
+saga_runtime_map *saga_map_new(int64_t key_size, int64_t val_size,
                      int64_t is_string_key) {
   int64_t initial_ecap = 8;
   int64_t initial_icap = 16; /* power of 2, ≥ 2 * initial_ecap */
 
-  mc_map *m = (mc_map *)malloc(sizeof(mc_map));
-  m->entries = (mc_map_entry *)malloc((size_t)initial_ecap * sizeof(mc_map_entry));
+  saga_runtime_map *m = (saga_runtime_map *)malloc(sizeof(saga_runtime_map));
+  m->entries = (saga_runtime_map_entry *)malloc((size_t)initial_ecap * sizeof(saga_runtime_map_entry));
   m->indices = (int64_t *)malloc((size_t)initial_icap * sizeof(int64_t));
   for (int64_t i = 0; i < initial_icap; i++)
-    m->indices[i] = MC_MAP_EMPTY;
+    m->indices[i] = SAGA_RUNTIME_MAP_EMPTY;
 
   m->len = 0;
   m->entries_cap = initial_ecap;
@@ -2037,11 +2185,11 @@ mc_map *saga_map_new(int64_t key_size, int64_t val_size,
   return m;
 }
 
-void saga_map_set(mc_map *m, const void *key, const void *value) {
+void saga_map_set(saga_runtime_map *m, const void *key, const void *value) {
   if (!m) return;
 
   int64_t entry_idx;
-  int64_t slot = mc_map_probe(m, key, &entry_idx);
+  int64_t slot = saga_runtime_map_probe(m, key, &entry_idx);
 
   if (entry_idx >= 0) {
     /* Key exists — update value in place (preserves insertion order). */
@@ -2051,14 +2199,14 @@ void saga_map_set(mc_map *m, const void *key, const void *value) {
 
   /* New key — grow if entries array is full. */
   if (m->len >= m->entries_cap) {
-    mc_map_grow(m);
+    saga_runtime_map_grow(m);
     /* Slot may have moved; re-probe. */
-    slot = mc_map_probe(m, key, &entry_idx);
+    slot = saga_runtime_map_probe(m, key, &entry_idx);
   }
   /* Also check index load factor (> 2/3). */
   if ((m->len + 1) * 3 > m->index_cap * 2) {
-    mc_map_grow(m);
-    slot = mc_map_probe(m, key, &entry_idx);
+    saga_runtime_map_grow(m);
+    slot = saga_runtime_map_probe(m, key, &entry_idx);
   }
 
   /* Append to the dense entries array. */
@@ -2072,24 +2220,24 @@ void saga_map_set(mc_map *m, const void *key, const void *value) {
   m->len++;
 }
 
-void *saga_map_get(mc_map *m, const void *key) {
+void *saga_map_get(saga_runtime_map *m, const void *key) {
   if (!m || m->len == 0) return NULL;
 
   int64_t entry_idx;
-  mc_map_probe(m, key, &entry_idx);
+  saga_runtime_map_probe(m, key, &entry_idx);
   if (entry_idx < 0) return NULL;
   return m->entries[entry_idx].value;
 }
 
-int64_t saga_map_has(mc_map *m, const void *key) {
+int64_t saga_map_has(saga_runtime_map *m, const void *key) {
   return saga_map_get(m, key) != NULL ? 1 : 0;
 }
 
-void saga_map_remove(mc_map *m, const void *key) {
+void saga_map_remove(saga_runtime_map *m, const void *key) {
   if (!m || m->len == 0) return;
 
   int64_t entry_idx;
-  int64_t slot = mc_map_probe(m, key, &entry_idx);
+  int64_t slot = saga_runtime_map_probe(m, key, &entry_idx);
   if (entry_idx < 0) return;
 
   /* Free the key/value being removed. */
@@ -2106,7 +2254,7 @@ void saga_map_remove(mc_map *m, const void *key) {
     /* Update the index slot that pointed at `last` to point at the new    */
     /* position.                                                           */
     int64_t moved_eidx;
-    int64_t moved_slot = mc_map_probe(m, m->entries[entry_idx].key,
+    int64_t moved_slot = saga_runtime_map_probe(m, m->entries[entry_idx].key,
                                       &moved_eidx);
     /* moved_eidx should still be `last`; fix it. */
     (void)moved_slot;
@@ -2119,40 +2267,59 @@ void saga_map_remove(mc_map *m, const void *key) {
     }
   }
 
-  m->indices[slot] = MC_MAP_DELETED;
+  m->indices[slot] = SAGA_RUNTIME_MAP_DELETED;
   m->len--;
 }
 
-int64_t saga_map_size(mc_map *m) {
+int64_t saga_map_size(saga_runtime_map *m) {
   return m ? m->len : 0;
 }
 
 /* O(1) access by insertion index — the dense array IS the order. */
-void *saga_map_key_at(mc_map *m, int64_t index) {
+void *saga_map_key_at(saga_runtime_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].key;
 }
 
-void *saga_map_value_at(mc_map *m, int64_t index) {
+void *saga_map_value_at(saga_runtime_map *m, int64_t index) {
   if (!m || index < 0 || index >= m->len) return NULL;
   return m->entries[index].value;
 }
 
-mc_array *saga_map_keys(mc_map *m) {
+saga_runtime_array *saga_map_keys(saga_runtime_map *m) {
   int64_t key_size = m ? m->key_size : 8;
   int64_t len = m ? m->len : 0;
-  mc_array *arr = saga_array_new_internal(key_size, len > 4 ? len : 4);
+  saga_runtime_array *arr = saga_array_new_internal(key_size, len > 4 ? len : 4);
   for (int64_t i = 0; i < len; i++) {
     saga_array_push_internal(arr, m->entries[i].key);
   }
   return arr;
 }
 
+/* Order-independent equality: same size, same key/value layout, every key   */
+/* in `a` exists in `b` with byte-equal values.  Keys are compared via the   */
+/* same path saga_map_get uses, so string keys compare by content.  Values   */
+/* compare by stored bytes — string-valued maps compare by pointer.          */
+int64_t saga_map_equals(saga_runtime_map *a, saga_runtime_map *b) {
+  if (a == b) return 1;
+  if (!a || !b) return 0;
+  if (a->len != b->len) return 0;
+  if (a->key_size != b->key_size) return 0;
+  if (a->val_size != b->val_size) return 0;
+  if (a->is_string_key != b->is_string_key) return 0;
+  for (int64_t i = 0; i < a->len; i++) {
+    void *bv = saga_map_get(b, a->entries[i].key);
+    if (!bv) return 0;
+    if (memcmp(a->entries[i].value, bv, (size_t)a->val_size) != 0) return 0;
+  }
+  return 1;
+}
+
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Intrinsics                                                               */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-void saga_intrinsic_print(const mc_string *s) {
+void saga_intrinsic_print(const saga_runtime_string *s) {
   if (s && s->data && s->len > 0) {
     fwrite(s->data, 1, (size_t)s->len, stdout);
   }
@@ -2162,19 +2329,19 @@ void saga_intrinsic_print(const mc_string *s) {
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Arena-aware allocation helpers                                           */
 /*                                                                          */
-/* These mirror mc_alloc_string / saga_array_new / mc_map_new but allocate    */
+/* These mirror saga_runtime_alloc_string / saga_array_new / saga_runtime_map_new but allocate    */
 /* from an arena instead of malloc.  The refcount is set to -1 (static /    */
 /* never-freed) because the arena owns the memory — individual objects are  */
 /* not freed; the entire arena is munmap'd at once.                         */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-mc_string *mc_arena_alloc_string(mc_arena *a, const char *buf, int64_t len) {
+saga_runtime_string *saga_runtime_arena_alloc_string(saga_runtime_arena *a, const char *buf, int64_t len) {
   if (!a) return NULL;
 
-  mc_string *s = (mc_string *)mc_arena_alloc(a, (int64_t)sizeof(mc_string));
+  saga_runtime_string *s = (saga_runtime_string *)saga_runtime_arena_alloc(a, (int64_t)sizeof(saga_runtime_string));
   if (!s) return NULL;
 
-  char *data = (char *)mc_arena_alloc(a, len > 0 ? len : 1);
+  char *data = (char *)saga_runtime_arena_alloc(a, len > 0 ? len : 1);
   if (!data) return NULL;
   if (len > 0 && buf) memcpy(data, buf, (size_t)len);
 
@@ -2184,15 +2351,15 @@ mc_string *mc_arena_alloc_string(mc_arena *a, const char *buf, int64_t len) {
   return s;
 }
 
-mc_array *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
+saga_runtime_array *saga_runtime_arena_alloc_array(saga_runtime_arena *a, int64_t elem_size,
                                int64_t initial_cap) {
   if (!a) return NULL;
   if (initial_cap < 4) initial_cap = 4;
 
-  mc_array *arr = (mc_array *)mc_arena_alloc(a, (int64_t)sizeof(mc_array));
+  saga_runtime_array *arr = (saga_runtime_array *)saga_runtime_arena_alloc(a, (int64_t)sizeof(saga_runtime_array));
   if (!arr) return NULL;
 
-  void *data = mc_arena_alloc(a, elem_size * initial_cap);
+  void *data = saga_runtime_arena_alloc(a, elem_size * initial_cap);
   if (!data) return NULL;
 
   arr->data      = data;
@@ -2203,26 +2370,26 @@ mc_array *mc_arena_alloc_array(mc_arena *a, int64_t elem_size,
   return arr;
 }
 
-mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size,
+saga_runtime_map *saga_runtime_arena_alloc_map(saga_runtime_arena *a, int64_t key_size, int64_t val_size,
                           int64_t is_string_key) {
   if (!a) return NULL;
 
   int64_t initial_ecap = 8;
   int64_t initial_icap = 16;
 
-  mc_map *m = (mc_map *)mc_arena_alloc(a, (int64_t)sizeof(mc_map));
+  saga_runtime_map *m = (saga_runtime_map *)saga_runtime_arena_alloc(a, (int64_t)sizeof(saga_runtime_map));
   if (!m) return NULL;
 
-  mc_map_entry *entries = (mc_map_entry *)mc_arena_alloc(
-      a, initial_ecap * (int64_t)sizeof(mc_map_entry));
+  saga_runtime_map_entry *entries = (saga_runtime_map_entry *)saga_runtime_arena_alloc(
+      a, initial_ecap * (int64_t)sizeof(saga_runtime_map_entry));
   if (!entries) return NULL;
 
-  int64_t *indices = (int64_t *)mc_arena_alloc(
+  int64_t *indices = (int64_t *)saga_runtime_arena_alloc(
       a, initial_icap * (int64_t)sizeof(int64_t));
   if (!indices) return NULL;
 
   for (int64_t i = 0; i < initial_icap; i++)
-    indices[i] = MC_MAP_EMPTY;
+    indices[i] = SAGA_RUNTIME_MAP_EMPTY;
 
   m->entries     = entries;
   m->indices     = indices;
@@ -2243,28 +2410,28 @@ mc_map *mc_arena_alloc_map(mc_arena *a, int64_t key_size, int64_t val_size,
 /* Called when a shared object is about to be mutated inside a spawn block.  */
 /*                                                                          */
 /* The COW barrier pattern (emitted by codegen):                            */
-/*   if (obj->refcount > 1) obj = mc_cow_copy_*(arena, obj);               */
+/*   if (obj->refcount > 1) obj = saga_runtime_cow_copy_*(arena, obj);               */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /*
- * mc_cow_copy_string  —  deep-copy a string into an arena.
+ * saga_runtime_cow_copy_string  —  deep-copy a string into an arena.
  */
-mc_string *mc_cow_copy_string(mc_arena *a, mc_string *src) {
+saga_runtime_string *saga_runtime_cow_copy_string(saga_runtime_arena *a, saga_runtime_string *src) {
   if (!a || !src) return src;
-  mc_string *copy = mc_arena_alloc_string(a, src->data, src->len);
+  saga_runtime_string *copy = saga_runtime_arena_alloc_string(a, src->data, src->len);
   if (copy) saga_release_string(src); /* drop the shared ref */
   return copy ? copy : src;         /* fallback to original on alloc failure */
 }
 
 /*
- * mc_cow_copy_array  —  deep-copy an array into an arena.
+ * saga_runtime_cow_copy_array  —  deep-copy an array into an arena.
  *
  * Elements are shallow-copied (memcpy).  For arrays of refcounted types,
  * the caller (codegen) must recursively COW-copy each element.
  */
-mc_array *mc_cow_copy_array(mc_arena *a, mc_array *src) {
+saga_runtime_array *saga_runtime_cow_copy_array(saga_runtime_arena *a, saga_runtime_array *src) {
   if (!a || !src) return src;
-  mc_array *copy = mc_arena_alloc_array(a, src->elem_size, src->cap);
+  saga_runtime_array *copy = saga_runtime_arena_alloc_array(a, src->elem_size, src->cap);
   if (!copy) return src;
 
   if (src->len > 0 && src->data)

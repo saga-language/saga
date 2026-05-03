@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Factory / singleton tests
@@ -281,4 +281,4 @@ TEST(Types, UnifyConflict) {
   EXPECT_FALSE(unify(param_type, arg_type, out));
 }
 
-} // namespace mc
+} // namespace saga

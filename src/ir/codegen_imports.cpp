@@ -6,7 +6,7 @@
 
 #include <llvm/IR/Constants.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // materialize_imports_from_source
@@ -87,7 +87,7 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
         st = exist->second;
         st->setBody(ftypes);
       } else {
-        st = llvm::StructType::create(context, ftypes, "mc." + key);
+        st = llvm::StructType::create(context, ftypes, "saga." + key);
         struct_types[key] = st;
       }
       struct_fields[key] = std::move(fnames);
@@ -103,60 +103,8 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
         std::string link_name = mangle(origin, sinfo.name + "__" + m.name);
         struct_method_links[key].push_back({link_name, m.name});
 
-        if (module->getFunction(link_name))
-          continue;
-
         auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-        auto *ptr_type = llvm::PointerType::getUnqual(context);
-        // Sret lowering for struct returns.
-        llvm::Type *sret_ty = nullptr;
-        llvm::Type *ret_ll = void_ll_type;
-        if (!fi.returns.empty()) {
-          auto *r = llvm_type(fi.returns[0]);
-          if (r && r->isStructTy()) {
-            sret_ty = r;
-            ret_ll = void_ll_type;
-          } else {
-            ret_ll = r;
-          }
-        }
-        std::vector<llvm::Type *> param_ll;
-        std::vector<llvm::Type *> byval_attached(fi.params.size(), nullptr);
-        if (sret_ty)
-          param_ll.push_back(ptr_type);
-        param_ll.push_back(ptr_type); // self pointer
-        for (size_t pi = 0; pi < fi.params.size(); ++pi) {
-          auto *p = llvm_type(fi.params[pi]);
-          if (p && p->isStructTy()) {
-            byval_attached[pi] = p;
-            param_ll.push_back(ptr_type);
-          } else {
-            param_ll.push_back(p);
-          }
-        }
-        auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
-        auto *func = llvm::Function::Create(
-            ft, llvm::Function::ExternalLinkage, link_name, module.get());
-
-        unsigned aidx = 0;
-        if (sret_ty) {
-          llvm::AttrBuilder ab(context);
-          ab.addStructRetAttr(sret_ty);
-          ab.addAlignmentAttr(
-              module->getDataLayout().getABITypeAlign(sret_ty));
-          func->addParamAttrs(aidx++, ab);
-        }
-        ++aidx; // self
-        for (size_t pi = 0; pi < fi.params.size(); ++pi) {
-          if (byval_attached[pi]) {
-            llvm::AttrBuilder ab(context);
-            ab.addByValAttr(byval_attached[pi]);
-            ab.addAlignmentAttr(
-                module->getDataLayout().getABITypeAlign(byval_attached[pi]));
-            func->addParamAttrs(aidx, ab);
-          }
-          ++aidx;
-        }
+        forward_declare_method(link_name, fi);
       }
       break;
     }
@@ -197,7 +145,7 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
         method_names.push_back(m.name);
       }
       auto *vtable_st = llvm::StructType::create(context, vtable_fields,
-                                                  "mc.vtable." + key);
+                                                  "saga.vtable." + key);
       iface_vtable_types[key] = vtable_st;
       iface_method_names[key] = std::move(method_names);
       named_sem_types[key] = exp.type;
@@ -215,4 +163,74 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
   }
 }
 
-} // namespace mc
+// ---------------------------------------------------------------------------
+// forward_declare_method
+// Emit an extern declaration for a struct method link symbol, lowering the
+// FuncTypeInfo with the standard sret/byval ABI plus an implicit `self`
+// pointer.  Idempotent — returns the existing function when one is already
+// present in the module.  Used by materialize_import for imported struct
+// methods, and by get_or_create_vtable as a fallback when a method symbol
+// isn't visible at the use site (e.g. struct in pkg A satisfying iface in
+// pkg B from pkg C without direct visibility into A).
+// ---------------------------------------------------------------------------
+
+llvm::Function *
+CodeGen::forward_declare_method(const std::string &link_name,
+                                 const FuncTypeInfo &fi) {
+  if (auto *existing = module->getFunction(link_name))
+    return existing;
+
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+
+  llvm::Type *sret_ty = nullptr;
+  llvm::Type *ret_ll = void_ll_type;
+  if (!fi.returns.empty()) {
+    auto *r = llvm_type(fi.returns[0]);
+    if (r && r->isStructTy()) {
+      sret_ty = r;
+    } else {
+      ret_ll = r;
+    }
+  }
+
+  std::vector<llvm::Type *> param_ll;
+  std::vector<llvm::Type *> byval_attached(fi.params.size(), nullptr);
+  if (sret_ty)
+    param_ll.push_back(ptr_type);
+  param_ll.push_back(ptr_type); // self pointer
+  for (size_t pi = 0; pi < fi.params.size(); ++pi) {
+    auto *p = llvm_type(fi.params[pi]);
+    if (p && p->isStructTy()) {
+      byval_attached[pi] = p;
+      param_ll.push_back(ptr_type);
+    } else {
+      param_ll.push_back(p);
+    }
+  }
+
+  auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
+  auto *func = llvm::Function::Create(
+      ft, llvm::Function::ExternalLinkage, link_name, module.get());
+
+  unsigned aidx = 0;
+  if (sret_ty) {
+    llvm::AttrBuilder ab(context);
+    ab.addStructRetAttr(sret_ty);
+    ab.addAlignmentAttr(module->getDataLayout().getABITypeAlign(sret_ty));
+    func->addParamAttrs(aidx++, ab);
+  }
+  ++aidx; // self
+  for (size_t pi = 0; pi < fi.params.size(); ++pi) {
+    if (byval_attached[pi]) {
+      llvm::AttrBuilder ab(context);
+      ab.addByValAttr(byval_attached[pi]);
+      ab.addAlignmentAttr(
+          module->getDataLayout().getABITypeAlign(byval_attached[pi]));
+      func->addParamAttrs(aidx, ab);
+    }
+    ++aidx;
+  }
+  return func;
+}
+
+} // namespace saga

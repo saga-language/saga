@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <sstream>
 
-namespace mc {
+namespace saga {
 
 // ===========================================================================
 // Factory helpers
@@ -21,8 +21,23 @@ TypePtr make_bool_type() {
   return std::make_shared<Type>(TypeKind::Bool, BoolType{});
 }
 
-TypePtr make_int_type(uint8_t bits, bool is_signed) {
-  return std::make_shared<Type>(TypeKind::Int, IntType{bits, is_signed});
+TypePtr make_int_type(uint8_t bits, bool is_signed, bool is_untyped) {
+  return std::make_shared<Type>(TypeKind::Int,
+                                IntType{bits, is_signed, is_untyped});
+}
+
+TypePtr make_untyped_int_type() {
+  return std::make_shared<Type>(TypeKind::Int,
+                                IntType{0, true, /*is_untyped=*/true});
+}
+
+TypePtr materialize_untyped(const TypePtr &t) {
+  if (!t || t->kind != TypeKind::Int)
+    return t;
+  auto &info = std::get<IntType>(t->detail);
+  if (!info.is_untyped)
+    return t;
+  return make_int_type(info.bits, info.is_signed);
 }
 
 TypePtr make_float_type(uint8_t bits) {
@@ -485,6 +500,13 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (source->kind == TypeKind::Int && target->kind == TypeKind::Float)
     return true;
 
+  // Untyped integer literal — assignable to any integer width.
+  // (Float targets are already handled by the Int→Float promotion above.)
+  if (source->kind == TypeKind::Int &&
+      std::get<IntType>(source->detail).is_untyped &&
+      target->kind == TypeKind::Int)
+    return true;
+
   // Source assignable to any alternative in a union target.
   if (target->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(target->detail);
@@ -557,6 +579,17 @@ TypePtr common_type(const TypePtr &a, const TypePtr &b) {
   if (is_error_type(b))
     return a;
   if (types_equal(a, b))
+    return a;
+
+  // Untyped integer literal yields to any concrete integer width on the
+  // other side, so `x Int32 + 5` keeps the Int32 typing.
+  auto is_untyped_int = [](const TypePtr &t) {
+    return t->kind == TypeKind::Int &&
+           std::get<IntType>(t->detail).is_untyped;
+  };
+  if (is_untyped_int(a) && b->kind == TypeKind::Int)
+    return b;
+  if (is_untyped_int(b) && a->kind == TypeKind::Int)
     return a;
 
   // Int + Float → Float.
@@ -772,4 +805,4 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
   }
 }
 
-} // namespace mc
+} // namespace saga

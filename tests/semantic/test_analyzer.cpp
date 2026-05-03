@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Helper — parse source text and run the analyzer, returning both.
@@ -573,4 +573,4 @@ TEST(Analyzer, IntrinsicReceiverMethodResolvesInCheckSelector) {
   EXPECT_TRUE(r.has_no_errors());
 }
 
-} // namespace mc
+} // namespace saga

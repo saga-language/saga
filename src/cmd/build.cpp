@@ -28,15 +28,15 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------------------
 
 /// Collect receiver methods from a stdlib analyzer into SgiReceiverMethod vec.
-static std::vector<mc::SgiReceiverMethod>
-collect_receiver_methods(const mc::Analyzer &analyzer) {
-  std::vector<mc::SgiReceiverMethod> result;
+static std::vector<saga::SgiReceiverMethod>
+collect_receiver_methods(const saga::Analyzer &analyzer) {
+  std::vector<saga::SgiReceiverMethod> result;
   // Intrinsic scalar types (Int, Float, Bool, String) — keyed by Type*.
   for (auto &[type_ptr, methods] : analyzer.type_methods_) {
     std::string type_name;
     switch (type_ptr->kind) {
-    case mc::TypeKind::Int: {
-      auto &ii = std::get<mc::IntType>(type_ptr->detail);
+    case saga::TypeKind::Int: {
+      auto &ii = std::get<saga::IntType>(type_ptr->detail);
       if (ii.bits == 0)
         type_name = "Int";
       else if (ii.is_signed)
@@ -45,21 +45,21 @@ collect_receiver_methods(const mc::Analyzer &analyzer) {
         type_name = "Uint" + std::to_string(ii.bits);
       break;
     }
-    case mc::TypeKind::Float: {
-      auto &fi = std::get<mc::FloatType>(type_ptr->detail);
+    case saga::TypeKind::Float: {
+      auto &fi = std::get<saga::FloatType>(type_ptr->detail);
       if (fi.bits == 0)
         type_name = "Float";
       else
         type_name = "Float" + std::to_string(fi.bits);
       break;
     }
-    case mc::TypeKind::Bool:   type_name = "Bool";   break;
-    case mc::TypeKind::String: type_name = "String"; break;
+    case saga::TypeKind::Bool:   type_name = "Bool";   break;
+    case saga::TypeKind::String: type_name = "String"; break;
     default: break;
     }
     if (type_name.empty())
       continue;
-    std::vector<mc::MethodInfo> pub;
+    std::vector<saga::MethodInfo> pub;
     for (auto &m : methods)
       if (m.is_public) pub.push_back(m);
     if (!pub.empty())
@@ -69,13 +69,13 @@ collect_receiver_methods(const mc::Analyzer &analyzer) {
   for (auto &[kind, methods] : analyzer.kind_methods_) {
     std::string type_name;
     switch (kind) {
-    case mc::TypeKind::Array: type_name = "Array"; break;
-    case mc::TypeKind::Map:   type_name = "Map";   break;
+    case saga::TypeKind::Array: type_name = "Array"; break;
+    case saga::TypeKind::Map:   type_name = "Map";   break;
     default: break;
     }
     if (type_name.empty())
       continue;
-    std::vector<mc::MethodInfo> pub;
+    std::vector<saga::MethodInfo> pub;
     for (auto &m : methods)
       if (m.is_public) pub.push_back(m);
     if (!pub.empty())
@@ -100,14 +100,14 @@ static bool compile_package(const std::string &source_dir,
     return false;
   }
 
-  mc::FileSet fileset;
+  saga::FileSet fileset;
   auto sg_files = collect_sg_files(source_dir);
   if (sg_files.empty()) {
     std::cerr << std::format("Error: no .sg files in '{}'\n", source_dir);
     return false;
   }
   for (auto &sg : sg_files) {
-    auto file = mc::File::from_path(sg.string());
+    auto file = saga::File::from_path(sg.string());
     if (!file) {
       std::cerr << std::format("Error: cannot open '{}'\n", sg.string());
       return false;
@@ -115,7 +115,7 @@ static bool compile_package(const std::string &source_dir,
     fileset.add_file(std::move(file));
   }
 
-  mc::Parser parser(fileset);
+  saga::Parser parser(fileset);
   auto ast = parser.parse();
   if (!ast || !parser.errors.errors.empty()) {
     if (!parser.errors.errors.empty())
@@ -125,8 +125,9 @@ static bool compile_package(const std::string &source_dir,
     return false;
   }
 
-  mc::Analyzer analyzer(fileset);
+  saga::Analyzer analyzer(fileset);
   analyzer.current_package_dir = source_dir;
+  analyzer.current_package_name_override = pkg_name;
   analyzer.is_stdlib = stdlib_mode;
   {
     fs::path parent = fs::path(source_dir).parent_path();
@@ -144,7 +145,7 @@ static bool compile_package(const std::string &source_dir,
     return false;
   }
 
-  mc::CodeGen codegen(pkg_name, analyzer);
+  saga::CodeGen codegen(pkg_name, analyzer);
   codegen.imported_init_symbols = init_symbols;
   codegen.emit(*ast);
 
@@ -154,13 +155,13 @@ static bool compile_package(const std::string &source_dir,
     return false;
   }
 
-  std::vector<mc::SgiExport> exports;
-  std::vector<mc::SgiImport> imports;
+  std::vector<saga::SgiExport> exports;
+  std::vector<saga::SgiImport> imports;
   if (analyzer.package_scope_) {
     for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
       if (sym.is_public && !sym.is_builtin && sym.type) {
-        bool is_type = (sym.kind == mc::SymbolKind::Type);
-        std::string origin = mc::origin_of(sym.type);
+        bool is_type = (sym.kind == saga::SymbolKind::Type);
+        std::string origin = saga::origin_of(sym.type);
         if (origin.empty()) origin = pkg_name;
         exports.push_back({"", sym_name, sym.type, is_type, origin});
       }
@@ -172,7 +173,7 @@ static bool compile_package(const std::string &source_dir,
   std::string abs_source_dir =
       fs::absolute(source_dir, abs_ec).lexically_normal().string();
   if (abs_ec) abs_source_dir.clear();
-  if (!mc::write_sgi(sgi_path, pkg_name, imports, exports, receiver_methods,
+  if (!saga::write_sgi(sgi_path, pkg_name, imports, exports, receiver_methods,
                      abs_source_dir)) {
     std::cerr << std::format("Error: cannot write interface to '{}'\n",
                              sgi_path);
@@ -198,7 +199,7 @@ static int build_graph_mode(const char *prog,
                              const std::string &binary_path,
                              bool lib_mode,
                              bool verbose) {
-  mc::BuildGraph graph;
+  saga::BuildGraph graph;
   if (!graph.scan(source_dir, import_path, output_dir, search_paths,
                   sgi_search_paths)) {
     std::cerr << std::format("Error: {}\n", graph.error);
@@ -232,7 +233,7 @@ static int build_graph_mode(const char *prog,
   std::unordered_map<std::string, std::string> pkg_link_name;
 
   // Index nodes by import path for transitive-dep walks.
-  std::unordered_map<std::string, const mc::BuildGraph::Node *> by_path;
+  std::unordered_map<std::string, const saga::BuildGraph::Node *> by_path;
   for (const auto *n : sorted)
     by_path[n->import_path] = n;
 
@@ -266,14 +267,14 @@ static int build_graph_mode(const char *prog,
         init_symbols.push_back(pkg_link_name[dep->import_path]);
     }
 
-    if (mc::BuildGraph::needs_rebuild(*node)) {
+    if (saga::BuildGraph::needs_rebuild(*node)) {
       if (verbose)
         std::cerr << std::format("  building {}\n", node->import_path);
       if (!compile_package(node->source_dir, node->name, node->output_dir,
                            search_paths, cumulative_sgi_dirs, init_symbols,
                            verbose))
         return 1;
-      if (!mc::BuildGraph::save_hash(*node))
+      if (!saga::BuildGraph::save_hash(*node))
         std::cerr << std::format("Warning: could not save hash for '{}'\n",
                                  node->import_path);
     } else if (verbose) {
@@ -283,9 +284,9 @@ static int build_graph_mode(const char *prog,
     // Record whether this freshly-compiled-or-cached package needs init.
     {
       std::string sgi = node->output_dir + "/" + node->name + ".sgi";
-      auto parsed = mc::load_sgi(sgi);
+      auto parsed = saga::load_sgi(sgi);
       pkg_needs_init[node->import_path] =
-          parsed && mc::sgi_needs_init(*parsed);
+          parsed && saga::sgi_needs_init(*parsed);
       pkg_link_name[node->import_path] = node->name + "__init__";
     }
 
@@ -428,17 +429,17 @@ int cmd_build(const char *prog, int argc, char **argv) {
 
   // ── Single-package mode ───────────────────────────────────────────────────
 
-  mc::FileSet fileset;
+  saga::FileSet fileset;
   std::string package_dir = load_sources(source_path, fileset);
   if (package_dir.empty() && fileset.files.empty())
     return 1;
 
-  mc::Parser parser(fileset);
+  saga::Parser parser(fileset);
   auto ast = parser.parse();
   if (!ast) { std::cerr << "Error: parse failed\n"; return 1; }
   if (!parser.errors.errors.empty()) { parser.errors.print_errors(); return 1; }
 
-  mc::Analyzer analyzer(fileset);
+  saga::Analyzer analyzer(fileset);
   analyzer.is_stdlib = stdlib_mode;
   setup_analyzer_paths(analyzer, package_dir, search_paths, sgi_search_paths,
                        prog);
@@ -450,7 +451,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
       ? input_path.filename().string()
       : input_path.stem().string();
 
-  mc::CodeGen codegen(module_name, analyzer);
+  saga::CodeGen codegen(module_name, analyzer);
   // Best-effort init-symbol discovery: each resolved import's .sgi tells us
   // whether that package owns runtime-allocated consts.  Single-package mode
   // has no full build graph, so order falls back to map-iteration order;
@@ -460,8 +461,8 @@ int cmd_build(const char *prog, int argc, char **argv) {
     std::string pname = (slash != std::string::npos)
                             ? imp_path.substr(slash + 1) : imp_path;
     std::string sgi = dir + "/" + pname + ".sgi";
-    auto parsed = mc::load_sgi(sgi);
-    if (parsed && mc::sgi_needs_init(*parsed))
+    auto parsed = saga::load_sgi(sgi);
+    if (parsed && saga::sgi_needs_init(*parsed))
       codegen.imported_init_symbols.push_back(pname + "__init__");
   }
   codegen.emit(*ast);
@@ -489,13 +490,13 @@ int cmd_build(const char *prog, int argc, char **argv) {
   if (emit_obj) return 0;
 
   if (lib_mode) {
-    std::vector<mc::SgiExport> exports;
-    std::vector<mc::SgiImport> imports;
+    std::vector<saga::SgiExport> exports;
+    std::vector<saga::SgiImport> imports;
     if (analyzer.package_scope_) {
       for (auto &[sym_name, sym] : analyzer.package_scope_->symbols) {
         if (sym.is_public && !sym.is_builtin && sym.type) {
-          bool is_type = (sym.kind == mc::SymbolKind::Type);
-          std::string origin = mc::origin_of(sym.type);
+          bool is_type = (sym.kind == saga::SymbolKind::Type);
+          std::string origin = saga::origin_of(sym.type);
           if (origin.empty()) origin = module_name;
           exports.push_back({"", sym_name, sym.type, is_type, origin});
         }
@@ -511,7 +512,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
           fs::absolute(package_dir, abs_ec).lexically_normal().string();
       if (abs_ec) abs_source_dir.clear();
     }
-    if (!mc::write_sgi(sgi_path, module_name, imports, exports,
+    if (!saga::write_sgi(sgi_path, module_name, imports, exports,
                        receiver_methods, abs_source_dir)) {
       std::cerr << std::format("Error: cannot write interface to '{}'\n",
                                sgi_path);

@@ -8,7 +8,7 @@
 
 #include <llvm/IR/Constants.h>
 
-namespace mc {
+namespace saga {
 
 // ---------------------------------------------------------------------------
 // Step 5a — FuncEmissionScope (RAII)
@@ -212,7 +212,7 @@ llvm::Function *CodeGen::emit_specialisation(
     std::vector<llvm::Type *> rfs;
     for (auto &r : fi.returns) rfs.push_back(to_param_ll(r));
     auto *st =
-        llvm::StructType::create(context, rfs, "mc.ret." + mangled);
+        llvm::StructType::create(context, rfs, "saga.ret." + mangled);
     multi_return_types[mangled] = st;
     multi_return_counts[mangled] = fi.returns.size();
     ret_ll = st;
@@ -319,4 +319,4 @@ llvm::Function *CodeGen::emit_specialisation(
   return func;
 }
 
-} // namespace mc
+} // namespace saga

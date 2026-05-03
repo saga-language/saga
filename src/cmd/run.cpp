@@ -79,17 +79,17 @@ int cmd_run(const char *prog, int argc, char **argv) {
 
   // ── Compile ───────────────────────────────────────────────────────────────
 
-  mc::FileSet fileset;
+  saga::FileSet fileset;
   std::string package_dir = load_sources(source_path, fileset);
   if (package_dir.empty() && fileset.files.empty())
     return 1;
 
-  mc::Parser parser(fileset);
+  saga::Parser parser(fileset);
   auto ast = parser.parse();
   if (!ast) { std::cerr << "Error: parse failed\n"; return 1; }
   if (!parser.errors.errors.empty()) { parser.errors.print_errors(); return 1; }
 
-  mc::Analyzer analyzer(fileset);
+  saga::Analyzer analyzer(fileset);
   setup_analyzer_paths(analyzer, package_dir, search_paths, sgi_search_paths,
                        prog);
   analyzer.analyze(*ast);
@@ -100,7 +100,7 @@ int cmd_run(const char *prog, int argc, char **argv) {
       ? input_path.filename().string()
       : input_path.stem().string();
 
-  mc::CodeGen codegen(module_name, analyzer);
+  saga::CodeGen codegen(module_name, analyzer);
   codegen.emit(*ast);
 
   // Write a temp object file.

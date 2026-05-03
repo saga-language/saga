@@ -6,7 +6,7 @@
 
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 TEST(FileSetTest, AddFile_AppendsFile) {
   FileSet fs;
@@ -17,4 +17,4 @@ TEST(FileSetTest, AddFile_AppendsFile) {
   ASSERT_EQ(fs.files[0]->filename, "file.txt");
 }
 
-} // namespace mc
+} // namespace saga

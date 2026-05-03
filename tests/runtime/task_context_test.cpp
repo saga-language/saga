@@ -8,9 +8,9 @@
 #include <vector>
 
 /* ── Helper: wait for actor under lock ─────────────────────────────────── */
-static void wait_for_actor(mc_actor *a) {
+static void wait_for_actor(saga_runtime_actor *a) {
   pthread_mutex_lock(&a->lock);
-  while (a->status < MC_ACTOR_COMPLETED)
+  while (a->status < SAGA_RUNTIME_ACTOR_COMPLETED)
     pthread_cond_wait(&a->done_cond, &a->lock);
   pthread_mutex_unlock(&a->lock);
 }
@@ -27,11 +27,11 @@ protected:
 
 /* ── Actor entries used by tests ───────────────────────────────────────── */
 
-static void noop_entry(mc_actor *) {}
+static void noop_entry(saga_runtime_actor *) {}
 
 /* Exit with an int64_t value allocated in the arena. */
-static void exit_with_value_entry(mc_actor *a) {
-  int64_t *val = (int64_t *)mc_arena_alloc(a->arena, sizeof(int64_t));
+static void exit_with_value_entry(saga_runtime_actor *a) {
+  int64_t *val = (int64_t *)saga_runtime_arena_alloc(a->arena, sizeof(int64_t));
   *val = 42;
   saga_context_exit(a, val, sizeof(int64_t));
   /* saga_context_exit does not return. */
@@ -40,15 +40,15 @@ static void exit_with_value_entry(mc_actor *a) {
 /* Exit with a larger struct. */
 struct Payload { int64_t x; int64_t y; };
 
-static void exit_with_struct_entry(mc_actor *a) {
-  Payload *p = (Payload *)mc_arena_alloc(a->arena, sizeof(Payload));
+static void exit_with_struct_entry(saga_runtime_actor *a) {
+  Payload *p = (Payload *)saga_runtime_arena_alloc(a->arena, sizeof(Payload));
   p->x = 100;
   p->y = 200;
   saga_context_exit(a, p, sizeof(Payload));
 }
 
 /* Poll cancelled and exit cleanly when asked. */
-static void poll_cancel_entry(mc_actor *a) {
+static void poll_cancel_entry(saga_runtime_actor *a) {
   while (!saga_context_cancelled(a)) {
     /* spin */
   }
@@ -56,26 +56,26 @@ static void poll_cancel_entry(mc_actor *a) {
 }
 
 /* Send several values through the channel, then exit. */
-static void channel_sender_entry(mc_actor *a) {
+static void channel_sender_entry(saga_runtime_actor *a) {
   for (int64_t i = 1; i <= 5; i++)
     saga_context_send(a, &i);
   /* Return normally — worker will close the channel. */
 }
 
 /* Send values and exit with a result. */
-static void send_then_exit_entry(mc_actor *a) {
+static void send_then_exit_entry(saga_runtime_actor *a) {
   for (int64_t i = 10; i <= 12; i++)
     saga_context_send(a, &i);
 
-  int64_t *val = (int64_t *)mc_arena_alloc(a->arena, sizeof(int64_t));
+  int64_t *val = (int64_t *)saga_runtime_arena_alloc(a->arena, sizeof(int64_t));
   *val = 99;
   saga_context_exit(a, val, sizeof(int64_t));
 }
 
 /* Busy-loop forever (used to test term). */
-static void infinite_loop_entry(mc_actor *a) {
+static void infinite_loop_entry(saga_runtime_actor *a) {
   while (1) {
-    if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == MC_ACTOR_KILLED)
+    if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == SAGA_RUNTIME_ACTOR_KILLED)
       longjmp(a->trap, 1);
   }
 }
@@ -85,13 +85,13 @@ static void infinite_loop_entry(mc_actor *a) {
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 TEST_F(TaskContextTest, WaitReturnsResult) {
-  mc_actor *a = saga_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
   void *result = saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(*(int64_t *)result, 42);
   EXPECT_EQ(a->arena, nullptr); /* arena destroyed */
@@ -100,13 +100,13 @@ TEST_F(TaskContextTest, WaitReturnsResult) {
 }
 
 TEST_F(TaskContextTest, WaitReturnsStruct) {
-  mc_actor *a = saga_executor_spawn(exit_with_struct_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(exit_with_struct_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
   void *result = saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
   ASSERT_NE(result, nullptr);
   Payload *p = (Payload *)result;
   EXPECT_EQ(p->x, 100);
@@ -116,20 +116,20 @@ TEST_F(TaskContextTest, WaitReturnsStruct) {
 }
 
 TEST_F(TaskContextTest, WaitNoopReturnsNull) {
-  mc_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   int64_t status;
   void *result = saga_task_wait(a, &status);
 
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
   EXPECT_EQ(result, nullptr); /* no context_exit was called */
 
   saga_task_drop(a);
 }
 
 TEST_F(TaskContextTest, WaitNullStatusPtr) {
-  mc_actor *a = saga_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
   void *result = saga_task_wait(a, nullptr);
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(*(int64_t *)result, 42);
@@ -140,11 +140,11 @@ TEST_F(TaskContextTest, WaitNullActor) {
   int64_t status = -1;
   void *result = saga_task_wait(nullptr, &status);
   EXPECT_EQ(result, nullptr);
-  EXPECT_EQ(status, MC_ACTOR_KILLED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_KILLED);
 }
 
 TEST_F(TaskContextTest, AliveBeforeCompletion) {
-  mc_actor *a = saga_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   /* Give it a moment to start. */
@@ -166,7 +166,7 @@ TEST_F(TaskContextTest, AliveNullReturnsFalse) {
 /* ── Cancel ────────────────────────────────────────────────────────────── */
 
 TEST_F(TaskContextTest, CancelSetsFlag) {
-  mc_actor *a = saga_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -174,7 +174,7 @@ TEST_F(TaskContextTest, CancelSetsFlag) {
 
   int64_t status;
   saga_task_wait(a, &status);
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED); /* exited cleanly after cancel */
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED); /* exited cleanly after cancel */
 
   saga_task_drop(a);
 }
@@ -186,7 +186,7 @@ TEST_F(TaskContextTest, CancelNullIsSafe) {
 /* ── Term ──────────────────────────────────────────────────────────────── */
 
 TEST_F(TaskContextTest, TermKillsActor) {
-  mc_actor *a = saga_executor_spawn(infinite_loop_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(infinite_loop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -194,18 +194,18 @@ TEST_F(TaskContextTest, TermKillsActor) {
 
   int64_t status;
   saga_task_wait(a, &status);
-  EXPECT_EQ(status, MC_ACTOR_KILLED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_KILLED);
 
   saga_task_drop(a);
 }
 
 TEST_F(TaskContextTest, TermAfterCompletionIsNoop) {
-  mc_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   saga_task_wait(a, nullptr);
   saga_task_term(a); // already completed — should be safe
-  EXPECT_EQ(a->status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(a->status, SAGA_RUNTIME_ACTOR_COMPLETED);
 
   saga_task_drop(a);
 }
@@ -217,7 +217,7 @@ TEST_F(TaskContextTest, TermNullIsSafe) {
 /* ── Drop ──────────────────────────────────────────────────────────────── */
 
 TEST_F(TaskContextTest, DropReleasesRef) {
-  mc_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   saga_task_wait(a, nullptr);
 
@@ -233,7 +233,7 @@ TEST_F(TaskContextTest, DropReleasesRef) {
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 TEST_F(TaskContextTest, ContextCancelledReflectsTaskCancel) {
-  mc_actor *a = saga_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(poll_cancel_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -254,7 +254,7 @@ TEST_F(TaskContextTest, ContextCancelledNullReturnsFalse) {
 
 TEST_F(TaskContextTest, SendThroughChannel) {
   /* Create actor, attach channel, THEN schedule — no race. */
-  mc_actor *a = mc_actor_new(channel_sender_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_runtime_actor_new(channel_sender_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   a->channel = saga_channel_new(sizeof(int64_t), 8);
   ASSERT_NE(a->channel, nullptr);
@@ -276,7 +276,7 @@ TEST_F(TaskContextTest, SendThroughChannel) {
 }
 
 TEST_F(TaskContextTest, SendAndExitWithResult) {
-  mc_actor *a = mc_actor_new(send_then_exit_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_runtime_actor_new(send_then_exit_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   a->channel = saga_channel_new(sizeof(int64_t), 8);
   ASSERT_NE(a->channel, nullptr);
@@ -295,7 +295,7 @@ TEST_F(TaskContextTest, SendAndExitWithResult) {
   /* Also get the exit result. */
   int64_t status;
   void *result = saga_task_wait(a, &status);
-  EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(*(int64_t *)result, 99);
 
@@ -305,7 +305,7 @@ TEST_F(TaskContextTest, SendAndExitWithResult) {
 }
 
 TEST_F(TaskContextTest, SendWithNoChannelReturnsError) {
-  mc_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
+  saga_runtime_actor *a = saga_executor_spawn(noop_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   saga_task_wait(a, nullptr);
 
@@ -327,7 +327,7 @@ TEST_F(TaskContextTest, SendNullActorReturnsError) {
 
 TEST_F(TaskContextTest, MultipleActorsWithResults) {
   const int N = 20;
-  std::vector<mc_actor *> actors(N);
+  std::vector<saga_runtime_actor *> actors(N);
 
   for (int i = 0; i < N; i++) {
     actors[i] = saga_executor_spawn(exit_with_value_entry, nullptr, 0, 0);
@@ -337,7 +337,7 @@ TEST_F(TaskContextTest, MultipleActorsWithResults) {
   for (int i = 0; i < N; i++) {
     int64_t status;
     void *result = saga_task_wait(actors[i], &status);
-    EXPECT_EQ(status, MC_ACTOR_COMPLETED);
+    EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_COMPLETED);
     ASSERT_NE(result, nullptr);
     EXPECT_EQ(*(int64_t *)result, 42);
     saga_task_drop(actors[i]);

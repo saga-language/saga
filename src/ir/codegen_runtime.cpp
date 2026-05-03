@@ -6,202 +6,247 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 
-namespace mc {
+namespace saga {
 
 void CodeGen::declare_runtime() {
   auto *ptr_type = llvm::PointerType::getUnqual(context);
 
-  // void saga_intrinsic_print(mc_string* s)
+  // void saga_intrinsic_print(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_intrinsic_print", module.get());
 
-  // mc_string* saga_string_concat(mc_string* a, mc_string* b)
+  // saga_runtime_string* saga_string_concat(saga_runtime_string* a, saga_runtime_string* b)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_concat", module.get());
 
-  // int64_t saga_string_compare(mc_string* a, mc_string* b)
+  // int64_t saga_string_compare(saga_runtime_string* a, saga_runtime_string* b)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_compare", module.get());
 
-  // mc_string* saga_int_to_string(int64_t val)
+  // saga_runtime_string* saga_int_to_string(int64_t val)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_int_to_string", module.get());
 
-  // mc_string* saga_float_to_string(double val)
+  // saga_runtime_string* saga_float_to_string(double val)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {f64_type}, false),
       llvm::Function::ExternalLinkage, "saga_float_to_string", module.get());
 
-  // mc_string* saga_bool_to_string(int64_t val)
+  // saga_runtime_string* saga_bool_to_string(int64_t val)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_bool_to_string", module.get());
 
-  // mc_string* saga_string_lower(mc_string* s)
+  // saga_runtime_string* saga_string_lower(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_lower", module.get());
 
-  // mc_string* saga_string_upper(mc_string* s)
+  // saga_runtime_string* saga_string_upper(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_upper", module.get());
 
-  // mc_array* saga_string_bytes(mc_string* s)
+  // saga_runtime_string* saga_string_trim(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_trim", module.get());
+
+  // saga_runtime_string* saga_string_capitalize(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_capitalize", module.get());
+
+  // saga_runtime_string* saga_string_title(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_title", module.get());
+
+  // i64 saga_string_has_prefix(saga_runtime_string* s, saga_runtime_string* prefix)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_has_prefix", module.get());
+
+  // i64 saga_string_has_suffix(saga_runtime_string* s, saga_runtime_string* suffix)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_has_suffix", module.get());
+
+  // i64 saga_string_contains(saga_runtime_string* s, saga_runtime_string* needle)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_contains", module.get());
+
+  // saga_runtime_array* saga_string_split(saga_runtime_string* s, saga_runtime_string* sep)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_split", module.get());
+
+  // saga_runtime_array* saga_string_bytes(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_bytes", module.get());
 
-  // i64 saga_string_count(mc_string* s)
+  // i64 saga_string_count(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_count", module.get());
 
-  // mc_array* saga_string_runes(mc_string* s)
+  // saga_runtime_array* saga_string_runes(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_runes", module.get());
 
-  // i64 saga_string_to_int(mc_string* s, i64* out)
+  // i64 saga_string_to_int(saga_runtime_string* s, i64* out)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_to_int", module.get());
 
-  // i64 saga_string_to_float(mc_string* s, double* out)
+  // i64 saga_string_to_float(saga_runtime_string* s, double* out)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_to_float", module.get());
 
-  // mc_string* saga_string_format(mc_string* self, mc_string* fmt)
+  // saga_runtime_string* saga_string_format(saga_runtime_string* self, saga_runtime_string* fmt)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_format", module.get());
 
-  // mc_string* saga_int_format(i64 val, mc_string* fmt)
+  // saga_runtime_string* saga_int_format(i64 val, saga_runtime_string* fmt)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_int_format", module.get());
 
-  // mc_string* saga_float_format(double val, mc_string* fmt)
+  // saga_runtime_string* saga_float_format(double val, saga_runtime_string* fmt)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {f64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_float_format", module.get());
 
-  // mc_array* saga_array_new(i64 elem_size, i64 initial_cap)
+  // saga_runtime_array* saga_array_new(i64 elem_size, i64 initial_cap)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_new", module.get());
 
-  // void saga_array_push(mc_array* arr, void* elem)
+  // void saga_array_push(saga_runtime_array* arr, void* elem)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_push", module.get());
 
-  // void* saga_array_at(mc_array* arr, i64 index)
+  // void* saga_array_at(saga_runtime_array* arr, i64 index)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_at", module.get());
 
-  // i64 saga_array_size(mc_array* arr)
+  // i64 saga_array_size(saga_runtime_array* arr)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_size", module.get());
 
-  // i64 saga_array_find(mc_array* arr, void* elem, i64* out)
+  // i64 saga_array_find(saga_runtime_array* arr, void* elem, i64* out)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_find", module.get());
 
-  // void saga_array_insert(mc_array* arr, void* elem, i64 index)
+  // void saga_array_insert(saga_runtime_array* arr, void* elem, i64 index)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_insert", module.get());
 
-  // void* saga_array_pop(mc_array* arr)
+  // void* saga_array_pop(saga_runtime_array* arr)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_pop", module.get());
 
-  // void saga_array_set(mc_array* arr, i64 index, void* elem)
+  // void saga_array_set(saga_runtime_array* arr, i64 index, void* elem)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_set", module.get());
 
-  // void saga_retain_string(mc_string* s)
+  // i64 saga_array_equals(saga_runtime_array* a, saga_runtime_array* b)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_array_equals", module.get());
+
+  // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_retain_string", module.get());
 
-  // void saga_release_string(mc_string* s)
+  // void saga_release_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_release_string", module.get());
 
-  // void saga_retain_array(mc_array* arr)
+  // void saga_retain_array(saga_runtime_array* arr)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_retain_array", module.get());
 
-  // void saga_release_array(mc_array* arr)
+  // void saga_release_array(saga_runtime_array* arr)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_release_array", module.get());
 
-  // mc_map* saga_map_new(i64 key_size, i64 val_size, i64 is_string_key)
+  // saga_runtime_map* saga_map_new(i64 key_size, i64 val_size, i64 is_string_key)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type, i64_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_new", module.get());
 
-  // void saga_map_set(mc_map* m, void* key, void* value)
+  // void saga_map_set(saga_runtime_map* m, void* key, void* value)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_set", module.get());
 
-  // void* saga_map_get(mc_map* m, void* key)
+  // void* saga_map_get(saga_runtime_map* m, void* key)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_get", module.get());
 
-  // i64 saga_map_has(mc_map* m, void* key)
+  // i64 saga_map_has(saga_runtime_map* m, void* key)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_has", module.get());
 
-  // void saga_map_remove(mc_map* m, void* key)
+  // void saga_map_remove(saga_runtime_map* m, void* key)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_remove", module.get());
 
-  // i64 saga_map_size(mc_map* m)
+  // i64 saga_map_size(saga_runtime_map* m)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_size", module.get());
 
-  // void* saga_map_key_at(mc_map* m, i64 index)
+  // void* saga_map_key_at(saga_runtime_map* m, i64 index)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_key_at", module.get());
 
-  // void* saga_map_value_at(mc_map* m, i64 index)
+  // void* saga_map_value_at(saga_runtime_map* m, i64 index)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_value_at", module.get());
 
-  // mc_array* saga_map_keys(mc_map* m)
+  // saga_runtime_array* saga_map_keys(saga_runtime_map* m)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_keys", module.get());
 
-  // void saga_retain_map(mc_map* m)
+  // i64 saga_map_equals(saga_runtime_map* a, saga_runtime_map* b)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_equals", module.get());
+
+  // void saga_retain_map(saga_runtime_map* m)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_retain_map", module.get());
 
-  // void saga_release_map(mc_map* m)
+  // void saga_release_map(saga_runtime_map* m)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_release_map", module.get());
@@ -218,82 +263,82 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {}, false),
       llvm::Function::ExternalLinkage, "saga_executor_shutdown", module.get());
 
-  // mc_actor* saga_executor_spawn(void(*entry)(mc_actor*), void* closure,
+  // saga_runtime_actor* saga_executor_spawn(void(*entry)(saga_runtime_actor*), void* closure,
   //                             i64 closure_size, i64 arena_max)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type,
                               {ptr_type, ptr_type, i64_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_executor_spawn", module.get());
 
-  // void saga_executor_schedule(mc_actor* actor)
+  // void saga_executor_schedule(saga_runtime_actor* actor)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_executor_schedule", module.get());
 
-  // mc_channel* saga_channel_new(i64 elem_size, i64 capacity)
+  // saga_runtime_channel* saga_channel_new(i64 elem_size, i64 capacity)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_channel_new", module.get());
 
-  // int saga_channel_recv(mc_channel* ch, void* out_buf)
+  // int saga_channel_recv(saga_runtime_channel* ch, void* out_buf)
   llvm::Function::Create(
       llvm::FunctionType::get(llvm::Type::getInt32Ty(context),
                               {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_channel_recv", module.get());
 
-  // void saga_channel_close(mc_channel* ch)
+  // void saga_channel_close(saga_runtime_channel* ch)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_channel_close", module.get());
 
-  // void saga_channel_destroy(mc_channel* ch)
+  // void saga_channel_destroy(saga_runtime_channel* ch)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_channel_destroy", module.get());
 
-  // i64 saga_task_alive(mc_actor* a)
+  // i64 saga_task_alive(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_task_alive", module.get());
 
-  // void saga_task_cancel(mc_actor* a)
+  // void saga_task_cancel(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_task_cancel", module.get());
 
-  // void saga_task_term(mc_actor* a)
+  // void saga_task_term(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_task_term", module.get());
 
-  // void* saga_task_wait(mc_actor* a, i64* out_status)
+  // void* saga_task_wait(saga_runtime_actor* a, i64* out_status)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_task_wait", module.get());
 
-  // void saga_task_drop(mc_actor* a)
+  // void saga_task_drop(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_task_drop", module.get());
 
-  // i64 saga_context_cancelled(mc_actor* a)
+  // i64 saga_context_cancelled(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_context_cancelled", module.get());
 
-  // void saga_context_exit(mc_actor* a, void* value, i64 size)
+  // void saga_context_exit(saga_runtime_actor* a, void* value, i64 size)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, i64_type},
                               false),
       llvm::Function::ExternalLinkage, "saga_context_exit", module.get());
 
-  // int saga_context_send(mc_actor* a, void* data)
+  // int saga_context_send(saga_runtime_actor* a, void* data)
   llvm::Function::Create(
       llvm::FunctionType::get(llvm::Type::getInt32Ty(context),
                               {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_context_send", module.get());
 
-  // void saga_reduction_tick(mc_actor* a)
+  // void saga_reduction_tick(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_reduction_tick", module.get());
@@ -303,12 +348,12 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {}, false),
       llvm::Function::ExternalLinkage, "saga_actor_yield", module.get());
 
-  // void saga_actor_trap(mc_string* reason)
+  // void saga_actor_trap(saga_runtime_string* reason)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_actor_trap", module.get());
 
-  // void* saga_error_from_trap(mc_actor* a)
+  // void* saga_error_from_trap(saga_runtime_actor* a)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_error_from_trap", module.get());
@@ -320,7 +365,7 @@ void CodeGen::declare_runtime() {
   std::string error_key = mangle(package_name, "Error");
   if (!iface_vtable_types.count(error_key)) {
     auto *vtable_st = llvm::StructType::create(
-        context, {ptr_type}, "mc.vtable." + error_key);
+        context, {ptr_type}, "saga.vtable." + error_key);
     iface_vtable_types[error_key] = vtable_st;
     iface_method_names[error_key] = {"Message"};
   }
@@ -351,15 +396,25 @@ llvm::GlobalVariable *CodeGen::get_or_create_vtable(const TypePtr &struct_type,
   auto *vtable_st = vt_it->second;
 
   auto &method_names = iface_method_names[iface_key];
-  auto &methods = struct_method_links[struct_key];
+  auto &iinfo_methods = std::get<InterfaceTypeInfo>(iface_type->detail).methods;
 
   // Build the vtable constant.
   std::string struct_origin =
       sinfo.origin_package.empty() ? package_name : sinfo.origin_package;
   std::vector<llvm::Constant *> entries;
-  for (auto &iface_method : method_names) {
-    std::string link_name = mangle(struct_origin, sinfo.name + "__" + iface_method);
+  for (size_t mi = 0; mi < method_names.size(); ++mi) {
+    auto &iface_method = method_names[mi];
+    std::string link_name =
+        mangle(struct_origin, sinfo.name + "__" + iface_method);
     auto *fn = module->getFunction(link_name);
+    if (!fn && mi < iinfo_methods.size() && iinfo_methods[mi].signature &&
+        iinfo_methods[mi].signature->kind == TypeKind::Func) {
+      // Symbol not visible in this importer (e.g. struct from pkg A satisfying
+      // iface from pkg B used from pkg C).  Forward-declare against the iface
+      // method signature so the linker resolves it.
+      auto &fi = std::get<FuncTypeInfo>(iinfo_methods[mi].signature->detail);
+      fn = forward_declare_method(link_name, fi);
+    }
     if (fn) {
       entries.push_back(fn);
     } else {
@@ -372,7 +427,7 @@ llvm::GlobalVariable *CodeGen::get_or_create_vtable(const TypePtr &struct_type,
   auto *vtable_const = llvm::ConstantStruct::get(vtable_st, entries);
   auto *vtable_global = new llvm::GlobalVariable(
       *module, vtable_st, true, llvm::GlobalValue::PrivateLinkage,
-      vtable_const, "mc.vtable." + struct_key + "." + iface_key);
+      vtable_const, "saga.vtable." + struct_key + "." + iface_key);
 
   vtable_globals[vtable_cache_key] = vtable_global;
   return vtable_global;
@@ -433,7 +488,7 @@ llvm::StructType *CodeGen::get_union_llvm_type(const TypePtr &union_sem) {
   auto *st = llvm::StructType::create(
       context,
       {llvm::Type::getInt8Ty(context), payload_ty},
-      "mc.union." + key);
+      "saga.union." + key);
   union_llvm_types[key] = st;
   return st;
 }
@@ -680,4 +735,4 @@ void CodeGen::emit_release_locals() {
   }
 }
 
-} // namespace mc
+} // namespace saga

@@ -7,7 +7,7 @@
 #include "gtest/gtest.h"
 #include <gtest/gtest.h>
 
-namespace mc {
+namespace saga {
 
 // Empty source and special characters
 TEST(Lexer, Scan_EmptySource_ReturnsEof) {
@@ -1070,4 +1070,4 @@ TEST(Lexer, Scan_Newline_TracksPosition) {
   ASSERT_EQ(pos.column, 1);
 }
 
-} // namespace mc
+} // namespace saga
