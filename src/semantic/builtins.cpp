@@ -259,12 +259,13 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_field", SymbolKind::Function,
       make_func_type({types.any_type, types.int_type}, {types.any_type})));
 
-  // intrinsic_sitofp(value: Int) -> Any
+  // intrinsic_sitofp(value: Any) -> Any
   // LLVM sitofp i64 → double. Returns Any so the stdlib can cast to Float,
-  // Float32, Float64, etc.
+  // Float32, Float64, etc.  Value is Any so any integer-kind input
+  // (Int, Int8/16/32/64, Uint*) flows through without an extra conversion.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sitofp", SymbolKind::Function,
-      make_func_type({types.int_type}, {types.any_type})));
+      make_func_type({types.any_type}, {types.any_type})));
 
   // intrinsic_fptosi(value: Float) -> Any
   // LLVM fptosi double → i64. Returns Any so the stdlib can cast to Int,
@@ -273,24 +274,24 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_fptosi", SymbolKind::Function,
       make_func_type({types.float_type}, {types.any_type})));
 
-  // intrinsic_zext(value: Int, bits: Int) -> Any
-  // LLVM zext/trunc to the target bit width. Returns Any so the stdlib can
-  // cast to Uint8, Int32, Char, etc.
+  // intrinsic_zext(value: Any, bits: Int) -> Any
+  // Truncate value to `bits`, then zero-extend back to i64.  Value is Any
+  // so any integer-kind input is accepted.
   global_scope->declare(Symbol::builtin(
       "intrinsic_zext", SymbolKind::Function,
-      make_func_type({types.int_type, types.int_type}, {types.any_type})));
+      make_func_type({types.any_type, types.int_type}, {types.any_type})));
 
-  // intrinsic_sext(value: Int, bits: Int) -> Any
-  // LLVM sext/trunc to the target bit width (sign-extending). Returns Any.
+  // intrinsic_sext(value: Any, bits: Int) -> Any
+  // Truncate value to `bits`, then sign-extend back to i64.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sext", SymbolKind::Function,
-      make_func_type({types.int_type, types.int_type}, {types.any_type})));
+      make_func_type({types.any_type, types.int_type}, {types.any_type})));
 
-  // intrinsic_sitofp32(value: Int) -> Any
+  // intrinsic_sitofp32(value: Any) -> Any
   // LLVM sitofp i64 → float (32-bit). Returns Any so stdlib can cast.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sitofp32", SymbolKind::Function,
-      make_func_type({types.int_type}, {types.any_type})));
+      make_func_type({types.any_type}, {types.any_type})));
 
   // intrinsic_fptrunc(value: Float) -> Any
   // LLVM fptrunc double → float (64→32 bit). Returns Any so stdlib can cast.

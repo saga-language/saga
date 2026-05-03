@@ -1,0 +1,28 @@
+// Regression: conversion methods on every integer kind round-trip
+// values correctly.  Before the codegen fix, intrinsic_sext / zext
+// produced narrow LLVM values that didn't match the i64 storage of
+// narrow Ints, so the generated function silently fell through to a
+// zero return.
+import "std/io"
+
+pub fn Main() Void {
+  // Bare literal -> narrow Int (Phase 6a).
+  a Int8 = 7
+  b Int32 = 12345
+  io.Println(a.String())
+  io.Println(b.String())
+
+  // Cross-sign reinterpret: -1 stored as Int8 -> 255 as Uint8.
+  neg Int8 = -1
+  io.Println(neg.Int().String())
+  u Uint8 = neg.Uint8()
+  io.Println(u.Int().String())
+
+  // Narrowing: 0x1FF truncates to a single byte.
+  big Int = 511
+  io.Println(big.Int8().Int().String())   // -1 (sign-extended)
+  io.Println(big.Uint8().Int().String())  // 255 (zero-extended)
+
+  // Float round-trip.
+  io.Println(b.Float().Int().String())
+}

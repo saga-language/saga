@@ -190,6 +190,13 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
 
   switch (t->kind) {
   case TypeKind::Int:
+    // Runtime ABI policy: every integer kind — platform Int *and* the
+    // narrow Int8/Int16/Int32/Int64 family — is stored as i64.  The
+    // narrow widths exist in the type system for assignment/conversion
+    // checking; truncation to the requested width happens lazily in
+    // intrinsic_sext / intrinsic_zext, which then sign- or zero-extend
+    // back to i64 so the runtime ABI stays uniform.  Phase 6b makes this
+    // policy explicit; honoring narrow widths in storage is deferred.
     return i64_type;
   case TypeKind::Float:
     return f64_type;

@@ -73,3 +73,6 @@ add_subdirectory(runtime/embed)
 
 # Generic struct ABI / per-instantiation layout regression tests.
 add_subdirectory(runtime/generic_aggregate)
+
+# Integer conversion regression tests (exercises Phase 6 sext/zext path).
+add_subdirectory(runtime/integer_conversion)

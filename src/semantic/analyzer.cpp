@@ -2627,7 +2627,7 @@ TypePtr Analyzer::check_bool_literal(const BoolLiteralNode &) {
 }
 
 TypePtr Analyzer::check_int_literal(const IntegerLiteralNode &) {
-  return builtins.int_type;
+  return make_untyped_int_type();
 }
 
 TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
@@ -4078,7 +4078,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
                         "variable initializer");
     }
     if (!final_type)
-      final_type = init_type;
+      final_type = materialize_untyped(init_type);
   }
 
   // Update or create the symbol in the current scope.
@@ -4093,7 +4093,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 }
 
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
-  auto rhs_type = check_expr(*decl.value);
+  auto rhs_type = materialize_untyped(check_expr(*decl.value));
 
   // ── Multi-return unpacking ───────────────────────────────────────────
   // If there are multiple targets and the RHS is a call to a function with

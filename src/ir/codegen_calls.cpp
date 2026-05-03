@@ -84,36 +84,33 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   }
 
   if (name == "intrinsic_zext") {
-    // intrinsic_zext(value: Int, bits: Int) -> Int
-    // bits must be an integer literal.
+    // intrinsic_zext(value: Int, bits: Int) -> Int (i64-stored)
+    // Truncate the input to `bits`, then zero-extend back to i64 so the
+    // result matches the runtime's uniform i64 storage for narrow Ints.
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
     auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
     if (!bits_node) return nullptr;
     int64_t bits = parse_int_literal(bits_node->literal);
-    auto *dst_type = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
-    unsigned src_bits = val->getType()->getIntegerBitWidth();
-    if (bits < static_cast<int64_t>(src_bits))
-      return builder.CreateTrunc(val, dst_type, "ztrunc");
-    if (bits > static_cast<int64_t>(src_bits))
-      return builder.CreateZExt(val, dst_type, "zext");
-    return val;
+    if (bits >= 64) return val;
+    auto *narrow_ty = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
+    auto *narrow = builder.CreateTrunc(val, narrow_ty, "ztrunc");
+    return builder.CreateZExt(narrow, i64_type, "zext");
   }
 
   if (name == "intrinsic_sext") {
-    // intrinsic_sext(value: Int, bits: Int) -> Int
+    // intrinsic_sext(value: Int, bits: Int) -> Int (i64-stored)
+    // Truncate to `bits`, then sign-extend back to i64.  Mirrors zext
+    // above; see the runtime-ABI note in CodeGen::llvm_type.
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
     auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
     if (!bits_node) return nullptr;
     int64_t bits = parse_int_literal(bits_node->literal);
-    auto *dst_type = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
-    unsigned src_bits = val->getType()->getIntegerBitWidth();
-    if (bits < static_cast<int64_t>(src_bits))
-      return builder.CreateTrunc(val, dst_type, "strunc");
-    if (bits > static_cast<int64_t>(src_bits))
-      return builder.CreateSExt(val, dst_type, "sext");
-    return val;
+    if (bits >= 64) return val;
+    auto *narrow_ty = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
+    auto *narrow = builder.CreateTrunc(val, narrow_ty, "strunc");
+    return builder.CreateSExt(narrow, i64_type, "sext");
   }
 
   if (name == "intrinsic_field") {
