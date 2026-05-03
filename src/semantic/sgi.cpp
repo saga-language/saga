@@ -1400,7 +1400,13 @@ struct SgiParser {
 
 } // anonymous namespace
 
-std::optional<SgiFile> parse_sgi(const std::string &content) {
+std::optional<SgiFile> parse_sgi(const std::string &content,
+                                  std::string *error_out) {
+  auto fail = [&](std::string msg) -> std::optional<SgiFile> {
+    if (error_out)
+      *error_out = std::move(msg);
+    return std::nullopt;
+  };
   try {
   SgiParser p;
   p.content = content;
@@ -1412,17 +1418,18 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
   p.skip_blank_lines();
   std::string magic = p.read_word();
   if (magic != "sgi")
-    return std::nullopt;
+    return fail("missing or invalid 'sgi' header magic");
   sgi.version = p.read_int();
   p.skip_line();
   if (sgi.version != kSgiVersion)
-    return std::nullopt;
+    return fail(std::string("unsupported sgi version ") +
+                std::to_string(sgi.version));
 
   // Package name
   p.skip_blank_lines();
   std::string pkg_kw = p.read_word();
   if (pkg_kw != "package")
-    return std::nullopt;
+    return fail("expected 'package' declaration after sgi header");
   sgi.package_name = p.read_word();
   p.skip_line();
 
@@ -1554,18 +1561,21 @@ std::optional<SgiFile> parse_sgi(const std::string &content) {
 
   return sgi;
   } catch (const std::exception &e) {
-    std::cerr << "sgi parse error: " << e.what() << "\n";
-    return std::nullopt;
+    return fail(std::string("sgi parse error: ") + e.what());
   }
 }
 
-std::optional<SgiFile> load_sgi(const std::string &path) {
+std::optional<SgiFile> load_sgi(const std::string &path,
+                                 std::string *error_out) {
   std::ifstream in(path);
-  if (!in)
+  if (!in) {
+    if (error_out)
+      *error_out = "cannot open sgi file '" + path + "'";
     return std::nullopt;
+  }
   std::ostringstream ss;
   ss << in.rdbuf();
-  return parse_sgi(ss.str());
+  return parse_sgi(ss.str(), error_out);
 }
 
 TypePtr sgi_to_module_type(const SgiFile &sgi,

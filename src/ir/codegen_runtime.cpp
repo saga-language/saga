@@ -351,15 +351,25 @@ llvm::GlobalVariable *CodeGen::get_or_create_vtable(const TypePtr &struct_type,
   auto *vtable_st = vt_it->second;
 
   auto &method_names = iface_method_names[iface_key];
-  auto &methods = struct_method_links[struct_key];
+  auto &iinfo_methods = std::get<InterfaceTypeInfo>(iface_type->detail).methods;
 
   // Build the vtable constant.
   std::string struct_origin =
       sinfo.origin_package.empty() ? package_name : sinfo.origin_package;
   std::vector<llvm::Constant *> entries;
-  for (auto &iface_method : method_names) {
-    std::string link_name = mangle(struct_origin, sinfo.name + "__" + iface_method);
+  for (size_t mi = 0; mi < method_names.size(); ++mi) {
+    auto &iface_method = method_names[mi];
+    std::string link_name =
+        mangle(struct_origin, sinfo.name + "__" + iface_method);
     auto *fn = module->getFunction(link_name);
+    if (!fn && mi < iinfo_methods.size() && iinfo_methods[mi].signature &&
+        iinfo_methods[mi].signature->kind == TypeKind::Func) {
+      // Symbol not visible in this importer (e.g. struct from pkg A satisfying
+      // iface from pkg B used from pkg C).  Forward-declare against the iface
+      // method signature so the linker resolves it.
+      auto &fi = std::get<FuncTypeInfo>(iinfo_methods[mi].signature->detail);
+      fn = forward_declare_method(link_name, fi);
+    }
     if (fn) {
       entries.push_back(fn);
     } else {

@@ -634,7 +634,15 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
     return llvm::ConstantInt::get(i1_type, 0);
 
   // Enum type names — return a sentinel so selectors can access variants.
-  // Keys are qualified (e.g. "test__Colors"), so fall back via key_for.
+  // Use the analyzer's symbol table to get the origin package so cross-
+  // package enum references resolve without falling back through the local
+  // package.
+  if (auto sym = analyzer.lookup(name);
+      sym && sym->type && sym->type->kind == TypeKind::Enum) {
+    auto &info = std::get<EnumTypeInfo>(sym->type->detail);
+    if (enum_types.count(key_for(info.origin_package, info.name)))
+      return llvm::ConstantInt::get(i64_type, 0);
+  }
   if (enum_types.count(key_for("", name)))
     return llvm::ConstantInt::get(i64_type, 0);
 

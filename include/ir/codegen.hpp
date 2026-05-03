@@ -233,6 +233,12 @@ struct CodeGen {
                                   const std::string &symbol_name,
                                   const TypePtr &func_type);
 
+  /// Forward-declare a struct method by link name, lowering its FuncTypeInfo
+  /// with the standard sret/byval ABI plus an implicit `self` pointer.
+  /// Returns the existing function if one with the same name already exists.
+  llvm::Function *forward_declare_method(const std::string &link_name,
+                                          const FuncTypeInfo &fi);
+
   /// Eagerly populate all codegen registries for every export of an
   /// imported module.  Must be called before any declare_structs/
   /// declare_functions/etc. pass walks the local source AST.

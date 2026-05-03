@@ -127,6 +127,7 @@ static bool compile_package(const std::string &source_dir,
 
   saga::Analyzer analyzer(fileset);
   analyzer.current_package_dir = source_dir;
+  analyzer.current_package_name_override = pkg_name;
   analyzer.is_stdlib = stdlib_mode;
   {
     fs::path parent = fs::path(source_dir).parent_path();
