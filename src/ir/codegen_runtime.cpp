@@ -41,6 +41,21 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_bool_to_string", module.get());
 
+  // int64_t saga_int_hash(int64_t v)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_int_hash", module.get());
+
+  // int64_t saga_string_hash(saga_runtime_string* s)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_hash", module.get());
+
+  // int64_t saga_bool_hash(int64_t v)
+  llvm::Function::Create(
+      llvm::FunctionType::get(i64_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_bool_hash", module.get());
+
   // saga_runtime_string* saga_string_lower(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),

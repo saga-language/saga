@@ -1,0 +1,22 @@
+// Package proto declares the named protocols the compiler dispatches
+// through. Every method shape the compiler "knows about" appears
+// here as a public interface, so users can name it in generic
+// constraints and read clear diagnostics when a type doesn't satisfy
+// one.
+
+// Hashable types must satisfy the consistency invariant:
+//   if a.Equals(b) then a.Hash() == b.Hash()
+// Maps rely on this. A type that violates it will silently lose
+// entries (insertions and lookups will land in different buckets).
+// The compiler cannot check this; it is the implementer's contract.
+//
+// Float is intentionally not Hashable: NaN is not equal to itself,
+// which breaks the consistency invariant.
+pub interface Hashable {
+  Hash() Int64
+  Equals(Hashable) Bool
+}
+
+pub interface Stringable {
+  String() String
+}

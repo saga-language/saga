@@ -835,6 +835,108 @@ SignatureNode Parser::parse_signature() {
   return SignatureNode{span_from(start), std::move(params), std::move(returns)};
 }
 
+// parse_interface_signature — same as parse_signature but parameter names
+// are optional (Go-style).  An interface method may write either
+//   Equals(other Hashable) Bool
+// or
+//   Equals(Hashable) Bool
+// Mixing named and unnamed parameters in the same signature is allowed
+// per-parameter; the disambiguation matches parse_func_type's lookahead:
+// an Identifier followed by a type-start is a name; otherwise it is the
+// type itself.  Unnamed parameters carry an empty IdentifierList so the
+// analyzer can distinguish them from named ones if needed.
+SignatureNode Parser::parse_interface_signature() {
+  auto start = mark();
+
+  expect(Token::Kind::LeftParenthesis);
+  skip_terminators();
+
+  std::vector<ParameterNode> params;
+
+  auto parse_one = [&]() {
+    auto p_start = mark();
+    auto names_start = mark();
+    std::vector<IdentifierNode> name_nodes;
+
+    // Named parameter? Detect by lookahead: Identifier followed by a
+    // type-start (excluding "," and ")") is a name.
+    if (check(Token::Kind::Identifier)) {
+      Token next = peek();
+      bool followed_by_type =
+          next.kind != Token::Kind::Comma &&
+          next.kind != Token::Kind::RightParenthesis &&
+          (next.kind == Token::Kind::Ellipsis || is_type_start(next.kind));
+      if (followed_by_type) {
+        // Named — consume the name(s).
+        auto id_start = mark();
+        Token id = advance();
+        name_nodes.push_back(IdentifierNode{span_from(id_start), id.literal});
+        while (check(Token::Kind::Comma)) {
+          Token after_comma = peek();
+          if (after_comma.kind != Token::Kind::Identifier)
+            break;
+          // Need to check whether the next identifier is another name
+          // (followed by a type) or the type itself.
+          advance(); // consume ","
+          Token after_ident_peek = peek();
+          if (after_ident_peek.kind == Token::Kind::Comma ||
+              after_ident_peek.kind == Token::Kind::RightParenthesis) {
+            // The identifier we'd consume next is the type — break before
+            // consuming it.
+            break;
+          }
+          auto id2_start = mark();
+          Token id2 = advance();
+          name_nodes.push_back(
+              IdentifierNode{span_from(id2_start), id2.literal});
+        }
+      }
+    }
+
+    IdentifierListNode names{span_from(names_start), std::move(name_nodes)};
+
+    bool is_variadic = false;
+    if (check(Token::Kind::Ellipsis)) {
+      advance();
+      is_variadic = true;
+    }
+
+    NodePtr type = parse_type();
+    return ParameterNode{span_from(p_start), std::move(names), std::move(type),
+                         is_variadic};
+  };
+
+  if (!check(Token::Kind::RightParenthesis)) {
+    params.push_back(parse_one());
+    while (check(Token::Kind::Comma)) {
+      advance();
+      skip_terminators();
+      if (check(Token::Kind::RightParenthesis))
+        break;
+      params.push_back(parse_one());
+    }
+    skip_terminators_before(Token::Kind::RightParenthesis);
+  }
+
+  expect(Token::Kind::RightParenthesis);
+
+  std::vector<NodePtr> returns;
+  auto is_return_type_start = [](Token::Kind k) {
+    return k != Token::Kind::LeftBrace && is_type_start(k);
+  };
+  if (is_return_type_start(current.kind)) {
+    returns.push_back(parse_type());
+    while (check(Token::Kind::Comma)) {
+      advance();
+      if (!is_return_type_start(current.kind))
+        break;
+      returns.push_back(parse_type());
+    }
+  }
+
+  return SignatureNode{span_from(start), std::move(params), std::move(returns)};
+}
+
 // ============================================================================
 // Sub-type Parsers
 // ============================================================================
@@ -1523,7 +1625,7 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
     IdentifierNode field_name{span_from(field_name_start),
                               field_name_tok.literal};
 
-    SignatureNode sig = parse_signature();
+    SignatureNode sig = parse_interface_signature();
 
     methods.push_back(InterfaceFieldNode{span_from(field_start), field_public,
                                          std::move(field_name),

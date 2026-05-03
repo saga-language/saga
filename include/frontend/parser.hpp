@@ -201,6 +201,7 @@ private:
   // ── Declaration sub-helpers ──────────────────────────────────────────
 
   SignatureNode parse_signature();
+  SignatureNode parse_interface_signature();
   ParameterNode parse_parameter();
   FieldSpecNode parse_field_spec();
   EnumFieldNode parse_enum_field();

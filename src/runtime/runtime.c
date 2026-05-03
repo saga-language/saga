@@ -2042,6 +2042,26 @@ static uint64_t saga_runtime_siphash(const uint8_t *data, int64_t len) {
 
 #undef SIP_ROUND
 
+/* Public per-primitive hash functions exposed to stdlib via             */
+/* intrinsic_runtime.  Each routes the concrete primitive payload        */
+/* through SipHash so user-visible Hash() methods produce the same bits  */
+/* the runtime uses internally for map keys.                             */
+int64_t saga_int_hash(int64_t v) {
+  return (int64_t)saga_runtime_siphash((const uint8_t *)&v, sizeof v);
+}
+
+int64_t saga_string_hash(const saga_runtime_string *s) {
+  if (!s || !s->data || s->len <= 0)
+    return (int64_t)saga_runtime_siphash((const uint8_t *)"", 0);
+  return (int64_t)saga_runtime_siphash((const uint8_t *)s->data, s->len);
+}
+
+int64_t saga_bool_hash(int64_t v) {
+  /* Storage is i64; only the low bit is meaningful. */
+  uint8_t b = (uint8_t)(v & 1);
+  return (int64_t)saga_runtime_siphash(&b, 1);
+}
+
 /* ── Key hashing / comparison helpers ──────────────────────────────────── */
 
 static uint64_t saga_runtime_map_hash_key(const saga_runtime_map *m, const void *key) {

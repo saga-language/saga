@@ -447,9 +447,16 @@ void Analyzer::expect_assignable(Span span, const TypePtr &target_type,
                                  const std::string &context) {
   if (is_error_type(target_type) || is_error_type(value_type))
     return;
-  if (!is_assignable_to(value_type, target_type)) {
-    type_error(span, target_type, value_type, context);
+  if (is_assignable_to(value_type, target_type))
+    return;
+  // The bare is_assignable_to check in types.cpp can't see stdlib method
+  // tables for primitive receivers (Int.Hash(), String.Equals(...)).  When
+  // the target is an interface, fall back to the full structural check.
+  if (target_type && target_type->kind == TypeKind::Interface &&
+      satisfies_interface(value_type, target_type)) {
+    return;
   }
+  type_error(span, target_type, value_type, context);
 }
 
 void Analyzer::expect_type(Span span, const TypePtr &type, TypeKind expected,
@@ -1367,6 +1374,12 @@ TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
   for (auto &p : sig.params) {
     auto pt = resolve_type(*p.type);
     // Each name in the identifier list maps to one parameter of that type.
+    // An empty identifier list means an unnamed parameter (Go-style interface
+    // method) — push the type once.
+    if (p.names.identifiers.empty()) {
+      params.push_back(p.is_variadic ? make_array_type(pt) : pt);
+      continue;
+    }
     for (size_t i = 0; i < p.names.identifiers.size(); ++i) {
       if (p.is_variadic && i == p.names.identifiers.size() - 1) {
         // Variadic wraps the type in an array.
@@ -1748,7 +1761,6 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
 }
 
 void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
-  std::vector<MethodInfo> methods;
   std::vector<TypeParam> type_params;
 
   bool has_generics = i.generic.has_value();
@@ -1757,21 +1769,28 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
     type_params = enter_generics(*i.generic);
   }
 
-  for (auto &field : i.methods) {
-    auto fn_type = resolve_signature(field.signature);
-    methods.push_back({std::string(field.name.name), fn_type, field.is_public,
-                       current_package_name()});
-  }
-
+  // Forward-declare the interface type so its methods can reference the
+  // interface itself (Go-style self-referential signatures, e.g.
+  // Equals(Hashable) Bool inside `interface Hashable`).  The method list is
+  // filled in after signature resolution.
   auto iface_type = make_interface_type(
-      std::string(i.name.name), std::move(methods), std::move(type_params),
-      current_package_name());
+      std::string(i.name.name), {}, type_params, current_package_name());
 
   auto &target_scope = has_generics ? current_scope->parent : current_scope;
   auto sym_it = target_scope->symbols.find(std::string(i.name.name));
   if (sym_it != target_scope->symbols.end()) {
     sym_it->second.type = iface_type;
   }
+
+  std::vector<MethodInfo> methods;
+  for (auto &field : i.methods) {
+    auto fn_type = resolve_signature(field.signature);
+    methods.push_back({std::string(field.name.name), fn_type, field.is_public,
+                       current_package_name()});
+  }
+
+  // Patch the interface type with its resolved methods.
+  std::get<InterfaceTypeInfo>(iface_type->detail).methods = std::move(methods);
 
   if (has_generics) {
     pop_scope();
@@ -4633,6 +4652,65 @@ TypePtr Analyzer::instantiate_generic_struct(
 // Interface conformance
 // ===========================================================================
 
+// signatures_match_with_self — compare an interface method signature against
+// a concrete method signature, treating any reference to `iface_self` inside
+// `iface_sig` as matching `concrete_self` in `concrete_sig`.  This is the
+// Go-style trick that lets `Equals(Hashable) Bool` declared in `interface
+// Hashable` match `Equals(Int) Bool` on the Int receiver.  Outside the
+// self-reference position, signatures must be `types_equal`.
+static bool signatures_match_with_self(const TypePtr &iface_sig,
+                                       const TypePtr &concrete_sig,
+                                       const TypePtr &iface_self,
+                                       const TypePtr &concrete_self) {
+  if (!iface_sig || !concrete_sig)
+    return false;
+  if (iface_sig->kind != TypeKind::Func ||
+      concrete_sig->kind != TypeKind::Func)
+    return false;
+
+  auto &a = std::get<FuncTypeInfo>(iface_sig->detail);
+  auto &b = std::get<FuncTypeInfo>(concrete_sig->detail);
+  if (a.params.size() != b.params.size())
+    return false;
+  if (a.returns.size() != b.returns.size())
+    return false;
+  if (a.is_variadic != b.is_variadic)
+    return false;
+
+  // An interface position counts as "the interface itself" when it points
+  // to the same nominal interface (same name + origin package).  SGI loads
+  // produce fresh TypePtrs, so pointer equality alone is insufficient.
+  auto refers_to_self = [&](const TypePtr &t) -> bool {
+    if (!t || t->kind != TypeKind::Interface || !iface_self ||
+        iface_self->kind != TypeKind::Interface)
+      return false;
+    if (t.get() == iface_self.get())
+      return true;
+    auto &a = std::get<InterfaceTypeInfo>(t->detail);
+    auto &b = std::get<InterfaceTypeInfo>(iface_self->detail);
+    return a.name == b.name && a.origin_package == b.origin_package;
+  };
+
+  auto self_match = [&](const TypePtr &iv, const TypePtr &cv) -> bool {
+    if (refers_to_self(iv))
+      return types_equal(cv, concrete_self) ||
+             (cv && concrete_self &&
+              cv->kind == concrete_self->kind &&
+              cv->kind == TypeKind::Interface);
+    return types_equal(iv, cv);
+  };
+
+  for (size_t i = 0; i < a.params.size(); ++i) {
+    if (!self_match(a.params[i], b.params[i]))
+      return false;
+  }
+  for (size_t i = 0; i < a.returns.size(); ++i) {
+    if (!self_match(a.returns[i], b.returns[i]))
+      return false;
+  }
+  return true;
+}
+
 bool Analyzer::satisfies_interface(const TypePtr &concrete,
                                    const TypePtr &iface) {
   if (!concrete || !iface)
@@ -4682,15 +4760,17 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
   }
 
   // Every interface method must be present on the concrete type with a
-  // compatible signature.
+  // compatible signature.  Self-references to `iface` inside an interface
+  // method signature stand for the concrete receiver type.
   for (auto &im : iface_info.methods) {
     bool found = false;
     for (auto &cm : concrete_methods) {
       if (cm.name == im.name) {
         found = true;
         if (im.signature && cm.signature) {
-          if (!types_equal(im.signature, cm.signature)) {
-            return false; // Signature mismatch.
+          if (!signatures_match_with_self(im.signature, cm.signature, iface,
+                                          concrete)) {
+            return false;
           }
         }
         break;

@@ -711,16 +711,16 @@ unique data.
 
 ## String Iterpolation
 
-Any type that implements a `Stringer` interface can be interpolated in a String.
+Any type that implements a `Stringable` interface can be interpolated in a String.
 All the basic types can return their values as a string. Arrays and maps also
 implement a String() method to provide a representation of their data.
 
 For a struct type to be used as an expression in an interpolation, it must
-implement the `Stringer` interface.
+implement the `Stringable` interface.
 
-The interface:
+The interface lives in `std/proto`:
 ```
-interface Stringer {
+pub interface Stringable {
   String() String
 }
 ```

@@ -25,6 +25,30 @@ llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
     if (iface_vtable_types.count(key_for("", tname)))
       return llvm::PointerType::getUnqual(context); // interface as ptr to fat ptr
   }
+  // Cross-package types appear as SelectorNode (`pkg.Type`).  Look the
+  // selector up via the package scope so we don't depend on current_scope
+  // state at codegen time.
+  if (auto *sel = std::get_if<SelectorNode>(&type_node.data)) {
+    if (auto *pkg_ident = std::get_if<IdentifierNode>(&sel->object->data)) {
+      std::optional<Symbol> sym;
+      if (analyzer.package_scope_) {
+        auto it = analyzer.package_scope_->symbols.find(
+            std::string(pkg_ident->name));
+        if (it != analyzer.package_scope_->symbols.end())
+          sym = it->second;
+      }
+      if (!sym)
+        sym = analyzer.lookup(std::string(pkg_ident->name));
+      if (sym && sym->type && sym->type->kind == TypeKind::Module) {
+        auto &mod = std::get<ModuleTypeInfo>(sym->type->detail);
+        std::string field_name(sel->field.name);
+        for (auto &exp : mod.exports) {
+          if (exp.name == field_name && exp.type)
+            return llvm_type(exp.type);
+        }
+      }
+    }
+  }
   // Fall back to analyzer resolve (works for builtins).
   auto sem_type = analyzer.resolve_type(type_node);
   return llvm_type(sem_type);

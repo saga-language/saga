@@ -17,6 +17,10 @@ pub fn (i Int) Equals(other Int) Bool {
   i == other
 }
 
+pub fn (i Int) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
+
 pub fn (i Int) Compare(other Int) Comparison {
   if i < other {
     Comparison.Less
@@ -88,6 +92,10 @@ pub fn (i Int8) String() String {
 
 pub fn (i Int8) Equals(other Int8) Bool { i == other }
 
+pub fn (i Int8) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
+
 pub fn (i Int8) Compare(other Int8) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
@@ -113,6 +121,10 @@ pub fn (i Int16) String() String {
 }
 
 pub fn (i Int16) Equals(other Int16) Bool { i == other }
+
+pub fn (i Int16) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
 
 pub fn (i Int16) Compare(other Int16) Comparison {
   if i < other { Comparison.Less }
@@ -140,6 +152,10 @@ pub fn (i Int32) String() String {
 
 pub fn (i Int32) Equals(other Int32) Bool { i == other }
 
+pub fn (i Int32) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
+
 pub fn (i Int32) Compare(other Int32) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
@@ -165,6 +181,10 @@ pub fn (i Int64) String() String {
 }
 
 pub fn (i Int64) Equals(other Int64) Bool { i == other }
+
+pub fn (i Int64) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
 
 pub fn (i Int64) Compare(other Int64) Comparison {
   if i < other { Comparison.Less }
@@ -192,6 +212,10 @@ pub fn (i Uint8) String() String {
 
 pub fn (i Uint8) Equals(other Uint8) Bool { i == other }
 
+pub fn (i Uint8) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
+
 pub fn (i Uint8) Compare(other Uint8) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
@@ -217,6 +241,10 @@ pub fn (i Uint16) String() String {
 }
 
 pub fn (i Uint16) Equals(other Uint16) Bool { i == other }
+
+pub fn (i Uint16) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
 
 pub fn (i Uint16) Compare(other Uint16) Comparison {
   if i < other { Comparison.Less }
@@ -244,6 +272,10 @@ pub fn (i Uint32) String() String {
 
 pub fn (i Uint32) Equals(other Uint32) Bool { i == other }
 
+pub fn (i Uint32) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
+
 pub fn (i Uint32) Compare(other Uint32) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
@@ -269,6 +301,10 @@ pub fn (i Uint64) String() String {
 }
 
 pub fn (i Uint64) Equals(other Uint64) Bool { i == other }
+
+pub fn (i Uint64) Hash() Int64 {
+  intrinsic_runtime("saga_int_hash", i)
+}
 
 pub fn (i Uint64) Compare(other Uint64) Comparison {
   if i < other { Comparison.Less }

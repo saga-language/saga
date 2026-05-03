@@ -1284,6 +1284,20 @@ struct SgiParser {
       ++pos;
     skip_line();
 
+    // Forward-declare the interface so self-referential method signatures
+    // (e.g. `Equals(Hashable) Bool` inside `interface Hashable`) resolve
+    // to this type rather than a fresh struct stub.
+    TypePtr t;
+    auto stub_it = defined_types.find(name);
+    if (stub_it != defined_types.end()) {
+      t = stub_it->second;
+      t->kind = TypeKind::Interface;
+      t->detail = InterfaceTypeInfo{name, "", {}, type_params, {}};
+    } else {
+      t = make_interface_type(name, {}, type_params);
+      defined_types[name] = t;
+    }
+
     std::vector<MethodInfo> methods;
     while (true) {
       skip_whitespace();
@@ -1310,8 +1324,9 @@ struct SgiParser {
       }
     }
 
-    auto t = make_interface_type(name, std::move(methods),
-                                  std::move(type_params));
+    auto &info = std::get<InterfaceTypeInfo>(t->detail);
+    info.methods = std::move(methods);
+
     pop_type_param_scope();
 
     SgiExport exp;
