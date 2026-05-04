@@ -90,7 +90,64 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   // These are compiled from stdlib source (e.g. std/array/array.sg) and use
   // opaque ptr for TypeParam parameters.  At the call site we box/unbox
   // concrete scalar values to match the generic ABI.
+  //
+  // When the body dispatches through a named protocol on a TypeParam
+  // value (e.g. `for v : a { v.String() }`), the opaque-T ABI cannot
+  // emit a working call — we specialise the body per concrete K instead,
+  // emitting a LinkOnceODR specialisation with concrete-typed args.
   if (obj_sem) {
+    auto km_decl_it = analyzer.kind_method_decls_.find(obj_sem->kind);
+    if (km_decl_it != analyzer.kind_method_decls_.end()) {
+      auto m_it = km_decl_it->second.find(method);
+      if (m_it != km_decl_it->second.end() &&
+          analyzer.kind_method_uses_typeparam_dispatch_.count(
+              m_it->second.decl)) {
+        auto &kmd = m_it->second;
+        // Build bindings keyed by ORIGINAL TypeParam IDs so they match
+        // the body's cached node_types from the eager pass.
+        std::unordered_map<uint32_t, TypePtr> bindings;
+        if (obj_sem->kind == TypeKind::Array && !kmd.type_params.empty()) {
+          auto &arr = std::get<ArrayTypeInfo>(obj_sem->detail);
+          bindings[kmd.type_params[0].id] = arr.element;
+        } else if (obj_sem->kind == TypeKind::Map &&
+                    kmd.type_params.size() >= 2) {
+          auto &mp = std::get<MapTypeInfo>(obj_sem->detail);
+          bindings[kmd.type_params[0].id] = mp.key;
+          bindings[kmd.type_params[1].id] = mp.value;
+        }
+        // Find the matching BodyInstantiation produced by the analyzer.
+        const Analyzer::BodyInstantiation *inst = nullptr;
+        auto inst_it = analyzer.instantiations_.find(kmd.decl);
+        if (inst_it != analyzer.instantiations_.end()) {
+          for (auto &i : inst_it->second) {
+            if (i.bindings.size() != bindings.size()) continue;
+            bool match = true;
+            for (auto &[id, t] : bindings) {
+              auto j = i.bindings.find(id);
+              if (j == i.bindings.end() || !types_equal(t, j->second)) {
+                match = false; break;
+              }
+            }
+            if (match) { inst = &i; break; }
+          }
+        }
+        auto *spec = emit_specialisation(*kmd.decl, kmd.original_signature,
+                                          bindings, inst);
+        if (spec) {
+          std::vector<llvm::Value *> args;
+          args.push_back(obj); // self
+          for (auto &arg_node : node.args) {
+            auto *val = emit_expr(*arg_node);
+            if (val) args.push_back(val);
+          }
+          if (spec->getReturnType()->isVoidTy()) {
+            builder.CreateCall(spec, args);
+            return nullptr;
+          }
+          return builder.CreateCall(spec, args, "kmcall.spec");
+        }
+      }
+    }
     auto km_it = analyzer.kind_methods_.find(obj_sem->kind);
     if (km_it != analyzer.kind_methods_.end()) {
       for (auto &m : km_it->second) {

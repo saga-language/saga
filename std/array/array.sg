@@ -33,3 +33,14 @@ pub fn |T| (a [T]) Find(elem T) Int | Missing {
 pub fn |T| (a [T]) Equals(other [T]) Bool {
   intrinsic_runtime("saga_array_equals", a, other)
 }
+
+pub fn |T| (a [T]) Stringify() String {
+  s := "["
+  first := true
+  for v : a {
+    if !first { s += ", " }
+    s += v.String()
+    first = false
+  }
+  s + "]"
+}

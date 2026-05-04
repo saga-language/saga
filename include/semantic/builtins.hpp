@@ -47,6 +47,14 @@ struct BuiltinTypes {
   TypePtr error_iface;     // Error { Message() String }
   TypePtr iterable_iface;  // |T| Iterable { Next() T | Error }
 
+  // Named protocols loaded from std/proto.  Populated by load_prelude
+  // from proto.sgi; null when the package is unavailable (during the
+  // first compilation of std/proto itself or when no resolver is set).
+  // Used by the analyzer to resolve method calls on TypeParam values
+  // against a named protocol shape.
+  TypePtr hashable_iface;    // Hashable   { Hash() Int64; Equals(Self) Bool }
+  TypePtr stringable_iface;  // Stringable { String() String }
+
   // Internal structs
   TypePtr missing_type;    // Missing (implements Error)
   TypePtr task_type;       // Task (returned from spawn)

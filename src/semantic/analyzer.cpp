@@ -199,6 +199,27 @@ void Analyzer::load_prelude() {
   if (!package_resolver)
     return;
 
+  // std/proto declares the named protocols the compiler dispatches
+  // through (Hashable, Stringable).  Loaded for every analysis pass —
+  // including stdlib leaf packages, whose generic bodies may dispatch
+  // through these protocols on TypeParam values.  Skipped only when
+  // proto itself is being compiled (proto.sgi doesn't exist yet).
+  bool compiling_proto =
+      is_stdlib && !current_package_dir.empty() &&
+      std::filesystem::path(current_package_dir).filename().string() == "proto";
+  if (!compiling_proto) {
+    std::string proto_sgi = package_resolver->find_sgi_file("std/proto");
+    if (!proto_sgi.empty()) {
+      if (auto sgi = load_sgi(proto_sgi)) {
+        for (auto &exp : sgi->exports) {
+          if (!exp.type || exp.type->kind != TypeKind::Interface) continue;
+          if (exp.name == "Hashable")   builtins.hashable_iface   = exp.type;
+          if (exp.name == "Stringable") builtins.stringable_iface = exp.type;
+        }
+      }
+    }
+  }
+
   // Stdlib type packages (int, float, bool, string, array, map) define their
   // own receiver methods and must not load others' — otherwise they'd
   // re-export foreign methods in their SGI files.
@@ -270,6 +291,14 @@ void Analyzer::load_prelude() {
     auto sgi = load_sgi(sgi_path);
     if (!sgi)
       continue;
+    if (!sgi->source_dir.empty()) {
+      auto last_slash = pkg.rfind('/');
+      std::string pkg_short = (last_slash != std::string::npos)
+                                  ? pkg.substr(last_slash + 1)
+                                  : pkg;
+      package_resolver->source_dirs[pkg_short] = sgi->source_dir;
+      package_resolver->source_dirs[pkg] = sgi->source_dir;
+    }
     for (auto &rm : sgi->receiver_methods) {
       auto kind_opt = get_recv_kind(rm.type_name);
       if (!kind_opt)
@@ -1103,6 +1132,14 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   // ensure_source_loaded is keyed by origin (package name), so it doubles
   // as the authoritative name for the loaded sub-analyzer.
   sub_analyzer->current_package_name_override = origin;
+  // Inherit stdlib mode when loading a stdlib package's source — stdlib
+  // packages use intrinsic_runtime and define receiver methods on
+  // intrinsic types, both of which are gated to stdlib mode.
+  static const std::unordered_set<std::string> stdlib_origins{
+      "proto", "int", "float", "bool", "string", "array", "map",
+      "unsafe", "sys", "os", "io"};
+  if (stdlib_origins.count(origin))
+    sub_analyzer->is_stdlib = true;
   sub_analyzer->analyze(*sub_ast);
   if (!sub_analyzer->errors.errors.empty())
     return nullptr;
@@ -1127,6 +1164,14 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
     generic_templates_.emplace(k, v);
   for (auto &[k, v] : sub_ptr->func_decl_by_type_)
     func_decl_by_type_.emplace(k, v);
+  for (auto *fd : sub_ptr->kind_method_uses_typeparam_dispatch_)
+    kind_method_uses_typeparam_dispatch_.insert(fd);
+  for (auto &[kind, methods] : sub_ptr->kind_method_decls_) {
+    auto &dst = kind_method_decls_[kind];
+    for (auto &[name, kmd] : methods) {
+      dst.emplace(name, kmd);
+    }
+  }
 
   loaded_source_packages_.emplace(
       origin,
@@ -1575,8 +1620,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         bool dup = false;
         for (auto &e : vec)
           if (e.name == std::string(fn.name.name)) { dup = true; break; }
-        if (!dup)
+        if (!dup) {
           vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
+          kind_method_decls_[TypeKind::Array][std::string(fn.name.name)] =
+              KindMethodDecl{&fn, fn_type, generic_params};
+        }
       }
     } else if (auto *map_tn =
                    std::get_if<MapTypeNode>(&recv_type_node->data)) {
@@ -1603,8 +1651,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         bool dup = false;
         for (auto &e : vec)
           if (e.name == std::string(fn.name.name)) { dup = true; break; }
-        if (!dup)
+        if (!dup) {
           vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
+          kind_method_decls_[TypeKind::Map][std::string(fn.name.name)] =
+              KindMethodDecl{&fn, fn_type, generic_params};
+        }
       }
     }
   }
@@ -1625,14 +1676,25 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   bool is_generic_on_concrete_recv =
       has_generics && fn.receiver &&
       fn_type && fn_type->kind == TypeKind::Func;
-  if (fn_type && (!fn.receiver || is_generic_on_concrete_recv)) {
+  // Generic receiver on Array/Map (kind_methods_) is also registered so
+  // codegen can drive emit_specialisation per concrete K when the body
+  // dispatches through a named protocol on a TypeParam value.
+  bool is_generic_on_kind_recv = false;
+  if (has_generics && fn.receiver) {
+    auto &rt = fn.receiver->type->data;
+    is_generic_on_kind_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                              std::get_if<MapTypeNode>(&rt);
+  }
+  if (fn_type && (!fn.receiver || is_generic_on_concrete_recv ||
+                   is_generic_on_kind_recv)) {
     func_decl_by_type_[fn_type.get()] = &fn;
   }
 
   // Stash the generic template for lazy body-analysis at instantiation
   // time.  Generic receiver methods on concrete types are included so
   // their bodies are checked per-instantiation (same as free generics).
-  if (has_generics && (!fn.receiver || is_generic_on_concrete_recv)) {
+  if (has_generics && (!fn.receiver || is_generic_on_concrete_recv ||
+                        is_generic_on_kind_recv)) {
     generic_templates_[&fn] =
         GenericTemplate{&fn, current_scope, std::move(generic_params)};
   }
@@ -2454,6 +2516,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   // Generic functions are type-checked lazily per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
   // through the eager path because their T is the element type.
+  bool is_eager_kind_method = false;
   if (fn.generic) {
     if (!fn.receiver)
       return;
@@ -2462,7 +2525,14 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
                            std::get_if<MapTypeNode>(&rt);
     if (!is_generic_recv)
       return;
+    is_eager_kind_method = true;
   }
+
+  // Mark the current kind_methods_ body so resolve_method_signature can
+  // record TypeParam protocol dispatch usage.  Restored on exit.
+  const FuncDeclNode *saved_eager_kind = current_eager_kind_method_decl_;
+  if (is_eager_kind_method)
+    current_eager_kind_method_decl_ = &fn;
 
   push_scope(ScopeKind::Function);
 
@@ -2505,6 +2575,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   }
 
   pop_scope();
+  current_eager_kind_method_decl_ = saved_eager_kind;
 }
 
 // ===========================================================================
@@ -3134,6 +3205,52 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
         }
       }
     }
+  } else if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
+    // kind_methods_ call (Array/Map receiver) where the substituted
+    // signature is already concrete, but the body must be re-checked
+    // with concrete K/V bindings because it dispatches through a named
+    // protocol on a TypeParam value.  Drive instantiation per concrete
+    // K so codegen can specialise.
+    auto obj_sem = node_types.count(sel->object.get())
+                       ? node_types[sel->object.get()]
+                       : nullptr;
+    if (obj_sem && (obj_sem->kind == TypeKind::Array ||
+                    obj_sem->kind == TypeKind::Map)) {
+      // Cross-package: the FuncDecl and dispatch flag are missing until
+      // we lazily load std/array or std/map source.  Trigger that here
+      // so kind_method_decls_ / kind_method_uses_typeparam_dispatch_
+      // are populated before we look them up.
+      if (!is_stdlib && kind_method_decls_.find(obj_sem->kind) ==
+                            kind_method_decls_.end()) {
+        const char *origin = obj_sem->kind == TypeKind::Array
+                                  ? "array" : "map";
+        ensure_source_loaded(origin);
+      }
+      auto km_it = kind_method_decls_.find(obj_sem->kind);
+      if (km_it != kind_method_decls_.end()) {
+        auto m_it = km_it->second.find(std::string(sel->field.name));
+        if (m_it != km_it->second.end() &&
+            kind_method_uses_typeparam_dispatch_.count(m_it->second.decl)) {
+          std::unordered_map<uint32_t, TypePtr> bindings;
+          auto &tps = m_it->second.type_params;
+          if (obj_sem->kind == TypeKind::Array && !tps.empty()) {
+            auto &arr = std::get<ArrayTypeInfo>(obj_sem->detail);
+            bindings[tps[0].id] = arr.element;
+          } else if (obj_sem->kind == TypeKind::Map && tps.size() >= 2) {
+            auto &mp = std::get<MapTypeInfo>(obj_sem->detail);
+            bindings[tps[0].id] = mp.key;
+            bindings[tps[1].id] = mp.value;
+          }
+          if (!bindings.empty()) {
+            instantiate_generic_body(*m_it->second.decl, bindings, parent);
+            if (current_instantiation_)
+              current_instantiation_->node_type_args[&parent] = bindings;
+            else
+              node_type_args[&parent] = bindings;
+          }
+        }
+      }
+    }
   }
 
   auto &fn_info = std::get<FuncTypeInfo>(effective_type->detail);
@@ -3396,6 +3513,58 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
                                     m.signature);
     return m.signature;
   }
+
+  // Named-protocol fallback for TypeParam values inside generic bodies.
+  // A method call on a value of TypeParam type is accepted if the called
+  // method belongs to a compiler-known protocol (Hashable, Stringable);
+  // satisfaction by the concrete type is verified at the monomorphisation
+  // site.  Self-typed positions in the protocol signature are rewritten to
+  // refer to the TypeParam.
+  if (obj_type->kind == TypeKind::TypeParam) {
+    auto subst_self = [](const TypePtr &sig, const TypePtr &iface,
+                          const TypePtr &concrete) -> TypePtr {
+      if (!sig || sig->kind != TypeKind::Func) return sig;
+      auto &fi = std::get<FuncTypeInfo>(sig->detail);
+      auto &iinfo = std::get<InterfaceTypeInfo>(iface->detail);
+      auto subst_one = [&](const TypePtr &t) -> TypePtr {
+        if (t && t->kind == TypeKind::Interface) {
+          auto &ti = std::get<InterfaceTypeInfo>(t->detail);
+          if (ti.name == iinfo.name &&
+              ti.origin_package == iinfo.origin_package)
+            return concrete;
+        }
+        return t;
+      };
+      std::vector<TypePtr> nparams, nreturns;
+      for (auto &p : fi.params)  nparams.push_back(subst_one(p));
+      for (auto &r : fi.returns) nreturns.push_back(subst_one(r));
+      auto out = make_func_type(std::move(nparams), std::move(nreturns));
+      std::get<FuncTypeInfo>(out->detail).is_variadic = fi.is_variadic;
+      return out;
+    };
+    auto try_protocol = [&](const TypePtr &iface) -> TypePtr {
+      if (!iface || iface->kind != TypeKind::Interface) return nullptr;
+      auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+      for (auto &m : ii.methods)
+        if (m.name == field_name && m.signature)
+          return subst_self(m.signature, iface, obj_type);
+      return nullptr;
+    };
+    auto record_dispatch = [&]() {
+      if (current_eager_kind_method_decl_)
+        kind_method_uses_typeparam_dispatch_.insert(
+            current_eager_kind_method_decl_);
+    };
+    if (auto t = try_protocol(builtins.stringable_iface)) {
+      record_dispatch();
+      return t;
+    }
+    if (auto t = try_protocol(builtins.hashable_iface)) {
+      record_dispatch();
+      return t;
+    }
+  }
+
   return nullptr;
 }
 

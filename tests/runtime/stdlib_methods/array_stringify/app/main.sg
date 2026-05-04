@@ -1,0 +1,14 @@
+// Verify Array.Stringify: per-K specialisation that dispatches through
+// Stringable on the element type.  Exercises Phase 2's TypeParam method
+// dispatch over primitive keys.
+import "std/io"
+
+pub fn Main() Void {
+  io.Println([1, 2, 3].Stringify())
+  io.Println(["a", "b", "c"].Stringify())
+  io.Println([true, false].Stringify())
+
+  empty := [42]
+  empty.Pop()
+  io.Println(empty.Stringify())
+}

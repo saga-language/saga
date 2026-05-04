@@ -180,6 +180,20 @@ struct Analyzer {
   /// same substitution logic in check_selector handles both.
   std::unordered_map<TypeKind, std::vector<MethodInfo>> kind_methods_;
 
+  /// Per-kind/method side table that retains the original FuncDecl,
+  /// pre-normalization signature, and original-ID TypeParams for bodies
+  /// that codegen needs to specialise per concrete K (because they
+  /// dispatch through a named protocol on the TypeParam — see
+  /// kind_method_uses_typeparam_dispatch_).  Populated during the
+  /// stdlib's signature pass and consumed by codegen.
+  struct KindMethodDecl {
+    const FuncDeclNode *decl = nullptr;
+    TypePtr original_signature;
+    std::vector<TypeParam> type_params;  // original IDs
+  };
+  std::unordered_map<TypeKind, std::unordered_map<std::string, KindMethodDecl>>
+      kind_method_decls_;
+
   /// Maps a BinaryExprNode (by its containing Node*) to the method name that
   /// should be called to implement the operator (e.g. "Add", "Compare").
   /// Only populated for struct-typed operands; primitive operators are still
@@ -261,6 +275,22 @@ struct Analyzer {
   /// satisfy reads) during the current Phase 3/4 pass.  nullptr when
   /// analysing non-generic code.
   BodyInstantiation *current_instantiation_ = nullptr;
+
+  /// Stdlib generic receiver methods on Array/Map (kind_methods_) whose
+  /// bodies dispatch through a named protocol on a TypeParam value
+  /// (e.g. `for v : a { v.String() }`).  These methods cannot be emitted
+  /// once with T opaque — codegen specialises per concrete K at every
+  /// user call site.  Populated by check_func_decl_body during the eager
+  /// body pass and consumed by codegen.
+  std::unordered_set<const FuncDeclNode *>
+      kind_method_uses_typeparam_dispatch_;
+
+  /// While checking a kind_methods_ body eagerly, points at the FuncDecl
+  /// being checked.  resolve_method_signature consults this when its
+  /// named-protocol fallback fires on a TypeParam receiver, so the decl
+  /// can be added to kind_method_uses_typeparam_dispatch_.  nullptr
+  /// outside the eager kind_methods_ pass.
+  const FuncDeclNode *current_eager_kind_method_decl_ = nullptr;
 
   /// Call-site backtrace for instantiation errors.  check_call_expr pushes
   /// the CallExprNode* before driving a body instantiation and pops after.

@@ -809,6 +809,12 @@ void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
     if (!fn || !fn->receiver)
       continue;
 
+    // Skip kind_methods_ generic bodies that need per-K specialisation.
+    // Their opaque-T ABI cannot dispatch through TypeParam method calls,
+    // so codegen emits a LinkOnceODR specialisation at every call site.
+    if (analyzer.kind_method_uses_typeparam_dispatch_.count(fn))
+      continue;
+
     std::string type_name = intrinsic_receiver_type_name(*fn->receiver->type);
     if (type_name.empty())
       continue;
@@ -863,6 +869,11 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver)
+      continue;
+
+    // Mirror declare_intrinsic_methods: skip bodies that codegen
+    // specialises per concrete K at every call site.
+    if (analyzer.kind_method_uses_typeparam_dispatch_.count(fn))
       continue;
 
     std::string type_name = intrinsic_receiver_type_name(*fn->receiver->type);

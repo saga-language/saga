@@ -11,5 +11,6 @@ function(stdlib_methods_test name)
 endfunction()
 
 stdlib_methods_test(array_equals)
+stdlib_methods_test(array_stringify)
 stdlib_methods_test(map_equals)
 stdlib_methods_test(string_methods)
