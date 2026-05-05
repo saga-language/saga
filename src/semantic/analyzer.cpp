@@ -1318,6 +1318,8 @@ TypePtr Analyzer::resolve_array_type(const ArrayTypeNode &node) {
 TypePtr Analyzer::resolve_map_type(const MapTypeNode &node) {
   auto key = resolve_type(*node.key_type);
   auto val = resolve_type(*node.value_type);
+  check_satisfies_protocol(key, ProtocolKind::Hashable, node.key_type->span,
+                           "map key");
   return make_map_type(std::move(key), std::move(val));
 }
 
@@ -2725,12 +2727,13 @@ TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
 }
 
 TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
-  // Verify all interpolated expressions implement Stringer (have .String()).
-  // For now, just check all fragments; a deeper Stringer check is deferred.
+  // Each interpolated expression must satisfy Stringable so the runtime
+  // can invoke `.String()` on it.
   for (auto &frag : node.fragments) {
-    if (!std::holds_alternative<StringFragmentNode>(frag->data)) {
-      check_expr(*frag);
-    }
+    if (std::holds_alternative<StringFragmentNode>(frag->data))
+      continue;
+    auto t = check_expr(*frag);
+    check_stringable_recursive(t, frag->span, "interpolated expression");
   }
   return builtins.string_type;
 }
@@ -2765,6 +2768,8 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
     if (!is_error_type(vt))
       expect_assignable(node.entries[i].value->span, val_type, vt, "map value");
   }
+  check_satisfies_protocol(key_type, ProtocolKind::Hashable,
+                           node.entries[0].key->span, "map key");
   return make_map_type(key_type, val_type);
 }
 
@@ -3248,6 +3253,24 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
             else
               node_type_args[&parent] = bindings;
           }
+        }
+      }
+
+      // Array.String() / Map.String() require their element/key/value types
+      // to satisfy Stringable (recursively for nested aggregates).  Phase 5
+      // will migrate these out of builtins; the named-protocol diagnostic
+      // here is the use-site enforcement promised by Phase 3.
+      if (sel->field.name == "String" && node.args.empty()) {
+        if (obj_sem->kind == TypeKind::Array) {
+          auto &arr = std::get<ArrayTypeInfo>(obj_sem->detail);
+          check_stringable_recursive(arr.element, sel->field.span,
+                                     "array element of .String() receiver");
+        } else if (obj_sem->kind == TypeKind::Map) {
+          auto &mp = std::get<MapTypeInfo>(obj_sem->detail);
+          check_stringable_recursive(mp.key, sel->field.span,
+                                     "map key of .String() receiver");
+          check_stringable_recursive(mp.value, sel->field.span,
+                                     "map value of .String() receiver");
         }
       }
     }
@@ -4880,6 +4903,57 @@ static bool signatures_match_with_self(const TypePtr &iface_sig,
   return true;
 }
 
+// Gather the methods visible on `concrete` from the analyzer's stdlib and
+// built-in tables.  Shared between satisfies_interface and the named-protocol
+// diagnostic so missing-method reports stay aligned with what the structural
+// match actually consulted.
+static std::vector<MethodInfo> collect_concrete_methods(
+    const TypePtr &concrete,
+    const std::unordered_map<const Type *, std::vector<MethodInfo>>
+        &type_methods,
+    const std::unordered_map<TypeKind, std::vector<MethodInfo>> &kind_methods,
+    const BuiltinTypes &builtins) {
+  std::vector<MethodInfo> methods;
+  if (!concrete)
+    return methods;
+
+  if (concrete->kind == TypeKind::Struct) {
+    auto &s = std::get<StructTypeInfo>(concrete->detail);
+    methods = s.methods;
+    return methods;
+  }
+
+  const Type *raw = concrete.get();
+  auto tm_it = type_methods.find(raw);
+  if (tm_it == type_methods.end()) {
+    const Type *canonical = nullptr;
+    switch (concrete->kind) {
+    case TypeKind::Int:    canonical = builtins.int_type.get(); break;
+    case TypeKind::Float:  canonical = builtins.float_type.get(); break;
+    case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
+    case TypeKind::String: canonical = builtins.string_type.get(); break;
+    default: break;
+    }
+    if (canonical && canonical != raw)
+      tm_it = type_methods.find(canonical);
+  }
+  if (tm_it != type_methods.end()) {
+    for (auto &m : tm_it->second)
+      methods.push_back(m);
+  }
+
+  auto km_it = kind_methods.find(concrete->kind);
+  if (km_it != kind_methods.end()) {
+    for (auto &m : km_it->second)
+      methods.push_back(m);
+  }
+
+  for (auto &m : builtin_methods(concrete->kind, builtins))
+    methods.push_back(m);
+
+  return methods;
+}
+
 bool Analyzer::satisfies_interface(const TypePtr &concrete,
                                    const TypePtr &iface) {
   if (!concrete || !iface)
@@ -4888,45 +4962,8 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
     return false;
 
   auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
-
-  // Collect methods from the concrete type.
-  std::vector<MethodInfo> concrete_methods;
-
-  if (concrete->kind == TypeKind::Struct) {
-    auto &s = std::get<StructTypeInfo>(concrete->detail);
-    concrete_methods = s.methods;
-  } else {
-    // Check stdlib-defined receiver methods (type_methods_ for scalar types).
-    const Type *raw = concrete.get();
-    auto tm_it = type_methods_.find(raw);
-    if (tm_it == type_methods_.end()) {
-      const Type *canonical = nullptr;
-      switch (concrete->kind) {
-      case TypeKind::Int:    canonical = builtins.int_type.get(); break;
-      case TypeKind::Float:  canonical = builtins.float_type.get(); break;
-      case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
-      case TypeKind::String: canonical = builtins.string_type.get(); break;
-      default: break;
-      }
-      if (canonical && canonical != raw)
-        tm_it = type_methods_.find(canonical);
-    }
-    if (tm_it != type_methods_.end()) {
-      for (auto &m : tm_it->second)
-        concrete_methods.push_back(m);
-    }
-    // Check stdlib-defined generic receiver methods (kind_methods_ for
-    // Array, Map).
-    auto km_it = kind_methods_.find(concrete->kind);
-    if (km_it != kind_methods_.end()) {
-      for (auto &m : km_it->second)
-        concrete_methods.push_back(m);
-    }
-    // Check remaining built-in methods (Enum, Range, Array/Map String).
-    auto bm = builtin_methods(concrete->kind, builtins);
-    for (auto &m : bm)
-      concrete_methods.push_back(m);
-  }
+  auto concrete_methods =
+      collect_concrete_methods(concrete, type_methods_, kind_methods_, builtins);
 
   // Every interface method must be present on the concrete type with a
   // compatible signature.  Self-references to `iface` inside an interface
@@ -4950,6 +4987,135 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
   }
 
   return true;
+}
+
+// Render an interface method's signature into a single-line form suitable for
+// citing in a "missing method" diagnostic, e.g. `Hash() Int64` or
+// `Equals(Self) Bool`.  Self-typed positions (the protocol's own interface
+// type appearing in its method signature) print as `Self` so the user reads
+// the protocol contract rather than its declared `Equals(Hashable) Bool`
+// shape.
+static std::string format_protocol_method(const std::string &name,
+                                          const TypePtr &sig,
+                                          const TypePtr &iface) {
+  if (!sig || sig->kind != TypeKind::Func)
+    return name + "(...)";
+  auto &fi = std::get<FuncTypeInfo>(sig->detail);
+  auto &iinfo = std::get<InterfaceTypeInfo>(iface->detail);
+
+  auto render = [&](const TypePtr &t) -> std::string {
+    if (t && t->kind == TypeKind::Interface) {
+      auto &ti = std::get<InterfaceTypeInfo>(t->detail);
+      if (ti.name == iinfo.name && ti.origin_package == iinfo.origin_package)
+        return "Self";
+    }
+    return type_to_string(t);
+  };
+
+  std::string s = name + "(";
+  for (size_t i = 0; i < fi.params.size(); ++i) {
+    if (i)
+      s += ", ";
+    s += render(fi.params[i]);
+  }
+  s += ")";
+  if (!fi.returns.empty())
+    s += " " + render(fi.returns[0]);
+  return s;
+}
+
+bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
+                                         ProtocolKind p, Span at,
+                                         const std::string &context) {
+  if (!concrete || is_error_type(concrete))
+    return true;
+  // Inside a generic body the binding isn't known yet — the concrete check
+  // happens at every monomorphisation site.
+  if (concrete->kind == TypeKind::TypeParam)
+    return true;
+
+  TypePtr iface;
+  const char *proto_name = nullptr;
+  switch (p) {
+  case ProtocolKind::Hashable:
+    iface = builtins.hashable_iface;
+    proto_name = "Hashable";
+    break;
+  case ProtocolKind::Stringable:
+    iface = builtins.stringable_iface;
+    proto_name = "Stringable";
+    break;
+  }
+  // proto.sgi unavailable (bootstrap of std/proto, or no resolver) — skip.
+  if (!iface)
+    return true;
+
+  // Float keys: NaN ≠ NaN breaks the consistency invariant, and the named
+  // diagnostic should explain that rather than report a missing Hash().
+  if (p == ProtocolKind::Hashable && concrete->kind == TypeKind::Float) {
+    std::string ctx = context.empty() ? "" : (" (" + context + ")");
+    error(at, std::format(
+                  "{} is not Hashable: floats lack total equality "
+                  "(NaN != NaN), which the hash-map consistency invariant "
+                  "requires{}",
+                  type_to_string(concrete), ctx));
+    return false;
+  }
+
+  if (satisfies_interface(concrete, iface))
+    return true;
+
+  // Build the "missing methods" list against the same method table the
+  // structural matcher consulted.
+  auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
+  auto concrete_methods =
+      collect_concrete_methods(concrete, type_methods_, kind_methods_, builtins);
+
+  std::vector<std::string> missing;
+  for (auto &im : iface_info.methods) {
+    bool ok = false;
+    for (auto &cm : concrete_methods) {
+      if (cm.name != im.name)
+        continue;
+      if (im.signature && cm.signature &&
+          !signatures_match_with_self(im.signature, cm.signature, iface,
+                                      concrete))
+        break;
+      ok = true;
+      break;
+    }
+    if (!ok)
+      missing.push_back(format_protocol_method(im.name, im.signature, iface));
+  }
+
+  std::string list;
+  for (size_t i = 0; i < missing.size(); ++i) {
+    if (i)
+      list += ", ";
+    list += missing[i];
+  }
+  std::string ctx = context.empty() ? "" : (" (" + context + ")");
+  error(at, std::format(
+                "type {} does not satisfy {}{}: missing {}",
+                type_to_string(concrete), proto_name, ctx, list));
+  return false;
+}
+
+bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
+                                          const std::string &context) {
+  if (!t || is_error_type(t))
+    return true;
+  if (t->kind == TypeKind::Array) {
+    auto &ai = std::get<ArrayTypeInfo>(t->detail);
+    return check_stringable_recursive(ai.element, at, context);
+  }
+  if (t->kind == TypeKind::Map) {
+    auto &mi = std::get<MapTypeInfo>(t->detail);
+    bool k = check_stringable_recursive(mi.key, at, context);
+    bool v = check_stringable_recursive(mi.value, at, context);
+    return k && v;
+  }
+  return check_satisfies_protocol(t, ProtocolKind::Stringable, at, context);
 }
 
 } // namespace saga

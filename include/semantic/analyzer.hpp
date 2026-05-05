@@ -652,6 +652,29 @@ private:
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
 
+  /// Named protocols the compiler dispatches through.  Used by
+  /// `check_satisfies_protocol` to pick the relevant interface from
+  /// `builtins.*_iface` and to render the protocol name in diagnostics.
+  enum class ProtocolKind { Hashable, Stringable };
+
+  /// Verify `concrete` satisfies the named protocol `p`; emit a named
+  /// diagnostic at `at` if not.  Skips silently when `concrete` is a
+  /// TypeParam (deferred to the monomorphisation site), an ErrorType,
+  /// or when the protocol interface hasn't been loaded yet (e.g. during
+  /// std/proto's own bootstrap or in tests without a package resolver).
+  /// `context` describes where the requirement comes from
+  /// ("map key", "interpolated expression", …) and is folded into the
+  /// diagnostic.  Returns `false` and reports an error on failure.
+  bool check_satisfies_protocol(const TypePtr &concrete, ProtocolKind p,
+                                Span at, const std::string &context = "");
+
+  /// Recursively verify `t` is Stringable, descending into Array elements
+  /// and Map keys/values so that `[[Foo]]` requires `Foo` itself to be
+  /// Stringable rather than terminating at the trivially-Stringable Array.
+  /// Returns `false` and reports the named diagnostic on failure.
+  bool check_stringable_recursive(const TypePtr &t, Span at,
+                                  const std::string &context = "");
+
   // ── Assignment compatibility helper ──────────────────────────────────
 
   /// Verify that `value_type` is assignable to `target_type`; report an
