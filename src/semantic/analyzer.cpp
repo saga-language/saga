@@ -1698,7 +1698,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   if (has_generics && (!fn.receiver || is_generic_on_concrete_recv ||
                         is_generic_on_kind_recv)) {
     generic_templates_[&fn] =
-        GenericTemplate{&fn, current_scope, std::move(generic_params)};
+        GenericTemplate{&fn, current_scope, std::move(generic_params),
+                        is_stdlib};
   }
 }
 
@@ -4700,9 +4701,15 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   // caller's scope.
   auto saved_scope = current_scope;
   BodyInstantiation *saved_inst = current_instantiation_;
+  bool saved_is_stdlib = is_stdlib;
   instantiation_stack_.push_back(&call_node);
 
   current_scope = tpl.decl_scope->child(ScopeKind::Block);
+  // Stdlib bodies (e.g. Map.String() in std/map) re-analysed at a user-
+  // package call site keep their stdlib provenance so intrinsic_* calls
+  // inside the body remain allowed.
+  if (tpl.is_stdlib)
+    is_stdlib = true;
 
   // Register each generic type parameter under its original name in the
   // new scope so a reference to `T` inside the body resolves to the
@@ -4776,6 +4783,7 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   pop_scope();           // the Function scope
   current_scope = saved_scope;
   current_instantiation_ = saved_inst;
+  is_stdlib = saved_is_stdlib;
   instantiation_stack_.pop_back();
 
   inst.in_progress = false;

@@ -111,23 +111,9 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
   // These are added per-kind below alongside kind-specific methods.
 
   switch (kind) {
-  // Bool, Int, Float, String methods are fully migrated to stdlib packages.
-
-  case TypeKind::Array: {
-    // Most Array methods are in std/array/array.sg.
-    // String() is deferred — requires TypeParam method dispatch.
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    break;
-  }
-
-  case TypeKind::Map: {
-    // Most Map methods are in std/map/map.sg.
-    // String() is deferred — requires TypeParam method dispatch.
-    methods.push_back(
-        {"String", make_func_type({}, {t.string_type}), true});
-    break;
-  }
+  // Bool, Int, Float, String, Array, Map methods are fully migrated to
+  // stdlib packages (std/bool, std/int, std/float, std/string, std/array,
+  // std/map).
 
   case TypeKind::Enum:
     methods.push_back(
@@ -314,6 +300,15 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   global_scope->declare(Symbol::builtin(
       "intrinsic_runtime_try", SymbolKind::Function,
       make_func_type({types.string_type}, {types.any_type}, true)));
+
+  // intrinsic_is_string(value: Any) -> Bool
+  // Compile-time predicate folded by codegen against the argument's static
+  // type after monomorphisation: i1 1 when the type is String, i1 0
+  // otherwise.  Used by stdlib formatters (Map/Array String) to add
+  // surrounding quotes only when rendering a String value.
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_is_string", SymbolKind::Function,
+      make_func_type({types.any_type}, {types.bool_type})));
 }
 
 } // namespace saga

@@ -28,3 +28,26 @@ pub fn |K, V| (m {K:V}) Keys() [K] {
 pub fn |K, V| (m {K:V}) Equals(other {K:V}) Bool {
   intrinsic_runtime("saga_map_equals", m, other)
 }
+
+pub fn |K, V| (m {K:V}) String() String {
+  if m.Size() == 0 { return "\{}" }
+  s := "\{"
+  first := true
+  for k : m.Keys() {
+    if !first { s += ", " }
+    if intrinsic_is_string(k) {
+      s += "\"" + k.String() + "\""
+    } else {
+      s += k.String()
+    }
+    s += ": "
+    v := m.At(k)
+    if intrinsic_is_string(v) {
+      s += "\"" + v.String() + "\""
+    } else {
+      s += v.String()
+    }
+    first = false
+  }
+  s + "}"
+}

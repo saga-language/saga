@@ -182,16 +182,29 @@ llvm::Value *CodeGen::emit_bool_literal(const BoolLiteralNode &node) {
 // ===========================================================================
 
 std::string CodeGen::unescape_fragment(std::string_view raw) {
-  if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
+  // A fragment is either a fully-quoted StringLiteral ("..."), or one of
+  // the interpolation pieces (StringStart "..{, StringMiddle }..{,
+  // StringEnd }..").  Only the partial pieces carry the unquoted `{`/`}`
+  // interpolation delimiters; stripping them from a fully-quoted literal
+  // would chew off escaped braces like `"\{"`.
+  bool is_literal =
+      raw.size() >= 2 && raw.front() == '"' && raw.back() == '"';
+  if (is_literal) {
     raw = raw.substr(1, raw.size() - 2);
-  else if (raw.size() >= 1 && raw.front() == '"')
+  } else if (raw.size() >= 1 && raw.front() == '"') {
     raw = raw.substr(1);
-  else if (raw.size() >= 1 && raw.back() == '"')
+    if (raw.size() >= 1 && raw.back() == '{')
+      raw = raw.substr(0, raw.size() - 1);
+  } else if (raw.size() >= 1 && raw.back() == '"') {
     raw = raw.substr(0, raw.size() - 1);
-  if (raw.size() >= 1 && raw.front() == '}')
-    raw = raw.substr(1);
-  if (raw.size() >= 1 && raw.back() == '{')
-    raw = raw.substr(0, raw.size() - 1);
+    if (raw.size() >= 1 && raw.front() == '}')
+      raw = raw.substr(1);
+  } else {
+    if (raw.size() >= 1 && raw.front() == '}')
+      raw = raw.substr(1);
+    if (raw.size() >= 1 && raw.back() == '{')
+      raw = raw.substr(0, raw.size() - 1);
+  }
 
   std::string out;
   out.reserve(raw.size());

@@ -217,6 +217,10 @@ struct Analyzer {
     const FuncDeclNode *decl;   // body reachable via decl->body
     Scope::Ptr decl_scope;      // scope visible to the body when declared
     std::vector<TypeParam> type_params; // ordered (id, name) pairs
+    bool is_stdlib = false;     // body originated in a stdlib package; the
+                                // intrinsic-call gate honours this when the
+                                // body is re-analysed at a user-package
+                                // instantiation site.
   };
 
   /// Generic free-function templates collected during the signature pass.

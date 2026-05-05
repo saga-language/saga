@@ -1,0 +1,29 @@
+// Phase 5.3 spike: Map.String() and Array.String() are now stdlib methods
+// (std/map, std/array).  Pinned format: ", " separator, surrounding quotes
+// on String values, "[]"/"{}" for empty containers.
+import "std/io"
+
+pub fn Main() Void {
+  // -- Array.String --------------------------------------------------------
+  io.Println([1, 2, 3].String())
+  io.Println(["a", "b", "c"].String())
+  io.Println([true, false].String())
+
+  empty_arr := [42]
+  empty_arr.Pop()
+  io.Println(empty_arr.String())
+
+  // -- Map.String ----------------------------------------------------------
+  m1 := {"a": 1, "b": 2}
+  io.Println(m1.String())
+
+  m2 := {1: "one", 2: "two"}
+  io.Println(m2.String())
+
+  m3 := {1: 10, 2: 20}
+  io.Println(m3.String())
+
+  empty_map := {"k": 1}
+  empty_map.Remove("k")
+  io.Println(empty_map.String())
+}
