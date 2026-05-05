@@ -1931,6 +1931,30 @@ typedef struct {
   void *value;
 } saga_runtime_map_entry;
 
+/* Key-kind tag.  Tells the runtime how to hash/compare keys without an     */
+/* indirect call when the type is a known primitive.  USER keys go through */
+/* the ops callback table.                                                  */
+typedef enum {
+  SAGA_KEY_KIND_USER   = 0, /* dispatch via ops                             */
+  SAGA_KEY_KIND_INT64  = 1,
+  SAGA_KEY_KIND_INT32  = 2,
+  SAGA_KEY_KIND_INT16  = 3,
+  SAGA_KEY_KIND_INT8   = 4,
+  SAGA_KEY_KIND_UINT64 = 5,
+  SAGA_KEY_KIND_UINT32 = 6,
+  SAGA_KEY_KIND_UINT16 = 7,
+  SAGA_KEY_KIND_UINT8  = 8,
+  SAGA_KEY_KIND_BOOL   = 9,
+  SAGA_KEY_KIND_STRING = 10,
+} saga_runtime_key_kind;
+
+/* Callback table for user-defined keys.  Pointed at constant tables emitted */
+/* by codegen alongside the user type's monomorphised methods.               */
+typedef struct {
+  uint64_t (*hash)(const void *key);
+  int      (*equals)(const void *a, const void *b);
+} saga_runtime_key_ops;
+
 typedef struct {
   saga_runtime_map_entry *entries;    /* dense array, insertion order                 */
   int64_t *indices;         /* hash table: slot → index (-1 empty, -2 del) */
@@ -1940,7 +1964,8 @@ typedef struct {
   int64_t key_size;
   int64_t val_size;
   int64_t refcount;
-  int     is_string_key;    /* 1 if keys are saga_runtime_string pointers            */
+  int64_t key_kind;                       /* saga_runtime_key_kind                  */
+  const saga_runtime_key_ops *ops;        /* non-NULL iff key_kind == USER          */
 } saga_runtime_map;
 
 #define SAGA_RUNTIME_MAP_EMPTY    (-1)
@@ -2064,27 +2089,47 @@ int64_t saga_bool_hash(int64_t v) {
 
 /* ── Key hashing / comparison helpers ──────────────────────────────────── */
 
+static uint64_t saga_runtime_map_hash_string(const void *key) {
+  const saga_runtime_string *s = *(const saga_runtime_string *const *)key;
+  if (!s || !s->data || s->len <= 0)
+    return saga_runtime_siphash((const uint8_t *)"", 0);
+  return saga_runtime_siphash((const uint8_t *)s->data, s->len);
+}
+
+static uint64_t saga_runtime_map_hash_bytes(const void *key, int64_t key_size) {
+  return saga_runtime_siphash((const uint8_t *)key, key_size);
+}
+
 static uint64_t saga_runtime_map_hash_key(const saga_runtime_map *m, const void *key) {
-  if (m->is_string_key) {
-    const saga_runtime_string *s = *(const saga_runtime_string *const *)key;
-    if (!s || !s->data || s->len <= 0)
-      return saga_runtime_siphash((const uint8_t *)"", 0);
-    return saga_runtime_siphash((const uint8_t *)s->data, s->len);
+  switch ((saga_runtime_key_kind)m->key_kind) {
+    case SAGA_KEY_KIND_USER:
+      return m->ops->hash(key);
+    case SAGA_KEY_KIND_STRING:
+      return saga_runtime_map_hash_string(key);
+    default:
+      return saga_runtime_map_hash_bytes(key, m->key_size);
   }
-  return saga_runtime_siphash((const uint8_t *)key, m->key_size);
+}
+
+static int saga_runtime_map_keys_equal_string(const void *a, const void *b) {
+  const saga_runtime_string *sa = *(const saga_runtime_string *const *)a;
+  const saga_runtime_string *sb = *(const saga_runtime_string *const *)b;
+  if (sa == sb) return 1;
+  if (!sa || !sb) return 0;
+  if (sa->len != sb->len) return 0;
+  if (sa->len == 0) return 1;
+  return memcmp(sa->data, sb->data, (size_t)sa->len) == 0;
 }
 
 static int saga_runtime_map_keys_equal(const saga_runtime_map *m, const void *a, const void *b) {
-  if (m->is_string_key) {
-    const saga_runtime_string *sa = *(const saga_runtime_string *const *)a;
-    const saga_runtime_string *sb = *(const saga_runtime_string *const *)b;
-    if (sa == sb) return 1;
-    if (!sa || !sb) return 0;
-    if (sa->len != sb->len) return 0;
-    if (sa->len == 0) return 1;
-    return memcmp(sa->data, sb->data, (size_t)sa->len) == 0;
+  switch ((saga_runtime_key_kind)m->key_kind) {
+    case SAGA_KEY_KIND_USER:
+      return m->ops->equals(a, b);
+    case SAGA_KEY_KIND_STRING:
+      return saga_runtime_map_keys_equal_string(a, b);
+    default:
+      return memcmp(a, b, (size_t)m->key_size) == 0;
   }
-  return memcmp(a, b, (size_t)m->key_size) == 0;
 }
 
 /* ── Internal: index table probing ─────────────────────────────────────── */
@@ -2185,7 +2230,7 @@ void saga_release_map(saga_runtime_map *m) {
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 saga_runtime_map *saga_map_new(int64_t key_size, int64_t val_size,
-                     int64_t is_string_key) {
+                     int64_t key_kind, const saga_runtime_key_ops *ops) {
   int64_t initial_ecap = 8;
   int64_t initial_icap = 16; /* power of 2, ≥ 2 * initial_ecap */
 
@@ -2201,7 +2246,8 @@ saga_runtime_map *saga_map_new(int64_t key_size, int64_t val_size,
   m->key_size = key_size;
   m->val_size = val_size;
   m->refcount = 1;
-  m->is_string_key = (int)is_string_key;
+  m->key_kind = key_kind;
+  m->ops = ops;
   return m;
 }
 
@@ -2326,7 +2372,8 @@ int64_t saga_map_equals(saga_runtime_map *a, saga_runtime_map *b) {
   if (a->len != b->len) return 0;
   if (a->key_size != b->key_size) return 0;
   if (a->val_size != b->val_size) return 0;
-  if (a->is_string_key != b->is_string_key) return 0;
+  if (a->key_kind != b->key_kind) return 0;
+  if (a->key_kind == SAGA_KEY_KIND_USER && a->ops != b->ops) return 0;
   for (int64_t i = 0; i < a->len; i++) {
     void *bv = saga_map_get(b, a->entries[i].key);
     if (!bv) return 0;
@@ -2391,7 +2438,7 @@ saga_runtime_array *saga_runtime_arena_alloc_array(saga_runtime_arena *a, int64_
 }
 
 saga_runtime_map *saga_runtime_arena_alloc_map(saga_runtime_arena *a, int64_t key_size, int64_t val_size,
-                          int64_t is_string_key) {
+                          int64_t key_kind, const saga_runtime_key_ops *ops) {
   if (!a) return NULL;
 
   int64_t initial_ecap = 8;
@@ -2419,7 +2466,8 @@ saga_runtime_map *saga_runtime_arena_alloc_map(saga_runtime_arena *a, int64_t ke
   m->key_size    = key_size;
   m->val_size    = val_size;
   m->refcount    = -1; /* arena-owned */
-  m->is_string_key = (int)is_string_key;
+  m->key_kind    = key_kind;
+  m->ops         = ops;
   return m;
 }
 

@@ -222,10 +222,28 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
             bool is_generic = ai < param_is_generic.size() &&
                               param_is_generic[ai];
             if (is_generic && pi < callee_ft->getNumParams()) {
-              auto *tmp = create_entry_alloca(parent_fn, "box.tmp",
-                                              val->getType());
-              builder.CreateStore(val, tmp);
-              val = tmp;
+              // Struct args arrive as a pointer to the struct alloca; box by
+              // copying the *struct contents* into a fresh alloca, otherwise
+              // the runtime would see a pointer-to-pointer-to-struct instead
+              // of the struct bytes themselves.
+              auto arg_sem = semantic_type(*node.args[ai]);
+              if (arg_sem && arg_sem->kind == TypeKind::Struct &&
+                  val->getType()->isPointerTy()) {
+                auto *struct_ll = llvm_type(arg_sem);
+                auto *tmp = create_entry_alloca(parent_fn, "box.tmp",
+                                                struct_ll);
+                auto &dl = module->getDataLayout();
+                builder.CreateMemCpy(
+                    tmp, dl.getABITypeAlign(struct_ll),
+                    val, dl.getABITypeAlign(struct_ll),
+                    dl.getTypeAllocSize(struct_ll));
+                val = tmp;
+              } else {
+                auto *tmp = create_entry_alloca(parent_fn, "box.tmp",
+                                                val->getType());
+                builder.CreateStore(val, tmp);
+                val = tmp;
+              }
             }
             args.push_back(val);
           }

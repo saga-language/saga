@@ -531,23 +531,30 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       auto &map_info = std::get<MapTypeInfo>(sem_type_ptr->detail);
       int64_t key_size = 8;
       int64_t val_size = 8;
-      bool string_keys = is_string_key_type(map_info.key);
       if (map_info.key) {
         auto *key_ll = llvm_type(map_info.key);
-        if (key_ll->isIntegerTy(1))
+        if (key_ll->isStructTy())
+          key_size = module->getDataLayout().getTypeAllocSize(key_ll);
+        else if (key_ll->isIntegerTy(1))
           key_size = 1;
       }
       if (map_info.value) {
         auto *val_ll = llvm_type(map_info.value);
-        if (val_ll->isIntegerTy(1))
+        if (val_ll->isStructTy())
+          val_size = module->getDataLayout().getTypeAllocSize(val_ll);
+        else if (val_ll->isIntegerTy(1))
           val_size = 1;
       }
+      int64_t key_kind_tag =
+          static_cast<int64_t>(CodeGen::key_kind_for(map_info.key));
+      llvm::Constant *ops_ptr = get_or_emit_key_ops(map_info.key);
       auto *new_fn = module->getFunction("saga_map_new");
       auto *map = builder.CreateCall(
           new_fn,
           {llvm::ConstantInt::get(i64_type, key_size),
            llvm::ConstantInt::get(i64_type, val_size),
-           llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0)},
+           llvm::ConstantInt::get(i64_type, key_kind_tag),
+           ops_ptr},
           "map");
       auto *alloca = create_entry_alloca(func, name, var_type);
       locals[name] = alloca;

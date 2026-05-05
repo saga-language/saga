@@ -206,9 +206,11 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_release_array", module.get());
 
-  // saga_runtime_map* saga_map_new(i64 key_size, i64 val_size, i64 is_string_key)
+  // saga_runtime_map* saga_map_new(i64 key_size, i64 val_size,
+  //                                i64 key_kind, saga_runtime_key_ops* ops)
   llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {i64_type, i64_type, i64_type}, false),
+      llvm::FunctionType::get(
+          ptr_type, {i64_type, i64_type, i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_new", module.get());
 
   // void saga_map_set(saga_runtime_map* m, void* key, void* value)

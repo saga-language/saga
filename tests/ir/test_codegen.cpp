@@ -3243,24 +3243,54 @@ TEST(CodeGen, MapMultipleEntries) {
   EXPECT_EQ(set_count, 3);
 }
 
-TEST(CodeGen, MapStringKeyFlag) {
-  // String-keyed maps should pass is_string_key=1 to saga_map_new.
+TEST(CodeGen, MapStringKeyKind) {
+  // String-keyed maps should pass key_kind=STRING (=10) and a null ops
+  // pointer to saga_map_new.
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  m := {\"key\": 42}\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
+  bool saw_call = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_map_new") {
-          // arg2 = is_string_key
-          auto *arg2 = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
-          ASSERT_NE(arg2, nullptr);
-          EXPECT_EQ(arg2->getSExtValue(), 1) << "String key map should pass is_string_key=1";
+          saw_call = true;
+          ASSERT_EQ(call->arg_size(), 4u);
+          auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+          ASSERT_NE(kind, nullptr);
+          EXPECT_EQ(kind->getSExtValue(), 10) << "String key map should pass key_kind=STRING";
+          EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)))
+              << "Primitive-keyed maps should pass a null ops pointer";
         }
+  EXPECT_TRUE(saw_call);
+}
+
+TEST(CodeGen, MapIntKeyKind) {
+  // Int-keyed maps should pass key_kind=INT64 (=1) and a null ops pointer.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {1: \"one\"}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool saw_call = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "saga_map_new") {
+          saw_call = true;
+          ASSERT_EQ(call->arg_size(), 4u);
+          auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+          ASSERT_NE(kind, nullptr);
+          EXPECT_EQ(kind->getSExtValue(), 1) << "Int key map should pass key_kind=INT64";
+          EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)));
+        }
+  EXPECT_TRUE(saw_call);
 }
 
 TEST(CodeGen, MapIntKeySizeEight) {

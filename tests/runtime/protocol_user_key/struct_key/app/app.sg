@@ -1,0 +1,30 @@
+// Phase 4.3 spike: user-defined struct keys.
+// UserId provides the Hashable shape (Hash + Equals); the runtime should
+// dispatch through the codegen-emitted ops table, not the primitive path.
+import "std/io"
+
+struct UserId {
+  raw Int64
+}
+
+pub fn (u UserId) Hash() Int64 { u.raw.Hash() }
+pub fn (u UserId) Equals(other UserId) Bool { u.raw == other.raw }
+pub fn (u UserId) String() String { "UserId(" + u.raw.String() + ")" }
+
+pub fn Main() Void {
+  u1 := UserId{raw: 1}
+  u2 := UserId{raw: 2}
+  m := {u1: "alice", u2: "bob"}
+
+  io.Println(m.Size().String())
+  io.Println(m.At(u1))
+  io.Println(m.At(u2))
+  io.Println(m.At(UserId{raw: 1}))
+  io.Println(m.Key?(u1).String())
+  io.Println(m.Key?(UserId{raw: 99}).String())
+
+  m.Remove(u1)
+  io.Println(m.Size().String())
+  io.Println(m.Key?(u1).String())
+  io.Println(m.At(u2))
+}

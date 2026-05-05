@@ -732,7 +732,17 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       for (auto &ident : param.names.identifiers) {
         std::string pname(ident.name);
         auto *alloca = create_entry_alloca(func, pname, ll_type);
-        builder.CreateStore(func->getArg(arg_idx++), alloca);
+        auto *arg = func->getArg(arg_idx++);
+        if (ll_type && ll_type->isStructTy()) {
+          // Byval struct param: arg is `ptr` to caller's copy.  Memcpy the
+          // bytes into the struct-typed local alloca so field access reads
+          // struct contents instead of the pointer's bits.
+          auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
+          auto al = module->getDataLayout().getABITypeAlign(ll_type);
+          builder.CreateMemCpy(alloca, al, arg, al, sz);
+        } else {
+          builder.CreateStore(arg, alloca);
+        }
         locals[pname] = alloca;
       }
     }

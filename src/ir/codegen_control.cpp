@@ -546,16 +546,15 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
   int64_t val_size = 8;
   llvm::Type *key_ll_type = i64_type;
   llvm::Type *val_ll_type = i64_type;
-  bool string_keys = false;
+  TypePtr key_sem;
 
   // Get semantic type of the map literal node itself.
   // We look through the entries to determine types.
   if (!node.entries.empty()) {
-    auto key_sem = semantic_type(*node.entries[0].key);
+    key_sem = semantic_type(*node.entries[0].key);
     auto val_sem = semantic_type(*node.entries[0].value);
     if (key_sem) {
       key_ll_type = llvm_type(key_sem);
-      string_keys = is_string_key_type(key_sem);
       if (key_ll_type->isStructTy())
         key_size = module->getDataLayout().getTypeAllocSize(key_ll_type);
       else if (key_ll_type->isIntegerTy(1))
@@ -574,13 +573,18 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     }
   }
 
-  // Create the map: saga_map_new(key_size, val_size, is_string_key)
+  int64_t key_kind_tag =
+      static_cast<int64_t>(CodeGen::key_kind_for(key_sem));
+  llvm::Constant *ops_ptr = get_or_emit_key_ops(key_sem);
+
+  // Create the map: saga_map_new(key_size, val_size, key_kind, ops)
   auto *new_fn = module->getFunction("saga_map_new");
   auto *map = builder.CreateCall(
       new_fn,
       {llvm::ConstantInt::get(i64_type, key_size),
        llvm::ConstantInt::get(i64_type, val_size),
-       llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0)},
+       llvm::ConstantInt::get(i64_type, key_kind_tag),
+       ops_ptr},
       "map");
 
   // Insert each entry.

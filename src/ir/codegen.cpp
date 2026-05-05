@@ -24,8 +24,146 @@
 
 namespace saga {
 
-bool CodeGen::is_string_key_type(const TypePtr &t) {
-  return t && t->kind == TypeKind::String;
+CodeGen::KeyKind CodeGen::key_kind_for(const TypePtr &t) {
+  if (!t)
+    return KeyKind::Int64;
+
+  // Look through aliases.
+  TypePtr u = t;
+  while (u && u->kind == TypeKind::Alias) {
+    auto &ai = std::get<AliasTypeInfo>(u->detail);
+    if (!ai.underlying || ai.underlying.get() == u.get())
+      break;
+    u = ai.underlying;
+  }
+  if (!u)
+    return KeyKind::Int64;
+
+  switch (u->kind) {
+  case TypeKind::String:
+    return KeyKind::String;
+  case TypeKind::Bool:
+    return KeyKind::Bool;
+  case TypeKind::Int: {
+    // Storage is uniform i64, so every integer width tags as Int64 —
+    // the narrower kinds are reserved for a future when the runtime
+    // wants to specialise the hash by actual width.
+    return KeyKind::Int64;
+  }
+  case TypeKind::Enum:
+    return KeyKind::Int64; // enums lower to i64 tags
+  case TypeKind::Struct:
+    return KeyKind::User;
+  default:
+    // Floats are not Hashable; the analyzer rejects them earlier.
+    // Anything else is also user/custom — route through ops.
+    return KeyKind::User;
+  }
+}
+
+llvm::Constant *CodeGen::get_or_emit_key_ops(const TypePtr &key_type) {
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  if (key_kind_for(key_type) != KeyKind::User)
+    return llvm::ConstantPointerNull::get(ptr_ty);
+
+  // Look through aliases to the struct.
+  TypePtr u = key_type;
+  while (u && u->kind == TypeKind::Alias) {
+    auto &ai = std::get<AliasTypeInfo>(u->detail);
+    if (!ai.underlying || ai.underlying.get() == u.get())
+      break;
+    u = ai.underlying;
+  }
+  if (!u || u->kind != TypeKind::Struct)
+    return llvm::ConstantPointerNull::get(ptr_ty);
+
+  auto &info = std::get<StructTypeInfo>(u->detail);
+  std::string cache_key = struct_cache_key(info);
+  if (auto it = key_ops_globals.find(cache_key); it != key_ops_globals.end())
+    return it->second;
+
+  // Lazily create the saga_runtime_key_ops { ptr, ptr } LLVM type.
+  if (!key_ops_struct_type) {
+    key_ops_struct_type = llvm::StructType::create(
+        context, {ptr_ty, ptr_ty}, "saga_runtime_key_ops");
+  }
+
+  // Resolve the user's Hash() and Equals() symbols.  If either is missing,
+  // we cannot wire up the table; return null and let the analyzer's earlier
+  // protocol check own the diagnostic surface.
+  std::string hash_link =
+      mangle(info.origin_package, info.name + "__Hash");
+  std::string equals_link =
+      mangle(info.origin_package, info.name + "__Equals");
+  auto *user_hash = module->getFunction(hash_link);
+  auto *user_equals = module->getFunction(equals_link);
+  if (!user_hash || !user_equals)
+    return llvm::ConstantPointerNull::get(ptr_ty);
+
+  // Hash thunk: i64 (ptr key) -> tail-call user's K__Hash(self=key).
+  std::string hash_thunk_name = hash_link + "__map_thunk";
+  auto *hash_thunk = module->getFunction(hash_thunk_name);
+  if (!hash_thunk) {
+    auto *thunk_ty = llvm::FunctionType::get(i64_type, {ptr_ty}, false);
+    hash_thunk = llvm::Function::Create(
+        thunk_ty, llvm::Function::PrivateLinkage, hash_thunk_name, module.get());
+    auto *bb = llvm::BasicBlock::Create(context, "entry", hash_thunk);
+    llvm::IRBuilder<> tb(bb);
+    auto *call = tb.CreateCall(user_hash, {hash_thunk->getArg(0)});
+    tb.CreateRet(call);
+  }
+
+  // Equals thunk: i32 (ptr a, ptr b) -> zext(K__Equals(a, b), i32).
+  // The runtime ABI's int return is i32; the user method returns Bool (i1).
+  std::string equals_thunk_name = equals_link + "__map_thunk";
+  auto *equals_thunk = module->getFunction(equals_thunk_name);
+  if (!equals_thunk) {
+    auto *i32_ty = llvm::Type::getInt32Ty(context);
+    auto *thunk_ty =
+        llvm::FunctionType::get(i32_ty, {ptr_ty, ptr_ty}, false);
+    equals_thunk = llvm::Function::Create(
+        thunk_ty, llvm::Function::PrivateLinkage, equals_thunk_name,
+        module.get());
+    // Mirror the byval/sret ABI of the user's Equals.  The user method has
+    // signature `Bool (ptr self, ptr other)` with `other` byval — passing
+    // the runtime's `b` straight through works because both sides agree
+    // the second argument is a pointer to a struct of the same layout.
+    auto *bb = llvm::BasicBlock::Create(context, "entry", equals_thunk);
+    llvm::IRBuilder<> tb(bb);
+    llvm::Value *a = equals_thunk->getArg(0);
+    llvm::Value *b = equals_thunk->getArg(1);
+    auto *raw = tb.CreateCall(user_equals, {a, b});
+    // Mirror byval on the call site — the user's `Equals` declares its
+    // `other` parameter as a byval struct, and direct calls in LLVM still
+    // require the attribute on the call as well as on the function decl.
+    llvm::Type *struct_ty = llvm_type(u);
+    if (struct_ty && struct_ty->isStructTy()) {
+      raw->addParamAttr(1,
+          llvm::Attribute::getWithByValType(context, struct_ty));
+      raw->addParamAttr(1,
+          llvm::Attribute::getWithAlignment(context,
+              module->getDataLayout().getABITypeAlign(struct_ty)));
+    }
+    llvm::Value *as_i32;
+    if (raw->getType()->isIntegerTy(1))
+      as_i32 = tb.CreateZExt(raw, i32_ty);
+    else if (raw->getType()->isIntegerTy(32))
+      as_i32 = raw;
+    else
+      as_i32 = tb.CreateZExtOrTrunc(raw, i32_ty);
+    tb.CreateRet(as_i32);
+  }
+
+  // Emit the constant ops global.
+  auto *ops_init = llvm::ConstantStruct::get(
+      key_ops_struct_type, {hash_thunk, equals_thunk});
+  std::string global_name =
+      mangle(info.origin_package, info.name + "__map_key_ops");
+  auto *gv = new llvm::GlobalVariable(
+      *module, key_ops_struct_type, /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, ops_init, global_name);
+  key_ops_globals[cache_key] = gv;
+  return gv;
 }
 
 // ===========================================================================
