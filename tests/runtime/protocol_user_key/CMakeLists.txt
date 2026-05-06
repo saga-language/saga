@@ -11,3 +11,4 @@ function(protocol_user_key_test name)
 endfunction()
 
 protocol_user_key_test(struct_key)
+protocol_user_key_test(dispatch)
