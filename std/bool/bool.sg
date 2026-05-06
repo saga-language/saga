@@ -8,3 +8,7 @@ pub fn (b Bool) String() String {
 pub fn (b Bool) Equals(other Bool) Bool {
   b == other
 }
+
+pub fn (b Bool) Hash() Int64 {
+  intrinsic_runtime("saga_bool_hash", b)
+}

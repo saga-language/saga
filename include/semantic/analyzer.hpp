@@ -180,6 +180,20 @@ struct Analyzer {
   /// same substitution logic in check_selector handles both.
   std::unordered_map<TypeKind, std::vector<MethodInfo>> kind_methods_;
 
+  /// Per-kind/method side table that retains the original FuncDecl,
+  /// pre-normalization signature, and original-ID TypeParams for bodies
+  /// that codegen needs to specialise per concrete K (because they
+  /// dispatch through a named protocol on the TypeParam — see
+  /// kind_method_uses_typeparam_dispatch_).  Populated during the
+  /// stdlib's signature pass and consumed by codegen.
+  struct KindMethodDecl {
+    const FuncDeclNode *decl = nullptr;
+    TypePtr original_signature;
+    std::vector<TypeParam> type_params;  // original IDs
+  };
+  std::unordered_map<TypeKind, std::unordered_map<std::string, KindMethodDecl>>
+      kind_method_decls_;
+
   /// Maps a BinaryExprNode (by its containing Node*) to the method name that
   /// should be called to implement the operator (e.g. "Add", "Compare").
   /// Only populated for struct-typed operands; primitive operators are still
@@ -203,6 +217,10 @@ struct Analyzer {
     const FuncDeclNode *decl;   // body reachable via decl->body
     Scope::Ptr decl_scope;      // scope visible to the body when declared
     std::vector<TypeParam> type_params; // ordered (id, name) pairs
+    bool is_stdlib = false;     // body originated in a stdlib package; the
+                                // intrinsic-call gate honours this when the
+                                // body is re-analysed at a user-package
+                                // instantiation site.
   };
 
   /// Generic free-function templates collected during the signature pass.
@@ -261,6 +279,22 @@ struct Analyzer {
   /// satisfy reads) during the current Phase 3/4 pass.  nullptr when
   /// analysing non-generic code.
   BodyInstantiation *current_instantiation_ = nullptr;
+
+  /// Stdlib generic receiver methods on Array/Map (kind_methods_) whose
+  /// bodies dispatch through a named protocol on a TypeParam value
+  /// (e.g. `for v : a { v.String() }`).  These methods cannot be emitted
+  /// once with T opaque — codegen specialises per concrete K at every
+  /// user call site.  Populated by check_func_decl_body during the eager
+  /// body pass and consumed by codegen.
+  std::unordered_set<const FuncDeclNode *>
+      kind_method_uses_typeparam_dispatch_;
+
+  /// While checking a kind_methods_ body eagerly, points at the FuncDecl
+  /// being checked.  resolve_method_signature consults this when its
+  /// named-protocol fallback fires on a TypeParam receiver, so the decl
+  /// can be added to kind_method_uses_typeparam_dispatch_.  nullptr
+  /// outside the eager kind_methods_ pass.
+  const FuncDeclNode *current_eager_kind_method_decl_ = nullptr;
 
   /// Call-site backtrace for instantiation errors.  check_call_expr pushes
   /// the CallExprNode* before driving a body instantiation and pops after.
@@ -621,6 +655,29 @@ private:
 
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
+
+  /// Named protocols the compiler dispatches through.  Used by
+  /// `check_satisfies_protocol` to pick the relevant interface from
+  /// `builtins.*_iface` and to render the protocol name in diagnostics.
+  enum class ProtocolKind { Hashable, Stringable };
+
+  /// Verify `concrete` satisfies the named protocol `p`; emit a named
+  /// diagnostic at `at` if not.  Skips silently when `concrete` is a
+  /// TypeParam (deferred to the monomorphisation site), an ErrorType,
+  /// or when the protocol interface hasn't been loaded yet (e.g. during
+  /// std/proto's own bootstrap or in tests without a package resolver).
+  /// `context` describes where the requirement comes from
+  /// ("map key", "interpolated expression", …) and is folded into the
+  /// diagnostic.  Returns `false` and reports an error on failure.
+  bool check_satisfies_protocol(const TypePtr &concrete, ProtocolKind p,
+                                Span at, const std::string &context = "");
+
+  /// Recursively verify `t` is Stringable, descending into Array elements
+  /// and Map keys/values so that `[[Foo]]` requires `Foo` itself to be
+  /// Stringable rather than terminating at the trivially-Stringable Array.
+  /// Returns `false` and reports the named diagnostic on failure.
+  bool check_stringable_recursive(const TypePtr &t, Span at,
+                                  const std::string &context = "");
 
   // ── Assignment compatibility helper ──────────────────────────────────
 

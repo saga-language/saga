@@ -1,0 +1,10 @@
+UserId(1) -> alice
+UserId(2) -> bob
+UserId(3) -> carol
+alice
+bob
+carol
+2
+alice
+false
+carol

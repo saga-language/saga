@@ -3243,24 +3243,54 @@ TEST(CodeGen, MapMultipleEntries) {
   EXPECT_EQ(set_count, 3);
 }
 
-TEST(CodeGen, MapStringKeyFlag) {
-  // String-keyed maps should pass is_string_key=1 to saga_map_new.
+TEST(CodeGen, MapStringKeyKind) {
+  // String-keyed maps should pass key_kind=STRING (=10) and a null ops
+  // pointer to saga_map_new.
   auto r = CG::from(
       "pub fn Main() Void {\n"
       "  m := {\"key\": 42}\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
+  bool saw_call = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_map_new") {
-          // arg2 = is_string_key
-          auto *arg2 = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
-          ASSERT_NE(arg2, nullptr);
-          EXPECT_EQ(arg2->getSExtValue(), 1) << "String key map should pass is_string_key=1";
+          saw_call = true;
+          ASSERT_EQ(call->arg_size(), 4u);
+          auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+          ASSERT_NE(kind, nullptr);
+          EXPECT_EQ(kind->getSExtValue(), 10) << "String key map should pass key_kind=STRING";
+          EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)))
+              << "Primitive-keyed maps should pass a null ops pointer";
         }
+  EXPECT_TRUE(saw_call);
+}
+
+TEST(CodeGen, MapIntKeyKind) {
+  // Int-keyed maps should pass key_kind=INT64 (=1) and a null ops pointer.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  m := {1: \"one\"}\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool saw_call = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "saga_map_new") {
+          saw_call = true;
+          ASSERT_EQ(call->arg_size(), 4u);
+          auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
+          ASSERT_NE(kind, nullptr);
+          EXPECT_EQ(kind->getSExtValue(), 1) << "Int key map should pass key_kind=INT64";
+          EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)));
+        }
+  EXPECT_TRUE(saw_call);
 }
 
 TEST(CodeGen, MapIntKeySizeEight) {
@@ -3280,6 +3310,61 @@ TEST(CodeGen, MapIntKeySizeEight) {
           ASSERT_NE(arg0, nullptr);
           EXPECT_EQ(arg0->getSExtValue(), 8) << "Int key map should pass 8";
         }
+}
+
+// ===========================================================================
+// Phase 1 spike — named protocols (Hashable, Stringable)
+// ===========================================================================
+
+TEST(CodeGen, IntHashLowersToStdlibHashSymbol) {
+  // Calling Hash() on an Int lowers to a direct call to the stdlib
+  // wrapper int__Int__Hash, which itself bottoms out in saga_int_hash.
+  // Both must be present in the emitted module.
+  auto r = CG::from(
+      "pub fn Main() Void {\n"
+      "  i := 42\n"
+      "  h := i.Hash()\n"
+      "}");
+  auto *main = r.func("main");
+  ASSERT_NE(main, nullptr);
+  bool calls_int_hash = false;
+  for (auto &bb : *main)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "int__Int__Hash")
+          calls_int_hash = true;
+  EXPECT_TRUE(calls_int_hash)
+      << "Int.Hash() should call the stdlib int__Int__Hash wrapper";
+  EXPECT_NE(r.codegen->module->getFunction("saga_int_hash"), nullptr)
+      << "saga_int_hash runtime export must be declared";
+}
+
+TEST(CodeGen, HashableInTypePositionTypeChecks) {
+  // Compile-only smoke test: naming proto.Hashable in a function-parameter
+  // type position must type-check.  Concrete satisfaction is verified by
+  // passing an Int (Int has Hash() Int64 and Equals(Int) Bool from std/int).
+  FileSet fs;
+  fs.add_file(File::from_source("test.sg",
+      "import \"proto\"\n"
+      "pub fn TakeHashable(h proto.Hashable) Bool {\n"
+      "  h.Hash() == 0\n"
+      "}\n"
+      "pub fn Main() Void {\n"
+      "  i := 42\n"
+      "  _ := TakeHashable(i)\n"
+      "}"));
+  Parser parser(fs);
+  auto ast = parser.parse();
+  ASSERT_NE(ast, nullptr);
+  EXPECT_TRUE(parser.errors.errors.empty());
+
+  Analyzer analyzer(fs);
+  analyzer.package_resolver->sgi_search_paths.push_back(SAGA_STD_SGI_DIR);
+  analyzer.analyze(*ast);
+  EXPECT_TRUE(analyzer.errors.errors.empty()) << "Analyzer errors";
+  for (auto &e : analyzer.errors.errors)
+    std::cerr << "  " << e.message << "\n";
 }
 
 // ===========================================================================

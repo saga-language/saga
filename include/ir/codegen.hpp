@@ -290,8 +290,38 @@ private:
   /// store.
   std::string struct_cache_key(const StructTypeInfo &info) const;
 
-  /// True if a semantic type represents string keys (for saga_runtime_map).
-  static bool is_string_key_type(const TypePtr &t);
+  /// Saga key-kind tags matching the runtime's saga_runtime_key_kind enum.
+  /// Encoded as the i64 third argument to saga_map_new.  USER means the
+  /// runtime dispatches through the ops callback table; every other value
+  /// names a primitive the runtime hashes/compares without an indirect call.
+  enum class KeyKind : int64_t {
+    User   = 0,
+    Int64  = 1,
+    Int32  = 2,
+    Int16  = 3,
+    Int8   = 4,
+    UInt64 = 5,
+    UInt32 = 6,
+    UInt16 = 7,
+    UInt8  = 8,
+    Bool   = 9,
+    String = 10,
+  };
+
+  /// Map a semantic key type to its KeyKind tag.
+  static KeyKind key_kind_for(const TypePtr &t);
+
+  /// Materialise (or return cached) `saga_runtime_key_ops` global for a
+  /// user-defined key type and emit thunks for its `Hash` and `Equals`
+  /// methods.  Returns a constant null pointer for primitive key types,
+  /// since those route through `key_kind` instead of the ops callback.
+  llvm::Constant *get_or_emit_key_ops(const TypePtr &key_type);
+
+  /// Cache of emitted ops globals keyed by struct cache key.
+  std::unordered_map<std::string, llvm::GlobalVariable *> key_ops_globals;
+
+  /// LLVM type for `saga_runtime_key_ops`: { ptr hash, ptr equals }.
+  llvm::StructType *key_ops_struct_type = nullptr;
 
   /// Unescape a raw string fragment (strips surrounding quotes, processes
   /// backslash sequences).  Shared by emit_string_literal and emit_const_decl.

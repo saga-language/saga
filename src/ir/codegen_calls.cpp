@@ -113,6 +113,21 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return builder.CreateSExt(narrow, i64_type, "sext");
   }
 
+  if (name == "intrinsic_is_string") {
+    // intrinsic_is_string(value: Any) -> Bool
+    // Compile-time predicate: the argument's static type (after
+    // monomorphisation, via semantic_type) folds to a constant i1.
+    // LLVM constant-folds the surrounding branch, so the dead arm is
+    // dropped during -O1.
+    if (node.args.empty()) return nullptr;
+    // Emit the argument so any side-effects in the expression still run
+    // (none expected, but we don't speculate).
+    (void)emit_expr(*node.args[0]);
+    auto arg_sem = semantic_type(*node.args[0]);
+    bool is_string = arg_sem && arg_sem->kind == TypeKind::String;
+    return llvm::ConstantInt::get(i1_type, is_string ? 1 : 0);
+  }
+
   if (name == "intrinsic_field") {
     // intrinsic_field(value: Any, index: Int) -> Any
     // Second arg must be an integer literal (field index).

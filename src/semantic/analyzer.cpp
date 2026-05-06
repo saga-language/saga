@@ -199,6 +199,27 @@ void Analyzer::load_prelude() {
   if (!package_resolver)
     return;
 
+  // std/proto declares the named protocols the compiler dispatches
+  // through (Hashable, Stringable).  Loaded for every analysis pass —
+  // including stdlib leaf packages, whose generic bodies may dispatch
+  // through these protocols on TypeParam values.  Skipped only when
+  // proto itself is being compiled (proto.sgi doesn't exist yet).
+  bool compiling_proto =
+      is_stdlib && !current_package_dir.empty() &&
+      std::filesystem::path(current_package_dir).filename().string() == "proto";
+  if (!compiling_proto) {
+    std::string proto_sgi = package_resolver->find_sgi_file("std/proto");
+    if (!proto_sgi.empty()) {
+      if (auto sgi = load_sgi(proto_sgi)) {
+        for (auto &exp : sgi->exports) {
+          if (!exp.type || exp.type->kind != TypeKind::Interface) continue;
+          if (exp.name == "Hashable")   builtins.hashable_iface   = exp.type;
+          if (exp.name == "Stringable") builtins.stringable_iface = exp.type;
+        }
+      }
+    }
+  }
+
   // Stdlib type packages (int, float, bool, string, array, map) define their
   // own receiver methods and must not load others' — otherwise they'd
   // re-export foreign methods in their SGI files.
@@ -270,6 +291,14 @@ void Analyzer::load_prelude() {
     auto sgi = load_sgi(sgi_path);
     if (!sgi)
       continue;
+    if (!sgi->source_dir.empty()) {
+      auto last_slash = pkg.rfind('/');
+      std::string pkg_short = (last_slash != std::string::npos)
+                                  ? pkg.substr(last_slash + 1)
+                                  : pkg;
+      package_resolver->source_dirs[pkg_short] = sgi->source_dir;
+      package_resolver->source_dirs[pkg] = sgi->source_dir;
+    }
     for (auto &rm : sgi->receiver_methods) {
       auto kind_opt = get_recv_kind(rm.type_name);
       if (!kind_opt)
@@ -447,9 +476,16 @@ void Analyzer::expect_assignable(Span span, const TypePtr &target_type,
                                  const std::string &context) {
   if (is_error_type(target_type) || is_error_type(value_type))
     return;
-  if (!is_assignable_to(value_type, target_type)) {
-    type_error(span, target_type, value_type, context);
+  if (is_assignable_to(value_type, target_type))
+    return;
+  // The bare is_assignable_to check in types.cpp can't see stdlib method
+  // tables for primitive receivers (Int.Hash(), String.Equals(...)).  When
+  // the target is an interface, fall back to the full structural check.
+  if (target_type && target_type->kind == TypeKind::Interface &&
+      satisfies_interface(value_type, target_type)) {
+    return;
   }
+  type_error(span, target_type, value_type, context);
 }
 
 void Analyzer::expect_type(Span span, const TypePtr &type, TypeKind expected,
@@ -1096,6 +1132,14 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   // ensure_source_loaded is keyed by origin (package name), so it doubles
   // as the authoritative name for the loaded sub-analyzer.
   sub_analyzer->current_package_name_override = origin;
+  // Inherit stdlib mode when loading a stdlib package's source — stdlib
+  // packages use intrinsic_runtime and define receiver methods on
+  // intrinsic types, both of which are gated to stdlib mode.
+  static const std::unordered_set<std::string> stdlib_origins{
+      "proto", "int", "float", "bool", "string", "array", "map",
+      "unsafe", "sys", "os", "io"};
+  if (stdlib_origins.count(origin))
+    sub_analyzer->is_stdlib = true;
   sub_analyzer->analyze(*sub_ast);
   if (!sub_analyzer->errors.errors.empty())
     return nullptr;
@@ -1120,6 +1164,14 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
     generic_templates_.emplace(k, v);
   for (auto &[k, v] : sub_ptr->func_decl_by_type_)
     func_decl_by_type_.emplace(k, v);
+  for (auto *fd : sub_ptr->kind_method_uses_typeparam_dispatch_)
+    kind_method_uses_typeparam_dispatch_.insert(fd);
+  for (auto &[kind, methods] : sub_ptr->kind_method_decls_) {
+    auto &dst = kind_method_decls_[kind];
+    for (auto &[name, kmd] : methods) {
+      dst.emplace(name, kmd);
+    }
+  }
 
   loaded_source_packages_.emplace(
       origin,
@@ -1266,6 +1318,8 @@ TypePtr Analyzer::resolve_array_type(const ArrayTypeNode &node) {
 TypePtr Analyzer::resolve_map_type(const MapTypeNode &node) {
   auto key = resolve_type(*node.key_type);
   auto val = resolve_type(*node.value_type);
+  check_satisfies_protocol(key, ProtocolKind::Hashable, node.key_type->span,
+                           "map key");
   return make_map_type(std::move(key), std::move(val));
 }
 
@@ -1367,6 +1421,12 @@ TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
   for (auto &p : sig.params) {
     auto pt = resolve_type(*p.type);
     // Each name in the identifier list maps to one parameter of that type.
+    // An empty identifier list means an unnamed parameter (Go-style interface
+    // method) — push the type once.
+    if (p.names.identifiers.empty()) {
+      params.push_back(p.is_variadic ? make_array_type(pt) : pt);
+      continue;
+    }
     for (size_t i = 0; i < p.names.identifiers.size(); ++i) {
       if (p.is_variadic && i == p.names.identifiers.size() - 1) {
         // Variadic wraps the type in an array.
@@ -1562,8 +1622,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         bool dup = false;
         for (auto &e : vec)
           if (e.name == std::string(fn.name.name)) { dup = true; break; }
-        if (!dup)
+        if (!dup) {
           vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
+          kind_method_decls_[TypeKind::Array][std::string(fn.name.name)] =
+              KindMethodDecl{&fn, fn_type, generic_params};
+        }
       }
     } else if (auto *map_tn =
                    std::get_if<MapTypeNode>(&recv_type_node->data)) {
@@ -1590,8 +1653,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         bool dup = false;
         for (auto &e : vec)
           if (e.name == std::string(fn.name.name)) { dup = true; break; }
-        if (!dup)
+        if (!dup) {
           vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
+          kind_method_decls_[TypeKind::Map][std::string(fn.name.name)] =
+              KindMethodDecl{&fn, fn_type, generic_params};
+        }
       }
     }
   }
@@ -1612,16 +1678,28 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   bool is_generic_on_concrete_recv =
       has_generics && fn.receiver &&
       fn_type && fn_type->kind == TypeKind::Func;
-  if (fn_type && (!fn.receiver || is_generic_on_concrete_recv)) {
+  // Generic receiver on Array/Map (kind_methods_) is also registered so
+  // codegen can drive emit_specialisation per concrete K when the body
+  // dispatches through a named protocol on a TypeParam value.
+  bool is_generic_on_kind_recv = false;
+  if (has_generics && fn.receiver) {
+    auto &rt = fn.receiver->type->data;
+    is_generic_on_kind_recv = std::get_if<ArrayTypeNode>(&rt) ||
+                              std::get_if<MapTypeNode>(&rt);
+  }
+  if (fn_type && (!fn.receiver || is_generic_on_concrete_recv ||
+                   is_generic_on_kind_recv)) {
     func_decl_by_type_[fn_type.get()] = &fn;
   }
 
   // Stash the generic template for lazy body-analysis at instantiation
   // time.  Generic receiver methods on concrete types are included so
   // their bodies are checked per-instantiation (same as free generics).
-  if (has_generics && (!fn.receiver || is_generic_on_concrete_recv)) {
+  if (has_generics && (!fn.receiver || is_generic_on_concrete_recv ||
+                        is_generic_on_kind_recv)) {
     generic_templates_[&fn] =
-        GenericTemplate{&fn, current_scope, std::move(generic_params)};
+        GenericTemplate{&fn, current_scope, std::move(generic_params),
+                        is_stdlib};
   }
 }
 
@@ -1748,7 +1826,6 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
 }
 
 void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
-  std::vector<MethodInfo> methods;
   std::vector<TypeParam> type_params;
 
   bool has_generics = i.generic.has_value();
@@ -1757,21 +1834,28 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
     type_params = enter_generics(*i.generic);
   }
 
-  for (auto &field : i.methods) {
-    auto fn_type = resolve_signature(field.signature);
-    methods.push_back({std::string(field.name.name), fn_type, field.is_public,
-                       current_package_name()});
-  }
-
+  // Forward-declare the interface type so its methods can reference the
+  // interface itself (Go-style self-referential signatures, e.g.
+  // Equals(Hashable) Bool inside `interface Hashable`).  The method list is
+  // filled in after signature resolution.
   auto iface_type = make_interface_type(
-      std::string(i.name.name), std::move(methods), std::move(type_params),
-      current_package_name());
+      std::string(i.name.name), {}, type_params, current_package_name());
 
   auto &target_scope = has_generics ? current_scope->parent : current_scope;
   auto sym_it = target_scope->symbols.find(std::string(i.name.name));
   if (sym_it != target_scope->symbols.end()) {
     sym_it->second.type = iface_type;
   }
+
+  std::vector<MethodInfo> methods;
+  for (auto &field : i.methods) {
+    auto fn_type = resolve_signature(field.signature);
+    methods.push_back({std::string(field.name.name), fn_type, field.is_public,
+                       current_package_name()});
+  }
+
+  // Patch the interface type with its resolved methods.
+  std::get<InterfaceTypeInfo>(iface_type->detail).methods = std::move(methods);
 
   if (has_generics) {
     pop_scope();
@@ -2435,6 +2519,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   // Generic functions are type-checked lazily per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
   // through the eager path because their T is the element type.
+  bool is_eager_kind_method = false;
   if (fn.generic) {
     if (!fn.receiver)
       return;
@@ -2443,7 +2528,14 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
                            std::get_if<MapTypeNode>(&rt);
     if (!is_generic_recv)
       return;
+    is_eager_kind_method = true;
   }
+
+  // Mark the current kind_methods_ body so resolve_method_signature can
+  // record TypeParam protocol dispatch usage.  Restored on exit.
+  const FuncDeclNode *saved_eager_kind = current_eager_kind_method_decl_;
+  if (is_eager_kind_method)
+    current_eager_kind_method_decl_ = &fn;
 
   push_scope(ScopeKind::Function);
 
@@ -2486,6 +2578,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   }
 
   pop_scope();
+  current_eager_kind_method_decl_ = saved_eager_kind;
 }
 
 // ===========================================================================
@@ -2635,12 +2728,13 @@ TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
 }
 
 TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
-  // Verify all interpolated expressions implement Stringer (have .String()).
-  // For now, just check all fragments; a deeper Stringer check is deferred.
+  // Each interpolated expression must satisfy Stringable so the runtime
+  // can invoke `.String()` on it.
   for (auto &frag : node.fragments) {
-    if (!std::holds_alternative<StringFragmentNode>(frag->data)) {
-      check_expr(*frag);
-    }
+    if (std::holds_alternative<StringFragmentNode>(frag->data))
+      continue;
+    auto t = check_expr(*frag);
+    check_stringable_recursive(t, frag->span, "interpolated expression");
   }
   return builtins.string_type;
 }
@@ -2675,6 +2769,8 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
     if (!is_error_type(vt))
       expect_assignable(node.entries[i].value->span, val_type, vt, "map value");
   }
+  check_satisfies_protocol(key_type, ProtocolKind::Hashable,
+                           node.entries[0].key->span, "map key");
   return make_map_type(key_type, val_type);
 }
 
@@ -3115,6 +3211,70 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
         }
       }
     }
+  } else if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
+    // kind_methods_ call (Array/Map receiver) where the substituted
+    // signature is already concrete, but the body must be re-checked
+    // with concrete K/V bindings because it dispatches through a named
+    // protocol on a TypeParam value.  Drive instantiation per concrete
+    // K so codegen can specialise.
+    auto obj_sem = node_types.count(sel->object.get())
+                       ? node_types[sel->object.get()]
+                       : nullptr;
+    if (obj_sem && (obj_sem->kind == TypeKind::Array ||
+                    obj_sem->kind == TypeKind::Map)) {
+      // Cross-package: the FuncDecl and dispatch flag are missing until
+      // we lazily load std/array or std/map source.  Trigger that here
+      // so kind_method_decls_ / kind_method_uses_typeparam_dispatch_
+      // are populated before we look them up.
+      if (!is_stdlib && kind_method_decls_.find(obj_sem->kind) ==
+                            kind_method_decls_.end()) {
+        const char *origin = obj_sem->kind == TypeKind::Array
+                                  ? "array" : "map";
+        ensure_source_loaded(origin);
+      }
+      auto km_it = kind_method_decls_.find(obj_sem->kind);
+      if (km_it != kind_method_decls_.end()) {
+        auto m_it = km_it->second.find(std::string(sel->field.name));
+        if (m_it != km_it->second.end() &&
+            kind_method_uses_typeparam_dispatch_.count(m_it->second.decl)) {
+          std::unordered_map<uint32_t, TypePtr> bindings;
+          auto &tps = m_it->second.type_params;
+          if (obj_sem->kind == TypeKind::Array && !tps.empty()) {
+            auto &arr = std::get<ArrayTypeInfo>(obj_sem->detail);
+            bindings[tps[0].id] = arr.element;
+          } else if (obj_sem->kind == TypeKind::Map && tps.size() >= 2) {
+            auto &mp = std::get<MapTypeInfo>(obj_sem->detail);
+            bindings[tps[0].id] = mp.key;
+            bindings[tps[1].id] = mp.value;
+          }
+          if (!bindings.empty()) {
+            instantiate_generic_body(*m_it->second.decl, bindings, parent);
+            if (current_instantiation_)
+              current_instantiation_->node_type_args[&parent] = bindings;
+            else
+              node_type_args[&parent] = bindings;
+          }
+        }
+      }
+
+      // Array.String() / Map.String() require their element/key/value types
+      // to satisfy Stringable (recursively for nested aggregates).  Phase 5
+      // will migrate these out of builtins; the named-protocol diagnostic
+      // here is the use-site enforcement promised by Phase 3.
+      if (sel->field.name == "String" && node.args.empty()) {
+        if (obj_sem->kind == TypeKind::Array) {
+          auto &arr = std::get<ArrayTypeInfo>(obj_sem->detail);
+          check_stringable_recursive(arr.element, sel->field.span,
+                                     "array element of .String() receiver");
+        } else if (obj_sem->kind == TypeKind::Map) {
+          auto &mp = std::get<MapTypeInfo>(obj_sem->detail);
+          check_stringable_recursive(mp.key, sel->field.span,
+                                     "map key of .String() receiver");
+          check_stringable_recursive(mp.value, sel->field.span,
+                                     "map value of .String() receiver");
+        }
+      }
+    }
   }
 
   auto &fn_info = std::get<FuncTypeInfo>(effective_type->detail);
@@ -3377,6 +3537,58 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
                                     m.signature);
     return m.signature;
   }
+
+  // Named-protocol fallback for TypeParam values inside generic bodies.
+  // A method call on a value of TypeParam type is accepted if the called
+  // method belongs to a compiler-known protocol (Hashable, Stringable);
+  // satisfaction by the concrete type is verified at the monomorphisation
+  // site.  Self-typed positions in the protocol signature are rewritten to
+  // refer to the TypeParam.
+  if (obj_type->kind == TypeKind::TypeParam) {
+    auto subst_self = [](const TypePtr &sig, const TypePtr &iface,
+                          const TypePtr &concrete) -> TypePtr {
+      if (!sig || sig->kind != TypeKind::Func) return sig;
+      auto &fi = std::get<FuncTypeInfo>(sig->detail);
+      auto &iinfo = std::get<InterfaceTypeInfo>(iface->detail);
+      auto subst_one = [&](const TypePtr &t) -> TypePtr {
+        if (t && t->kind == TypeKind::Interface) {
+          auto &ti = std::get<InterfaceTypeInfo>(t->detail);
+          if (ti.name == iinfo.name &&
+              ti.origin_package == iinfo.origin_package)
+            return concrete;
+        }
+        return t;
+      };
+      std::vector<TypePtr> nparams, nreturns;
+      for (auto &p : fi.params)  nparams.push_back(subst_one(p));
+      for (auto &r : fi.returns) nreturns.push_back(subst_one(r));
+      auto out = make_func_type(std::move(nparams), std::move(nreturns));
+      std::get<FuncTypeInfo>(out->detail).is_variadic = fi.is_variadic;
+      return out;
+    };
+    auto try_protocol = [&](const TypePtr &iface) -> TypePtr {
+      if (!iface || iface->kind != TypeKind::Interface) return nullptr;
+      auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+      for (auto &m : ii.methods)
+        if (m.name == field_name && m.signature)
+          return subst_self(m.signature, iface, obj_type);
+      return nullptr;
+    };
+    auto record_dispatch = [&]() {
+      if (current_eager_kind_method_decl_)
+        kind_method_uses_typeparam_dispatch_.insert(
+            current_eager_kind_method_decl_);
+    };
+    if (auto t = try_protocol(builtins.stringable_iface)) {
+      record_dispatch();
+      return t;
+    }
+    if (auto t = try_protocol(builtins.hashable_iface)) {
+      record_dispatch();
+      return t;
+    }
+  }
+
   return nullptr;
 }
 
@@ -4489,9 +4701,15 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   // caller's scope.
   auto saved_scope = current_scope;
   BodyInstantiation *saved_inst = current_instantiation_;
+  bool saved_is_stdlib = is_stdlib;
   instantiation_stack_.push_back(&call_node);
 
   current_scope = tpl.decl_scope->child(ScopeKind::Block);
+  // Stdlib bodies (e.g. Map.String() in std/map) re-analysed at a user-
+  // package call site keep their stdlib provenance so intrinsic_* calls
+  // inside the body remain allowed.
+  if (tpl.is_stdlib)
+    is_stdlib = true;
 
   // Register each generic type parameter under its original name in the
   // new scope so a reference to `T` inside the body resolves to the
@@ -4565,6 +4783,7 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   pop_scope();           // the Function scope
   current_scope = saved_scope;
   current_instantiation_ = saved_inst;
+  is_stdlib = saved_is_stdlib;
   instantiation_stack_.pop_back();
 
   inst.in_progress = false;
@@ -4633,6 +4852,116 @@ TypePtr Analyzer::instantiate_generic_struct(
 // Interface conformance
 // ===========================================================================
 
+// signatures_match_with_self — compare an interface method signature against
+// a concrete method signature, treating any reference to `iface_self` inside
+// `iface_sig` as matching `concrete_self` in `concrete_sig`.  This is the
+// Go-style trick that lets `Equals(Hashable) Bool` declared in `interface
+// Hashable` match `Equals(Int) Bool` on the Int receiver.  Outside the
+// self-reference position, signatures must be `types_equal`.
+static bool signatures_match_with_self(const TypePtr &iface_sig,
+                                       const TypePtr &concrete_sig,
+                                       const TypePtr &iface_self,
+                                       const TypePtr &concrete_self) {
+  if (!iface_sig || !concrete_sig)
+    return false;
+  if (iface_sig->kind != TypeKind::Func ||
+      concrete_sig->kind != TypeKind::Func)
+    return false;
+
+  auto &a = std::get<FuncTypeInfo>(iface_sig->detail);
+  auto &b = std::get<FuncTypeInfo>(concrete_sig->detail);
+  if (a.params.size() != b.params.size())
+    return false;
+  if (a.returns.size() != b.returns.size())
+    return false;
+  if (a.is_variadic != b.is_variadic)
+    return false;
+
+  // An interface position counts as "the interface itself" when it points
+  // to the same nominal interface (same name + origin package).  SGI loads
+  // produce fresh TypePtrs, so pointer equality alone is insufficient.
+  auto refers_to_self = [&](const TypePtr &t) -> bool {
+    if (!t || t->kind != TypeKind::Interface || !iface_self ||
+        iface_self->kind != TypeKind::Interface)
+      return false;
+    if (t.get() == iface_self.get())
+      return true;
+    auto &a = std::get<InterfaceTypeInfo>(t->detail);
+    auto &b = std::get<InterfaceTypeInfo>(iface_self->detail);
+    return a.name == b.name && a.origin_package == b.origin_package;
+  };
+
+  auto self_match = [&](const TypePtr &iv, const TypePtr &cv) -> bool {
+    if (refers_to_self(iv))
+      return types_equal(cv, concrete_self) ||
+             (cv && concrete_self &&
+              cv->kind == concrete_self->kind &&
+              cv->kind == TypeKind::Interface);
+    return types_equal(iv, cv);
+  };
+
+  for (size_t i = 0; i < a.params.size(); ++i) {
+    if (!self_match(a.params[i], b.params[i]))
+      return false;
+  }
+  for (size_t i = 0; i < a.returns.size(); ++i) {
+    if (!self_match(a.returns[i], b.returns[i]))
+      return false;
+  }
+  return true;
+}
+
+// Gather the methods visible on `concrete` from the analyzer's stdlib and
+// built-in tables.  Shared between satisfies_interface and the named-protocol
+// diagnostic so missing-method reports stay aligned with what the structural
+// match actually consulted.
+static std::vector<MethodInfo> collect_concrete_methods(
+    const TypePtr &concrete,
+    const std::unordered_map<const Type *, std::vector<MethodInfo>>
+        &type_methods,
+    const std::unordered_map<TypeKind, std::vector<MethodInfo>> &kind_methods,
+    const BuiltinTypes &builtins) {
+  std::vector<MethodInfo> methods;
+  if (!concrete)
+    return methods;
+
+  if (concrete->kind == TypeKind::Struct) {
+    auto &s = std::get<StructTypeInfo>(concrete->detail);
+    methods = s.methods;
+    return methods;
+  }
+
+  const Type *raw = concrete.get();
+  auto tm_it = type_methods.find(raw);
+  if (tm_it == type_methods.end()) {
+    const Type *canonical = nullptr;
+    switch (concrete->kind) {
+    case TypeKind::Int:    canonical = builtins.int_type.get(); break;
+    case TypeKind::Float:  canonical = builtins.float_type.get(); break;
+    case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
+    case TypeKind::String: canonical = builtins.string_type.get(); break;
+    default: break;
+    }
+    if (canonical && canonical != raw)
+      tm_it = type_methods.find(canonical);
+  }
+  if (tm_it != type_methods.end()) {
+    for (auto &m : tm_it->second)
+      methods.push_back(m);
+  }
+
+  auto km_it = kind_methods.find(concrete->kind);
+  if (km_it != kind_methods.end()) {
+    for (auto &m : km_it->second)
+      methods.push_back(m);
+  }
+
+  for (auto &m : builtin_methods(concrete->kind, builtins))
+    methods.push_back(m);
+
+  return methods;
+}
+
 bool Analyzer::satisfies_interface(const TypePtr &concrete,
                                    const TypePtr &iface) {
   if (!concrete || !iface)
@@ -4641,56 +4970,21 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
     return false;
 
   auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
-
-  // Collect methods from the concrete type.
-  std::vector<MethodInfo> concrete_methods;
-
-  if (concrete->kind == TypeKind::Struct) {
-    auto &s = std::get<StructTypeInfo>(concrete->detail);
-    concrete_methods = s.methods;
-  } else {
-    // Check stdlib-defined receiver methods (type_methods_ for scalar types).
-    const Type *raw = concrete.get();
-    auto tm_it = type_methods_.find(raw);
-    if (tm_it == type_methods_.end()) {
-      const Type *canonical = nullptr;
-      switch (concrete->kind) {
-      case TypeKind::Int:    canonical = builtins.int_type.get(); break;
-      case TypeKind::Float:  canonical = builtins.float_type.get(); break;
-      case TypeKind::Bool:   canonical = builtins.bool_type.get(); break;
-      case TypeKind::String: canonical = builtins.string_type.get(); break;
-      default: break;
-      }
-      if (canonical && canonical != raw)
-        tm_it = type_methods_.find(canonical);
-    }
-    if (tm_it != type_methods_.end()) {
-      for (auto &m : tm_it->second)
-        concrete_methods.push_back(m);
-    }
-    // Check stdlib-defined generic receiver methods (kind_methods_ for
-    // Array, Map).
-    auto km_it = kind_methods_.find(concrete->kind);
-    if (km_it != kind_methods_.end()) {
-      for (auto &m : km_it->second)
-        concrete_methods.push_back(m);
-    }
-    // Check remaining built-in methods (Enum, Range, Array/Map String).
-    auto bm = builtin_methods(concrete->kind, builtins);
-    for (auto &m : bm)
-      concrete_methods.push_back(m);
-  }
+  auto concrete_methods =
+      collect_concrete_methods(concrete, type_methods_, kind_methods_, builtins);
 
   // Every interface method must be present on the concrete type with a
-  // compatible signature.
+  // compatible signature.  Self-references to `iface` inside an interface
+  // method signature stand for the concrete receiver type.
   for (auto &im : iface_info.methods) {
     bool found = false;
     for (auto &cm : concrete_methods) {
       if (cm.name == im.name) {
         found = true;
         if (im.signature && cm.signature) {
-          if (!types_equal(im.signature, cm.signature)) {
-            return false; // Signature mismatch.
+          if (!signatures_match_with_self(im.signature, cm.signature, iface,
+                                          concrete)) {
+            return false;
           }
         }
         break;
@@ -4701,6 +4995,135 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
   }
 
   return true;
+}
+
+// Render an interface method's signature into a single-line form suitable for
+// citing in a "missing method" diagnostic, e.g. `Hash() Int64` or
+// `Equals(Self) Bool`.  Self-typed positions (the protocol's own interface
+// type appearing in its method signature) print as `Self` so the user reads
+// the protocol contract rather than its declared `Equals(Hashable) Bool`
+// shape.
+static std::string format_protocol_method(const std::string &name,
+                                          const TypePtr &sig,
+                                          const TypePtr &iface) {
+  if (!sig || sig->kind != TypeKind::Func)
+    return name + "(...)";
+  auto &fi = std::get<FuncTypeInfo>(sig->detail);
+  auto &iinfo = std::get<InterfaceTypeInfo>(iface->detail);
+
+  auto render = [&](const TypePtr &t) -> std::string {
+    if (t && t->kind == TypeKind::Interface) {
+      auto &ti = std::get<InterfaceTypeInfo>(t->detail);
+      if (ti.name == iinfo.name && ti.origin_package == iinfo.origin_package)
+        return "Self";
+    }
+    return type_to_string(t);
+  };
+
+  std::string s = name + "(";
+  for (size_t i = 0; i < fi.params.size(); ++i) {
+    if (i)
+      s += ", ";
+    s += render(fi.params[i]);
+  }
+  s += ")";
+  if (!fi.returns.empty())
+    s += " " + render(fi.returns[0]);
+  return s;
+}
+
+bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
+                                         ProtocolKind p, Span at,
+                                         const std::string &context) {
+  if (!concrete || is_error_type(concrete))
+    return true;
+  // Inside a generic body the binding isn't known yet — the concrete check
+  // happens at every monomorphisation site.
+  if (concrete->kind == TypeKind::TypeParam)
+    return true;
+
+  TypePtr iface;
+  const char *proto_name = nullptr;
+  switch (p) {
+  case ProtocolKind::Hashable:
+    iface = builtins.hashable_iface;
+    proto_name = "Hashable";
+    break;
+  case ProtocolKind::Stringable:
+    iface = builtins.stringable_iface;
+    proto_name = "Stringable";
+    break;
+  }
+  // proto.sgi unavailable (bootstrap of std/proto, or no resolver) — skip.
+  if (!iface)
+    return true;
+
+  // Float keys: NaN ≠ NaN breaks the consistency invariant, and the named
+  // diagnostic should explain that rather than report a missing Hash().
+  if (p == ProtocolKind::Hashable && concrete->kind == TypeKind::Float) {
+    std::string ctx = context.empty() ? "" : (" (" + context + ")");
+    error(at, std::format(
+                  "{} is not Hashable: floats lack total equality "
+                  "(NaN != NaN), which the hash-map consistency invariant "
+                  "requires{}",
+                  type_to_string(concrete), ctx));
+    return false;
+  }
+
+  if (satisfies_interface(concrete, iface))
+    return true;
+
+  // Build the "missing methods" list against the same method table the
+  // structural matcher consulted.
+  auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
+  auto concrete_methods =
+      collect_concrete_methods(concrete, type_methods_, kind_methods_, builtins);
+
+  std::vector<std::string> missing;
+  for (auto &im : iface_info.methods) {
+    bool ok = false;
+    for (auto &cm : concrete_methods) {
+      if (cm.name != im.name)
+        continue;
+      if (im.signature && cm.signature &&
+          !signatures_match_with_self(im.signature, cm.signature, iface,
+                                      concrete))
+        break;
+      ok = true;
+      break;
+    }
+    if (!ok)
+      missing.push_back(format_protocol_method(im.name, im.signature, iface));
+  }
+
+  std::string list;
+  for (size_t i = 0; i < missing.size(); ++i) {
+    if (i)
+      list += ", ";
+    list += missing[i];
+  }
+  std::string ctx = context.empty() ? "" : (" (" + context + ")");
+  error(at, std::format(
+                "type {} does not satisfy {}{}: missing {}",
+                type_to_string(concrete), proto_name, ctx, list));
+  return false;
+}
+
+bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
+                                          const std::string &context) {
+  if (!t || is_error_type(t))
+    return true;
+  if (t->kind == TypeKind::Array) {
+    auto &ai = std::get<ArrayTypeInfo>(t->detail);
+    return check_stringable_recursive(ai.element, at, context);
+  }
+  if (t->kind == TypeKind::Map) {
+    auto &mi = std::get<MapTypeInfo>(t->detail);
+    bool k = check_stringable_recursive(mi.key, at, context);
+    bool v = check_stringable_recursive(mi.value, at, context);
+    return k && v;
+  }
+  return check_satisfies_protocol(t, ProtocolKind::Stringable, at, context);
 }
 
 } // namespace saga

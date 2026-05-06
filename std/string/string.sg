@@ -59,6 +59,10 @@ pub fn (s String) Equals(other String) Bool {
   intrinsic_runtime("saga_string_compare", s, other) == 0
 }
 
+pub fn (s String) Hash() Int64 {
+  intrinsic_runtime("saga_string_hash", s)
+}
+
 pub fn (s String) Bytes() [Byte] {
   intrinsic_runtime("saga_string_bytes", s)
 }

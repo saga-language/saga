@@ -25,6 +25,30 @@ llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
     if (iface_vtable_types.count(key_for("", tname)))
       return llvm::PointerType::getUnqual(context); // interface as ptr to fat ptr
   }
+  // Cross-package types appear as SelectorNode (`pkg.Type`).  Look the
+  // selector up via the package scope so we don't depend on current_scope
+  // state at codegen time.
+  if (auto *sel = std::get_if<SelectorNode>(&type_node.data)) {
+    if (auto *pkg_ident = std::get_if<IdentifierNode>(&sel->object->data)) {
+      std::optional<Symbol> sym;
+      if (analyzer.package_scope_) {
+        auto it = analyzer.package_scope_->symbols.find(
+            std::string(pkg_ident->name));
+        if (it != analyzer.package_scope_->symbols.end())
+          sym = it->second;
+      }
+      if (!sym)
+        sym = analyzer.lookup(std::string(pkg_ident->name));
+      if (sym && sym->type && sym->type->kind == TypeKind::Module) {
+        auto &mod = std::get<ModuleTypeInfo>(sym->type->detail);
+        std::string field_name(sel->field.name);
+        for (auto &exp : mod.exports) {
+          if (exp.name == field_name && exp.type)
+            return llvm_type(exp.type);
+        }
+      }
+    }
+  }
   // Fall back to analyzer resolve (works for builtins).
   auto sem_type = analyzer.resolve_type(type_node);
   return llvm_type(sem_type);
@@ -507,23 +531,30 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       auto &map_info = std::get<MapTypeInfo>(sem_type_ptr->detail);
       int64_t key_size = 8;
       int64_t val_size = 8;
-      bool string_keys = is_string_key_type(map_info.key);
       if (map_info.key) {
         auto *key_ll = llvm_type(map_info.key);
-        if (key_ll->isIntegerTy(1))
+        if (key_ll->isStructTy())
+          key_size = module->getDataLayout().getTypeAllocSize(key_ll);
+        else if (key_ll->isIntegerTy(1))
           key_size = 1;
       }
       if (map_info.value) {
         auto *val_ll = llvm_type(map_info.value);
-        if (val_ll->isIntegerTy(1))
+        if (val_ll->isStructTy())
+          val_size = module->getDataLayout().getTypeAllocSize(val_ll);
+        else if (val_ll->isIntegerTy(1))
           val_size = 1;
       }
+      int64_t key_kind_tag =
+          static_cast<int64_t>(CodeGen::key_kind_for(map_info.key));
+      llvm::Constant *ops_ptr = get_or_emit_key_ops(map_info.key);
       auto *new_fn = module->getFunction("saga_map_new");
       auto *map = builder.CreateCall(
           new_fn,
           {llvm::ConstantInt::get(i64_type, key_size),
            llvm::ConstantInt::get(i64_type, val_size),
-           llvm::ConstantInt::get(i64_type, string_keys ? 1 : 0)},
+           llvm::ConstantInt::get(i64_type, key_kind_tag),
+           ops_ptr},
           "map");
       auto *alloca = create_entry_alloca(func, name, var_type);
       locals[name] = alloca;

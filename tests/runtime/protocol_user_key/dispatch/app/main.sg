@@ -1,0 +1,36 @@
+// Phase 6.1: end-to-end dog-food of named-protocol dispatch on a
+// user-defined map key.  UserId.Hash() returns a constant so every key
+// collides into the same probe slot — correct insert, lookup, removal,
+// and iteration then all *require* the user's Equals() to disambiguate.
+// Without user dispatch the runtime would have no way to tell two
+// distinct UserId values apart.
+import "std/io"
+
+struct UserId {
+  raw Int64
+}
+
+pub fn (u UserId) Hash() Int64 { 42 }
+pub fn (u UserId) Equals(other UserId) Bool { u.raw == other.raw }
+pub fn (u UserId) String() String { "UserId(" + u.raw.String() + ")" }
+
+pub fn Main() Void {
+  u1 := UserId{raw: 1}
+  u2 := UserId{raw: 2}
+  u3 := UserId{raw: 3}
+  m := {u1: "alice", u2: "bob", u3: "carol"}
+
+  for k, v : m {
+    io.Println(k.String() + " -> " + v)
+  }
+
+  io.Println(m.At(u1))
+  io.Println(m.At(u2))
+  io.Println(m.At(u3))
+
+  m.Remove(u2)
+  io.Println(m.Size().String())
+  io.Println(m.At(u1))
+  io.Println(m.Key?(u2).String())
+  io.Println(m.At(u3))
+}

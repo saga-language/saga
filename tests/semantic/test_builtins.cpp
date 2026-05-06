@@ -214,21 +214,19 @@ TEST(Builtins, BoolMethodsMigratedToStdlib) {
   EXPECT_TRUE(methods.empty());
 }
 
-// Array and Map retain only String (deferred — requires TypeParam dispatch).
-TEST(Builtins, ArrayMethodsOnlyString) {
+// Array and Map methods are fully migrated to stdlib (std/array, std/map).
+TEST(Builtins, ArrayMethodsMigratedToStdlib) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::Array, types);
-  ASSERT_EQ(methods.size(), 1u);
-  EXPECT_EQ(methods[0].name, "String");
+  EXPECT_TRUE(methods.empty());
 }
 
-TEST(Builtins, MapMethodsOnlyString) {
+TEST(Builtins, MapMethodsMigratedToStdlib) {
   BuiltinTypes types;
   types.init();
   auto methods = builtin_methods(TypeKind::Map, types);
-  ASSERT_EQ(methods.size(), 1u);
-  EXPECT_EQ(methods[0].name, "String");
+  EXPECT_TRUE(methods.empty());
 }
 
 } // namespace saga

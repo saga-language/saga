@@ -732,7 +732,17 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       for (auto &ident : param.names.identifiers) {
         std::string pname(ident.name);
         auto *alloca = create_entry_alloca(func, pname, ll_type);
-        builder.CreateStore(func->getArg(arg_idx++), alloca);
+        auto *arg = func->getArg(arg_idx++);
+        if (ll_type && ll_type->isStructTy()) {
+          // Byval struct param: arg is `ptr` to caller's copy.  Memcpy the
+          // bytes into the struct-typed local alloca so field access reads
+          // struct contents instead of the pointer's bits.
+          auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
+          auto al = module->getDataLayout().getABITypeAlign(ll_type);
+          builder.CreateMemCpy(alloca, al, arg, al, sz);
+        } else {
+          builder.CreateStore(arg, alloca);
+        }
         locals[pname] = alloca;
       }
     }
@@ -809,6 +819,12 @@ void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
     if (!fn || !fn->receiver)
       continue;
 
+    // Skip kind_methods_ generic bodies that need per-K specialisation.
+    // Their opaque-T ABI cannot dispatch through TypeParam method calls,
+    // so codegen emits a LinkOnceODR specialisation at every call site.
+    if (analyzer.kind_method_uses_typeparam_dispatch_.count(fn))
+      continue;
+
     std::string type_name = intrinsic_receiver_type_name(*fn->receiver->type);
     if (type_name.empty())
       continue;
@@ -863,6 +879,11 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver)
+      continue;
+
+    // Mirror declare_intrinsic_methods: skip bodies that codegen
+    // specialises per concrete K at every call site.
+    if (analyzer.kind_method_uses_typeparam_dispatch_.count(fn))
       continue;
 
     std::string type_name = intrinsic_receiver_type_name(*fn->receiver->type);
