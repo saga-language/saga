@@ -20,4 +20,33 @@ To keep the codebase maintainable and reduce token churn during rewrites, adhere
 ## 3. Architectural Integrity
 - **No Monstrous Methods:** Target 10-15 lines for logical operations (calculating, transforming, or mutating state). You may exceed this limit ONLY for structural operations (e.g., giant switch statements, exhaustive pattern matching, or static mapping tables), provided each branch immediately delegates to a separate atomic function.
 - **Dependency Direction:** Ensure sub-modules do not import from the main entry point (Avoid circular dependencies).
-- **Documentation:** Only comment on **why**, not **how**. The code should be clear enough that **how** is obvious.
+
+## 4. Comment Policy — Why, Not What
+
+The default is **no comment.** Naming and structure must carry the load.
+Before writing a comment, ask: "if I delete this, would a future reader
+be confused?" If no, don't write it.
+
+A comment is only justified when **one** of these is true:
+
+- **Hidden constraint or invariant** — the code relies on something not
+  visible at the call site (e.g., "caller must hold the actor lock").
+- **Workaround for a specific bug** — flag the bug or upstream issue.
+- **Performance-driven non-obvious form** — the algorithm is
+  intentionally written in a surprising way and can't be simplified
+  without losing the perf win.
+- **Safety boundary** — a check at the boundary of a system, where
+  removing or weakening the check could cause an unforeseen bug.
+
+**Never write:**
+- Comments that restate the function/variable name in prose
+  ("// Wrap value into union" above `wrap_value_in_union(...)`).
+- Comments that narrate what the next few lines do
+  ("// Null branch: write the err tag" above `CreateStore(...err_tag...)`).
+- Multi-paragraph docstrings or section banners introducing a single
+  function. If you feel the need, the function is doing too much —
+  split it.
+- Comments that reference the current task, fix, or PR ("added for
+  issue #123", "used by the X flow"). That belongs in commit messages.
+
+If a comment is justified, keep it to **one short line** where possible.
