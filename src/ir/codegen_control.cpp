@@ -628,13 +628,56 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
 // Index expressions
 // ===========================================================================
 
+llvm::Value *
+CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
+                                            llvm::Type *elem_ll,
+                                            const TypePtr &val_type) {
+  auto result_union =
+      make_union_type({val_type, analyzer.builtins.error_iface});
+  auto *union_st = get_union_llvm_type(result_union);
+  if (!union_st)
+    return nullptr;
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto *is_null = builder.CreateICmpEQ(
+      elem_ptr, llvm::ConstantPointerNull::get(ptr_ty), "idx.is_null");
+
+  auto *null_bb = llvm::BasicBlock::Create(context, "idx.null", func);
+  auto *ok_bb = llvm::BasicBlock::Create(context, "idx.ok", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "idx.merge", func);
+
+  builder.CreateCondBr(is_null, null_bb, ok_bb);
+
+  builder.SetInsertPoint(null_bb);
+  auto missing_sem = analyzer.builtins.missing_type;
+  auto *missing_val =
+      llvm::Constant::getNullValue(llvm::StructType::get(context));
+  auto *err_wrapped =
+      emit_union_wrap(missing_val, missing_sem, result_union);
+  auto *null_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(ok_bb);
+  auto *loaded = builder.CreateLoad(elem_ll, elem_ptr, "elem");
+  auto *ok_wrapped = emit_union_wrap(loaded, val_type, result_union);
+  auto *ok_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(merge_bb);
+  auto *phi = builder.CreatePHI(ptr_ty, 2, "idx.union");
+  phi->addIncoming(err_wrapped, null_end_bb);
+  phi->addIncoming(ok_wrapped, ok_end_bb);
+  return phi;
+}
+
 llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
   auto *obj = emit_expr(*node.object);
   if (!obj)
     return nullptr;
 
-  // Check if this is an array index.
   auto obj_sem = semantic_type(*node.object);
+
   if (obj_sem && obj_sem->kind == TypeKind::Array) {
     auto *idx = emit_expr(*node.index);
     if (!idx)
@@ -643,13 +686,13 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     auto *at_fn = module->getFunction("saga_array_at");
     auto *elem_ptr = builder.CreateCall(at_fn, {obj, idx}, "at");
 
-    // Determine the element type to load.
     auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
     auto *elem_ll = llvm_type(arr_info.element);
-    return builder.CreateLoad(elem_ll, elem_ptr, "elem");
+
+    return wrap_indexed_lookup_in_error_union(elem_ptr, elem_ll,
+                                              arr_info.element);
   }
 
-  // Map indexing: map[key] → loads value from saga_runtime_map_get.
   if (obj_sem && obj_sem->kind == TypeKind::Map) {
     auto *idx = emit_expr(*node.index);
     if (!idx)
@@ -659,16 +702,14 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
 
     auto *func = builder.GetInsertBlock()->getParent();
 
-    // Store key to a temporary for passing by pointer.
     auto *key_tmp = create_entry_alloca(func, "map.idx.key", idx->getType());
     builder.CreateStore(idx, key_tmp);
 
     auto *get_fn = module->getFunction("saga_map_get");
     auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp}, "map.get");
 
-    // Load the value from the returned pointer.
     auto *val_ll = llvm_type(map_info.value);
-    return builder.CreateLoad(val_ll, val_ptr, "map.val");
+    return wrap_indexed_lookup_in_error_union(val_ptr, val_ll, map_info.value);
   }
 
   // String indexing — deferred for now.

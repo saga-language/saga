@@ -527,6 +527,9 @@ private:
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_map_literal(const MapLiteralNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
+  llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
+                                                  llvm::Type *elem_ll,
+                                                  const TypePtr &val_type);
   llvm::Value *emit_or_expr(const OrExprNode &node);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
