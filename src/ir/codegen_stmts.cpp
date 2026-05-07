@@ -145,10 +145,6 @@ void CodeGen::apply_func_abi_attrs(llvm::Function *func,
 // ===========================================================================
 
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
-  // Generic functions have no concrete signature.  Emission happens
-  // per call-site specialisation (Step 5 of monomorphism_plan.md).
-  // Receiver methods on generic receiver types (Array/Map) are not
-  // skipped — their T is the element type, not a free type parameter.
   if (fn.generic) {
     if (!fn.receiver)
       return;
@@ -157,6 +153,9 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
                            std::get_if<MapTypeNode>(&rt);
     if (!is_generic_recv)
       return;
+  } else if (fn.receiver) {
+    // Receiver method bodies are emitted by their own paths.
+    return;
   }
 
   std::string name(fn.name.name);

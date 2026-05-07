@@ -40,19 +40,10 @@ void CodeGen::declare_functions(const SourceNode &src) {
           continue;
       }
 
-      // Skip receiver methods on intrinsic types — handled by
-      // declare_intrinsic_methods or hardcoded codegen.
-      if (fn->receiver) {
-        auto &rt = fn->receiver->type->data;
-        if (auto *ri = std::get_if<IdentifierNode>(&rt)) {
-          if (is_intrinsic_type_name(ri->name))
-            continue;
-        }
-        // Also skip generic receivers ([T], {K:V}) — these are dispatched
-        // through the hardcoded array/map codegen path, not as direct calls.
-        if (std::get_if<ArrayTypeNode>(&rt) || std::get_if<MapTypeNode>(&rt))
-          continue;
-      }
+      // Receiver methods are declared elsewhere with the receiver in
+      // the signature; this path would build a clashing one without it.
+      if (fn->receiver)
+        continue;
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
       std::string link_name = is_main ? "main" : mangle(name);
@@ -753,15 +744,22 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     managed_locals.clear();
     current_func_is_main = false;
 
-    // Receiver parameter.
+    size_t arg_idx = 0;
+    bool has_sret = false;
+    if (fn->signature.returns.size() == 1) {
+      auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+      if (r_ll && r_ll->isStructTy()) {
+        has_sret = true;
+        ++arg_idx;
+      }
+    }
+
     std::string recv_name(fn->receiver->name.name);
     auto *recv_alloca = create_entry_alloca(
         func, recv_name, llvm::PointerType::getUnqual(context));
-    builder.CreateStore(func->getArg(0), recv_alloca);
+    builder.CreateStore(func->getArg(arg_idx++), recv_alloca);
     locals[recv_name] = recv_alloca;
 
-    // Regular parameters.
-    size_t arg_idx = 1;
     for (auto &param : fn->signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
       for (auto &ident : param.names.identifiers) {
@@ -769,9 +767,6 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
         auto *alloca = create_entry_alloca(func, pname, ll_type);
         auto *arg = func->getArg(arg_idx++);
         if (ll_type && ll_type->isStructTy()) {
-          // Byval struct param: arg is `ptr` to caller's copy.  Memcpy the
-          // bytes into the struct-typed local alloca so field access reads
-          // struct contents instead of the pointer's bits.
           auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
           auto al = module->getDataLayout().getABITypeAlign(ll_type);
           builder.CreateMemCpy(alloca, al, arg, al, sz);
@@ -789,7 +784,15 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     if (!builder.GetInsertBlock()->getTerminator()) {
       emit_release_locals();
       auto *ret_type = func->getReturnType();
-      if (ret_type->isVoidTy()) {
+      if (has_sret && tail_val && tail_val->getType()->isPointerTy()) {
+        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
+          auto *st_ty = ai->getAllocatedType();
+          auto sz = module->getDataLayout().getTypeAllocSize(st_ty);
+          auto al = module->getDataLayout().getABITypeAlign(st_ty);
+          builder.CreateMemCpy(func->getArg(0), al, tail_val, al, sz);
+        }
+        builder.CreateRetVoid();
+      } else if (ret_type->isVoidTy()) {
         builder.CreateRetVoid();
       } else if (tail_val && tail_val->getType() == ret_type) {
         builder.CreateRet(tail_val);
