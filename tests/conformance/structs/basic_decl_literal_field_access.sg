@@ -1,0 +1,13 @@
+// Spec: struct decl, literal, field access via selector.
+// (docs/language.md:741-743, 818, 825-826)
+import "std/io"
+
+struct Point {
+  x, y Int
+}
+
+pub fn Main() Void {
+  p := Point{x: 2, y: 4}
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}

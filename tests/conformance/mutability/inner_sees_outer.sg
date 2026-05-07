@@ -1,0 +1,10 @@
+// Spec: "An inner scope can see outer scopes but not the other way
+// around." (docs/language.md:61)  Pos case: inner block reads outer var.
+import "std/io"
+
+pub fn Main() Void {
+  x := 7
+  if true {
+    io.Println(x.String())
+  }
+}

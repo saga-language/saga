@@ -1,0 +1,9 @@
+// Spec: calling with positional args, returning a value.
+// (docs/language.md:1011-1012)
+import "std/io"
+
+pub fn Add(a, b Int) Int { a + b }
+
+pub fn Main() Void {
+  io.Println(Add(1, 2).String())
+}

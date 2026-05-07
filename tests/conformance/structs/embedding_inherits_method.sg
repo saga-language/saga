@@ -1,0 +1,16 @@
+// Spec: structural embedding (`struct Child < Parent`) — child
+// inherits parent's fields and methods. (docs/language.md:849-879)
+import "std/io"
+
+struct Greeter {
+  pub fn Greet() String { "Hello!" }
+}
+
+struct User < Greeter {
+  name String
+}
+
+pub fn Main() Void {
+  u := User{name: "Alice"}
+  io.Println(u.Greet())
+}

@@ -1,0 +1,7 @@
+// Spec: `str[..]` performs a full copy. (docs/language.md:696, 704)
+import "std/io"
+
+pub fn Main() Void {
+  str := "hello"
+  io.Println(str[..])
+}

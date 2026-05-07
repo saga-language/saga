@@ -1,0 +1,7 @@
+// Spec: identifiers must NOT start with a digit. (docs/language.md:21)
+import "std/io"
+
+pub fn Main() Void {
+  1foo := 1
+  io.Println(1foo.String())
+}

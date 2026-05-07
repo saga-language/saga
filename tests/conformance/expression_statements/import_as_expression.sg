@@ -1,0 +1,7 @@
+// Spec: import can be used as an expression, the result bound to a
+// constant. (docs/language.md:154-156)
+const Out = import "std/io"
+
+pub fn Main() Void {
+  Out.Println("import as expression")
+}

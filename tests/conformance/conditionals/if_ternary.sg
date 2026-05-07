@@ -1,0 +1,8 @@
+// Spec: if used as a one-line ternary. (docs/language.md:1096-1097)
+import "std/io"
+
+pub fn Main() Void {
+  y := 20
+  x := if y > 10 { 0 } else { y }
+  io.Println(x.String())
+}

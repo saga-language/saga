@@ -1,0 +1,11 @@
+// Spec: "Arrays of the same type do not need to be spread into a
+// variadic." (docs/language.md:276-277, line 284 example)
+import "std/io"
+
+fn Sum(args ...Int) Int {
+  for i : args |acc| { acc += i }
+}
+
+pub fn Main() Void {
+  io.Println(Sum([1, 2, 3, 4, 5]).String())
+}

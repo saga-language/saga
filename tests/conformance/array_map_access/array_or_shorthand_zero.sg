@@ -1,0 +1,9 @@
+// Spec: `arr[idx] or {}` shorthand returns the zero value of T on miss.
+// (docs/language.md:638-640, 660: "shorthand: zero value of T")
+import "std/io"
+
+pub fn Main() Void {
+  arr := [10, 20, 30]
+  i := arr[99] or {}
+  io.Println(i.String())
+}

@@ -1,0 +1,9 @@
+// Spec: a value constant from a compile-time literal.
+// (docs/language.md:85-91)
+import "std/io"
+
+const Pi = 3
+
+pub fn Main() Void {
+  io.Println(Pi.String())
+}

@@ -1,0 +1,8 @@
+// Spec: any Stringable type can be interpolated in a string literal.
+// (docs/language.md:712-716, syntax `"{expr}"` from line 590)
+import "std/io"
+
+pub fn Main() Void {
+  x := 42
+  io.Println("value: {x}")
+}

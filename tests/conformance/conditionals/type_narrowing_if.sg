@@ -1,0 +1,15 @@
+// Spec: `if value == Int` narrows a union type within the branch.
+// (docs/language.md:1144-1150)
+import "std/io"
+
+fn Describe(v Int | Float) String {
+  if v == Int {
+    "int " + v.String()
+  } else {
+    "float " + v.String()
+  }
+}
+
+pub fn Main() Void {
+  io.Println(Describe(7))
+}

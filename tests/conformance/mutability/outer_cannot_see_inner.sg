@@ -1,0 +1,11 @@
+// Spec: "An inner scope can see outer scopes but not the other way
+// around." (docs/language.md:61)  Neg case: outer scope cannot read a
+// variable declared inside an inner block.
+import "std/io"
+
+pub fn Main() Void {
+  if true {
+    y := 5
+  }
+  io.Println(y.String())
+}

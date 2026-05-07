@@ -1,0 +1,8 @@
+// Spec: "Using a variable before it is declared is an error."
+// (docs/language.md:1336)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println(x.String())
+  x := 1
+}

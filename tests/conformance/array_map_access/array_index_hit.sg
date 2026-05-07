@@ -1,0 +1,9 @@
+// Spec: `arr[i]` with valid index returns the element wrapped in
+// `T | Error`; `or` clause unwraps. (docs/language.md:633-636)
+import "std/io"
+
+pub fn Main() Void {
+  arr := [10, 20, 30]
+  v := arr[1] or { 0 }
+  io.Println(v.String())
+}

@@ -1,0 +1,10 @@
+// Spec: aliases "inherit all the methods from the aliased type."
+// (docs/language.md:559)
+import "std/io"
+
+const UserID = Int
+
+pub fn Main() Void {
+  uid UserID = 42
+  io.Println(uid.String())
+}

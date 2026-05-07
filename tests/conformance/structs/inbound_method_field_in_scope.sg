@@ -1,0 +1,16 @@
+// Spec: in-bound method has direct access to struct fields without
+// receiver. (docs/language.md:754-757)
+import "std/io"
+
+struct User {
+  pub firstName, lastName String
+
+  pub fn FullName() String {
+    "{firstName} {lastName}"
+  }
+}
+
+pub fn Main() Void {
+  u := User{firstName: "Jane", lastName: "Doe"}
+  io.Println(u.FullName())
+}

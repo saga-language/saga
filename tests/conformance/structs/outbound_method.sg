@@ -1,0 +1,19 @@
+// Spec: out-bound (post-declaration) method using receiver syntax.
+// (docs/language.md:746-748)
+import "std/io"
+
+struct Point {
+  x, y Int
+}
+
+fn (p Point) Add(other Point) Point {
+  Point{x: p.x + other.x, y: p.y + other.y}
+}
+
+pub fn Main() Void {
+  a := Point{x: 1, y: 2}
+  b := Point{x: 3, y: 4}
+  c := a.Add(b)
+  io.Println(c.x.String())
+  io.Println(c.y.String())
+}

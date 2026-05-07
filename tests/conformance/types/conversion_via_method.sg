@@ -1,0 +1,10 @@
+// Spec: "Types can not be cast to a different size or type. They must
+// be converted, which allocates a new variable."
+// (docs/language.md:305-317, line 315: `f32 := f.Float32()`)
+import "std/io"
+
+pub fn Main() Void {
+  i := 7
+  f := i.Float()
+  io.Println(f.String())
+}

@@ -1,0 +1,9 @@
+// Spec: "All top level constants are immutable." (docs/language.md:50)
+import "std/io"
+
+pub const Pi = 3
+
+pub fn Main() Void {
+  Pi = 4
+  io.Println("unreachable")
+}

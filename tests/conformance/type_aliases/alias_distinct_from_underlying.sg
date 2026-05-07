@@ -1,0 +1,16 @@
+// Spec: "Aliases are not shadows of the original type, they are unique
+// types" (docs/language.md:558). Passing a typed Int where a UserID
+// is expected should be a type error — the user must convert
+// explicitly.
+import "std/io"
+
+const UserID = Int
+
+fn TakeUserID(u UserID) Void {
+  io.Println(u.String())
+}
+
+pub fn Main() Void {
+  i Int = 7
+  TakeUserID(i)
+}

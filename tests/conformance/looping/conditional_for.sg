@@ -1,0 +1,11 @@
+// Spec: condition-only `for cond {}` loops while cond is true.
+// (docs/language.md:1217-1221)
+import "std/io"
+
+pub fn Main() Void {
+  running := true
+  for running {
+    io.Println("once")
+    running = false
+  }
+}

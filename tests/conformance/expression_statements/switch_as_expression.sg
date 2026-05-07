@@ -1,0 +1,13 @@
+// Spec: switch can be used as an expression. (docs/language.md:154-156,
+// shown explicitly in the Conditionals section example at line 1122.)
+import "std/io"
+
+pub fn Main() Void {
+  v := 1
+  x := switch v {
+    case 0: 100
+    case 1: 200
+    else: 300
+  }
+  io.Println(x.String())
+}

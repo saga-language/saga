@@ -1,0 +1,19 @@
+// Spec: implicit interface satisfaction — a type matches an interface
+// if it implements all listed methods. (docs/language.md:929-930)
+import "std/io"
+
+interface Greeter {
+  Greet() String
+}
+
+struct EnglishGreeter {
+  pub fn Greet() String { "Hello!" }
+}
+
+fn UseGreeter(g Greeter) Void {
+  io.Println(g.Greet())
+}
+
+pub fn Main() Void {
+  UseGreeter(EnglishGreeter{})
+}

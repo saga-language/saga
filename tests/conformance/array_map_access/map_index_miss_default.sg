@@ -1,0 +1,9 @@
+// Spec: missing key resolves through `or { default }`.
+// (docs/language.md:644)
+import "std/io"
+
+pub fn Main() Void {
+  m := {"name": "jane"}
+  v := m["email"] or { "unknown" }
+  io.Println(v)
+}

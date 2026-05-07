@@ -1,0 +1,9 @@
+// Spec: map constants are populated before `Main` runs, alongside
+// arrays. (docs/language.md:102, line 108 example.)
+import "std/io"
+
+const Ports = {"http": 80, "https": 443}
+
+pub fn Main() Void {
+  io.Println(Ports.Size().String())
+}

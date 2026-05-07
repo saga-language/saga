@@ -1,0 +1,12 @@
+// Spec: compound assignment operators +=, -=, *=, /=.
+// (docs/language.md:1344-1347)
+import "std/io"
+
+pub fn Main() Void {
+  x := 10
+  x += 5
+  x -= 2
+  x *= 3
+  x /= 2
+  io.Println(x.String())
+}

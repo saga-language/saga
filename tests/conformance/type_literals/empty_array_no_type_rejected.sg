@@ -1,0 +1,8 @@
+// Spec: an empty array literal with no inferrable type is invalid.
+// (docs/language.md:601, "arr1 := [] // invalid, no inferrable type")
+import "std/io"
+
+pub fn Main() Void {
+  arr := []
+  io.Println("unreachable")
+}

@@ -1,0 +1,11 @@
+// Spec: "but you can't mix and match" — passing a mix of scalars and
+// an array to a variadic is a type error. (docs/language.md:286-287)
+import "std/io"
+
+fn Sum(args ...Int) Int {
+  for i : args |acc| { acc += i }
+}
+
+pub fn Main() Void {
+  io.Println(Sum(1, 2, [3, 4]).String())
+}

@@ -1,0 +1,12 @@
+// Spec: `or |err| { ... }` captures the error in the named variable.
+// (docs/language.md:411-414, 425-429)
+import "std/io"
+
+pub fn Main() Void {
+  arr := [10, 20, 30]
+  i := arr[99] or |err| {
+    io.Println("captured: " + err.Message())
+    -1
+  }
+  io.Println(i.String())
+}

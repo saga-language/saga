@@ -1,0 +1,14 @@
+// Spec: variadic parameter declared with `...Type`; the variable is
+// an array. (docs/language.md:265-273)
+//
+// Note: Sum's body uses for-as-expression with accumulator, which is
+// itself a documented form (see expression_statements/).
+import "std/io"
+
+fn Sum(args ...Int) Int {
+  for i : args |acc| { acc += i }
+}
+
+pub fn Main() Void {
+  io.Println(Sum(1, 2, 3, 4, 5).String())
+}

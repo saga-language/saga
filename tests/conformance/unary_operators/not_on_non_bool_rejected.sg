@@ -1,0 +1,8 @@
+// Spec: "Using `!` with any expression that does not resolve to
+// `true` or `false` is an error." (docs/language.md:1368-1370)
+import "std/io"
+
+pub fn Main() Void {
+  x := !5
+  io.Println("unreachable")
+}

@@ -1,0 +1,17 @@
+// Spec: a type that lacks a required method must not satisfy the
+// interface. (docs/language.md:929-930)
+import "std/io"
+
+interface Greeter {
+  Greet() String
+}
+
+struct Silent {}
+
+fn UseGreeter(g Greeter) Void {
+  io.Println(g.Greet())
+}
+
+pub fn Main() Void {
+  UseGreeter(Silent{})
+}

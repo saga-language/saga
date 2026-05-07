@@ -1,0 +1,9 @@
+// Spec cross-cutting: explicit-typed declaration with initializer for a
+// scalar type. The matching array form (`arr [Int] = []`,
+// docs/language.md:602) is currently broken — see BUGS.md.
+import "std/io"
+
+pub fn Main() Void {
+  x Int = 5
+  io.Println(x.String())
+}

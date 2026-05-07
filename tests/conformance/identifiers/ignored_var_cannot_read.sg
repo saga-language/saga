@@ -1,0 +1,8 @@
+// Spec: underscore-prefixed identifiers are "ignored" — they "can not be
+// accessed once they are assigned a value." (docs/language.md:25-27)
+import "std/io"
+
+pub fn Main() Void {
+  _x := 1
+  io.Println(_x.String())
+}

@@ -1,0 +1,9 @@
+// Spec: "Constants whose value requires allocation at runtime — arrays
+// and maps — are populated before `Main` runs." (docs/language.md:102)
+import "std/io"
+
+const Primes = [2, 3, 5, 7]
+
+pub fn Main() Void {
+  io.Println(Primes.Size().String())
+}

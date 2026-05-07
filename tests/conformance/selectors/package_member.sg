@@ -1,0 +1,7 @@
+// Spec: `pkg.Member` selector accesses an exported package symbol.
+// (docs/language.md:1064-1065)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println("ok")
+}

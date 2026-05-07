@@ -1,0 +1,11 @@
+// Spec: "Arrays, maps, and ranges are shapes, so the names `array`,
+// `map`, and `range` are not reserved words. Feel free to use them in
+// your code." (docs/language.md:299-300)
+import "std/io"
+
+pub fn Main() Void {
+  array := 1
+  map := 2
+  range := 3
+  io.Println((array + map + range).String())
+}

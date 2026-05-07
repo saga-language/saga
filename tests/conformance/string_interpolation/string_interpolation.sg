@@ -1,0 +1,7 @@
+// Spec: String values interpolate as themselves.
+import "std/io"
+
+pub fn Main() Void {
+  name := "world"
+  io.Println("hello, {name}")
+}

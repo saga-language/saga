@@ -1,0 +1,14 @@
+// Spec: "return" as early exit. (docs/language.md:226-232)
+import "std/io"
+
+pub fn Greeting(evening? Bool) String {
+  if evening? {
+    return "Goodnight"
+  }
+  "Good day"
+}
+
+pub fn Main() Void {
+  io.Println(Greeting(true))
+  io.Println(Greeting(false))
+}

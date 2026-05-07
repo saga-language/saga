@@ -1,0 +1,11 @@
+// Spec: ++ and -- shorthand for `x = x + 1` / `x = x - 1`.
+// (docs/language.md:1349-1350)
+import "std/io"
+
+pub fn Main() Void {
+  x := 5
+  x++
+  x++
+  x--
+  io.Println(x.String())
+}

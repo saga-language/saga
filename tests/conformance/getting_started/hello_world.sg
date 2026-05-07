@@ -1,0 +1,6 @@
+// Spec: the introductory hello-world program. (docs/language.md:6-15)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println("Hello, world!")
+}

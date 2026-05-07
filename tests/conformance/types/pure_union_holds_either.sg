@@ -1,0 +1,10 @@
+// Spec: a pure union (no Error type) holds any of its alternatives.
+// (docs/language.md:363-371) — `Bool | Int` is the canonical example.
+import "std/io"
+
+pub fn Main() Void {
+  x Bool | Int = 5
+  io.Println(x.String())
+  x = true
+  io.Println(x.String())
+}

@@ -1,0 +1,11 @@
+// Spec: "It is an error to shadow a variable from an outer scope or to
+// redeclare an identifier from the current scope." (docs/language.md:67-68)
+import "std/io"
+
+pub fn Main() Void {
+  x := 1
+  if true {
+    x := 2
+    io.Println(x.String())
+  }
+}

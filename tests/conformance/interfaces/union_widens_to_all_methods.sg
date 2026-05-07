@@ -1,0 +1,25 @@
+// Spec: an interface union (`Reader | Writer`) requires *both* sets
+// of methods to be implemented. Widens, not narrows.
+// (docs/language.md:951-953)
+import "std/io"
+
+interface Reader {
+  Read() String
+}
+interface Writer {
+  Write(s String) Void
+}
+
+const ReadWriter = Reader | Writer
+
+struct ReadOnly {
+  pub fn Read() String { "data" }
+}
+
+fn UseRW(rw ReadWriter) Void {
+  io.Println(rw.Read())
+}
+
+pub fn Main() Void {
+  UseRW(ReadOnly{})
+}

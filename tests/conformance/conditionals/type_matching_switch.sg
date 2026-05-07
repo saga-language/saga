@@ -1,0 +1,15 @@
+// Spec: switch with type cases performs type matching; must be
+// exhaustive. (docs/language.md:1161-1166)
+import "std/io"
+
+fn Describe(v Int | Float | String) String {
+  switch v {
+    case Int:    "int"
+    case Float:  "float"
+    case String: "string"
+  }
+}
+
+pub fn Main() Void {
+  io.Println(Describe("hello"))
+}

@@ -1,0 +1,9 @@
+// Spec: "Redeclaring a variable (shadowing) is also an error."
+// (docs/language.md:1336-1337)
+import "std/io"
+
+pub fn Main() Void {
+  x := 1
+  x := 2
+  io.Println(x.String())
+}

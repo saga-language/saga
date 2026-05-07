@@ -1,0 +1,8 @@
+// Spec: `break <expr>` exits the loop with that value when used in
+// expression form. (docs/language.md:1203-1204, 1314-1316)
+import "std/io"
+
+pub fn Main() Void {
+  result := for word : ["a", "b", "c"] { if word < "b" { break word } }
+  io.Println(result or { "?" })
+}

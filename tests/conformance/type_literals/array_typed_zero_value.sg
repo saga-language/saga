@@ -1,0 +1,9 @@
+// Spec: bare typed array declaration uses the empty array as zero
+// value. (docs/language.md:603, "arr3 [Int] // assigning an empty
+// value isn't actually needed, that's the zero value")
+import "std/io"
+
+pub fn Main() Void {
+  arr [Int]
+  io.Println(arr.Size().String())
+}

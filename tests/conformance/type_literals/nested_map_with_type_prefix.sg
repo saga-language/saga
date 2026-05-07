@@ -1,0 +1,11 @@
+// Spec: nested map literal with explicit type prefix.
+// (docs/language.md:609-614)
+import "std/io"
+
+pub fn Main() Void {
+  registry := {String: {String: Int}}{
+    "production": {"port": 80, "timeout": 30},
+    "staging":    {"port": 8080, "timeout": 60}
+  }
+  io.Println(registry.Size().String())
+}
