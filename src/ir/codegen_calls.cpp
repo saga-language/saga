@@ -665,6 +665,17 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   if (auto *fn = module->getFunction(mangle(name)))
     return fn;
 
+  // Top-level constant declared in the current package.  emit_const_decl
+  // creates a GlobalVariable named mangle(name); identifier reads from it.
+  // Struct-typed constants return the pointer (caller GEPs through it);
+  // scalar/string/array/map constants load the stored value.
+  if (auto *gv = module->getGlobalVariable(mangle(name))) {
+    auto sym = analyzer.lookup(name);
+    if (sym && sym->type && sym->type->kind == TypeKind::Struct)
+      return gv;
+    return builder.CreateLoad(gv->getValueType(), gv, name);
+  }
+
   return nullptr;
 }
 

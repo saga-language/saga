@@ -186,6 +186,21 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   if (module->getGlobalVariable(link_name))
     return;
 
+  // `const Foo = import "..."` is a named-import binding, not a value
+  // constant.  The analyzer has already rewritten Foo into a Module
+  // symbol; there is no runtime storage to emit and no LLVM type to
+  // assign.  Skip.
+  if (node.value && std::get_if<ImportExprNode>(&node.value->data))
+    return;
+
+  // `const MyType = Int` (and other type aliases) carry no runtime
+  // value — the analyzer rewrites them to SymbolKind::Type.  Codegen
+  // for a use site treats `MyType` as the underlying type, so no
+  // GlobalVariable is needed.
+  if (auto sym = analyzer.lookup(name);
+      sym && sym->kind == SymbolKind::Type)
+    return;
+
   // Determine the semantic type.
   auto sem_type = semantic_type(*node.value);
   if (!sem_type && node.type)
@@ -194,6 +209,11 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
     return;
 
   auto *ll_type = llvm_type(sem_type);
+  // Defensive: if the semantic type does not lower to an LLVM type
+  // (e.g. a Module type sneaking through), skip — there is nothing to
+  // store at runtime.
+  if (!ll_type)
+    return;
 
   // Collection constants (arrays, maps) cannot be built as compile-time
   // LLVM constants — their backing storage is heap-allocated.  Emit a
@@ -248,8 +268,23 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
     }
   }
 
-  if (!init)
-    init = llvm::Constant::getNullValue(ll_type);
+  // No literal initializer: the value is a non-trivial compile-time
+  // expression (e.g. `const MaxSize = 2 * 1024 * 1024`). Create a
+  // mutable-storage global with a zero placeholder and queue the value
+  // expression to run from `<pkg>__init__` before user code observes
+  // the global.  Logically still immutable — semantic analysis enforces
+  // that user code cannot mutate it; isConstant=false here is purely a
+  // codegen necessity so the init function can write the value.
+  if (!init) {
+    auto *gv = new llvm::GlobalVariable(
+        *module, ll_type, /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::Constant::getNullValue(ll_type), link_name);
+    (void)gv;
+    deferred_const_inits_.push_back(&node);
+    init_function_needed = true;
+    return;
+  }
 
   auto *gv = new llvm::GlobalVariable(
       *module, ll_type, /*isConstant=*/true,

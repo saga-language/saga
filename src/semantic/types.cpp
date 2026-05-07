@@ -483,6 +483,16 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (is_error_type(source) || is_error_type(target))
     return true;
 
+  // Aliases (declared via `const MyInt = Int`) are transparent for
+  // assignability — `x MyInt = 5` and `x Int = my_int_val` should both
+  // be accepted because the alias names the same storage as its
+  // underlying type.  Type identity (`types_equal`) keeps them
+  // distinct, which is correct for method-resolution purposes.
+  if (source && source->kind == TypeKind::Alias)
+    return is_assignable_to(unwrap_alias(source), target);
+  if (target && target->kind == TypeKind::Alias)
+    return is_assignable_to(source, unwrap_alias(target));
+
   // Any is a top type — any value is assignable to Any, and Any is assignable
   // to any type.  Used by intrinsic_runtime / intrinsic_field signatures.
   auto is_any = [](const TypePtr &t) {

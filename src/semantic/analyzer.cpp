@@ -4357,6 +4357,17 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
+    // Reject assignment to a top-level constant.  Spec: "All top level
+    // constants are immutable" (docs/language.md:50).  Catches
+    // `Pi = 4`, `Pi += 1`, etc. for any compound assignment too.
+    if (auto *id = std::get_if<IdentifierNode>(&node.targets[i]->data)) {
+      auto sym = lookup(std::string(id->name));
+      if (sym && sym->kind == SymbolKind::Constant) {
+        error(node.targets[i]->span,
+              std::format("cannot assign to constant '{}'", id->name));
+      }
+    }
+
     auto target_type = check_expr(*node.targets[i]);
     if (i < node.values.size()) {
       auto val_type = check_expr(*node.values[i]);
@@ -4400,6 +4411,13 @@ void Analyzer::check_assign(const AssignNode &node) {
 }
 
 void Analyzer::check_increment(const IncrementNode &node) {
+  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Constant) {
+      error(node.operand->span,
+            std::format("cannot increment constant '{}'", id->name));
+    }
+  }
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("increment requires integer type, got {}",
@@ -4408,6 +4426,13 @@ void Analyzer::check_increment(const IncrementNode &node) {
 }
 
 void Analyzer::check_decrement(const DecrementNode &node) {
+  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Constant) {
+      error(node.operand->span,
+            std::format("cannot decrement constant '{}'", id->name));
+    }
+  }
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("decrement requires integer type, got {}",

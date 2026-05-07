@@ -326,6 +326,11 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   if (!t)
     return void_ll_type;
 
+  // Aliases are transparent at the LLVM ABI level — `const MyInt = Int`
+  // lowers to whatever Int lowers to.  Unwrap before dispatching.
+  if (t->kind == TypeKind::Alias)
+    return llvm_type(unwrap_alias(t));
+
   switch (t->kind) {
   case TypeKind::Int:
     // Runtime ABI policy: every integer kind — platform Int *and* the

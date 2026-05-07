@@ -22,6 +22,14 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   std::string method(sel->field.name);
 
   auto obj_sem = semantic_type(*sel->object);
+  // Aliases are transparent for method dispatch (mirroring how the
+  // analyzer resolves the call).  Unwrap so kind-keyed dispatch tables
+  // (kind_methods_, builtin_methods, etc.) find the underlying type.
+  // User-defined methods on the alias itself live in the alias's own
+  // method table and are picked up via type_methods_ keyed by the
+  // unwrapped pointer.
+  if (obj_sem && obj_sem->kind == TypeKind::Alias)
+    obj_sem = unwrap_alias(obj_sem);
 
   // ── Module function call: mod.Func(args) ────────────────────────
   if (obj_sem && obj_sem->kind == TypeKind::Module)
