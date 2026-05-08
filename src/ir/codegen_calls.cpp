@@ -538,7 +538,58 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   if (callee_sem && callee_sem->kind == TypeKind::Func)
     fi = &std::get<FuncTypeInfo>(callee_sem->detail);
 
+  // Variadic call with multiple scalar args: pack them into a fresh
+  // saga_runtime_array and pass the pointer as the variadic arg.
+  // The array-passthrough case (single array arg matching the variadic
+  // array type) is handled by the per-arg loop below.
+  llvm::Value *variadic_packed = nullptr;
+  size_t variadic_idx = 0;
+  bool variadic_is_passthrough = false;
+  if (fi && fi->is_variadic && !fi->params.empty()) {
+    variadic_idx = fi->params.size() - 1;
+    auto &last = fi->params.back();
+    if (node.args.size() == fi->params.size() &&
+        last && last->kind == TypeKind::Array) {
+      auto last_arg_sem = semantic_type(*node.args.back());
+      if (last_arg_sem && types_equal(last_arg_sem, last))
+        variadic_is_passthrough = true;
+    }
+    if (!variadic_is_passthrough &&
+        last && last->kind == TypeKind::Array) {
+      auto &arr = std::get<ArrayTypeInfo>(last->detail);
+      auto *elem_ll = llvm_type(arr.element);
+      uint64_t elem_size =
+          elem_ll ? module->getDataLayout().getTypeAllocSize(elem_ll)
+                  : 8;
+      auto *new_fn = module->getFunction("saga_array_new");
+      auto *push_fn = module->getFunction("saga_array_push");
+      int64_t var_count = node.args.size() > variadic_idx
+                              ? static_cast<int64_t>(node.args.size() -
+                                                     variadic_idx)
+                              : 0;
+      std::vector<llvm::Value *> new_args = {
+          llvm::ConstantInt::get(i64_type, elem_size),
+          llvm::ConstantInt::get(i64_type,
+                                 std::max<int64_t>(var_count, 4))};
+      auto *arr_val = builder.CreateCall(new_fn, new_args, "var.arr");
+      for (size_t i = variadic_idx; i < node.args.size(); ++i) {
+        auto *val = emit_expr(*node.args[i]);
+        if (!val) continue;
+        auto *tmp =
+            create_entry_alloca(parent_fn, "var.tmp", val->getType());
+        builder.CreateStore(val, tmp);
+        std::vector<llvm::Value *> push_args = {arr_val, tmp};
+        builder.CreateCall(push_fn, push_args);
+      }
+      variadic_packed = arr_val;
+    }
+  }
+
   for (size_t i = 0; i < node.args.size(); ++i) {
+    if (variadic_packed && i >= variadic_idx) {
+      args.push_back(variadic_packed);
+      break;
+    }
     auto *val = emit_expr(*node.args[i]);
     if (!val)
       continue;
@@ -559,6 +610,19 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         auto *boxed = emit_interface_box(struct_ptr, arg_sem, fi->params[i]);
         if (boxed)
           val = boxed;
+      }
+    }
+    // Wrap a non-union arg into the union when the param expects one
+    // (`f Int|Float = 7`).  Without this, the byval attribute attaches
+    // to the raw scalar value and the callee's memcpy reads through
+    // address `7` → segfault.
+    if (fi && i < fi->params.size() && fi->params[i] &&
+        fi->params[i]->kind == TypeKind::Union) {
+      auto arg_sem = semantic_type(*node.args[i]);
+      if (arg_sem && arg_sem->kind != TypeKind::Union) {
+        auto *wrapped =
+            emit_union_wrap(val, arg_sem, fi->params[i]);
+        if (wrapped) val = wrapped;
       }
     }
     if (fi && i < fi->params.size() && fi->params[i] &&

@@ -173,6 +173,14 @@ struct CodeGen {
   struct LoopContext {
     llvm::BasicBlock *break_bb;   // target of `break`
     llvm::BasicBlock *next_bb;    // target of `next`
+    // For `result := for ... { break v }`: the loop's for-expression
+    // type is `T | Error`.  result_alloca points at a union slot
+    // pre-filled with the error tag; `break v` wraps v with the ok
+    // tag and stores it before branching to break_bb.  Null when the
+    // for-expression isn't an impure-union form.
+    llvm::AllocaInst *result_alloca = nullptr;
+    TypePtr result_union_type;
+    TypePtr result_value_type;
   };
   std::vector<LoopContext> loop_stack;
 
@@ -487,7 +495,7 @@ private:
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
-  llvm::Value *emit_for_expr(const ForExprNode &node);
+  llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
 
   // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
   struct ForLoopBlocks {

@@ -43,7 +43,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_if_expr(n);
           },
           [&](const ForExprNode &n) -> llvm::Value * {
-            return emit_for_expr(n);
+            return emit_for_expr(n, node);
           },
           [&](const SwitchExprNode &n) -> llvm::Value * {
             return emit_switch_expr(n);
@@ -63,9 +63,31 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const IndexExprNode &n) -> llvm::Value * {
             return emit_index_expr(n);
           },
-          [&](const BreakNode &) -> llvm::Value * {
-            if (!loop_stack.empty())
-              builder.CreateBr(loop_stack.back().break_bb);
+          [&](const BreakNode &n) -> llvm::Value * {
+            if (loop_stack.empty()) return nullptr;
+            auto &frame = loop_stack.back();
+            // `break <value>` inside a for-expression typed `T | Error`:
+            // wrap with ok tag, store to the pre-allocated union slot,
+            // then branch to break_bb.  Without this the value is lost.
+            if (frame.result_alloca && !n.values.empty() &&
+                frame.result_value_type && frame.result_union_type) {
+              auto *val = emit_expr(*n.values[0]);
+              if (val) {
+                auto *wrapped = emit_union_wrap(val, frame.result_value_type,
+                                                frame.result_union_type);
+                if (wrapped) {
+                  auto *union_st =
+                      get_union_llvm_type(frame.result_union_type);
+                  auto sz =
+                      module->getDataLayout().getTypeAllocSize(union_st);
+                  auto al =
+                      module->getDataLayout().getABITypeAlign(union_st);
+                  builder.CreateMemCpy(frame.result_alloca, al, wrapped,
+                                       al, sz);
+                }
+              }
+            }
+            builder.CreateBr(frame.break_bb);
             return nullptr;
           },
           [&](const NextNode &) -> llvm::Value * {

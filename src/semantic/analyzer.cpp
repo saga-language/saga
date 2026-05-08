@@ -2584,7 +2584,26 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   declare_parameters(fn.signature);
 
   auto &block = std::get<BlockNode>(fn.body->data);
-  auto body_type = check_block(block);
+  // Tail-position for-expression with accumulator: pass the function's
+  // declared return type as the accumulator hint so the body of
+  // `for i : xs |acc| { acc += i }` typechecks against the return.
+  TypePtr tail_hint;
+  if (current_scope->return_types.size() == 1 &&
+      !types_equal(current_scope->return_types[0], builtins.void_type) &&
+      !block.stmts.empty() &&
+      std::get_if<ForExprNode>(&block.stmts.back()->data))
+    tail_hint = current_scope->return_types[0];
+
+  TypePtr body_type;
+  if (tail_hint) {
+    for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
+      check_expr(*block.stmts[i]);
+    auto &for_node = std::get<ForExprNode>(block.stmts.back()->data);
+    body_type = check_for_expr(for_node, tail_hint);
+    record_type(*block.stmts.back(), body_type);
+  } else {
+    body_type = check_block(block);
+  }
 
   // Check that the tail expression matches the return type (if non-Void).
   // If the last statement always returns (directly or through branches),
@@ -3803,24 +3822,26 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       }
     }
 
+    // Narrow the subject inside the arm body when there's a single
+    // pattern; with multiple patterns the narrowed type would be their
+    // union, which the analyzer doesn't synthesize here.  Narrowing
+    // applies whether the body is a block or an expression — without
+    // this, `case Int: x.String()` saw x as the unnarrowed union.
+    bool narrowed = is_type_match && !subject_var.empty() &&
+                    arm.patterns.size() == 1 &&
+                    !is_error_type(first_pattern_type);
+    push_scope(ScopeKind::Block);
+    if (narrowed) {
+      current_scope->symbols[subject_var] = Symbol::variable(
+          subject_var, first_pattern_type, arm.patterns[0]->span);
+    }
     TypePtr arm_type;
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
-      push_scope(ScopeKind::Block);
-      // Narrow the subject only when there's a single pattern; with
-      // multiple patterns the narrowed type would be their union, which
-      // the analyzer doesn't synthesize here.
-      if (is_type_match && !subject_var.empty() &&
-          arm.patterns.size() == 1 &&
-          !is_error_type(first_pattern_type)) {
-        current_scope->symbols[subject_var] =
-            Symbol::variable(subject_var, first_pattern_type,
-                             arm.patterns[0]->span);
-      }
       arm_type = check_block(*block);
-      pop_scope();
     } else {
       arm_type = check_expr(*arm.body);
     }
+    pop_scope();
 
     if (!result_type)
       result_type = arm_type;
@@ -3879,6 +3900,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
 TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                                  TypePtr accumulator_hint) {
   push_scope(ScopeKind::Loop);
+  break_value_types_.emplace_back();
 
   if (node.mode) {
     std::visit(overloaded{
@@ -4050,7 +4072,26 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
   auto &body_block = std::get<BlockNode>(node.body->data);
   check_block(body_block);
 
+  // A `break <value>` anywhere in the body shapes the for-expression's
+  // result as `T | Error` (spec language.md:1284-1295).  When multiple
+  // breaks have differing types the result is `T1 | T2 | … | Error`.
+  std::vector<TypePtr> break_types = std::move(break_value_types_.back());
+  break_value_types_.pop_back();
+
   pop_scope();
+
+  if (!break_types.empty()) {
+    std::vector<TypePtr> alts;
+    for (auto &bt : break_types) {
+      bool seen = false;
+      for (auto &existing : alts)
+        if (types_equal(existing, bt)) { seen = true; break; }
+      if (!seen) alts.push_back(bt);
+    }
+    alts.push_back(builtins.error_iface);
+    return make_union_type(std::move(alts));
+  }
+
   return node.accumulator ? acc_type : builtins.void_type;
 }
 
@@ -4583,7 +4624,9 @@ void Analyzer::check_break(const BreakNode &node) {
     return;
   }
   for (auto &val : node.values) {
-    check_expr(*val);
+    auto t = check_expr(*val);
+    if (!break_value_types_.empty())
+      break_value_types_.back().push_back(t);
   }
 }
 

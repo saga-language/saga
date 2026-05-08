@@ -287,20 +287,26 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
     // Default / else block.
     func->insert(func->end(), default_bb);
     builder.SetInsertPoint(default_bb);
-    llvm::Value *else_val = nullptr;
-    bool else_terminated = false;
     if (node.else_body) {
+      llvm::Value *else_val = nullptr;
       if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
         else_val = emit_block(*block);
       } else {
         else_val = emit_expr(**node.else_body);
       }
-      else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+      bool else_terminated =
+          builder.GetInsertBlock()->getTerminator() != nullptr;
+      if (!else_terminated)
+        builder.CreateBr(merge_bb);
+      case_results.push_back({else_val, builder.GetInsertBlock(),
+                              else_terminated});
+    } else {
+      // Exhaustiveness is enforced by check_switch_expr — the default
+      // is unreachable when all union alternatives are covered.  Adding
+      // a null-valued case_result here would break the merge-PHI's
+      // all_have_value check.
+      builder.CreateUnreachable();
     }
-    if (!else_terminated)
-      builder.CreateBr(merge_bb);
-    case_results.push_back({else_val, builder.GetInsertBlock(),
-                            else_terminated});
 
   } else if (is_string) {
     // ── String matching: chained icmp + br ──────────────────────────
@@ -778,14 +784,16 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   std::vector<int> non_error_tags;
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
     auto &alt = info.alternatives[i];
-    if (alt->kind == TypeKind::Interface) {
+    bool is_err = false;
+    if (alt && alt->kind == TypeKind::Interface) {
       auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error") {
-        error_tags.push_back(static_cast<int>(i));
-        continue;
-      }
+      if (iface.name == "Error") is_err = true;
+    } else if (alt && alt->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
+      if (sinfo.name == "Missing") is_err = true;
     }
-    non_error_tags.push_back(static_cast<int>(i));
+    if (is_err) error_tags.push_back(static_cast<int>(i));
+    else non_error_tags.push_back(static_cast<int>(i));
   }
 
   // Create basic blocks.
@@ -1027,6 +1035,24 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
     auto [gep, field_ll] = struct_field_gep(alloca, sem, fname);
     if (!gep)
       continue;
+
+    // Find the field's semantic type for union-wrap detection.
+    TypePtr field_sem;
+    for (auto &fi : info.fields)
+      if (fi.name == fname) { field_sem = fi.type; break; }
+
+    // Field is a union; the supplied value is one alternative.  Wrap
+    // before memcpy so the union's tag is set correctly.  Without this
+    // an `optional String | Missing` field given `Missing{}` would
+    // memcpy zero bytes into a 9-byte slot, leaving the tag at 0
+    // (i.e. interpreted as an empty String).
+    if (field_sem && field_sem->kind == TypeKind::Union) {
+      auto val_sem = semantic_type(*fa.value);
+      if (val_sem && val_sem->kind != TypeKind::Union) {
+        auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
+        if (wrapped) val = wrapped;
+      }
+    }
 
     // D1: aggregate fields are stored inline. If the rhs is a pointer to
     // a struct (e.g. from a nested struct literal), memcpy the bytes

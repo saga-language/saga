@@ -43,45 +43,6 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
   completion, which means "from task" must appear before "done".
 - Priority: high — concurrency primitive correctness.
 
-### `or` clause inside parentheses doesn't parse
-
-- Repro: `(20 / 4 or { 0 }).String()` cascades:
-  `expected ')', got 'or'`.  Workaround is to bind the result first:
-  `x := 20 / 4 or { 0 }; x.String()`.
-- Spec source: not explicitly forbidden — the spec shows
-  `(6 / 0 or { 0 }) + 1` at `docs/language.md:1399`, suggesting the
-  parens-wrapped form is intended to work.
-- Priority: low — workaround is trivial, but the spec example
-  suggests this should parse.
-
-### `break <value>` doesn't shape the for-expression as `T | Error`
-
-- Spec source: `docs/language.md:1284-1295` — "If `break` is present
-  anywhere in the block, the expression becomes impure, returning
-  from the loop immediately, and returning a `Missing` error. The
-  return type of the `for` expression becomes `T | Error`."
-- Conformance test:
-  `tests/conformance/looping/break_with_value.sg`
-- Behavior: `result := for word : [...] { if cond { break word } }`
-  is type-checked as Void rather than `String | Error`, so `result or { "?" }`
-  fails: `argument 1: expected String, got Void`.
-- Priority: medium — search-pattern uses of `for` are common.
-
-### Type narrowing (via `if value == T` and `switch value { case T: ... }`) segfaults at runtime
-
-- Spec source: `docs/language.md:1136-1166` — type matching with
-  conditionals narrows union types within branches.
-- Conformance tests:
-  - `tests/conformance/conditionals/type_narrowing_if.sg`
-  - `tests/conformance/conditionals/type_matching_switch.sg`
-- Behavior: build clean, runtime SIGSEGV. The `if v == Int { v.String() }`
-  pattern (and the switch-case-on-types equivalent) over a `Int | Float`
-  union segfaults when the branch body uses `v` after narrowing — the
-  union extraction probably reads through a payload pointer that hasn't
-  been set up correctly.
-- Priority: high — type matching is the primary mechanism for working
-  with union values.
-
 ### Range iteration produces no output and `.Array()` doesn't return an array
 
 - Spec source: `docs/language.md:1038-1054` — `(0..N)` is iterable
@@ -109,18 +70,6 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
   vtable.
 - Priority: medium — affects the canonical interface-composition
   pattern but only at runtime; declaration and type-check work.
-
-### Optional field `Type | Missing` resolved with `or { default }` returns empty value
-
-- Spec source: `docs/language.md:833-846` — optional field via
-  `String | Missing` and `data.optional or { "unknown" }`.
-- Conformance test:
-  `tests/conformance/structs/optional_field_with_or.sg`
-- Behavior: `p := Payload{optional: Missing{}}` then
-  `v := p.optional or { "unknown" }` builds and runs but prints
-  the empty string — neither the value nor the `or` default. The
-  union extraction or the or-clause isn't routing to the fallback.
-- Priority: medium — common pattern for parsing optional data.
 
 ### String indexing and slicing aren't implemented
 
@@ -215,22 +164,6 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
 - Priority: medium — default-value form (`or { default }`) works,
   which is the more common case.
 
-### Method dispatch on union types doesn't try alternatives
-
-- Spec source: `docs/language.md:363-371` (pure unions); also §Method
-  Calling and the broader spec promise that intrinsic types carry
-  methods like `.String()`.
-- Conformance test:
-  `tests/conformance/types/pure_union_holds_either.sg`
-- Behavior: `x Bool | Int = 5; io.Println(x.String())` is rejected
-  with "type Bool | Int has no member 'String'". Both alternatives
-  individually have a `String()` method (Int via std/int, Bool via
-  std/bool), so the dispatch should accept the call when *every*
-  alternative has a method of the same shape (similar to how the
-  alias-unwrap fix made aliases transparent).
-- Priority: medium — affects any code that prints a union directly.
-  Workaround: narrow first via type matching before calling.
-
 ### Float32 and Float64 do not carry stdlib methods like String
 
 - Spec source: `docs/language.md:302-303` lists Int8/16/32/64,
@@ -267,32 +200,6 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
   capture additionally tripping over an upvalue layout that isn't
   populated correctly (or at all).
 - Priority: high — closures are a documented core feature.
-
-### `for` as expression with accumulator: result is wrong or rejected
-
-- Spec source: `docs/language.md:1267-1294` — accumulator semantics:
-  "the compiler uses the type of the left-hand value to initialize an
-  internal accumulator [...] The result of the expression is the
-  accumulator."
-- Conformance tests:
-  - `tests/conformance/expression_statements/for_as_expression.sg`
-    (with explicit `sum Int =` LHS)
-  - `tests/conformance/methods/variadic_call.sg` and
-    `tests/conformance/methods/variadic_with_array.sg` (when the
-    for-as-expression is the tail expression of a function whose
-    signature declares the return type)
-- Behavior:
-  - With explicit LHS type, builds & runs but evaluates to 0 instead
-    of the accumulated total.
-  - As a function tail expression with declared return type Int, the
-    analyzer infers the accumulator as Void, then rejects
-    `acc += i` ("compound assignment requires numeric type, got
-    Void") and the function as a whole ("return type: expected Int,
-    got Void"). Suggests the accumulator-type inference picks up the
-    LHS type only when the LHS is a typed declaration, not a function
-    return position.
-- Priority: high — accumulator-form `for` is described in the spec
-  as "the secret superpower of `for`."
 
 ### Forward const ref produces the late value, not the spec's zero
 

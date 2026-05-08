@@ -4418,6 +4418,76 @@ TEST(CodeGen, StructFieldFuncCalledIndirectly) {
 // P3 — Struct-typed channels
 // ===========================================================================
 
+// Type-match switch over a union with no `else`: the default branch
+// must be marked unreachable.  A null-valued default case_result would
+// otherwise break the merge-PHI all_have_value check, and the
+// function would silently return null instead of the matched body.
+TEST(CodeGen, TypeMatchSwitch_NoElse_DefaultIsUnreachable) {
+  auto r = CG::from(
+      "fn Describe(v Int | Float) String {\n"
+      "  switch v {\n"
+      "    case Int: \"int\"\n"
+      "    case Float: \"float\"\n"
+      "  }\n"
+      "}\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Describe");
+  ASSERT_NE(fn, nullptr);
+
+  bool has_unreachable = false;
+  bool has_phi = false;
+  for (auto &bb : *fn) {
+    for (auto &inst : bb) {
+      if (llvm::isa<llvm::UnreachableInst>(&inst))
+        has_unreachable = true;
+      if (llvm::isa<llvm::PHINode>(&inst))
+        has_phi = true;
+    }
+  }
+  EXPECT_TRUE(has_unreachable) << "default branch should be unreachable";
+  EXPECT_TRUE(has_phi) << "merge should phi over case body values";
+}
+
+// Calling a function whose parameter is a union type with a non-union
+// argument must wrap the argument into the union before passing.
+// Without this the byval attribute attaches to the raw scalar value
+// and the callee's memcpy reads through that scalar as an address.
+TEST(CodeGen, UnionParam_ScalarArg_IsWrappedAtCallSite) {
+  auto r = CG::from(
+      "fn Take(v Int | Float) String { \"\" }\n"
+      "pub fn Main() Void {}");
+  auto *take = r.func("Take");
+  ASSERT_NE(take, nullptr);
+  // Force a call via another function so the call-site IR is emitted.
+  auto r2 = CG::from(
+      "fn Take(v Int | Float) String { \"\" }\n"
+      "fn Use() String { Take(7) }\n"
+      "pub fn Main() Void {}");
+  auto *use = r2.func("Use");
+  ASSERT_NE(use, nullptr);
+
+  bool saw_alloca_union = false;
+  bool saw_tag_store = false;
+  for (auto &bb : *use) {
+    for (auto &inst : bb) {
+      if (auto *alloca = llvm::dyn_cast<llvm::AllocaInst>(&inst)) {
+        auto *st = llvm::dyn_cast<llvm::StructType>(alloca->getAllocatedType());
+        if (st && st->getNumElements() == 2 &&
+            st->getElementType(0)->isIntegerTy(8))
+          saw_alloca_union = true;
+      }
+      if (auto *store = llvm::dyn_cast<llvm::StoreInst>(&inst)) {
+        if (auto *ci =
+                llvm::dyn_cast<llvm::ConstantInt>(store->getValueOperand()))
+          if (ci->getType()->isIntegerTy(8))
+            saw_tag_store = true;
+      }
+    }
+  }
+  EXPECT_TRUE(saw_alloca_union) << "expected a union alloca to wrap the arg";
+  EXPECT_TRUE(saw_tag_store) << "expected a tag-byte store before the call";
+}
+
 // Int `**` lowers to a multiplication loop with the expected block
 // scaffolding (cond / body / end).  Pre-fix this slot was a TODO that
 // returned constant 0, so a passing test below confirms the lowering

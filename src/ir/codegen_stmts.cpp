@@ -681,6 +681,23 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       }
     }
 
+    // Union RHS via pointer (e.g. `result := for ... { break v }`):
+    // emit_for_expr returns a ptr to a union struct.  Allocate a
+    // struct-typed local and memcpy through.
+    if (val && val_sem && val_sem->kind == TypeKind::Union &&
+        val->getType()->isPointerTy()) {
+      auto *union_st = get_union_llvm_type(val_sem);
+      if (union_st) {
+        auto *alloca = create_entry_alloca(func, name, union_st);
+        auto sz = module->getDataLayout().getTypeAllocSize(union_st);
+        auto al = module->getDataLayout().getABITypeAlign(union_st);
+        builder.CreateMemCpy(alloca, al, val, al, sz);
+        locals[name] = alloca;
+        track_managed(name, val_sem);
+        continue;
+      }
+    }
+
     llvm::Type *var_type = val ? val->getType() : i64_type;
     auto *alloca = create_entry_alloca(func, name, var_type);
     locals[name] = alloca;

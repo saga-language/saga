@@ -26,8 +26,63 @@ llvm::Value *to_bool(llvm::IRBuilder<> &b, llvm::Value *v) {
 
 } // namespace
 
-llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
+llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
+                                    const Node &parent) {
   auto *func = builder.GetInsertBlock()->getParent();
+
+  auto for_sem = semantic_type(parent);
+
+  // Accumulator setup: when the for-expression has `|acc|`, allocate a
+  // local zero-initialised to the for-expression's recorded type, bind
+  // it as `acc`, and load+return it after the loop exits.  Without
+  // this, every for-expression returns null and `sum := for ... |acc|
+  // {...}` would always be 0.
+  llvm::AllocaInst *acc_alloca = nullptr;
+  llvm::Type *acc_ll = nullptr;
+  if (node.accumulator) {
+    if (for_sem && for_sem->kind != TypeKind::Void) {
+      acc_ll = llvm_type(for_sem);
+      if (acc_ll && !acc_ll->isVoidTy()) {
+        std::string acc_name(node.accumulator->name);
+        acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
+        builder.CreateStore(llvm::Constant::getNullValue(acc_ll), acc_alloca);
+        locals[acc_name] = acc_alloca;
+      }
+    }
+  }
+
+  // break-with-value: if the recorded type is `T | Error`, allocate a
+  // union slot pre-filled with the err tag.  break codegen will wrap
+  // its value with the ok tag and store before branching.
+  llvm::AllocaInst *break_result = nullptr;
+  TypePtr break_value_type;
+  if (!node.accumulator && for_sem && for_sem->kind == TypeKind::Union &&
+      is_impure_union(for_sem)) {
+    auto *union_st = get_union_llvm_type(for_sem);
+    if (union_st) {
+      auto &uinfo = std::get<UnionTypeInfo>(for_sem->detail);
+      int err_tag = -1;
+      for (size_t i = 0; i < uinfo.alternatives.size(); ++i) {
+        auto &alt = uinfo.alternatives[i];
+        if (alt && alt->kind == TypeKind::Interface &&
+            std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
+          err_tag = static_cast<int>(i);
+        } else if (alt) {
+          break_value_type = alt;
+        }
+      }
+      if (err_tag >= 0 && break_value_type) {
+        break_result = create_entry_alloca(func, "for.result", union_st);
+        builder.CreateStore(llvm::Constant::getNullValue(union_st),
+                            break_result);
+        auto *tag_gep =
+            builder.CreateStructGEP(union_st, break_result, 0, "for.tag");
+        builder.CreateStore(
+            llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), err_tag),
+            tag_gep);
+      }
+    }
+  }
 
   ForLoopBlocks bbs;
   bbs.cond_bb = llvm::BasicBlock::Create(context, "for.cond", func);
@@ -35,7 +90,10 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
   bbs.update_bb = llvm::BasicBlock::Create(context, "for.update");
   bbs.exit_bb = llvm::BasicBlock::Create(context, "for.exit");
 
-  loop_stack.push_back({bbs.exit_bb, bbs.update_bb});
+  LoopContext frame{bbs.exit_bb, bbs.update_bb, break_result,
+                    break_result ? for_sem : TypePtr{},
+                    break_value_type};
+  loop_stack.push_back(frame);
 
   if (!node.mode) {
     emit_for_infinite(node, bbs);
@@ -52,6 +110,11 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node) {
   loop_stack.pop_back();
   func->insert(func->end(), bbs.exit_bb);
   builder.SetInsertPoint(bbs.exit_bb);
+
+  if (acc_alloca && acc_ll)
+    return builder.CreateLoad(acc_ll, acc_alloca, "for.acc");
+  if (break_result)
+    return break_result;
   return nullptr;
 }
 

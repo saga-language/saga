@@ -87,6 +87,12 @@ struct Analyzer {
   Scope::Ptr global_scope;
   Scope::Ptr current_scope;
 
+  // Stack of per-loop break value-type collections.  check_break pushes
+  // the type of each `break <value>` into the innermost vector; the
+  // enclosing for-expression reads it to shape its result as
+  // `T | Error` (spec language.md:1284-1295).
+  std::vector<std::vector<TypePtr>> break_value_types_;
+
   // ── Resolved information (output tables) ─────────────────────────────
 
   /// Maps each AST node (by Node*) to its resolved type.
