@@ -3,6 +3,30 @@
 Each entry: spec source line, the failing conformance test (or a one-liner
 repro until a test exists), and a brief note on what's broken.
 
+## Order of attack
+
+Tackle the open list in clusters, not top-to-bottom — bugs in the same
+cluster share their mental context, so fixing one makes the next much
+faster than starting cold.
+
+1. **Parser & shallow checks** — small, isolated grammar fixes plus
+   missing analyzer checks. Same surface (parser/analyzer); fastest
+   way to drop the count. Examples: `**`, `or` in parens, C-style
+   `for`, multi-value `case`, `const X = A | B`, typed array decl,
+   non-exhaustive type-switch acceptance, array-to-variadic.
+2. **Union / narrowing / for-expression typing** — high leverage,
+   shared codegen + type-inference paths. Fixing the narrowing
+   segfault likely unblocks the optional-field and `break <value>`
+   bugs at once. Examples: type narrowing crash, optional field
+   with `or`, capture-form `or |err|`, accumulator typing, union
+   method dispatch.
+3. **Standalones** — each is its own mini-investigation; do in any
+   order. Examples: `Task.Wait()` ordering, range iteration, string
+   indexing/slicing, closures with params/captures, alias method
+   dispatch, COW on function call, generic-struct ABI mismatch.
+
+Deferred: `[T]` type-erased storage (perf footnote, not correctness).
+
 ---
 
 ## Open
@@ -19,16 +43,6 @@ repro until a test exists), and a brief note on what's broken.
   completion, which means "from task" must appear before "done".
 - Priority: high — concurrency primitive correctness.
 
-### `**` (exponential) returns 0 instead of the power
-
-- Spec source: `docs/language.md:1377-1378` — `**` is listed as an
-  arithmetic operator alongside `+ - * / %`.
-- Conformance test:
-  `tests/conformance/binary_operators/arithmetic.sg`
-- Behavior: `2 ** 10` evaluates to `0` instead of `1024`. Either the
-  operator isn't lowered or it's mis-lowered to a no-op.
-- Priority: medium — useful operator, narrow workaround (manual loop).
-
 ### `or` clause inside parentheses doesn't parse
 
 - Repro: `(20 / 4 or { 0 }).String()` cascades:
@@ -39,17 +53,6 @@ repro until a test exists), and a brief note on what's broken.
   parens-wrapped form is intended to work.
 - Priority: low — workaround is trivial, but the spec example
   suggests this should parse.
-
-### C-style index for-loop (`for i Int; i < N; i += 1 {}`) doesn't parse
-
-- Spec source: `docs/language.md:1223-1224` — explicit example.
-- Conformance test:
-  `tests/conformance/looping/c_style_index_iterator.sg`
-- Behavior: parser cascades on `for i Int;`:
-  `expected '{', got identifier`. The form is documented as one of
-  the four valid `for` shapes but the parser doesn't recognize it.
-- Priority: high — this is the canonical numeric-counter form,
-  workaround requires manual condition + `+=` plumbing.
 
 ### `break <value>` doesn't shape the for-expression as `T | Error`
 
@@ -79,28 +82,6 @@ repro until a test exists), and a brief note on what's broken.
 - Priority: high — type matching is the primary mechanism for working
   with union values.
 
-### Multi-value case (`case 0, 2, 4:`) doesn't parse
-
-- Spec source: `docs/language.md:1110-1111` — "Case clauses can have
-  multiple expressions separated by commas to match multiple values
-  to a single clause."
-- Conformance test:
-  `tests/conformance/conditionals/switch_multi_value_case.sg`
-- Behavior: parser cascades on the first comma:
-  `expected ':', got ','`. The form is documented but not recognized.
-- Priority: medium.
-
-### Non-exhaustive type-switch is silently accepted
-
-- Spec source: `docs/language.md:1174-1177` — non-exhaustive type
-  matching without `else` must be an error.
-- Conformance test:
-  `tests/conformance/conditionals/non_exhaustive_type_switch_rejected.sg`
-- Behavior: the analyzer accepts a switch that covers only one of
-  three union alternatives (no `else`).  Should be rejected at
-  semantic analysis.
-- Priority: medium.
-
 ### Range iteration produces no output and `.Array()` doesn't return an array
 
 - Spec source: `docs/language.md:1038-1054` — `(0..N)` is iterable
@@ -115,21 +96,19 @@ repro until a test exists), and a brief note on what's broken.
 - Priority: high — ranges are a documented core iteration form and
   the for-loop case is the headline example in the spec.
 
-### `const X = Iface1 | Iface2` (interface-union alias) doesn't parse as a type
+### Calling through a union-of-interfaces value segfaults at runtime
 
-- Spec source: `docs/language.md:945-948` — explicit examples like
-  `const ReadWriter = Reader | Writer`,
-  `const ReadCloser = Reader | Closer`, etc.
+- Spec source: `docs/language.md:961-965` — wider interface assignable
+  to narrower one when subset.
 - Conformance test:
   `tests/conformance/interfaces/subset_assignable.sg`
-- Behavior: declaration emits two errors:
-  `bitwise operator requires integer type, got Reader` (the `|` is
-  parsed as bitwise OR over typed values rather than a type-union
-  constructor), then `'ReadCloser' is not a type` at the use site.
-  The corresponding *type-position* form (e.g. `f Reader | Writer`
-  in a parameter list) does work in some contexts.
-- Priority: high — this is the documented composition mechanism for
-  interfaces and the spec leans heavily on it.
+- Behavior: `const RC = Reader | Closer; rc RC = File{}; ReadOnly(rc)`
+  builds clean (analyzer recognizes interface widening) but SIGSEGVs
+  at the call site.  Codegen path for passing a union-of-interfaces
+  value to a single-interface parameter doesn't extract the right
+  vtable.
+- Priority: medium — affects the canonical interface-composition
+  pattern but only at runtime; declaration and type-check work.
 
 ### Optional field `Type | Missing` resolved with `or { default }` returns empty value
 
@@ -315,37 +294,30 @@ repro until a test exists), and a brief note on what's broken.
 - Priority: high — accumulator-form `for` is described in the spec
   as "the secret superpower of `for`."
 
-### Array passed to variadic parameter is rejected
-
-- Spec source: `docs/language.md:276-285` — "Arrays of the same type
-  do not need to be spread into a variadic. There is literally no work
-  for the compiler to do if you pass an array in."
-- Conformance test: `tests/conformance/methods/variadic_with_array.sg`
-- Behavior: with `fn Sum(args ...Int) Int { ... }`, calling
-  `Sum([1, 2, 3, 4, 5])` is rejected with "variadic argument 1:
-  expected Int, got [Int]". The spec explicitly permits this form.
-- Priority: medium — convenient form, documented, currently unusable.
-
-### Forward-declared constant reference crashes the compiler
+### Forward const ref produces the late value, not the spec's zero
 
 - Spec source: `docs/language.md:120-122` — "A constant initialiser
   must not read a constant declared later in the same package; the
   read will see the type's zero value with no diagnostic."
 - Conformance test:
   `tests/conformance/initialisation/forward_const_read_returns_zero.sg`
-- Behavior: `const Second = First * 2; const First = 10` causes the
-  saga compiler to terminate with SIGSEGV inside `emit_const_decl`
-  while creating Second's GlobalVariable.  The semantic analyzer
-  presumably returns Error/void for the unresolved forward reference,
-  and that flows into `llvm_type` → `void` → `getNullValue(void)` →
-  crash.
-- Spec note: the rule itself ("zero value with no diagnostic") is
-  unusual — most languages either implement two-pass declaration so
-  textual order doesn't matter, or report an error.  Worth raising
-  with you whether this is the design you actually want before fixing
-  the compiler to honor it.  Either way, the current crash is
-  unambiguously wrong.
-- Priority: high — small program, hard crash with no diagnostic.
+- Behavior (post-fix): the compiler no longer crashes.
+  `const Second = First * 2; const First = 10` builds and runs, but
+  produces `20` instead of the spec's `0`.  Cause: literal-scalar
+  consts are emitted as compile-time `constant i64 N` globals rather
+  than going through the textual-order deferred-init path, so a
+  forward read sees the real value, not zero.
+- Two ways to fix:
+  1. Route every const through the deferred-init path so textual
+     order is observable at runtime — small perf cost, honors the
+     spec literally.
+  2. Revise the spec to require an error on forward refs (which is
+     what most languages do).
+- Worth raising before code change: the current rule is unusual and
+  may have been aspirational.  The behavior we have now ("forward
+  refs see the actual value because consts are compile-time") is at
+  least not surprising to readers from other languages.
+- Priority: low — needs a design decision, not a code fix.
 
 ### Cross-package generic struct method has calling-convention mismatch (SIGSEGV)
 
@@ -421,186 +393,7 @@ repro until a test exists), and a brief note on what's broken.
 - Priority: low — correctness is fine; this is a diagnostic-quality
   issue.
 
-### Typed array declarations are unrecognized (`arr [Int]` and `arr [Int] = ...`)
-
-- Spec source: `docs/language.md:600-605` — the spec lists three valid
-  array declaration forms:
-  - `arr2 [Int] = []` (typed with empty literal initializer)
-  - `arr3 [Int]` (bare typed declaration, zero-value)
-  - `arr4 := [1]` (inferred from initializer)
-- Repro: any of
-  ```
-  arr [Int] = [1, 2, 3]   // Error: undefined name 'arr'
-  arr [Int]               // Error: undefined name 'arr'
-  ```
-  The same forms for scalars (`x Int = 5`, `x Int`) parse fine — only
-  the array-type-prefix form fails.  The inferred form (`arr := [1]`)
-  works.
-- Conformance tests:
-  `tests/conformance/type_literals/array_typed_with_initializer.sg`,
-  `tests/conformance/type_literals/array_typed_zero_value.sg`
-- Priority: high — both are documented, recommended forms.
-
-### Empty array literal with no inferrable type is silently accepted
-
-- Spec source: `docs/language.md:601` — "arr1 := [] // invalid, no
-  inferrable type"
-- Conformance test:
-  `tests/conformance/type_literals/empty_array_no_type_rejected.sg`
-- Behavior: `arr := []` builds and runs without diagnostic; the spec
-  says this should be a type error.  The analyzer apparently picks
-  some default element type rather than rejecting the ambiguous case.
-- Priority: medium — silent acceptance of an explicitly-disallowed
-  form.
-
-### Nested map literal with explicit type prefix doesn't parse
-
-- Spec source: `docs/language.md:609-614`:
-  ```
-  registry := {String: {String: Int}}{
-    "production": {"port": 80, "timeout": 30},
-    ...
-  }
-  ```
-- Conformance test:
-  `tests/conformance/type_literals/nested_map_with_type_prefix.sg`
-- Behavior: parser cascades:
-  `expected identifier, got string literal`,
-  `expected ':', got string literal`. The `{KType: VType}{...}` map
-  literal-with-type-prefix syntax isn't recognized by the parser.
-- Priority: medium — documented form for instantiating typed maps,
-  workaround is to declare via `const` first.
 
 ---
 
 ## Resolved
-
-### Struct methods broadly broken (compiler crash, link error, runtime crash) — FIXED
-
-- Symptoms (single-package mode):
-  1. Out-bound method `fn (p Point) Add(...) ...` SIGFPE'd in LLVM's
-     instruction selection.
-  2. In-bound method (`pub fn FullName() String { ... }` inside a
-     struct body) wasn't codegen'd, leading to a link-time
-     "undefined reference" error.
-  3. Calling an inherited method through `struct Child < Parent`
-     SIGSEGV'd at runtime.
-- Root cause #1 (the LLVM crash): the analyzer derived the package
-  name from the *directory* (per spec — "A directory forms the scope
-  and name of a package"), but `cmd/build.cpp` (and `cmd/run.cpp`)
-  derived codegen's `module_name` from the *file stem* when invoked
-  on a single `.sg` file.  Mismatched mangling produced two distinct
-  versions of every type (`%saga.<dir>__T` and `%saga.<file>__T`)
-  and a call site that didn't match the emitted definition's
-  signature, which LLVM choked on during lowering.
-- Root cause #2 (out-bound method body): the receiver-method
-  forward-declaration path included the receiver in the LLVM
-  signature, but `emit_func_decl` didn't skip receiver methods, so it
-  emitted *another* function for the same source decl using a
-  receiver-less signature.  The body wired the wrong arg index for
-  the receiver, never wrote the result back through the sret pointer,
-  and the call site dispatched to the right symbol but landed on a
-  body that had been emitted into the *other* (mismangled) function.
-- Fixes:
-  - `src/cmd/build.cpp`, `src/cmd/run.cpp`: derive `module_name` from
-    `analyzer.current_package_name()` (with file-stem as fallback).
-  - `src/ir/codegen_decls.cpp::declare_functions`: skip any
-    receiver-bearing decl — these are forward-declared by the
-    method-symbol path with the correct signature.
-  - `src/ir/codegen_stmts.cpp::emit_func_decl`: same — skip
-    receiver-bearing decls; method bodies are emitted by
-    `emit_struct_methods` (and the intrinsic / generic-collection
-    paths).
-  - `src/ir/codegen_decls.cpp::emit_struct_methods` (out-bound body
-    section): account for the sret-arg offset when binding the
-    receiver and regular params; on tail-expression with sret, memcpy
-    the result through `func->getArg(0)` (the sret pointer) before
-    `ret void`.
-- Tests: `tests/conformance/structs/outbound_method.sg`,
-  `tests/conformance/structs/inbound_method_field_in_scope.sg`, and
-  `tests/conformance/structs/embedding_inherits_method.sg` all pass.
-  Two struct-related issues remain open: the optional-field union
-  extraction, and the alias-receiver method dispatch (a different
-  shape of "method through alias", separate from struct methods).
-
-### `arr[i] or { default }` segfaulted on out-of-bounds index — FIXED
-
-- Symptom: `saga_array_at` correctly returned NULL on out-of-range,
-  but codegen unconditionally `load`ed an `i64` through that pointer
-  before the or-clause's tag check ran.  The same pattern also broke
-  `map[k] or { default }`.
-- Fix: `src/ir/codegen_control.cpp::emit_index_expr` — both array and
-  map indexing now route through a new
-  `wrap_indexed_lookup_in_error_union` helper that null-checks the
-  runtime pointer, and on NULL wraps a Missing into the union (using
-  the existing `emit_union_wrap`) instead of loading.  On non-NULL
-  it loads the value and wraps it with the ok tag.  Returns a PHI'd
-  pointer to a properly-tagged union, which `emit_or_expr` accepts
-  directly.
-- Tests:
-  `tests/conformance/types/or_clause_default_value.sg` passes.
-- Caveat: the *capture-form* (`or |err| { err.Method() }`) now
-  reaches the err branch but segfaults inside the vtable dispatch
-  because the Missing fat pointer isn't constructed at runtime — see
-  the open "Capture-form `or |err|`..." entry above.
-
-### Reading a top-level scalar constant segfaults at runtime — FIXED
-
-- Symptom: `const Pi = 3; io.Println(Pi.String())` built cleanly but
-  segfaulted at runtime because `emit_identifier` had no path for
-  same-package globals — the value silently dropped.
-- Fix: `src/ir/codegen_calls.cpp` — `emit_identifier` now looks up
-  `module->getGlobalVariable(mangle(name))` and emits a load (or
-  returns the GV pointer for struct-typed consts).
-- Tests: `tests/conformance/constants/value_const.sg` now passes.
-
-### `const X = 2 * 1024 * 1024` initialized to 0 — FIXED
-
-- Symptom: const declarations whose value isn't a single literal
-  (e.g. `2 * 1024 * 1024`) fell through to a null-value initializer.
-- Fix: `src/ir/codegen_decls.cpp` — non-literal initializers now route
-  through the deferred-init path used for arrays/maps; the global is
-  emitted with `isConstant=false` (mutable storage, logically
-  immutable from user code) and the value expression runs from
-  `<pkg>__init__`.
-- Tests: `tests/conformance/constants/compile_time_expr.sg` passes.
-
-### `const Foo = import "..."` crashes the compiler — FIXED
-
-- Symptom: SIGSEGV inside `emit_const_decl` because a Module-typed
-  semantic type fell through `llvm_type` to `void` and was passed to
-  `GlobalVariable`.
-- Fix: `src/ir/codegen_decls.cpp` — early-return for ConstDecl whose
-  value is `ImportExprNode`. Belt-and-braces: also bail out on null
-  `ll_type`.
-- Tests: `tests/conformance/constants/named_import.sg` passes.
-
-### Top-level constants assignable at runtime — FIXED
-
-- Symptom: `Pi = 4` (assignment to a top-level `const Pi = 3`) was
-  silently accepted by the analyzer.
-- Fix: `src/semantic/analyzer.cpp` — `check_assign`, `check_increment`,
-  and `check_decrement` now reject targets whose symbol is
-  `SymbolKind::Constant` with a clear "cannot assign to constant 'X'"
-  diagnostic.
-- Tests: `tests/conformance/mutability/const_immutable.sg` passes.
-- Note: this only catches direct assignment forms (`x = ...`, `x += 1`,
-  `x++`, `x--`).  Method-call mutation of const collections
-  (`Primes.Push(7)`) needs a separate method-mutation classification —
-  see "Mutation of global const collections" above.
-
-### Type aliases not transparent for assignability or method dispatch — FIXED
-
-- Symptom: with `const MyInt = Int`, `x MyInt = 5` rejected as
-  "expected MyInt, got Int"; method calls on alias-typed values lost
-  their arguments at codegen.
-- Fixes:
-  - `src/semantic/types.cpp::is_assignable_to` now unwraps aliases on
-    either side before deciding.
-  - `src/ir/codegen.cpp::llvm_type` now unwraps aliases up front (was
-    falling through to `void_ll_type`).
-  - `src/ir/codegen_decls.cpp::emit_const_decl` skips
-    SymbolKind::Type entries (no runtime storage to emit).
-  - `src/ir/codegen_method_dispatch.cpp::emit_method_or_module_call`
-    unwraps the receiver type so kind-keyed dispatch works on aliases.
-- Tests: `tests/conformance/constants/type_alias.sg` passes.

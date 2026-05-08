@@ -4418,6 +4418,52 @@ TEST(CodeGen, StructFieldFuncCalledIndirectly) {
 // P3 — Struct-typed channels
 // ===========================================================================
 
+// Int `**` lowers to a multiplication loop with the expected block
+// scaffolding (cond / body / end).  Pre-fix this slot was a TODO that
+// returned constant 0, so a passing test below confirms the lowering
+// actually executes.
+TEST(CodeGen, IntPow_LowersToLoop) {
+  auto r = CG::from(
+      "pub fn Pow(a, b Int) Int { a ** b }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("Pow");
+  ASSERT_NE(fn, nullptr);
+
+  bool saw_cond = false, saw_body = false, saw_end = false;
+  bool saw_mul = false;
+  for (auto &bb : *fn) {
+    auto name = bb.getName();
+    if (name == "pow.cond") saw_cond = true;
+    if (name == "pow.body") saw_body = true;
+    if (name == "pow.end")  saw_end = true;
+    for (auto &inst : bb)
+      if (auto *bin = llvm::dyn_cast<llvm::BinaryOperator>(&inst))
+        if (bin->getOpcode() == llvm::Instruction::Mul)
+          saw_mul = true;
+  }
+  EXPECT_TRUE(saw_cond);
+  EXPECT_TRUE(saw_body);
+  EXPECT_TRUE(saw_end);
+  EXPECT_TRUE(saw_mul);
+}
+
+TEST(CodeGen, FloatPow_LowersToPowIntrinsic) {
+  auto r = CG::from(
+      "pub fn FPow(a, b Float) Float { a ** b }\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.func("FPow");
+  ASSERT_NE(fn, nullptr);
+
+  bool saw_pow = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (auto *callee = call->getCalledFunction())
+          if (callee->getIntrinsicID() == llvm::Intrinsic::pow)
+            saw_pow = true;
+  EXPECT_TRUE(saw_pow);
+}
+
 TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
   // Regression: `|UserStruct| spawn` previously segfaulted the compiler
   // because the channel element type couldn't be resolved at codegen time.

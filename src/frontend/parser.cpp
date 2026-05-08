@@ -2120,6 +2120,15 @@ NodePtr Parser::parse_group_or_range() {
 
   skip_terminators();
 
+  // `or` has lower BP than `..`, so the Pratt cutoff above also stops
+  // before it.  The spec uses `(6 / 0 or { 0 }) + 1` (language.md:1399),
+  // so admit `or` as a continuation here — but only when there's no
+  // `..` ahead, since range parsing owns that case.
+  if (check(Token::Kind::Or)) {
+    first = parse_or_expr(std::move(first));
+    skip_terminators();
+  }
+
   if (check(Token::Kind::DotDot)) {
     // ── RangeExpr = "(" Expression ".." Expression ")" ──────────────────
     advance(); // consume ".."
@@ -2505,8 +2514,19 @@ NodePtr Parser::parse_statement() {
     break;
   }
 
-  // ── 2. Parse the leading expression ────────────────────────────────────
   auto start = mark();
+
+  // ── 1a. Typed array declaration `arr [Type] = …` ────────────────────────
+  // Without this dispatch, parse_expression would greedily consume the
+  // bracket as an IndexExpr.  No existing Saga code uses index expressions
+  // as assignment targets at the statement level; array element writes go
+  // through `arr.Set(i, v)`.
+  if (check(Token::Kind::Identifier) &&
+      peek().kind == Token::Kind::LeftBracket) {
+    return parse_var_decl();
+  }
+
+  // ── 2. Parse the leading expression ────────────────────────────────────
   NodePtr expr = parse_expression();
   if (!expr)
     return nullptr;
@@ -2682,7 +2702,8 @@ NodePtr Parser::parse_if_expr() {
                                std::move(then_block), std::move(else_block));
 }
 
-// parse_case_arm — CaseArm = "case" Expression ":" ( Expression | Block )
+// parse_case_arm — CaseArm = "case" Expression ("," Expression)* ":"
+//                            ( Expression | Block )
 //
 // Body disambiguation: if the token after ":" (with terminators skipped) is
 // "{" the body is a Block; otherwise it is an Expression.  The expression
@@ -2693,9 +2714,13 @@ CaseArmNode Parser::parse_case_arm() {
 
   expect(Token::Kind::Case);
 
-  // parse_expr_bp(1): stop before "{" so the body block is not mistaken
-  // for a struct literal opened by the pattern expression.
-  NodePtr pattern = parse_expr_bp(1);
+  std::vector<NodePtr> patterns;
+  patterns.push_back(parse_expr_bp(1));
+  while (check(Token::Kind::Comma)) {
+    advance();
+    skip_terminators();
+    patterns.push_back(parse_expr_bp(1));
+  }
 
   expect(Token::Kind::Colon);
   skip_terminators();
@@ -2703,7 +2728,7 @@ CaseArmNode Parser::parse_case_arm() {
   NodePtr body =
       check(Token::Kind::LeftBrace) ? parse_block() : parse_expression();
 
-  return CaseArmNode{span_from(start), std::move(pattern), std::move(body)};
+  return CaseArmNode{span_from(start), std::move(patterns), std::move(body)};
 }
 
 // parse_switch_expr — SwitchExpr = "switch" Expression SwitchBlock
@@ -2812,22 +2837,48 @@ NodePtr Parser::parse_for_expr() {
     // consumed as a struct literal by the leading expression.
     NodePtr leading = parse_expr_bp(1);
 
-    if (check(Token::Kind::DeclAssignment)) {
+    auto *leading_id = std::get_if<IdentifierNode>(&leading->data);
+    bool typed_init_form =
+        leading_id != nullptr &&
+        (check(Token::Kind::Identifier) ||
+         check(Token::Kind::LeftBracket));
+
+    if (typed_init_form || check(Token::Kind::DeclAssignment)) {
       // ── IteratorClause ─────────────────────────────────────────────────
-      // Identifier ":=" Expression ";" Expression ";" Assignment
-      auto *id_ptr = std::get_if<IdentifierNode>(&leading->data);
-      if (!id_ptr)
-        error_at(leading->span,
-                 "for-iterator init requires an identifier before ':='");
+      // Two shapes:
+      //   typed:    Identifier Type [ "=" Expression ] ";" Cond ";" Update
+      //   inferred: Identifier ":=" Expression          ";" Cond ";" Update
+      auto *id_ptr = leading_id;
+      NodePtr init;
+      if (typed_init_form) {
+        if (!id_ptr)
+          error_at(leading->span,
+                   "for-iterator typed init requires an identifier");
+        NodePtr type_node = parse_type();
+        std::optional<NodePtr> init_val;
+        if (check(Token::Kind::Assignment)) {
+          advance();
+          init_val = parse_expression();
+        }
+        init = make_node<VarDeclNode>(
+            span_from(mode_start),
+            id_ptr ? *id_ptr : IdentifierNode{leading->span, ""},
+            std::make_optional(std::move(type_node)),
+            std::move(init_val));
+      } else {
+        if (!id_ptr)
+          error_at(leading->span,
+                   "for-iterator init requires an identifier before ':='");
 
-      IdentifierListNode id_list{leading->span,
-                                 id_ptr ? std::vector<IdentifierNode>{*id_ptr}
-                                        : std::vector<IdentifierNode>{}};
+        IdentifierListNode id_list{leading->span,
+                                   id_ptr ? std::vector<IdentifierNode>{*id_ptr}
+                                          : std::vector<IdentifierNode>{}};
 
-      advance(); // consume ":="
-      NodePtr init_val = parse_expression();
-      NodePtr init = make_node<DeclAssignNode>(
-          span_from(mode_start), std::move(id_list), std::move(init_val));
+        advance(); // consume ":="
+        NodePtr init_val = parse_expression();
+        init = make_node<DeclAssignNode>(
+            span_from(mode_start), std::move(id_list), std::move(init_val));
+      }
       expect(Token::Kind::Semicolon);
       NodePtr condition = parse_expression();
       expect(Token::Kind::Semicolon);
@@ -3034,6 +3085,33 @@ NodePtr Parser::parse_struct_literal(NodePtr type_expr) {
 
   expect(Token::Kind::LeftBrace);
   skip_terminators();
+
+  // Spec form `{K:V}{"k": v, ...}` is a typed map literal.  Field-assignment
+  // syntax requires identifier-named fields, so when the first key is not
+  // an Identifier we route to a map-literal parse instead.
+  if (!check(Token::Kind::RightBrace) &&
+      !check(Token::Kind::Identifier)) {
+    std::vector<KeyValueNode> entries;
+    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+      auto kv_start = mark();
+      NodePtr key = parse_expr_bp(1);
+      expect(Token::Kind::Colon);
+      NodePtr value = parse_expression();
+      entries.push_back(
+          KeyValueNode{span_from(kv_start), std::move(key), std::move(value)});
+      skip_terminators();
+      if (check(Token::Kind::Comma)) {
+        advance();
+        skip_terminators();
+      }
+    }
+    expect(Token::Kind::RightBrace);
+    // The type prefix becomes the literal's annotation context; we drop
+    // it here because MapLiteralNode has no annotation slot, and the
+    // analyzer will infer the same map type from the entries.
+    (void)type_expr;
+    return make_node<MapLiteralNode>(span_from(start), std::move(entries));
+  }
 
   std::vector<FieldAssignmentNode> fields;
 

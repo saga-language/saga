@@ -475,6 +475,8 @@ private:
   llvm::Value *emit_identifier(const IdentifierNode &node);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
+  llvm::Value *emit_int_pow(llvm::Value *base, llvm::Value *exp);
+  llvm::Value *emit_float_pow(llvm::Value *base, llvm::Value *exp);
 
   /// Emit a binary operator that was resolved to a struct method call
   /// (operator overloading). `method` is e.g. "Add", "Compare", "Equals".

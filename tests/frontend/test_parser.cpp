@@ -715,6 +715,17 @@ TEST_F(ParserPrefixTest, Group_Unary_Inside) {
   EXPECT_EQ(inner->op, Token::Kind::Not);
 }
 
+// `or` has lower BP than `..` and would be cut off by parse_expr_bp(25)
+// inside parens.  parse_group_or_range admits it explicitly so the spec
+// example `(6 / 0 or { 0 }) + 1` parses.
+TEST_F(ParserPrefixTest, Group_OrClause_Inside) {
+  auto r = ExprResult::from("(x / y or { 0 })");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<GroupExprNode>();
+  ASSERT_NE(n, nullptr);
+  EXPECT_NE(std::get_if<OrExprNode>(&n->inner->data), nullptr);
+}
+
 // ── Range expressions
 // ─────────────────────────────────────────────────────────
 
@@ -1018,6 +1029,29 @@ TEST_F(ParserBlockTest, Statement_VarDecl_FnType) {
   EXPECT_NE(std::get_if<FuncTypeNode>(&(*n->type)->data), nullptr);
 }
 
+TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_NoInit) {
+  auto r = BlockResult::from("{ arr [Int] }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.stmt_as<VarDeclNode>(0);
+  ASSERT_NE(n, nullptr);
+  EXPECT_EQ(n->name.name, "arr");
+  ASSERT_TRUE(n->type.has_value());
+  EXPECT_NE(std::get_if<ArrayTypeNode>(&(*n->type)->data), nullptr);
+  EXPECT_FALSE(n->init.has_value());
+}
+
+TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_WithInit) {
+  auto r = BlockResult::from("{ arr [Int] = [1, 2, 3] }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.stmt_as<VarDeclNode>(0);
+  ASSERT_NE(n, nullptr);
+  EXPECT_EQ(n->name.name, "arr");
+  ASSERT_TRUE(n->type.has_value());
+  EXPECT_NE(std::get_if<ArrayTypeNode>(&(*n->type)->data), nullptr);
+  ASSERT_TRUE(n->init.has_value());
+  EXPECT_NE(std::get_if<ArrayLiteralNode>(&(*n->init)->data), nullptr);
+}
+
 // ── DeclAssign (:=)
 // ───────────────────────────────────────────────────────────
 
@@ -1221,9 +1255,10 @@ TEST_F(ParserCompoundTest, Switch_SingleArm_ExprBody) {
   // subject
   EXPECT_NE(std::get_if<IdentifierNode>(&n->subject->data), nullptr);
 
-  // one arm, expression body
+  // one arm, one pattern, expression body
   ASSERT_EQ(n->arms.size(), 1u);
-  auto *pat = std::get_if<IntegerLiteralNode>(&n->arms[0].pattern->data);
+  ASSERT_EQ(n->arms[0].patterns.size(), 1u);
+  auto *pat = std::get_if<IntegerLiteralNode>(&n->arms[0].patterns[0]->data);
   ASSERT_NE(pat, nullptr);
   EXPECT_EQ(pat->literal, "1");
   EXPECT_NE(std::get_if<IntegerLiteralNode>(&n->arms[0].body->data), nullptr);
@@ -1237,6 +1272,30 @@ TEST_F(ParserCompoundTest, Switch_MultipleArms) {
   auto *n = r.as<SwitchExprNode>();
   ASSERT_NE(n, nullptr);
   EXPECT_EQ(n->arms.size(), 2u);
+}
+
+TEST_F(ParserCompoundTest, Switch_MultiValueCase) {
+  auto r = ExprResult::from("switch x {\ncase 1, 2, 3: 10\n}");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<SwitchExprNode>();
+  ASSERT_NE(n, nullptr);
+  ASSERT_EQ(n->arms.size(), 1u);
+  ASSERT_EQ(n->arms[0].patterns.size(), 3u);
+  for (size_t i = 0; i < 3; ++i) {
+    auto *pat =
+        std::get_if<IntegerLiteralNode>(&n->arms[0].patterns[i]->data);
+    ASSERT_NE(pat, nullptr);
+    EXPECT_EQ(pat->literal, std::to_string(i + 1));
+  }
+}
+
+TEST_F(ParserCompoundTest, Switch_MultiValueCase_TrailingTerminator) {
+  auto r = ExprResult::from("switch x {\ncase 1,\n2,\n3: 10\n}");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<SwitchExprNode>();
+  ASSERT_NE(n, nullptr);
+  ASSERT_EQ(n->arms.size(), 1u);
+  EXPECT_EQ(n->arms[0].patterns.size(), 3u);
 }
 
 TEST_F(ParserCompoundTest, Switch_WithElseArm_ExprBody) {
@@ -1425,6 +1484,34 @@ TEST_F(ParserForTest, For_Iterator_WithAddAssign) {
   auto *update = std::get_if<AssignNode>(&iter->update->data);
   ASSERT_NE(update, nullptr);
   EXPECT_EQ(update->op, Token::Kind::AddAssignment);
+}
+
+// Spec form: `for i Int; i < N; i += 1 {}` — typed VarDecl init (no "=")
+// uses the type's zero value.
+TEST_F(ParserForTest, For_Iterator_TypedInit) {
+  auto r = ExprResult::from("for i Int ; i ; i++ { }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = for_expr(r);
+  ASSERT_NE(n, nullptr);
+  auto *iter = std::get_if<ForIterClauseNode>(&(*n->mode)->data);
+  ASSERT_NE(iter, nullptr);
+  auto *init = std::get_if<VarDeclNode>(&iter->init->data);
+  ASSERT_NE(init, nullptr);
+  EXPECT_EQ(init->name.name, "i");
+  ASSERT_TRUE(init->type.has_value());
+  EXPECT_FALSE(init->init.has_value());
+}
+
+TEST_F(ParserForTest, For_Iterator_TypedInit_WithValue) {
+  auto r = ExprResult::from("for i Int = 5 ; i ; i++ { }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = for_expr(r);
+  ASSERT_NE(n, nullptr);
+  auto *iter = std::get_if<ForIterClauseNode>(&(*n->mode)->data);
+  ASSERT_NE(iter, nullptr);
+  auto *init = std::get_if<VarDeclNode>(&iter->init->data);
+  ASSERT_NE(init, nullptr);
+  ASSERT_TRUE(init->init.has_value());
 }
 
 // ── for as a statement value

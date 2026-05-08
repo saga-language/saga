@@ -526,13 +526,29 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     }
   }
 
-  // Union source: every alternative must be assignable to target.
+  // Union source: when every alternative is an interface, the union is
+  // conjunctive (interface widening — spec language.md:951-953).  A
+  // value of `Reader | Writer` implements *both* sets of methods, so
+  // assignment to either Reader or Writer is fine.  For other unions
+  // (e.g. `Int | String`), the union is disjunctive and every alternative
+  // must independently be assignable to the target.
   if (source->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(source->detail);
-    for (auto &alt : info.alternatives) {
+    bool all_ifaces = !info.alternatives.empty();
+    for (auto &alt : info.alternatives)
+      if (!alt || alt->kind != TypeKind::Interface) {
+        all_ifaces = false;
+        break;
+      }
+    if (all_ifaces) {
+      for (auto &alt : info.alternatives)
+        if (is_assignable_to(alt, target))
+          return true;
+      return false;
+    }
+    for (auto &alt : info.alternatives)
       if (!is_assignable_to(alt, target))
         return false;
-    }
     return true;
   }
 

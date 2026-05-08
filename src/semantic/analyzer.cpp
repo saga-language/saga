@@ -1862,6 +1862,58 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
   }
 }
 
+// Treat a const-decl RHS as a type expression for alias detection:
+// bare type identifier, module selector to a type, or `A | B | …` union
+// of those.  Returns the resolved TypePtr or null when the RHS doesn't
+// match — at which point the caller treats the const as a value, not
+// a type alias.
+TypePtr Analyzer::try_interpret_as_type_expr(const Node &node) {
+  if (auto *ident = std::get_if<IdentifierNode>(&node.data)) {
+    auto sym = lookup(std::string(ident->name));
+    if (sym && sym->kind == SymbolKind::Type && sym->type)
+      return sym->type;
+    return nullptr;
+  }
+  if (auto *sel = std::get_if<SelectorNode>(&node.data)) {
+    auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data);
+    if (!obj_ident) return nullptr;
+    auto obj_sym = lookup(std::string(obj_ident->name));
+    if (!obj_sym || obj_sym->kind != SymbolKind::Module || !obj_sym->type ||
+        obj_sym->type->kind != TypeKind::Module)
+      return nullptr;
+    auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
+    std::string field_name(sel->field.name);
+    for (auto &exp : mod.exports) {
+      if (exp.name != field_name || !exp.type) continue;
+      if (exp.type->kind == TypeKind::Struct ||
+          exp.type->kind == TypeKind::Enum ||
+          exp.type->kind == TypeKind::Interface ||
+          exp.type->kind == TypeKind::Alias)
+        return exp.type;
+    }
+    return nullptr;
+  }
+  if (auto *bin = std::get_if<BinaryExprNode>(&node.data)) {
+    if (bin->op != Token::Kind::BitwiseOr) return nullptr;
+    auto lhs = try_interpret_as_type_expr(*bin->lhs);
+    auto rhs = try_interpret_as_type_expr(*bin->rhs);
+    if (!lhs || !rhs) return nullptr;
+    std::vector<TypePtr> alts;
+    auto add_alt = [&](const TypePtr &t) {
+      if (t->kind == TypeKind::Union) {
+        for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
+          alts.push_back(a);
+      } else {
+        alts.push_back(t);
+      }
+    };
+    add_alt(lhs);
+    add_alt(rhs);
+    return make_union_type(std::move(alts));
+  }
+  return nullptr;
+}
+
 void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   TypePtr const_type = nullptr;
   if (c.type) {
@@ -1872,35 +1924,7 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   // If the value is an identifier (or selector) that refers to a type,
   // create an alias type so methods can be bound to it.
   if (!const_type && c.value) {
-    TypePtr alias_underlying = nullptr;
-    if (auto *ident = std::get_if<IdentifierNode>(&c.value->data)) {
-      auto sym = lookup(std::string(ident->name));
-      if (sym && sym->kind == SymbolKind::Type && sym->type) {
-        alias_underlying = sym->type;
-      }
-    } else if (auto *sel = std::get_if<SelectorNode>(&c.value->data)) {
-      // Handle math.Point style type aliases.
-      if (auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data)) {
-        auto obj_sym = lookup(std::string(obj_ident->name));
-        if (obj_sym && obj_sym->kind == SymbolKind::Module && obj_sym->type &&
-            obj_sym->type->kind == TypeKind::Module) {
-          auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
-          std::string field_name(sel->field.name);
-          for (auto &exp : mod.exports) {
-            if (exp.name == field_name && exp.type) {
-              // Check if the export is a type (struct, enum, interface, alias).
-              if (exp.type->kind == TypeKind::Struct ||
-                  exp.type->kind == TypeKind::Enum ||
-                  exp.type->kind == TypeKind::Interface ||
-                  exp.type->kind == TypeKind::Alias) {
-                alias_underlying = exp.type;
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
+    TypePtr alias_underlying = try_interpret_as_type_expr(*c.value);
 
     if (alias_underlying) {
       // Create a unique alias type that inherits the underlying type's methods.
@@ -2257,7 +2281,8 @@ void Analyzer::resolve_if_expr(const IfExprNode &node) {
 void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
   resolve_expr(*node.subject);
   for (auto &arm : node.arms) {
-    resolve_expr(*arm.pattern);
+    for (auto &pat : arm.patterns)
+      resolve_expr(*pat);
     // The body may be an expression or a block.
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
@@ -3296,11 +3321,26 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     }
   }
 
+  // Spec: arrays of the same element type may be passed directly into
+  // a variadic without spreading.  (docs/language.md:276-285)
+  // Detection: exactly one argument in the variadic position whose type
+  // matches the variadic's array type.
+  bool variadic_array_passthrough =
+      fn_info.is_variadic && !fn_info.params.empty() &&
+      arg_types.size() == fn_info.params.size() &&
+      fn_info.params.back()->kind == TypeKind::Array &&
+      arg_types.back() && arg_types.back()->kind == TypeKind::Array &&
+      types_equal(arg_types.back(), fn_info.params.back());
+
   // Check argument types against the (possibly instantiated) signature.
   for (size_t i = 0; i < arg_types.size(); ++i) {
     bool is_variadic_param = fn_info.is_variadic && !fn_info.params.empty() &&
                              i >= fn_info.params.size() - 1;
-    if (is_variadic_param) {
+    if (is_variadic_param && variadic_array_passthrough) {
+      expect_assignable(node.args[i]->span, fn_info.params.back(),
+                        arg_types[i],
+                        std::format("variadic argument {}", i + 1));
+    } else if (is_variadic_param) {
       // Variadic args are checked against the element type of the
       // array-wrapped last parameter.
       auto &last = fn_info.params.back();
@@ -3719,10 +3759,10 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
     if (auto *id = std::get_if<IdentifierNode>(&node.subject->data)) {
       subject_var = std::string(id->name);
     }
-    // Check if the first arm's pattern is a type name.
-    if (!node.arms.empty()) {
+    // Check if the first arm's first pattern is a type name.
+    if (!node.arms.empty() && !node.arms[0].patterns.empty()) {
       if (auto *pid =
-              std::get_if<IdentifierNode>(&node.arms[0].pattern->data)) {
+              std::get_if<IdentifierNode>(&node.arms[0].patterns[0]->data)) {
         auto sym = lookup(std::string(pid->name));
         if (sym && sym->kind == SymbolKind::Type)
           is_type_match = true;
@@ -3731,41 +3771,50 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   }
 
   for (auto &arm : node.arms) {
-    auto pattern_type = check_expr(*arm.pattern);
+    TypePtr first_pattern_type;
+    for (auto &pat : arm.patterns) {
+      auto pattern_type = check_expr(*pat);
+      if (!first_pattern_type)
+        first_pattern_type = pattern_type;
 
-    if (is_type_match) {
-      // Type matching: verify the pattern type is an alternative of the union.
-      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
-        auto &info = std::get<UnionTypeInfo>(subject_type->detail);
-        bool found = false;
-        for (auto &alt : info.alternatives) {
-          if (types_equal(alt, pattern_type) ||
-              is_assignable_to(pattern_type, alt))
-            found = true;
+      if (is_type_match) {
+        // Type matching: verify the pattern type is an alternative of the union.
+        if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+          auto &info = std::get<UnionTypeInfo>(subject_type->detail);
+          bool found = false;
+          for (auto &alt : info.alternatives) {
+            if (types_equal(alt, pattern_type) ||
+                is_assignable_to(pattern_type, alt))
+              found = true;
+          }
+          if (!found) {
+            error(pat->span,
+                  std::format("type {} is not an alternative of {}",
+                              type_to_string(pattern_type),
+                              type_to_string(subject_type)));
+          }
         }
-        if (!found) {
-          error(arm.pattern->span,
-                std::format("type {} is not an alternative of {}",
-                            type_to_string(pattern_type),
-                            type_to_string(subject_type)));
+      } else {
+        // Value matching: pattern must be same type as subject.
+        if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+          expect_assignable(pat->span, subject_type, pattern_type,
+                            "case pattern");
         }
-      }
-    } else {
-      // Value matching: pattern must be same type as subject.
-      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
-        expect_assignable(arm.pattern->span, subject_type, pattern_type,
-                          "case pattern");
       }
     }
 
     TypePtr arm_type;
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
-      // For type matching, narrow the subject variable in the arm scope.
+      // Narrow the subject only when there's a single pattern; with
+      // multiple patterns the narrowed type would be their union, which
+      // the analyzer doesn't synthesize here.
       if (is_type_match && !subject_var.empty() &&
-          !is_error_type(pattern_type)) {
+          arm.patterns.size() == 1 &&
+          !is_error_type(first_pattern_type)) {
         current_scope->symbols[subject_var] =
-            Symbol::variable(subject_var, pattern_type, arm.pattern->span);
+            Symbol::variable(subject_var, first_pattern_type,
+                             arm.patterns[0]->span);
       }
       arm_type = check_block(*block);
       pop_scope();
@@ -3792,6 +3841,36 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       result_type = else_type;
     else
       result_type = common_type(result_type, else_type);
+  } else if (is_type_match && !is_error_type(subject_type)) {
+    // Spec: type-matching without `else` must be exhaustive.
+    // (docs/language.md:1174-1177)
+    auto &info = std::get<UnionTypeInfo>(subject_type->detail);
+    std::vector<TypePtr> uncovered;
+    for (auto &alt : info.alternatives) {
+      bool covered = false;
+      for (auto &arm : node.arms) {
+        for (auto &pat : arm.patterns) {
+          auto pat_t = check_expr(*pat);
+          if (is_error_type(pat_t)) continue;
+          if (types_equal(alt, pat_t) || is_assignable_to(pat_t, alt)) {
+            covered = true;
+            break;
+          }
+        }
+        if (covered) break;
+      }
+      if (!covered) uncovered.push_back(alt);
+    }
+    if (!uncovered.empty()) {
+      std::string names;
+      for (size_t i = 0; i < uncovered.size(); ++i) {
+        if (i) names += ", ";
+        names += type_to_string(uncovered[i]);
+      }
+      error(node.span,
+            std::format("non-exhaustive type-switch: missing case(s) for {}",
+                        names));
+    }
   }
 
   return result_type ? result_type : builtins.void_type;
@@ -4277,13 +4356,25 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 
   if (var.init) {
     TypePtr init_type;
-    // When the initializer is a for-expression with an accumulator,
-    // pass the declared type so the accumulator variable is typed.
     if (auto *for_node = std::get_if<ForExprNode>(&(*var.init)->data)) {
       init_type = check_for_expr(*for_node, declared_type);
       record_type(**var.init, init_type);
     } else {
       init_type = check_expr(**var.init);
+    }
+    // An empty `[]` / `{}` literal under a typed declaration adopts the
+    // declared element type; without this, the array-of-error placeholder
+    // produced by check_array_literal would fail expect_assignable.
+    if (declared_type) {
+      bool empty_arr =
+          std::get_if<ArrayLiteralNode>(&(*var.init)->data) != nullptr &&
+          std::get<ArrayLiteralNode>((*var.init)->data).elements.empty();
+      bool empty_map =
+          std::get_if<MapLiteralNode>(&(*var.init)->data) != nullptr &&
+          std::get<MapLiteralNode>((*var.init)->data).entries.empty();
+      if ((empty_arr && declared_type->kind == TypeKind::Array) ||
+          (empty_map && declared_type->kind == TypeKind::Map))
+        init_type = declared_type;
     }
     if (declared_type && !is_error_type(init_type)) {
       expect_assignable((*var.init)->span, declared_type, init_type,
@@ -4305,6 +4396,23 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 }
 
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
+  // The `:=` form has no declared type, so an empty `[]` or `{}` literal
+  // has no source for its element type.  Spec: "arr1 := [] // invalid,
+  // no inferrable type" (docs/language.md:601).  The typed forms
+  // (`arr [Int] = []`) parse as VarDeclNode and are not affected.
+  if (auto *arr_lit = std::get_if<ArrayLiteralNode>(&decl.value->data)) {
+    if (arr_lit->elements.empty())
+      error(decl.value->span,
+            "empty array literal: cannot infer element type without a "
+            "declared type");
+  } else if (auto *map_lit =
+                 std::get_if<MapLiteralNode>(&decl.value->data)) {
+    if (map_lit->entries.empty())
+      error(decl.value->span,
+            "empty map literal: cannot infer key/value type without a "
+            "declared type");
+  }
+
   auto rhs_type = materialize_untyped(check_expr(*decl.value));
 
   // ── Multi-return unpacking ───────────────────────────────────────────
@@ -4564,7 +4672,13 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
                       "constant initializer");
   }
 
-  // Update symbol type.
+  // Forward-ref initializers (e.g. `const A = B * 2` with B declared
+  // later) leave init_type as Error.  Spec: zero value with no
+  // diagnostic.  Fall back to Int so downstream method dispatch
+  // (`A.String()`) and codegen find the right ABI.
+  if (!declared_type && is_error_type(init_type))
+    init_type = builtins.int_type;
+
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = declared_type ? declared_type : init_type;
   }

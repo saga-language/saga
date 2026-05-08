@@ -233,21 +233,26 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
       auto *case_bb = llvm::BasicBlock::Create(context,
           "sw.case." + std::to_string(i), func);
 
-      // Resolve the pattern's semantic type (should be a type name).
-      auto pattern_sem = semantic_type(*arm.pattern);
-      int tag = -1;
-      if (pattern_sem)
-        tag = union_tag_for_type(pattern_sem, subject_sem);
-      if (tag >= 0)
-        sw->addCase(llvm::ConstantInt::get(i8_ty, tag), case_bb);
-      else
-        sw->addCase(llvm::ConstantInt::get(i8_ty, i), case_bb);
+      // Multi-pattern arms route every pattern to the same case block.
+      // Narrowing the subject only makes sense with a single pattern.
+      TypePtr pattern_sem;
+      for (size_t pi = 0; pi < arm.patterns.size(); ++pi) {
+        auto p_sem = semantic_type(*arm.patterns[pi]);
+        if (pi == 0)
+          pattern_sem = p_sem;
+        int tag = -1;
+        if (p_sem)
+          tag = union_tag_for_type(p_sem, subject_sem);
+        if (tag >= 0)
+          sw->addCase(llvm::ConstantInt::get(i8_ty, tag), case_bb);
+        else
+          sw->addCase(llvm::ConstantInt::get(i8_ty, i), case_bb);
+      }
 
       builder.SetInsertPoint(case_bb);
 
-      // Narrow the subject variable for this arm.
       llvm::AllocaInst *saved = nullptr;
-      if (!subject_var.empty() && pattern_sem) {
+      if (!subject_var.empty() && pattern_sem && arm.patterns.size() == 1) {
         auto local_it = locals.find(subject_var);
         if (local_it != locals.end()) {
           auto *extracted = emit_union_extract(union_ptr, pattern_sem,
@@ -308,12 +313,20 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
       auto *next_bb = llvm::BasicBlock::Create(context,
           "sw.next." + std::to_string(i));
 
-      // Emit the pattern comparison.
-      auto *pattern_val = emit_expr(*arm.pattern);
-      auto *cmp = builder.CreateCall(cmp_fn, {subject_val, pattern_val}, "strcmp");
-      auto *is_eq = builder.CreateICmpEQ(cmp,
-          llvm::ConstantInt::get(i64_type, 0), "sw.eq");
-      builder.CreateCondBr(is_eq, case_bb, next_bb);
+      for (size_t pi = 0; pi < arm.patterns.size(); ++pi) {
+        auto *pattern_val = emit_expr(*arm.patterns[pi]);
+        auto *cmp = builder.CreateCall(cmp_fn, {subject_val, pattern_val}, "strcmp");
+        auto *is_eq = builder.CreateICmpEQ(cmp,
+            llvm::ConstantInt::get(i64_type, 0), "sw.eq");
+        bool is_last = (pi + 1 == arm.patterns.size());
+        auto *fail_bb = is_last
+            ? next_bb
+            : llvm::BasicBlock::Create(context,
+                "sw.try." + std::to_string(i) + "." + std::to_string(pi), func);
+        builder.CreateCondBr(is_eq, case_bb, fail_bb);
+        if (!is_last)
+          builder.SetInsertPoint(fail_bb);
+      }
 
       // Emit the case body.
       builder.SetInsertPoint(case_bb);
@@ -369,32 +382,30 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
       auto *case_bb = llvm::BasicBlock::Create(context,
           "sw.case." + std::to_string(i), func);
 
-      // Resolve the case constant. For enum selectors and integer
-      // literals this happens at codegen time.
-      auto *pattern_val = emit_expr(*arm.pattern);
-      if (auto *ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(pattern_val)) {
-        // If the subject is i1 (bool) but the constant is i64, truncate.
-        if (subject_val->getType()->isIntegerTy(1) &&
-            ci->getType()->isIntegerTy(64)) {
-          sw->addCase(llvm::ConstantInt::get(
-              llvm::Type::getInt1Ty(context),
-              ci->getZExtValue() & 1), case_bb);
-        } else if (ci->getType() == subject_val->getType()) {
-          sw->addCase(ci, case_bb);
+      for (auto &pat : arm.patterns) {
+        auto *pattern_val = emit_expr(*pat);
+        if (auto *ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(pattern_val)) {
+          if (subject_val->getType()->isIntegerTy(1) &&
+              ci->getType()->isIntegerTy(64)) {
+            sw->addCase(llvm::ConstantInt::get(
+                llvm::Type::getInt1Ty(context),
+                ci->getZExtValue() & 1), case_bb);
+          } else if (ci->getType() == subject_val->getType()) {
+            sw->addCase(ci, case_bb);
+          } else {
+            auto *cast = llvm::ConstantInt::get(
+                llvm::cast<llvm::IntegerType>(subject_val->getType()),
+                ci->getSExtValue());
+            sw->addCase(cast, case_bb);
+          }
         } else {
-          // Type mismatch — try an intcast.
-          auto *cast = llvm::ConstantInt::get(
-              llvm::cast<llvm::IntegerType>(subject_val->getType()),
-              ci->getSExtValue());
-          sw->addCase(cast, case_bb);
+          // Non-constant pattern — keep the block reachable with a
+          // synthetic case so it isn't orphaned.  Well-formed programs
+          // shouldn't hit this path.
+          sw->addCase(llvm::ConstantInt::get(
+              llvm::cast<llvm::IntegerType>(subject_val->getType()), i),
+              case_bb);
         }
-      } else {
-        // Non-constant pattern — fall back to chained comparison in default.
-        // This shouldn't happen for well-formed programs, but add the
-        // block anyway so it's not orphaned.
-        sw->addCase(llvm::ConstantInt::get(
-            llvm::cast<llvm::IntegerType>(subject_val->getType()), i),
-            case_bb);
       }
 
       // Emit the case body.

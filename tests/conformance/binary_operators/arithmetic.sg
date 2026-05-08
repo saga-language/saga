@@ -5,9 +5,10 @@ pub fn Main() Void {
   io.Println((3 + 4).String())
   io.Println((10 - 3).String())
   io.Println((6 * 7).String())
-  div := 20 / 4 or { 0 }
-  io.Println(div.String())
+  io.Println((20 / 4 or { 0 }).String())
   io.Println((2 ** 10).String())
-  rem := 17 % 5 or { 0 }
-  io.Println(rem.String())
+  io.Println((2 ** 0).String())
+  io.Println((0 ** 5).String())
+  io.Println(((20 / 4 or { 0 }) + 1).String())
+  io.Println((17 % 5 or { 0 }).String())
 }
