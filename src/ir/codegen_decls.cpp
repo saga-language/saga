@@ -461,10 +461,31 @@ MethodSig CodeGen::build_method_signature(const FuncDeclNode &fn) {
     }
   }
 
+  // Receiver ABI: structs and interfaces pass by pointer; alias-of-
+  // primitive (e.g. `UserID = Int`) passes by value so the LLVM
+  // signature matches dispatch sites that emit a scalar receiver.
+  // Resolve the receiver via the analyzer's package_scope_ rather
+  // than resolve_type_node — at codegen time current_scope may not
+  // hold the receiver's name, which would silently degrade to void.
+  llvm::Type *self_ll = ptr_type;
+  if (fn.receiver) {
+    if (auto *id = std::get_if<IdentifierNode>(&fn.receiver->type->data)) {
+      auto sym = analyzer.package_scope_
+                     ? analyzer.package_scope_->lookup(std::string(id->name))
+                     : std::optional<Symbol>{};
+      if (sym && sym->type) {
+        auto unwrapped = unwrap_alias(sym->type);
+        if (unwrapped && unwrapped->kind != TypeKind::Struct)
+          self_ll = llvm_type(unwrapped);
+      }
+    }
+  }
+
   std::vector<llvm::Type *> param_types;
   if (sig.sret_struct_ty)
     param_types.push_back(ptr_type);
-  param_types.push_back(ptr_type); // self pointer
+  param_types.push_back(self_ll);
+  sig.self_ll = self_ll;
   for (auto &param : fn.signature.params) {
     auto *ll = resolve_type_node(*param.type);
     bool byval = ll && ll->isStructTy() && !param.is_variadic;
@@ -555,8 +576,13 @@ void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
 
     std::string struct_name(recv_ident->name);
     std::string struct_key = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key))
-      continue;
+    if (!struct_types.count(struct_key)) {
+      auto sym = analyzer.package_scope_
+                     ? analyzer.package_scope_->lookup(struct_name)
+                     : std::optional<Symbol>{};
+      if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+        continue;
+    }
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
@@ -733,8 +759,17 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    if (!struct_types.count(mangle(package_name, struct_name)))
-      continue;
+    TypePtr alias_sem_type;
+    if (!struct_types.count(mangle(package_name, struct_name))) {
+      auto sym = analyzer.package_scope_
+                     ? analyzer.package_scope_->lookup(struct_name)
+                     : std::optional<Symbol>{};
+      if (sym && sym->type && sym->type->kind == TypeKind::Alias)
+        alias_sem_type = sym->type;
+      else
+        continue;
+    }
+    bool is_alias_recv = static_cast<bool>(alias_sem_type);
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
@@ -761,8 +796,10 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     }
 
     std::string recv_name(fn->receiver->name.name);
-    auto *recv_alloca = create_entry_alloca(
-        func, recv_name, llvm::PointerType::getUnqual(context));
+    llvm::Type *recv_alloc_ty = is_alias_recv
+        ? llvm_type(unwrap_alias(alias_sem_type))
+        : llvm::PointerType::getUnqual(context);
+    auto *recv_alloca = create_entry_alloca(func, recv_name, recv_alloc_ty);
     builder.CreateStore(func->getArg(arg_idx++), recv_alloca);
     locals[recv_name] = recv_alloca;
 

@@ -25,7 +25,12 @@ faster than starting cold.
    indexing/slicing, closures with params/captures, alias method
    dispatch, COW on function call, generic-struct ABI mismatch.
 
-Deferred: `[T]` type-erased storage (perf footnote, not correctness).
+Deferred:
+- `[T]` type-erased storage (perf footnote, not correctness).
+- Comma-separated struct fields on a single line (`struct Point { x Int,
+  y Int }`). The parser currently requires one field per line. Decide
+  whether the spec should allow `,`/`;`-separated fields inline as a
+  shorthand, or whether the line-per-field form stays the only one.
 
 ---
 
@@ -95,45 +100,6 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
 - Priority: high — both forms are documented in the spec and used
   in the §Strings examples.
 
-### Typed-value-to-alias passing crashes the compiler (and may be too permissive)
-
-- Spec source: `docs/language.md:558-559` — "Aliases are not shadows
-  of the original type, they are unique types".
-- Conformance test:
-  `tests/conformance/type_aliases/alias_distinct_from_underlying.sg`
-- Behavior: `const UserID = Int; fn TakeUserID(u UserID) Void {...};
-  i Int = 7; TakeUserID(i)` — the analyzer's `is_assignable_to`
-  currently unwraps aliases on either side (transparent) and accepts
-  the call.  Codegen then SIGSEGVs trying to lower the conversion.
-- Two questions tangled here:
-  1. **Spec-strict reading**: typed `Int` to alias `UserID` should be
-     a *type error*; the user must explicitly convert.  In that case
-     `is_assignable_to`'s alias-transparency is too aggressive — it
-     should let through *untyped* numeric literals (so
-     `uid UserID = 5` still works) but reject typed values without
-     conversion.
-  2. Either way, the codegen crash on the currently-permissive path
-     is a separate bug.
-- Priority: medium — flagged as a possible spec/impl-direction
-  decision before fixing.
-
-### User-defined method on an alias isn't dispatched correctly
-
-- Spec source: `docs/language.md:559-562` — aliases inherit methods
-  AND "methods can be bound to any type provided it is within the
-  same file scope."
-- Conformance test:
-  `tests/conformance/type_aliases/alias_extension_method.sg`
-- Behavior: `const UserID = Int; pub fn (u UserID) Display() String
-  {...}; uid UserID = 7; uid.Display()` builds cleanly but SIGSEGVs
-  at runtime. The method-dispatch alias-unwrap landed earlier (so
-  the underlying-Int method table works) probably erases the alias's
-  own method table — the `Display` user method either isn't being
-  registered against UserID, or the dispatch's unwrap is bypassing
-  the alias's methods slot.
-- Priority: high — defining methods on aliases is a documented core
-  feature.
-
 ### Capture-form `or |err| { err.Message() }` for indexed access
 
 - Spec source: `docs/language.md:411-414, 425-429` — `or |err| { ... }`
@@ -200,31 +166,6 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
   capture additionally tripping over an upvalue layout that isn't
   populated correctly (or at all).
 - Priority: high — closures are a documented core feature.
-
-### Forward const ref produces the late value, not the spec's zero
-
-- Spec source: `docs/language.md:120-122` — "A constant initialiser
-  must not read a constant declared later in the same package; the
-  read will see the type's zero value with no diagnostic."
-- Conformance test:
-  `tests/conformance/initialisation/forward_const_read_returns_zero.sg`
-- Behavior (post-fix): the compiler no longer crashes.
-  `const Second = First * 2; const First = 10` builds and runs, but
-  produces `20` instead of the spec's `0`.  Cause: literal-scalar
-  consts are emitted as compile-time `constant i64 N` globals rather
-  than going through the textual-order deferred-init path, so a
-  forward read sees the real value, not zero.
-- Two ways to fix:
-  1. Route every const through the deferred-init path so textual
-     order is observable at runtime — small perf cost, honors the
-     spec literally.
-  2. Revise the spec to require an error on forward refs (which is
-     what most languages do).
-- Worth raising before code change: the current rule is unusual and
-  may have been aspirational.  The behavior we have now ("forward
-  refs see the actual value because consts are compile-time") is at
-  least not surprising to readers from other languages.
-- Priority: low — needs a design decision, not a code fix.
 
 ### Cross-package generic struct method has calling-convention mismatch (SIGSEGV)
 
@@ -300,7 +241,3 @@ Deferred: `[T]` type-erased storage (perf footnote, not correctness).
 - Priority: low — correctness is fine; this is a diagnostic-quality
   issue.
 
-
----
-
-## Resolved

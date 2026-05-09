@@ -24,6 +24,7 @@ struct MethodSig {
   llvm::FunctionType *fn_type = nullptr;
   llvm::Type *sret_struct_ty = nullptr;
   std::vector<llvm::Type *> byval_struct_tys; // one per regular param
+  llvm::Type *self_ll = nullptr;              // receiver LLVM type
 };
 
 // Stamp argument names onto an already-created LLVM function based on its

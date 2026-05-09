@@ -22,14 +22,33 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   std::string method(sel->field.name);
 
   auto obj_sem = semantic_type(*sel->object);
-  // Aliases are transparent for method dispatch (mirroring how the
-  // analyzer resolves the call).  Unwrap so kind-keyed dispatch tables
-  // (kind_methods_, builtin_methods, etc.) find the underlying type.
-  // User-defined methods on the alias itself live in the alias's own
-  // method table and are picked up via type_methods_ keyed by the
-  // unwrapped pointer.
-  if (obj_sem && obj_sem->kind == TypeKind::Alias)
+  // Aliases: methods bound directly to the alias (`pub fn (u UserID)
+  // Display()`) live in alias_info.methods and mangle as
+  // `<AliasName>__<Method>`.  Look those up FIRST — only fall through
+  // to the unwrapped underlying-type tables if no alias-specific
+  // method matched (so e.g. `uid.String()` still routes through Int).
+  if (obj_sem && obj_sem->kind == TypeKind::Alias) {
+    auto &ai = std::get<AliasTypeInfo>(obj_sem->detail);
+    for (auto &m : ai.methods) {
+      if (m.name != method) continue;
+      std::string link_name = mangle(type_to_string(obj_sem) + "__" + method);
+      if (auto *callee = module->getFunction(link_name)) {
+        std::vector<llvm::Value *> args;
+        args.push_back(emit_expr(*sel->object));
+        for (auto &arg_node : node.args) {
+          if (auto *v = emit_expr(*arg_node))
+            args.push_back(v);
+        }
+        if (callee->getReturnType()->isVoidTy()) {
+          builder.CreateCall(callee, args);
+          return nullptr;
+        }
+        return builder.CreateCall(callee, args, "alias.mcall");
+      }
+      break;
+    }
     obj_sem = unwrap_alias(obj_sem);
+  }
 
   // ── Module function call: mod.Func(args) ────────────────────────
   if (obj_sem && obj_sem->kind == TypeKind::Module)

@@ -483,15 +483,35 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (is_error_type(source) || is_error_type(target))
     return true;
 
-  // Aliases (declared via `const MyInt = Int`) are transparent for
-  // assignability — `x MyInt = 5` and `x Int = my_int_val` should both
-  // be accepted because the alias names the same storage as its
-  // underlying type.  Type identity (`types_equal`) keeps them
-  // distinct, which is correct for method-resolution purposes.
-  if (source && source->kind == TypeKind::Alias)
-    return is_assignable_to(unwrap_alias(source), target);
-  if (target && target->kind == TypeKind::Alias)
-    return is_assignable_to(source, unwrap_alias(target));
+  // Alias assignability: spec says aliases are unique types
+  // (docs/language.md:558).  A typed value of the underlying type is
+  // NOT implicitly assignable to the alias and vice versa — the user
+  // must convert at the boundary.  Two carve-outs:
+  //   1. Untyped literals (e.g. `5`) flow into an alias slot because
+  //      they haven't committed to a type yet.
+  //   2. Aliases whose underlying is Interface or Union stay
+  //      transparent — those are themselves coercion targets, and a
+  //      value satisfying the interface/union doesn't change identity
+  //      when named via an alias.
+  auto alias_underlying_is_iface_or_union = [](const TypePtr &alias) {
+    auto u = unwrap_alias(alias);
+    return u && (u->kind == TypeKind::Interface || u->kind == TypeKind::Union);
+  };
+  bool source_is_untyped =
+      source && source->kind == TypeKind::Int &&
+      std::get<IntType>(source->detail).is_untyped;
+  if (target && target->kind == TypeKind::Alias) {
+    if (source_is_untyped || alias_underlying_is_iface_or_union(target))
+      return is_assignable_to(source, unwrap_alias(target));
+    if (source && source->kind == TypeKind::Alias)
+      return types_equal(source, target);
+    return false;
+  }
+  if (source && source->kind == TypeKind::Alias) {
+    if (alias_underlying_is_iface_or_union(source))
+      return is_assignable_to(unwrap_alias(source), target);
+    return false;
+  }
 
   // Any is a top type — any value is assignable to Any, and Any is assignable
   // to any type.  Used by intrinsic_runtime / intrinsic_field signatures.

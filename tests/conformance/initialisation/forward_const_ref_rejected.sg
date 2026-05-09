@@ -1,0 +1,10 @@
+// Spec: "Reading a constant declared later in the same package is a
+// compile-time error." (docs/language.md:120-122).
+import "std/io"
+
+const Second = First * 2
+const First = 10
+
+pub fn Main() Void {
+  io.Println(Second.String())
+}

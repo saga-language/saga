@@ -117,9 +117,8 @@ Within a single package, files are processed in alphanumeric order, and
 declarations within a file are processed in textual order. A constant
 initialiser may read another constant declared earlier — earlier in the
 same file, earlier within the package's file order, or in any imported
-package. A constant initialiser must not read a constant declared later
-in the same package; the read will see the type's zero value with no
-diagnostic.
+package. Reading a constant declared later in the same package is a
+compile-time error.
 
 Saga does not provide a user-defined package initialiser (an `init`
 function or block that runs implicitly on import). The omission is

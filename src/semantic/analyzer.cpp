@@ -2756,6 +2756,17 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
   if (sym->kind == SymbolKind::Module && sym->type)
     return sym->type;
 
+  // Forward reference inside a constant initialiser.  check_const_decl
+  // runs in textual order and assigns each Constant's type as it goes,
+  // so a Constant with no type means it was declared but not yet
+  // checked — i.e. a sibling declared later.  Spec says this is a
+  // compile-time error (docs/language.md:120-122).
+  if (sym->kind == SymbolKind::Constant && !sym->type) {
+    error(ident.span,
+          std::format("constant '{}' read before its own declaration", name));
+    return builtins.error_type;
+  }
+
   return sym->type ? sym->type : builtins.error_type;
 }
 
