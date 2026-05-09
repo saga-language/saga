@@ -26,7 +26,7 @@ faster than starting cold.
    dispatch, COW on function call, generic-struct ABI mismatch.
 
 Deferred:
-- `[T]` type-erased storage (perf footnote, not correctness).
+- `T[]` type-erased storage (perf footnote, not correctness).
 - Comma-separated struct fields on a single line (`struct Point { x Int,
   y Int }`). The parser currently requires one field per line. Decide
   whether the spec should allow `,`/`;`-separated fields inline as a
@@ -51,7 +51,7 @@ Deferred:
 ### Range iteration produces no output and `.Array()` doesn't return an array
 
 - Spec source: `docs/language.md:1038-1054` — `(0..N)` is iterable
-  via `for i : (0..N) { ... }`, and `.Array()` converts to `[T]`.
+  via `for i : (0..N) { ... }`, and `.Array()` converts to `T[]`.
 - Conformance tests:
   - `tests/conformance/range/range_in_for_loop.sg` — the for-loop
     builds and runs but produces no output. The loop body never
@@ -208,7 +208,7 @@ Deferred:
   are copied."
 - Conformance test:
   `tests/conformance/mutability/value_semantics_function.sg`
-- Behavior: passing `arr [1,2,3]` to `fn Append(a [Int])` that calls
+- Behavior: passing `arr [1,2,3]` to `fn Append(a Int[])` that calls
   `a.Push(99)` mutates the caller's array (Size goes 3 -> 4). Either the
   function-call boundary isn't being treated as an escape, or the
   copy-on-write logic in the array runtime isn't triggering before the
@@ -216,14 +216,14 @@ Deferred:
 - Priority: high — this breaks the documented memory model and would
   silently corrupt code that relies on it.
 
-### `[T]` array element storage is type-erased to machine words
+### `T[]` array element storage is type-erased to machine words
 
-- Spec source: `docs/stdlib.md:18` documents `[T]` as "compiled once
+- Spec source: `docs/stdlib.md:18` documents `T[]` as "compiled once
   with type-erased `T`." This is intentional, but worth tracking as a
-  performance footnote — `[Int8]` consumes the same memory as `[Int]`,
+  performance footnote — `Int8[]` consumes the same memory as `Int[]`,
   so small-type arrays don't shrink RSS or improve cache locality.
 - Decision (2026-05-06): defer. Not a correctness bug.
-- Fix shape: monomorphize `[T]` for primitive element types
+- Fix shape: monomorphize `T[]` for primitive element types
   (Int8/16/32, Float32, Bool, Char), keep type-erased path for
   arbitrary `T`.
 

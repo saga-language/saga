@@ -1030,7 +1030,7 @@ TEST_F(ParserBlockTest, Statement_VarDecl_FnType) {
 }
 
 TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_NoInit) {
-  auto r = BlockResult::from("{ arr [Int] }");
+  auto r = BlockResult::from("{ arr Int[] }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -1041,7 +1041,7 @@ TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_NoInit) {
 }
 
 TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_WithInit) {
-  auto r = BlockResult::from("{ arr [Int] = [1, 2, 3] }");
+  auto r = BlockResult::from("{ arr Int[] = [1, 2, 3] }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -2584,6 +2584,7 @@ TEST_F(ParserStmtCoverageTest, Assignment_IndexTarget) {
   ASSERT_NE(idx, nullptr);
 }
 
+
 TEST_F(ParserStmtCoverageTest, VarDecl_StructType) {
   auto r = ExprResult::from("{ x struct{a Int} }");
   EXPECT_TRUE(r.errors.empty());
@@ -2627,8 +2628,8 @@ TEST_F(ParserTypeCoverageTest, UnionType) {
 }
 
 TEST_F(ParserTypeCoverageTest, ArrayType) {
-  // fn signature return type: fn Foo() [Int] { [] }
-  auto r = ParseResult::from("fn Foo() [Int] { [] }\n");
+  // fn signature return type: fn Foo() Int[] { [] }
+  auto r = ParseResult::from("fn Foo() Int[] { [] }\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);

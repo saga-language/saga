@@ -1,4 +1,4 @@
-# Language, Draft v0.3
+# Language, Draft v0.3.1
 
 This is the third major revision of the language prior to an offical 1.0. So
 far, it shows the most promise.
@@ -104,7 +104,7 @@ runtime — arrays and maps — are populated before `Main` runs.
 
 ```
 pub const Pi Float = 3.14159           // baked into the binary
-pub const Primes [Int] = [2, 3, 5, 7]  // populated before Main
+pub const Primes Int[] = [2, 3, 5, 7]  // populated before Main
 pub const Ports {String: Int} = {"http": 80, "https": 443}
 ```
 
@@ -267,7 +267,7 @@ name with `...`, the parameter can accept any number of arguments. The
 variable itself is just an array.
 
 ```
-fn Sum(args ...Int) Int { // args is of type [Int]
+fn Sum(args ...Int) Int { // args is of type Int[]
   for i : args |acc| { acc += i }
 }
 ```
@@ -280,20 +280,27 @@ literally no work for the compiler to do if you pass an array in.
 sum1 := Sum(1, 2, 3, 4, 5)
 
 // or pass in an array
-sum2 := Sum([1, 2, 3, 4, 5]) // [Int] matches the argument's actual type
+sum2 := Sum([1, 2, 3, 4, 5]) // Int[] matches the argument's actual type
 
 // but you can't mix and match
-sum3 := Sum(1, 2, [3, 4]) // The types are Int and [Int], no match
+sum3 := Sum(1, 2, [3, 4]) // The types are Int and Int[], no match
 ```
 
 ## Types
 
 There are nine standard intrinsic types. Six have identifiers: Bool, Byte,
 Float, Int, String, and Void. Three are identfied by their shapes:
-`[Type]` (array), `{Type: Type}` (map), and `(Expr..Expr)` (range). The two
+`Type[]` (array), `{Type: Type}` (map), and `(Expr..Expr)` (range). The two
 numeric types (Int and  Float) are aliases of the word size variant (Int32 and
 Float32 on a 32bit  system, and Int64 and Float64 on a 64bit system, and so
 on). Byte is an alias of UInt8.
+
+The array type form is deliberately a *suffix* — `Int[]`, not `[Int]`. The
+suffix mirrors the indexing operation (`arr[i]`), so the type form and the
+access form share a shape. The map type, in contrast, mirrors the map
+*literal* form (`{"a": 1}`), so its declaration and construction also share a
+shape. Each container's type expression is shaped like the syntactic context
+where the container is used.
 
 Arrays, maps, and ranges are shapes, so the names `array`, `map`, and `range`
 are not reserved words. Feel free to use them in your code.
@@ -324,11 +331,11 @@ Arrays, maps, ranges, and strings are all fat types. Each is backed by struct
 that contains a reference to backing data and metadata, like size.
 
 ```
-arr := [1, 2, 3] // type is inteffered by the first value: [Int]
+arr := [1, 2, 3] // type is inteffered by the first value: Int[]
 arr.Size() // => 3
 ```
 
-To convert a type like `[Byte]` to a String, a conversion utility method
+To convert a type like `Byte[]` to a String, a conversion utility method
 must be used, since String supports UTF-8.
 
 Complex types can be self-referential provided they're defined on or before
@@ -565,7 +572,7 @@ scope. You can't, for instance, bind methods to types declared in other files
 const UserID = Int  // UserID is a unique type
 i := UserID.Int() // to convert and extract the underlying integer
 
-const MyArray = [MyArray] // MyArray is an array of itself, infinitely
+const MyArray = MyArray[] // MyArray is an array of itself, infinitely
 size := MyArray.Size()  // Inherits Size() from the Array type.
 
 const MyPoint = math.Point
@@ -588,7 +595,7 @@ is assigned a zero value by the compiler.
 | Int | 0 | 42, 0b1010, 0o775, 0x1f |
 | String | "" | "single-line", """multi-line""" | "{expr}" |
 | Void | | |
-| [Type] | [] | [1, 2, 3] |
+| Type[] | [] | [1, 2, 3] |
 | {Type:Type} | {} | {"key": 42} |
 
 Multiline strings also support interpolation.
@@ -598,8 +605,8 @@ or it will be a type error.
 
 ```
 arr1 := [] // invalid, no inferrable type
-arr2 [Int] = [] // valid, type is known
-arr3 [Int] // assigning an empty value isn't actually needed, that's the zero value
+arr2 Int[] = [] // valid, type is known
+arr3 Int[] // assigning an empty value isn't actually needed, that's the zero value
 arr4 := [1] // type can be inferred
 ```
 
@@ -1050,7 +1057,7 @@ for i : (0..10) {
 
 Only integer types and Char or Byte can be used.
 
-It can be converted to an array of the same type with `.Array() [T]`
+It can be converted to an array of the same type with `.Array() T[]`
 
 _Note: There is no "step" value at this time but may be added later._
 
@@ -1300,11 +1307,11 @@ not generate an accumulator.
 // Filtering
 array := [1, 2, 3, 4]
 // The left hand type is an integer array, so that's the type of the accumulator
-evens [Int] = for i : array |acc| { if i % 2 == 0 { acc.Push(i) } } // => [2, 4]
+evens Int[] = for i : array |acc| { if i % 2 == 0 { acc.Push(i) } } // => [2, 4]
 
 // Mapping
 array := [1, 2, 3, 4]
-doubles [Int] = for i : array |acc| { acc.Push(i * 2) } // => [2, 4, 6, 8]
+doubles Int[] = for i : array |acc| { acc.Push(i * 2) } // => [2, 4, 6, 8]
 
 // Reducing
 array := [1, 2, 3, 4]
@@ -1469,6 +1476,7 @@ the collection has no more records.
 
 # History
 
--  6 Mar, 2025: Draft v0.3 (current)
-- 25 Feb, 2025: Draft v0.2
--  7 Feb, 2025: Draft v0.1
+-  9 May, 2026: Draft v0.3.1 (current)
+-  6 Mar, 2026: Draft v0.3
+- 25 Feb, 2026: Draft v0.2
+-  7 Feb, 2026: Draft v0.1

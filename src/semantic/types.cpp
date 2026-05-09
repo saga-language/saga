@@ -246,7 +246,7 @@ std::string type_to_string(const TypePtr &t) {
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    return "[" + type_to_string(info.element) + "]";
+    return type_to_string(info.element) + "[]";
   }
 
   case TypeKind::Map: {

@@ -241,9 +241,9 @@ TEST(TypeCheck, DeclAssign_EmptyMapLiteral_Rejected) {
 }
 
 TEST(TypeCheck, VarDecl_EmptyArrayLiteral_Allowed) {
-  // Typed declaration (`arr [Int] = []`) provides the element type, so
+  // Typed declaration (`arr Int[] = []`) provides the element type, so
   // the empty literal is fine here even though `:=` would reject it.
-  auto r = TC::from("fn f() {\n  arr [Int] = []\n}");
+  auto r = TC::from("fn f() {\n  arr Int[] = []\n}");
   EXPECT_TRUE(r.ok());
 }
 
@@ -595,21 +595,21 @@ TEST(TypeCheck, ReceiverMethodAccess) {
 TEST(TypeCheck, ArrayGenericReceiverMethod) {
   // stdlib-mode array receiver with generic T; Len() returns Int.
   auto r = TC::from(
-      "fn |T| (self [T]) Len() Int { 0 }\n"
+      "fn |T| (self T[]) Len() Int { 0 }\n"
       "fn f() Int {\n  arr := [1, 2, 3]\n  arr.Len()\n}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, ArrayGenericReceiverMethodSubstitution) {
-  // Return type [T] should substitute T→Int for [Int] receiver.
+  // Return type T[] should substitute T→Int for Int[] receiver.
   auto r = TC::from(
-      "fn |T| (self [T]) Clone() [T] { self }\n"
-      "fn f() [Int] {\n  arr := [1, 2, 3]\n  arr.Clone()\n}");
+      "fn |T| (self T[]) Clone() T[] { self }\n"
+      "fn f() Int[] {\n  arr := [1, 2, 3]\n  arr.Clone()\n}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, ArrayGenericReceiverMethodNonStdlibRejected) {
-  auto r = TC::from("fn |T| (self [T]) Len() Int { 0 }",
+  auto r = TC::from("fn |T| (self T[]) Len() Int { 0 }",
                      /*stdlib=*/false);
   EXPECT_TRUE(r.has_err("receiver methods on generic types can only be "
                          "defined in stdlib packages"));

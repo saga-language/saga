@@ -1,40 +1,40 @@
 // Package array provides methods on the Array intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-pub fn |T| (a [T]) Size() Int {
+pub fn |T| (a T[]) Size() Int {
   intrinsic_runtime("saga_array_size", a)
 }
 
-pub fn |T| (a [T]) Push(elem T) T {
+pub fn |T| (a T[]) Push(elem T) T {
   intrinsic_runtime("saga_array_push", a, elem)
   elem
 }
 
-pub fn |T| (a [T]) At(index Int) T {
+pub fn |T| (a T[]) At(index Int) T {
   intrinsic_runtime("saga_array_at", a, index)
 }
 
-pub fn |T| (a [T]) Insert(elem T, index Int) Void {
+pub fn |T| (a T[]) Insert(elem T, index Int) Void {
   intrinsic_runtime("saga_array_insert", a, elem, index)
 }
 
-pub fn |T| (a [T]) Pop() T {
+pub fn |T| (a T[]) Pop() T {
   intrinsic_runtime("saga_array_pop", a)
 }
 
-pub fn |T| (a [T]) Set(index Int, elem T) Void {
+pub fn |T| (a T[]) Set(index Int, elem T) Void {
   intrinsic_runtime("saga_array_set", a, index, elem)
 }
 
-pub fn |T| (a [T]) Find(elem T) Int | Missing {
+pub fn |T| (a T[]) Find(elem T) Int | Missing {
   intrinsic_runtime_try("saga_array_find", a, elem)
 }
 
-pub fn |T| (a [T]) Equals(other [T]) Bool {
+pub fn |T| (a T[]) Equals(other T[]) Bool {
   intrinsic_runtime("saga_array_equals", a, other)
 }
 
-pub fn |T| (a [T]) String() String {
+pub fn |T| (a T[]) String() String {
   if a.Size() == 0 { return "[]" }
   s := "["
   first := true

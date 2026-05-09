@@ -4290,7 +4290,7 @@ TEST(CodeGen, IntrinsicRuntimeCallsNamedFunction) {
 TEST(CodeGen, IntrinsicRuntimeAutoPromotesScalar) {
   // saga_array_push expects (ptr, ptr) — the second ptr needs auto-promotion.
   auto r = CG::from(
-      "fn f(arr [Int], val Int) Void {\n"
+      "fn f(arr Int[], val Int) Void {\n"
       "  intrinsic_runtime(\"saga_array_push\", arr, val)\n"
       "}\n"
       "pub fn Main() Void {}");

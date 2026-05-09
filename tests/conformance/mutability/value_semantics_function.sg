@@ -3,7 +3,7 @@
 // the callee must not be visible to the caller.
 import "std/io"
 
-fn Append(a [Int]) Int {
+fn Append(a Int[]) Int {
   a.Push(99)
   a.Size()
 }

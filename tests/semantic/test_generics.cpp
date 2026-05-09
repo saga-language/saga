@@ -74,7 +74,7 @@ TEST(Generics, GenericFuncTypeMismatchInBody) {
 
 TEST(Generics, GenericFuncDefinitionOnly) {
   // Just declaring a generic function should not error.
-  auto r = GR::from("fn |T| Wrap(x T) [T] { [x] }");
+  auto r = GR::from("fn |T| Wrap(x T) T[] { [x] }");
   EXPECT_TRUE(r.ok());
 }
 
@@ -157,7 +157,7 @@ TEST(Generics, GenericInterfaceDecl) {
 // ===========================================================================
 
 TEST(Generics, TypeParamInArrayReturn) {
-  auto r = GR::from("fn |T| Wrap(x T) [T] { [x] }");
+  auto r = GR::from("fn |T| Wrap(x T) T[] { [x] }");
   EXPECT_TRUE(r.ok());
 }
 

@@ -125,14 +125,15 @@ public = "pub" ; // private by default, no need to specify
 
 /* Types */
 Type = UnionType ;
-UnionType = SingleType { "|" SingleType } ;
+UnionType = BaseType { "|" BaseType } ;
+BaseType = SingleType { ArraySuffix } ;
 SingleType = Identifier | Selector | IntrinsicType | StructType ;
 Generic = "|" TypeList "|" ;
 TypeList = Type { "," Type } ;
 
 
-IntrinsicType = ArrayType | FuncType | MapType | RangeType | StructType | basic_type | float_type | integer_type | void_type ;
-ArrayType = "[" Type "]" ; // prevent union array types
+IntrinsicType = FuncType | MapType | RangeType | StructType | basic_type | float_type | integer_type | void_type ;
+ArraySuffix = "[" "]" ; // suffix wraps the preceding type into Array<T>
 FuncType = "fn" Signature ;
 RangeType = "(" Type ")" ; 
 MapType = "{" Type : Type "}" ;

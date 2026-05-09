@@ -110,7 +110,7 @@ TEST(Types, IsIterable) {
 TEST(Types, TypeToString) {
   EXPECT_EQ(type_to_string(make_void_type()), "Void");
   EXPECT_EQ(type_to_string(make_int_type()), "Int");
-  EXPECT_EQ(type_to_string(make_array_type(make_string_type())), "[String]");
+  EXPECT_EQ(type_to_string(make_array_type(make_string_type())), "String[]");
   EXPECT_EQ(type_to_string(make_type_param(0, "T")), "T");
 }
 
