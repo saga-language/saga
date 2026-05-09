@@ -1899,6 +1899,22 @@ void saga_array_set(saga_runtime_array *arr, int64_t index, const void *elem) {
          (size_t)arr->elem_size);
 }
 
+/* Shallow clone: new struct + new data buffer, contents memcpy'd.            */
+/* Matches saga_array_equals: elements (pointer or aggregate value) are       */
+/* shared by byte-copy, not deeply duplicated.                                */
+saga_runtime_array *saga_array_clone(const saga_runtime_array *src) {
+  if (!src) return NULL;
+  saga_runtime_array *dst = (saga_runtime_array *)malloc(sizeof(*dst));
+  dst->elem_size = src->elem_size;
+  dst->len = src->len;
+  dst->cap = src->cap > 0 ? src->cap : (src->len > 0 ? src->len : 4);
+  dst->refcount = 1;
+  dst->data = malloc((size_t)(dst->elem_size * dst->cap));
+  if (src->len > 0)
+    memcpy(dst->data, src->data, (size_t)(src->elem_size * src->len));
+  return dst;
+}
+
 /* Element-wise byte comparison.  Matches saga_array_find semantics: arrays  */
 /* of strings/structs compare by stored bytes (pointer or aggregate value),  */
 /* not by deep content.                                                      */

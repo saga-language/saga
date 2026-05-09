@@ -253,12 +253,12 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_sitofp", SymbolKind::Function,
       make_func_type({types.any_type}, {types.any_type})));
 
-  // intrinsic_fptosi(value: Float) -> Any
-  // LLVM fptosi double → i64. Returns Any so the stdlib can cast to Int,
-  // Int32, etc.
+  // intrinsic_fptosi(value: Any) -> Any
+  // LLVM fptosi float-kind → i64.  Value is Any so Float32/Float64 inputs
+  // flow through without an extra conversion.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fptosi", SymbolKind::Function,
-      make_func_type({types.float_type}, {types.any_type})));
+      make_func_type({types.any_type}, {types.any_type})));
 
   // intrinsic_zext(value: Any, bits: Int) -> Any
   // Truncate value to `bits`, then zero-extend back to i64.  Value is Any
@@ -279,19 +279,19 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_sitofp32", SymbolKind::Function,
       make_func_type({types.any_type}, {types.any_type})));
 
-  // intrinsic_fptrunc(value: Float) -> Any
-  // LLVM fptrunc double → float (64→32 bit). Returns Any so stdlib can cast.
+  // intrinsic_fptrunc(value: Any) -> Any
+  // LLVM fptrunc to float (32-bit).  Value is Any so Float/Float64 inputs
+  // are accepted without a prior conversion.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fptrunc", SymbolKind::Function,
-      make_func_type({types.float_type}, {types.any_type})));
+      make_func_type({types.any_type}, {types.any_type})));
 
-  // intrinsic_fpext(value: Float) -> Any
-  // LLVM fpext float → double (32→64 bit). On 64-bit targets where Float is
-  // already f64 this is a no-op, but needed for 32-bit targets where Float
-  // is f32 and Float64 is f64.
+  // intrinsic_fpext(value: Any) -> Any
+  // LLVM fpext to double (64-bit).  Value is Any so Float/Float32 inputs
+  // are accepted; same-width inputs are passed through unchanged.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fpext", SymbolKind::Function,
-      make_func_type({types.float_type}, {types.any_type})));
+      make_func_type({types.any_type}, {types.any_type})));
 
   // intrinsic_runtime_try(name: String, args...) -> Any
   // Like intrinsic_runtime but for C functions that return a status code

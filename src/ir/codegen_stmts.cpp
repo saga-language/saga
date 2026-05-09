@@ -221,8 +221,13 @@ void CodeGen::emit_function_body_inner(
   // Create allocas for parameters and store the incoming argument values.
   // param_ll has one entry per flattened parameter name so variadic /
   // multi-name params are already expanded.
+  //
+  // Array params are owned by the callee — emit_call_expr clones array
+  // args at the call boundary (spec value semantics, docs/language.md:51).
+  // Tracking them as managed locals releases the clone at function exit.
   size_t ll_idx = 0;
   for (auto &param : fn.signature.params) {
+    auto param_sem = semantic_type(*param.type);
     for (auto &ident : param.names.identifiers) {
       auto *ll_type = ll_idx < param_ll.size()
                           ? param_ll[ll_idx]
@@ -241,6 +246,8 @@ void CodeGen::emit_function_body_inner(
         builder.CreateStore(arg, alloca);
       }
       locals[pname] = alloca;
+      if (param_sem && param_sem->kind == TypeKind::Array)
+        track_managed(pname, param_sem);
       ++ll_idx;
     }
   }

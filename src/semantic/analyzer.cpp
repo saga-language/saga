@@ -11,6 +11,43 @@
 
 namespace saga {
 
+namespace {
+
+// Methods whose body passes the receiver as the first argument to one of
+// these C runtime functions mutate the caller's collection in place. Used
+// to enforce "mutation of global objects is prohibited" (docs/language.md:96)
+// at the call site for stdlib Array/Map methods.
+const std::unordered_set<std::string> kMutatingIntrinsics{
+    "saga_array_push", "saga_array_pop", "saga_array_set",
+    "saga_array_insert", "saga_map_set", "saga_map_remove"};
+
+bool is_kind_method_mutating(const FuncDeclNode &fn) {
+  if (!fn.body || !fn.receiver) return false;
+  auto *blk = std::get_if<BlockNode>(&fn.body->data);
+  if (!blk) return false;
+  std::string_view recv = fn.receiver->name.name;
+  for (auto &stmt : blk->stmts) {
+    auto *call = std::get_if<CallExprNode>(&stmt->data);
+    if (!call) continue;
+    auto *id = std::get_if<IdentifierNode>(&call->callee->data);
+    if (!id || id->name != "intrinsic_runtime" || call->args.size() < 2)
+      continue;
+    auto *lit = std::get_if<StringLiteralNode>(&call->args[0]->data);
+    if (!lit || lit->fragments.size() != 1) continue;
+    auto *frag = std::get_if<StringFragmentNode>(&lit->fragments[0]->data);
+    if (!frag) continue;
+    std::string_view raw = frag->text;
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
+      raw = raw.substr(1, raw.size() - 2);
+    if (!kMutatingIntrinsics.count(std::string(raw))) continue;
+    auto *recv_id = std::get_if<IdentifierNode>(&call->args[1]->data);
+    if (recv_id && recv_id->name == recv) return true;
+  }
+  return false;
+}
+
+} // namespace
+
 // ===========================================================================
 // Construction
 // ===========================================================================
@@ -246,9 +283,11 @@ void Analyzer::load_prelude() {
     if (type_name == "Uint16") return builtins.uint16_type.get();
     if (type_name == "Uint32") return builtins.uint32_type.get();
     if (type_name == "Uint64") return builtins.uint64_type.get();
-    if (type_name == "Float")  return builtins.float_type.get();
-    if (type_name == "Bool")   return builtins.bool_type.get();
-    if (type_name == "String") return builtins.string_type.get();
+    if (type_name == "Float")   return builtins.float_type.get();
+    if (type_name == "Float32") return builtins.float32_type.get();
+    if (type_name == "Float64") return builtins.float64_type.get();
+    if (type_name == "Bool")    return builtins.bool_type.get();
+    if (type_name == "String")  return builtins.string_type.get();
     return nullptr;
   };
 
@@ -2779,7 +2818,7 @@ TypePtr Analyzer::check_int_literal(const IntegerLiteralNode &) {
 }
 
 TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
-  return builtins.float_type;
+  return make_untyped_float_type();
 }
 
 TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
@@ -3290,6 +3329,19 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       auto km_it = kind_method_decls_.find(obj_sem->kind);
       if (km_it != kind_method_decls_.end()) {
         auto m_it = km_it->second.find(std::string(sel->field.name));
+        if (m_it != km_it->second.end() &&
+            is_kind_method_mutating(*m_it->second.decl)) {
+          if (auto *recv_id =
+                  std::get_if<IdentifierNode>(&sel->object->data)) {
+            auto sym = lookup(std::string(recv_id->name));
+            if (sym && sym->kind == SymbolKind::Constant) {
+              error(node.span,
+                    std::format("cannot call mutating method '{}' on "
+                                "constant '{}'",
+                                sel->field.name, recv_id->name));
+            }
+          }
+        }
         if (m_it != km_it->second.end() &&
             kind_method_uses_typeparam_dispatch_.count(m_it->second.decl)) {
           std::unordered_map<uint32_t, TypePtr> bindings;

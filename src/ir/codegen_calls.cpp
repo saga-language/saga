@@ -490,17 +490,36 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       bool is_func_typed = callee_sem && callee_sem->kind == TypeKind::Func;
       if (is_func_typed) {
         auto *ptr_type = llvm::PointerType::getUnqual(context);
-        // The local's alloca holds a ptr; load it to get the fn pointer.
-        auto *fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
+        bool is_closure =
+            alloca->getAllocatedType() == closure_fat_ptr_type;
+
+        // Closure value carries (fn, env); plain function value is just fn.
+        // The trampoline expects env as its first arg.
+        llvm::Value *fn_ptr = nullptr;
+        llvm::Value *env_ptr = nullptr;
+        if (is_closure) {
+          auto *fn_gep = builder.CreateStructGEP(
+              closure_fat_ptr_type, alloca, 0, "closure.fn.gep");
+          fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "closure.fn");
+          auto *env_gep = builder.CreateStructGEP(
+              closure_fat_ptr_type, alloca, 1, "closure.env.gep");
+          env_ptr = builder.CreateLoad(ptr_type, env_gep, "closure.env");
+        } else {
+          fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
+        }
 
         std::vector<llvm::Value *> args;
+        std::vector<llvm::Type *> param_types;
+        if (is_closure) {
+          args.push_back(env_ptr);
+          param_types.push_back(ptr_type);
+        }
         for (auto &arg_node : node.args) {
           auto *val = emit_expr(*arg_node);
           if (val)
             args.push_back(val);
         }
 
-        std::vector<llvm::Type *> param_types;
         llvm::Type *ret_ll = void_ll_type;
         auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
         for (auto &pt : fi.params)
@@ -593,6 +612,14 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto *val = emit_expr(*node.args[i]);
     if (!val)
       continue;
+    // Spec docs/language.md:51 — values that escape their scope are
+    // copied. The function-call boundary is an escape, so deep-copy
+    // arrays before passing so the callee operates on its own copy.
+    auto arg_sem = semantic_type(*node.args[i]);
+    if (arg_sem && arg_sem->kind == TypeKind::Array) {
+      val = builder.CreateCall(module->getFunction("saga_array_clone"),
+                               {val}, "arg.clone");
+    }
     // Interface boxing: param expects an interface, arg is a concrete
     // struct.  Spill struct SSA values, then wrap the struct pointer
     // in a fat pointer { data, vtable }.

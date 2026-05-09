@@ -26,11 +26,21 @@ faster than starting cold.
    dispatch, COW on function call, generic-struct ABI mismatch.
 
 Deferred:
-- `T[]` type-erased storage (perf footnote, not correctness).
+- `T[]` type-erased storage (perf footnote, not correctness). This is
+  for adding "stencil" like behaviour where all allocated types use the
+  current (slow) behaviour, but concrete basic types have sized arrays
+  that take advantage of type-specific commands for operations, each
+  basic type used will get its own monomorphic implementation.
 - Comma-separated struct fields on a single line (`struct Point { x Int,
   y Int }`). The parser currently requires one field per line. Decide
   whether the spec should allow `,`/`;`-separated fields inline as a
   shorthand, or whether the line-per-field form stays the only one.
+- Arrays should support sizing: `T[42]`. Pre-allocated arrays. These 
+  are not fixed arrays but arrays that start at a fixed size.
+- Are SGIs regenerated or cleared appropriately? Loads of issues with 
+  stale SGI files.
+- `const` for locals. Needs some thinking/talking out to decide if and
+  how to implement.
 
 ---
 
@@ -130,42 +140,6 @@ Deferred:
 - Priority: medium — default-value form (`or { default }`) works,
   which is the more common case.
 
-### Float32 and Float64 do not carry stdlib methods like String
-
-- Spec source: `docs/language.md:302-303` lists Int8/16/32/64,
-  UInt8/16/32/64, Float32, Float64 as full-citizen numeric types;
-  §"Methods on Intrinsic Types" (line 338-349) says intrinsic types
-  have `String()` etc.
-- Conformance test (the failing portion of):
-  `tests/conformance/types/numeric_width_variants.sg`
-- Behavior: `f32 Float32 = 5.0; f32.String()` is rejected with "type
-  Float32 has no member 'String'". `std/float/float.sg` only defines
-  methods on `Float`; there's no `Float32`/`Float64` overload.  The
-  Int family covers all widths in `std/int/int.sg`; the Float family
-  doesn't.
-- Priority: medium — stdlib coverage gap, same pattern as Int but
-  unfilled.
-
-### Closures with parameters or captures are broken
-
-- Spec source: `docs/language.md:1015-1036`
-- Conformance tests:
-  - `tests/conformance/expression_statements/fn_as_expression.sg` —
-    `add1 := fn(x Int) Int { x + 1 }; add1(5)` returns a stack-address
-    value instead of `6`.
-  - `tests/conformance/closures/closure_captures_local.sg` —
-    `i := 1; closure := fn (x Int) Int { x + i }; closure(2)` SIGSEGVs
-    at runtime.
-- Surface map:
-  - Zero-param anonymous fn (`fn () Int { 42 }`) — works
-    (`tests/conformance/closures/anonymous_no_capture.sg` passes).
-  - One+ param, no capture — body runs but the call returns
-    uninitialized memory.
-  - Capture of a local — segfault on call.
-- Suggests parameter-binding is wrong inside the closure body, with
-  capture additionally tripping over an upvalue layout that isn't
-  populated correctly (or at all).
-- Priority: high — closures are a documented core feature.
 
 ### Cross-package generic struct method has calling-convention mismatch (SIGSEGV)
 
@@ -190,31 +164,6 @@ Deferred:
   cross-package import.
 - Side note: the specialization is mangled `gen__app__Box__...` even
   though `Box` is defined in `lib`. May be related, may be cosmetic.
-
-### Mutation of global const collections is not rejected
-
-- Spec source: `docs/language.md:96` — "Mutation of global objects is
-  prohibited."
-- Conformance test: `tests/conformance/constants/mutate_global_array.sg`
-- Behavior: `const Primes = [2, 3, 5]` followed by `Primes.Push(7)` is
-  silently accepted, and the runtime push succeeds (size becomes 4).
-  Same underlying problem as const-scalar-mutability above: the analyzer
-  doesn't flag mutating method calls on Constant-kind symbols.
-- Priority: high.
-
-### Function parameters do not enforce value semantics for arrays
-
-- Spec source: `docs/language.md:51` — "Values that escape their scope
-  are copied."
-- Conformance test:
-  `tests/conformance/mutability/value_semantics_function.sg`
-- Behavior: passing `arr [1,2,3]` to `fn Append(a Int[])` that calls
-  `a.Push(99)` mutates the caller's array (Size goes 3 -> 4). Either the
-  function-call boundary isn't being treated as an escape, or the
-  copy-on-write logic in the array runtime isn't triggering before the
-  push when the value's refcount is shared with the caller.
-- Priority: high — this breaks the documented memory model and would
-  silently corrupt code that relies on it.
 
 ### `T[]` array element storage is type-erased to machine words
 
