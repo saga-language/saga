@@ -6,6 +6,7 @@
 #include <llvm/IR/Constants.h>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace saga {
 
@@ -493,6 +494,29 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 // Array literals
 // ===========================================================================
 
+llvm::Value *CodeGen::emit_range_expr(const RangeExprNode &node) {
+  auto *low = emit_expr(*node.low);
+  auto *high = emit_expr(*node.high);
+  if (!low || !high) return nullptr;
+
+  // Range carries i64 endpoints regardless of element width — the runtime
+  // ABI stores narrow integers as i64 (see CodeGen::llvm_type's Int case).
+  if (low->getType() != i64_type)
+    low = builder.CreateIntCast(low, i64_type, /*isSigned=*/true, "rng.lo");
+  if (high->getType() != i64_type)
+    high = builder.CreateIntCast(high, i64_type, /*isSigned=*/true, "rng.hi");
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *slot = create_entry_alloca(func, "range.lit", range_struct_type);
+  auto *lo_gep =
+      builder.CreateStructGEP(range_struct_type, slot, 0, "range.lo.gep");
+  builder.CreateStore(low, lo_gep);
+  auto *hi_gep =
+      builder.CreateStructGEP(range_struct_type, slot, 1, "range.hi.gep");
+  builder.CreateStore(high, hi_gep);
+  return slot;
+}
+
 llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
   // Determine element size from the semantic type.
   auto sem = semantic_type(
@@ -694,6 +718,42 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     return nullptr;
 
   auto obj_sem = semantic_type(*node.object);
+
+  // Slice form: `obj[a..b]`, `obj[..b]`, `obj[a..]`, `obj[..]`.  String
+  // slicing is byte-indexed via saga_string_slice; absent endpoints flow
+  // through as the INT64_MIN sentinel so the runtime clamps to [0, len].
+  if (auto *slice = std::get_if<SliceNode>(&node.index->data)) {
+    if (obj_sem && obj_sem->kind == TypeKind::String) {
+      auto *sentinel = llvm::ConstantInt::get(
+          i64_type, static_cast<uint64_t>(INT64_MIN), /*isSigned=*/true);
+      llvm::Value *lo = sentinel;
+      llvm::Value *hi = sentinel;
+      if (slice->low) {
+        lo = emit_expr(**slice->low);
+        if (lo && lo->getType() != i64_type)
+          lo = builder.CreateIntCast(lo, i64_type, true, "slice.lo");
+      }
+      if (slice->high) {
+        hi = emit_expr(**slice->high);
+        if (hi && hi->getType() != i64_type)
+          hi = builder.CreateIntCast(hi, i64_type, true, "slice.hi");
+      }
+      if (!lo || !hi) return nullptr;
+      return builder.CreateCall(module->getFunction("saga_string_slice"),
+                                {obj, lo, hi}, "str.slice");
+    }
+    return nullptr;
+  }
+
+  // Scalar index form: `obj[i]`.
+  if (obj_sem && obj_sem->kind == TypeKind::String) {
+    auto *idx = emit_expr(*node.index);
+    if (!idx) return nullptr;
+    if (idx->getType() != i64_type)
+      idx = builder.CreateIntCast(idx, i64_type, true, "str.idx");
+    return builder.CreateCall(module->getFunction("saga_string_at"),
+                              {obj, idx}, "str.at");
+  }
 
   if (obj_sem && obj_sem->kind == TypeKind::Array) {
     auto *idx = emit_expr(*node.index);

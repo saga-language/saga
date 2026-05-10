@@ -1341,6 +1341,37 @@ static saga_runtime_string *saga_runtime_alloc_string(const char *buf, int64_t l
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
+/* String access (indexing and slicing)                                     */
+/*                                                                          */
+/* Indexing and slicing are byte-indexed.  This matches the spec's          */
+/* one-character examples ("hello"[1] => "e") for ASCII; the runes/bytes    */
+/* split (saga_string_runes / saga_string_bytes) is the path that exposes   */
+/* codepoint-aware iteration when needed.                                   */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+saga_runtime_string *saga_string_at(const saga_runtime_string *s,
+                                    int64_t index) {
+  if (!s || index < 0 || index >= s->len)
+    return saga_runtime_alloc_string("", 0);
+  return saga_runtime_alloc_string(s->data + index, 1);
+}
+
+/* Sentinel high-bound: callers pass INT64_MIN when the slice's high end is */
+/* omitted (str[a..]).  Likewise INT64_MIN signals an omitted low (str[..b]) */
+/* — chosen because no valid index can collide with it.  Out-of-range       */
+/* values are clamped to [0, len], which mirrors how Go and Rust treat      */
+/* slice bounds: `str[..]` == `str[0..len]`.                                */
+saga_runtime_string *saga_string_slice(const saga_runtime_string *s,
+                                       int64_t low, int64_t high) {
+  if (!s) return saga_runtime_alloc_string("", 0);
+  if (low == INT64_MIN || low < 0) low = 0;
+  if (low > s->len) low = s->len;
+  if (high == INT64_MIN || high > s->len) high = s->len;
+  if (high < low) high = low;
+  return saga_runtime_alloc_string(s->data + low, high - low);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
 /* String helpers                                                           */
 /* ───────────────────────────────────────────────────────────────────────── */
 
@@ -1897,6 +1928,25 @@ void saga_array_set(saga_runtime_array *arr, int64_t index, const void *elem) {
   if (!arr || !elem || index < 0 || index >= arr->len) return;
   memcpy((char *)arr->data + arr->elem_size * index, elem,
          (size_t)arr->elem_size);
+}
+
+/* Materialize a [low, high) range into a fresh i64-element array.  Element  */
+/* widths narrower than i64 (Char, Int8/16/32) share the same in-memory      */
+/* representation by ABI, so a single i64 path covers all integer ranges.    */
+saga_runtime_array *saga_range_to_array(int64_t low, int64_t high) {
+  int64_t len = high > low ? high - low : 0;
+  int64_t cap = len > 4 ? len : 4;
+  saga_runtime_array *arr =
+      (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
+  arr->data = malloc((size_t)(8 * cap));
+  arr->len = len;
+  arr->cap = cap;
+  arr->elem_size = 8;
+  arr->refcount = 1;
+  int64_t *out = (int64_t *)arr->data;
+  for (int64_t i = 0; i < len; i++)
+    out[i] = low + i;
+  return arr;
 }
 
 /* Shallow clone: new struct + new data buffer, contents memcpy'd.            */

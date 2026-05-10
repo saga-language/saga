@@ -138,6 +138,12 @@ struct CodeGen {
   /// The fat pointer type for closures: { ptr fn, ptr env }.
   llvm::StructType *closure_fat_ptr_type = nullptr;
 
+  /// Backing struct for `(low..high)` literals: { i64 low, i64 high }.  The
+  /// range element type is type-erased to i64; integer/Char/Byte ranges all
+  /// share this layout, with materialising methods (Array/iteration) reading
+  /// the receiver's semantic element type for the produced T[].
+  llvm::StructType *range_struct_type = nullptr;
+
   /// Counter for generating unique closure names.
   int next_closure_id = 0;
 
@@ -522,6 +528,10 @@ private:
                           const ForRangeClauseNode &range,
                           llvm::Value *iterable, const TypePtr &iter_sem,
                           const ForLoopBlocks &bbs);
+  void emit_for_range_range(const ForExprNode &node,
+                            const ForRangeClauseNode &range,
+                            llvm::Value *iterable, const TypePtr &iter_sem,
+                            const ForLoopBlocks &bbs);
   void emit_for_range_task(const ForExprNode &node,
                            const ForRangeClauseNode &range,
                            const StructTypeInfo &task_info,
@@ -537,6 +547,7 @@ private:
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_map_literal(const MapLiteralNode &node);
+  llvm::Value *emit_range_expr(const RangeExprNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                                   llvm::Type *elem_ll,

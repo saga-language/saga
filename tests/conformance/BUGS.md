@@ -58,20 +58,6 @@ Deferred:
   completion, which means "from task" must appear before "done".
 - Priority: high — concurrency primitive correctness.
 
-### Range iteration produces no output and `.Array()` doesn't return an array
-
-- Spec source: `docs/language.md:1038-1054` — `(0..N)` is iterable
-  via `for i : (0..N) { ... }`, and `.Array()` converts to `T[]`.
-- Conformance tests:
-  - `tests/conformance/range/range_in_for_loop.sg` — the for-loop
-    builds and runs but produces no output. The loop body never
-    executes.
-  - `tests/conformance/range/range_to_array.sg` — `(0..3).Array()`
-    is rejected: `type Void has no member 'Size'`. Either `.Array()`
-    isn't implemented on Range, or it returns Void.
-- Priority: high — ranges are a documented core iteration form and
-  the for-loop case is the headline example in the spec.
-
 ### Calling through a union-of-interfaces value segfaults at runtime
 
 - Spec source: `docs/language.md:961-965` — wider interface assignable
@@ -85,30 +71,6 @@ Deferred:
   vtable.
 - Priority: medium — affects the canonical interface-composition
   pattern but only at runtime; declaration and type-check work.
-
-### String indexing and slicing aren't implemented
-
-- Spec source: `docs/language.md:687-705` — string can be indexed
-  (`str[i]`) and sliced in four forms (`str[a..b]`, `str[..b]`,
-  `str[a..]`, `str[..]`).
-- Conformance tests:
-  `tests/conformance/strings/string_index.sg`,
-  `tests/conformance/strings/string_slice_*.sg`
-- Behavior:
-  - `str[1]` builds but `c := str[1]` produces no IR for the
-    indexing — the LHS alloca is allocated but never stored to. The
-    `io.Println(c)` call then reads uninitialized memory and prints
-    process environment bytes.
-  - Slice forms (`str[a..b]`, `str[..b]`, etc.) all SIGSEGV at
-    runtime — the slice node's codegen path appears to call into a
-    runtime function that doesn't exist or returns garbage.
-- Fix shape: needs runtime functions (a `saga_string_at`-equivalent
-  returning a one-char saga_runtime_string, plus a
-  `saga_string_slice(start, end)`), and codegen branches in
-  `emit_index_expr` (currently has only Array and Map paths) and
-  the slice-form path.
-- Priority: high — both forms are documented in the spec and used
-  in the §Strings examples.
 
 ### Capture-form `or |err| { err.Message() }` for indexed access
 

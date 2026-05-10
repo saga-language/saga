@@ -331,6 +331,20 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         module->getFunction("saga_int_to_string"), {obj}, "str");
   }
 
+  // Range methods — emit_range_expr produced obj as a ptr to {i64 lo, i64 hi}.
+  if (obj_sem && obj_sem->kind == TypeKind::Range) {
+    auto *lo_gep = builder.CreateStructGEP(
+        range_struct_type, obj, 0, "rng.lo.gep");
+    auto *hi_gep = builder.CreateStructGEP(
+        range_struct_type, obj, 1, "rng.hi.gep");
+    auto *lo = builder.CreateLoad(i64_type, lo_gep, "rng.lo");
+    auto *hi = builder.CreateLoad(i64_type, hi_gep, "rng.hi");
+    if (method == "Array") {
+      return builder.CreateCall(
+          module->getFunction("saga_range_to_array"), {lo, hi}, "rng.arr");
+    }
+  }
+
   // ── Task method calls ─────────────────────────────────────────────
   // Task is a semantic struct wrapping saga_runtime_actor*.  obj is the actor ptr.
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {

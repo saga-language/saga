@@ -212,6 +212,9 @@ void CodeGen::emit_for_range(const ForExprNode &node,
   case TypeKind::Map:
     emit_for_range_map(node, range, iterable, iter_sem, bbs);
     return;
+  case TypeKind::Range:
+    emit_for_range_range(node, range, iterable, iter_sem, bbs);
+    return;
   case TypeKind::Struct: {
     auto &st_info = std::get<StructTypeInfo>(iter_sem->detail);
     if (st_info.name == "Task")
@@ -297,6 +300,69 @@ void CodeGen::emit_for_range_array(const ForExprNode &node,
   auto *next_idx = builder.CreateAdd(
       upd_idx, llvm::ConstantInt::get(i64_type, 1), "idx.next");
   builder.CreateStore(next_idx, idx_alloca);
+  builder.CreateBr(bbs.cond_bb);
+}
+
+void CodeGen::emit_for_range_range(const ForExprNode &node,
+                                   const ForRangeClauseNode &range,
+                                   llvm::Value *iterable,
+                                   const TypePtr &iter_sem,
+                                   const ForLoopBlocks &bbs) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto &range_info = std::get<RangeTypeInfo>(iter_sem->detail);
+  auto *elem_ll = llvm_type(range_info.element);
+  if (!elem_ll || !elem_ll->isIntegerTy())
+    elem_ll = i64_type;
+
+  auto *lo_gep =
+      builder.CreateStructGEP(range_struct_type, iterable, 0, "rng.lo.gep");
+  auto *hi_gep =
+      builder.CreateStructGEP(range_struct_type, iterable, 1, "rng.hi.gep");
+  auto *lo = builder.CreateLoad(i64_type, lo_gep, "rng.lo");
+  auto *hi = builder.CreateLoad(i64_type, hi_gep, "rng.hi");
+
+  // Counter is stored at the loop's narrow element width but loaded /
+  // bumped at i64 to match runtime ABI.  emit_block expects the body to
+  // see the loop variable at its declared (narrow) width.
+  auto *counter = create_entry_alloca(func, ".rng.cur", i64_type);
+  builder.CreateStore(lo, counter);
+
+  llvm::AllocaInst *val_alloca = nullptr;
+  if (!range.vars.empty()) {
+    val_alloca = create_entry_alloca(
+        func, std::string(range.vars[0].name), elem_ll);
+    locals[std::string(range.vars[0].name)] = val_alloca;
+  }
+
+  builder.CreateBr(bbs.cond_bb);
+  builder.SetInsertPoint(bbs.cond_bb);
+  auto *cur = builder.CreateLoad(i64_type, counter, "rng.cur");
+  auto *cmp = builder.CreateICmpSLT(cur, hi, "rng.cmp");
+  builder.CreateCondBr(cmp, bbs.body_bb, bbs.exit_bb);
+
+  func->insert(func->end(), bbs.body_bb);
+  builder.SetInsertPoint(bbs.body_bb);
+  tick_reduction(*this);
+
+  if (val_alloca) {
+    llvm::Value *body_cur = builder.CreateLoad(i64_type, counter, "rng.cur");
+    if (elem_ll != i64_type)
+      body_cur = builder.CreateIntCast(body_cur, elem_ll,
+                                       /*isSigned=*/true, "rng.narrow");
+    builder.CreateStore(body_cur, val_alloca);
+  }
+
+  auto &body_block = std::get<BlockNode>(node.body->data);
+  emit_block(body_block);
+  if (!builder.GetInsertBlock()->getTerminator())
+    builder.CreateBr(bbs.update_bb);
+
+  func->insert(func->end(), bbs.update_bb);
+  builder.SetInsertPoint(bbs.update_bb);
+  auto *upd = builder.CreateLoad(i64_type, counter, "rng.cur");
+  auto *next = builder.CreateAdd(
+      upd, llvm::ConstantInt::get(i64_type, 1), "rng.next");
+  builder.CreateStore(next, counter);
   builder.CreateBr(bbs.cond_bb);
 }
 

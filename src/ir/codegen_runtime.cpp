@@ -191,6 +191,22 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_clone", module.get());
 
+  // saga_runtime_array* saga_range_to_array(i64 low, i64 high)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_range_to_array", module.get());
+
+  // saga_runtime_string* saga_string_at(saga_runtime_string* s, i64 index)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_at", module.get());
+
+  // saga_runtime_string* saga_string_slice(saga_runtime_string* s,
+  //                                        i64 low, i64 high)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_slice", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),

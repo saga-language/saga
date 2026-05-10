@@ -122,12 +122,17 @@ std::vector<MethodInfo> builtin_methods(TypeKind kind,
         {"String", make_func_type({}, {t.string_type}), true});
     break;
 
-  case TypeKind::Range:
+  case TypeKind::Range: {
+    // Range methods use sentinel TypeParam 9993 for the element type;
+    // substitute_kind_method binds it to the concrete element at the call
+    // site (mirrors the 9990/9991/9992 convention used for Array and Map).
+    auto t_param = make_type_param(9993, "T");
     methods.push_back(
-        {"Array", make_func_type({}, {}), true}); // returns [T], generic
+        {"Array", make_func_type({}, {make_array_type(t_param)}), true});
     methods.push_back(
         {"String", make_func_type({}, {t.string_type}), true});
     break;
+  }
 
   default:
     break;

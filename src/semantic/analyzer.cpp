@@ -3531,6 +3531,12 @@ TypePtr substitute_kind_method(TypeKind kind, const TypePtr &effective_type,
     bindings[9990] = arr_info.element;
     return substitute(sig, bindings);
   }
+  if (kind == TypeKind::Range) {
+    auto &range_info = std::get<RangeTypeInfo>(effective_type->detail);
+    std::unordered_map<uint32_t, TypePtr> bindings;
+    bindings[9993] = range_info.element;
+    return substitute(sig, bindings);
+  }
   return sig;
 }
 

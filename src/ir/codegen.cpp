@@ -299,6 +299,10 @@ void CodeGen::init_types() {
   closure_fat_ptr_type = llvm::StructType::create(
       context, {ptr_ty, ptr_ty}, "saga_runtime_closure");
 
+  // Range literal backing struct: { i64 low, i64 high }
+  range_struct_type = llvm::StructType::create(
+      context, {i64_type, i64_type}, "saga_runtime_range");
+
   // Register built-in enums with the current package as origin key.
   // key_for("", "Comparison") resolves to mangle(package_name, "Comparison").
   std::string cmp_key = mangle(package_name, "Comparison");
@@ -394,6 +398,8 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_array
   case TypeKind::Map:
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_map
+  case TypeKind::Range:
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_range
   case TypeKind::Func:
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_closure
   case TypeKind::TypeParam:

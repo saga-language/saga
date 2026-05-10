@@ -60,6 +60,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const MapLiteralNode &n) -> llvm::Value * {
             return emit_map_literal(n);
           },
+          [&](const RangeExprNode &n) -> llvm::Value * {
+            return emit_range_expr(n);
+          },
           [&](const IndexExprNode &n) -> llvm::Value * {
             return emit_index_expr(n);
           },
