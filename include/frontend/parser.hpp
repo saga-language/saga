@@ -81,6 +81,11 @@ private:
   /// Useful inside blocks and parameter lists.
   void skip_terminators_before(Token::Kind closing);
 
+  /// If current is ',' or ';', diagnose it as a stray member separator
+  /// (struct/enum/interface members are newline-separated), consume it,
+  /// and continue.  `kind_name` is used in the message.
+  void consume_stray_member_separator(const char *kind_name);
+
   /// True if current is Eof or we've hit max errors.
   bool is_at_end() const;
 

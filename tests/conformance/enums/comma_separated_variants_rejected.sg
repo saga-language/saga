@@ -1,0 +1,8 @@
+// Spec: enum members are separated by newlines, not by ','.
+// (docs/grammar.md:19, EnumDecl uses `terminal` between members.)
+
+enum Color {
+  Red, Green, Blue
+}
+
+pub fn Main() Void {}

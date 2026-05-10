@@ -1,0 +1,9 @@
+// Spec: interface methods are separated by newlines, not by ','.
+// (docs/grammar.md:22, InterfaceDecl uses `terminal` between members.)
+
+interface Reader {
+  Read() String,
+  Close() Void
+}
+
+pub fn Main() Void {}

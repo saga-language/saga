@@ -357,6 +357,16 @@ void Parser::skip_terminators_before(Token::Kind /*closing*/) {
   }
 }
 
+void Parser::consume_stray_member_separator(const char *kind_name) {
+  if (!check(Token::Kind::Comma) && !check(Token::Kind::Semicolon))
+    return;
+  const char *sep = check(Token::Kind::Comma) ? "," : ";";
+  error(std::string(kind_name) +
+        " members must be separated by a newline, not '" + sep + "'");
+  advance();
+  skip_terminators();
+}
+
 // True when parsing should stop: either the token stream is exhausted or we
 // have hit the error budget. Checking max_reached() prevents infinite loops
 // in error-recovery paths when every token triggers a fresh error.
@@ -937,10 +947,10 @@ SignatureNode Parser::parse_interface_signature() {
   };
   if (is_return_type_start(current.kind)) {
     returns.push_back(parse_type());
-    while (check(Token::Kind::Comma)) {
+    // Peek so a stray "," (member separator) stays for the interface_decl
+    // member-loop diagnostic instead of being silently dropped here.
+    while (check(Token::Kind::Comma) && is_return_type_start(peek().kind)) {
       advance();
-      if (!is_return_type_start(current.kind))
-        break;
       returns.push_back(parse_type());
     }
   }
@@ -1480,6 +1490,7 @@ NodePtr Parser::parse_enum_decl(bool is_public) {
   std::vector<EnumFieldNode> fields;
   while (!check(Token::Kind::RightBrace) && !is_at_end()) {
     fields.push_back(parse_enum_field());
+    consume_stray_member_separator("enum");
     skip_terminators();
   }
 
@@ -1632,6 +1643,7 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
     methods.push_back(InterfaceFieldNode{span_from(field_start), field_public,
                                          std::move(field_name),
                                          std::move(sig)});
+    consume_stray_member_separator("interface");
     skip_terminators();
   }
 
@@ -1711,6 +1723,7 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
                                          std::move(field_node)});
     }
 
+    consume_stray_member_separator("struct");
     skip_terminators();
   }
 
