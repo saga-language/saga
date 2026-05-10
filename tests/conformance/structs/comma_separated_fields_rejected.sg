@@ -1,0 +1,8 @@
+// Spec: struct members are separated by newlines, not by ',' or ';'.
+// (docs/grammar.md:23, StructDecl uses `terminal` between members.)
+
+struct Point {
+  x Int, y Int
+}
+
+pub fn Main() Void {}
