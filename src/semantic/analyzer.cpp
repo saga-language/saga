@@ -2781,8 +2781,15 @@ TypePtr Analyzer::check_expr(const Node &node) {
 TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
                                    const Node &parent) {
   std::string name(ident.name);
-  if (!name.empty() && name[0] == '_')
-    return builtins.void_type;
+  // Spec docs/language.md:25-27 — underscore-prefixed names are "ignored"
+  // variables: legal to declare, illegal to read back.  Declaration sites
+  // (`_x := 1`) bypass this path entirely; a use here is therefore a
+  // read attempt or a re-assignment, both of which the spec forbids.
+  if (!name.empty() && name[0] == '_') {
+    error(ident.span,
+          std::format("cannot access ignored variable '{}'", name));
+    return builtins.error_type;
+  }
 
   auto sym = lookup(name);
   if (!sym) {
