@@ -46,18 +46,6 @@ Deferred:
 
 ## Open
 
-### `Task.Wait()` doesn't block reliably / output ordering wrong
-
-- Spec source: `docs/language.md:1445` — `t.Wait() // block until the
-  thread finishes`.
-- Conformance test: `tests/conformance/concurrency/spawn_basic.sg`
-- Behavior: `t := spawn { io.Println("from task") }; t.Wait();
-  io.Println("done")` produces output ordering `done\nfrom task`
-  (parent's "done" runs before the spawned task's print). Spec
-  semantics require Wait to block until the task's body has run to
-  completion, which means "from task" must appear before "done".
-- Priority: high — concurrency primitive correctness.
-
 ### Calling through a union-of-interfaces value segfaults at runtime
 
 - Spec source: `docs/language.md:961-965` — wider interface assignable
@@ -72,60 +60,6 @@ Deferred:
 - Priority: medium — affects the canonical interface-composition
   pattern but only at runtime; declaration and type-check work.
 
-### Capture-form `or |err| { err.Message() }` for indexed access
-
-- Spec source: `docs/language.md:411-414, 425-429` — `or |err| { ... }`
-  binds the captured error and is documented as supporting method
-  calls on it (e.g. `log.Error(err)`, `err.Message()`).
-- Conformance test:
-  `tests/conformance/types/or_clause_capture_error.sg`
-- Behavior: now that `arr[i]` correctly produces a tagged `T | Error`
-  union (see Resolved entry below), the err-branch of `or |err|` runs.
-  But the err-payload slot holds a zero-valued empty struct (Missing),
-  not a runtime fat pointer to a Missing instance with vtable.  Method
-  dispatch via the vtable then derefs zero and segfaults.
-- Fix shape: needs runtime additions —
-  - a `saga_runtime_missing` data type and a
-    `saga_missing_vtable_instance` global that maps `Message` to a C
-    function returning a constant string,
-  - a constructor (`saga_missing_error_new` or similar) that returns
-    a heap-allocated `saga_runtime_iface_fat_ptr` matching the shape
-    used by `saga_error_from_trap`,
-  - codegen change to call that function in place of the current
-    "wrap a zero-sized empty struct" path used by both
-    `intrinsic_runtime_try`'s failure path and the array/map index
-    null branch.
-- Note: the same gap means `intrinsic_runtime_try` failures *also*
-  produce err values whose `.Method()` calls would segfault — this
-  isn't unique to indexed access, it's just the first place a
-  conformance test exercises it.
-- Priority: medium — default-value form (`or { default }`) works,
-  which is the more common case.
-
-
-### Cross-package generic struct method has calling-convention mismatch (SIGSEGV)
-
-- Spec source: this is a runtime test, not derived from a single
-  language-spec sentence; covers the generic-struct + non-generic
-  method form that `docs/language.md` §Methods/§Structs collectively
-  promise.
-- Existing test (pre-existing failure, not introduced by this work):
-  `tests/runtime/cross_package/generic_struct_nongeneric_method`
-  (`lib.Box{value T}` with `Get() T`, called as `b.Get()` from `app`).
-- Behavior: the binary segfaults at runtime.  The generated IR shows
-  the specialization is declared with a pointer parameter
-  (`define linkonce_odr i64 @gen__app__Box__Get__Int(ptr %b)`) but the
-  call site passes the struct by value
-  (`call i64 @gen__app__Box__Get__Int(%"saga.lib__Box<Int>" %b1)`).
-  The body then GEPs through `%b` as if it were a pointer, derefs the
-  scalar `42` as an address, and crashes.  Either the call site needs
-  to pass-by-pointer (place the struct in an alloca and pass `&b`) or
-  the specialization body needs to receive by value.
-- Priority: high — generic structs are a documented core feature and
-  this crashes the simplest user program that combines them with a
-  cross-package import.
-- Side note: the specialization is mangled `gen__app__Box__...` even
-  though `Box` is defined in `lib`. May be related, may be cosmetic.
 
 ### `T[]` array element storage is type-erased to machine words
 

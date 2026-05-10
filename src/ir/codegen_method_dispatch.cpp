@@ -808,14 +808,18 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         args.push_back(sret_slot);
       }
 
-      // For struct methods, self is a pointer to the struct.
+      // For struct methods, self is a pointer to the struct.  Resolve
+      // through the parameterized cache key so a generic instantiation
+      // (e.g. `lib__Box<Int>`) matches its actual LLVM struct type, not
+      // the unparameterized base name.
+      std::string self_struct_key = struct_cache_key(info);
       llvm::Value *self_ptr = obj;
       if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
         auto local_it = locals.find(std::string(id->name));
         if (local_it != locals.end()) {
           auto *alloca = local_it->second;
           auto *alloca_type = alloca->getAllocatedType();
-          auto st_it = struct_types.find(struct_key);
+          auto st_it = struct_types.find(self_struct_key);
           if (st_it != struct_types.end() && alloca_type == st_it->second) {
             self_ptr = alloca;
           } else if (alloca_type->isPointerTy()) {
@@ -825,7 +829,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
       }
 
       // If self_ptr is a struct value (not a pointer/alloca), spill.
-      auto st_it2 = struct_types.find(struct_key);
+      auto st_it2 = struct_types.find(self_struct_key);
       if (st_it2 != struct_types.end() &&
           self_ptr->getType() == st_it2->second) {
         auto *tmp = create_entry_alloca(parent_fn, "self.tmp",

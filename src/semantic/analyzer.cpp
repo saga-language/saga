@@ -4235,34 +4235,40 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
 
   pop_scope();
 
-  // Instantiate Task<T> with the explicit generic argument if provided,
-  // e.g. |Int| spawn { ... } → Task<Int>.
+  // Default Task instantiation: spawn-with-no-explicit-T produces Task<Void>.
+  // Codegen needs a concrete T to lower task.Wait() (the union it produces is
+  // T | Error); without one, the Wait call drops out of the IR and the
+  // parent prints before the spawn body runs.
+  TypePtr chan_type = builtins.void_type;
   if (node.generic && !node.generic->type_params.empty()) {
-    auto chan_type = resolve_type(*node.generic->type_params[0]);
-    if (chan_type && !is_error_type(chan_type)) {
-      std::unordered_map<uint32_t, TypePtr> bindings;
-      bindings[0] = chan_type; // T (id 0) in Task<T>
-
-      auto &info = std::get<StructTypeInfo>(builtins.task_type->detail);
-      std::vector<FieldInfo> new_fields;
-      for (auto &f : info.fields)
-        new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
-      std::vector<MethodInfo> new_methods;
-      for (auto &m : info.methods)
-        new_methods.push_back({m.name, substitute(m.signature, bindings),
-                               m.is_public, m.origin_package});
-
-      auto result = make_struct_type(info.name, std::move(new_fields),
-                                     std::move(new_methods), {},
-                                     info.origin_package);
-      auto &ri = std::get<StructTypeInfo>(result->detail);
-      ri.type_params = info.type_params;
-      ri.type_args.push_back(chan_type);
-      ri.embeds = info.embeds;
-      return result;
-    }
+    auto explicit_t = resolve_type(*node.generic->type_params[0]);
+    if (explicit_t && !is_error_type(explicit_t))
+      chan_type = explicit_t;
   }
-  return builtins.task_type;
+  return instantiate_task_type(chan_type);
+}
+
+TypePtr Analyzer::instantiate_task_type(const TypePtr &chan_type) {
+  std::unordered_map<uint32_t, TypePtr> bindings;
+  bindings[0] = chan_type; // T (id 0) in Task<T>
+
+  auto &info = std::get<StructTypeInfo>(builtins.task_type->detail);
+  std::vector<FieldInfo> new_fields;
+  for (auto &f : info.fields)
+    new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
+  std::vector<MethodInfo> new_methods;
+  for (auto &m : info.methods)
+    new_methods.push_back({m.name, substitute(m.signature, bindings),
+                           m.is_public, m.origin_package});
+
+  auto result = make_struct_type(info.name, std::move(new_fields),
+                                 std::move(new_methods), {},
+                                 info.origin_package);
+  auto &ri = std::get<StructTypeInfo>(result->detail);
+  ri.type_params = info.type_params;
+  ri.type_args.push_back(chan_type);
+  ri.embeds = info.embeds;
+  return result;
 }
 
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {

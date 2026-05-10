@@ -282,12 +282,12 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto *bb_success_end = builder.GetInsertBlock(); // may have changed
     builder.CreateBr(bb_merge);
 
-    // Failure path: wrap Missing in union.
+    // Failure path: wrap a Missing-as-Error fat pointer in the union so
+    // `or |err|` can dispatch err.Message() through the Error interface.
     builder.SetInsertPoint(bb_fail);
-    auto missing_sem = analyzer.builtins.missing_type;
-    auto *missing_val = llvm::Constant::getNullValue(
-        llvm::StructType::get(context)); // Missing is empty struct
-    auto *wrapped_err = emit_union_wrap(missing_val, missing_sem, union_sem);
+    auto *err_fat = emit_missing_fat_ptr("operation failed");
+    auto *wrapped_err =
+        emit_union_wrap(err_fat, analyzer.builtins.error_iface, union_sem);
     auto *bb_fail_end = builder.GetInsertBlock();
     builder.CreateBr(bb_merge);
 

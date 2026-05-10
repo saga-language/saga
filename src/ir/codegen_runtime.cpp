@@ -207,6 +207,15 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_slice", module.get());
 
+  // void* saga_missing_new(const char* msg, i64 len)
+  // Returns a heap-allocated saga_runtime_iface_fat_ptr (data = Missing
+  // instance carrying `msg`, vtable = Missing-as-Error vtable).  Callers
+  // wrap the returned pointer into a `T | Error` union's err payload so
+  // user code can dispatch `err.Message()` through the Error interface.
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_missing_new", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -562,6 +571,25 @@ int CodeGen::union_tag_for_type(const TypePtr &alt_type,
       return static_cast<int>(i);
   }
   return -1;
+}
+
+llvm::Value *CodeGen::emit_missing_fat_ptr(const std::string &message) {
+  auto *char_array = llvm::ConstantDataArray::getString(
+      context, message, /*AddNull=*/false);
+  auto *raw_global = new llvm::GlobalVariable(
+      *module, char_array->getType(), /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, char_array, ".missing.msg");
+  raw_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  raw_global->setAlignment(llvm::Align(1));
+  auto *data_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
+      char_array->getType(), raw_global,
+      llvm::ArrayRef<llvm::Constant *>{
+          llvm::ConstantInt::get(i64_type, 0),
+          llvm::ConstantInt::get(i64_type, 0)});
+  auto *len = llvm::ConstantInt::get(i64_type,
+                                     static_cast<int64_t>(message.size()));
+  return builder.CreateCall(module->getFunction("saga_missing_new"),
+                            {data_ptr, len}, "missing.fat");
 }
 
 llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,

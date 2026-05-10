@@ -600,6 +600,7 @@ private:
                          TypePtr accumulator_hint = nullptr);
   TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
+  TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);

@@ -1290,6 +1290,51 @@ static saga_runtime_string *saga_trap_error_message(void *self) {
   return s;
 }
 
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Missing — concrete error returned by index/map lookups and the failure   */
+/* path of intrinsic_runtime_try.                                           */
+/*                                                                          */
+/* Uses the same saga_runtime_iface_fat_ptr shape as TrapError, with a      */
+/* one-slot vtable (Message) so callers can dispatch through the Error      */
+/* interface uniformly.                                                     */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/* saga_runtime_alloc_string is defined further below; forward-declare it
+ * here so the Missing constructor can reach it. */
+static saga_runtime_string *saga_runtime_alloc_string(const char *buf,
+                                                      int64_t len);
+
+typedef struct {
+  saga_runtime_string *message;
+} saga_runtime_missing;
+
+static saga_runtime_string *saga_missing_message(void *self) {
+  saga_runtime_missing *m = (saga_runtime_missing *)self;
+  if (m && m->message) {
+    if (m->message->refcount > 0) m->message->refcount++;
+    return m->message;
+  }
+  return saga_runtime_alloc_string("", 0);
+}
+
+static const saga_runtime_trap_error_vtable saga_missing_vtable_instance = {
+    .message_fn = (void *)saga_missing_message,
+};
+
+void *saga_missing_new(const char *msg, int64_t len) {
+  saga_runtime_missing *m =
+      (saga_runtime_missing *)malloc(sizeof(saga_runtime_missing));
+  if (!m) return NULL;
+  m->message = saga_runtime_alloc_string(msg ? msg : "", msg ? len : 0);
+
+  saga_runtime_iface_fat_ptr *fat =
+      (saga_runtime_iface_fat_ptr *)malloc(sizeof(saga_runtime_iface_fat_ptr));
+  if (!fat) { free(m); return NULL; }
+  fat->data = m;
+  fat->vtable = (void *)&saga_missing_vtable_instance;
+  return fat;
+}
+
 /*
  * saga_error_from_trap — build an Error interface fat pointer from the
  * trapped actor's stashed reason string.  Returns a heap-allocated

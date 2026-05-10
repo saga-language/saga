@@ -672,7 +672,8 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
 llvm::Value *
 CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                             llvm::Type *elem_ll,
-                                            const TypePtr &val_type) {
+                                            const TypePtr &val_type,
+                                            const std::string &miss_msg) {
   auto result_union =
       make_union_type({val_type, analyzer.builtins.error_iface});
   auto *union_st = get_union_llvm_type(result_union);
@@ -691,11 +692,14 @@ CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
   builder.CreateCondBr(is_null, null_bb, ok_bb);
 
   builder.SetInsertPoint(null_bb);
-  auto missing_sem = analyzer.builtins.missing_type;
-  auto *missing_val =
-      llvm::Constant::getNullValue(llvm::StructType::get(context));
+  // The error payload is the Error interface, lowered as a fat pointer.
+  // saga_missing_new allocates one (data = Missing carrying the message,
+  // vtable = single-slot Message vtable) so `or |err| { err.Message() }`
+  // can dispatch through the Error interface without crashing on a null
+  // vtable.
+  auto *err_fat = emit_missing_fat_ptr(miss_msg);
   auto *err_wrapped =
-      emit_union_wrap(missing_val, missing_sem, result_union);
+      emit_union_wrap(err_fat, analyzer.builtins.error_iface, result_union);
   auto *null_end_bb = builder.GetInsertBlock();
   builder.CreateBr(merge_bb);
 
@@ -766,8 +770,8 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
     auto *elem_ll = llvm_type(arr_info.element);
 
-    return wrap_indexed_lookup_in_error_union(elem_ptr, elem_ll,
-                                              arr_info.element);
+    return wrap_indexed_lookup_in_error_union(
+        elem_ptr, elem_ll, arr_info.element, "index out of bounds");
   }
 
   if (obj_sem && obj_sem->kind == TypeKind::Map) {
@@ -786,7 +790,8 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp}, "map.get");
 
     auto *val_ll = llvm_type(map_info.value);
-    return wrap_indexed_lookup_in_error_union(val_ptr, val_ll, map_info.value);
+    return wrap_indexed_lookup_in_error_union(
+        val_ptr, val_ll, map_info.value, "key not found");
   }
 
   // String indexing — deferred for now.

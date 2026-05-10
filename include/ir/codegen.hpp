@@ -551,7 +551,8 @@ private:
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                                   llvm::Type *elem_ll,
-                                                  const TypePtr &val_type);
+                                                  const TypePtr &val_type,
+                                                  const std::string &miss_msg);
   llvm::Value *emit_or_expr(const OrExprNode &node);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
@@ -647,6 +648,12 @@ private:
   /// Wrap a concrete value into a union alloca, returning the alloca ptr.
   llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
                                 const TypePtr &union_type);
+
+  /// Build a Missing-as-Error iface fat pointer carrying `message`.  Returns
+  /// the i8* result of `saga_missing_new`, suitable for use as the err
+  /// payload of a `T | Error` union.  Used by wrap_indexed_lookup and the
+  /// failure path of `intrinsic_runtime_try`.
+  llvm::Value *emit_missing_fat_ptr(const std::string &message);
 
   /// Extract a concrete value from a union alloca given the expected alt type.
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,
