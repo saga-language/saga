@@ -1,0 +1,9 @@
+// Spec: a private function with single return value, tail-expression
+// return. (docs/language.md:200, "fn Add(a, b Int) Int { a + b }")
+import "std/io"
+
+fn Add(a, b Int) Int { a + b }
+
+pub fn Main() Void {
+  io.Println(Add(2, 3).String())
+}

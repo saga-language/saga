@@ -34,7 +34,7 @@ TEST(Sgi, TypeToSgiPrimitives) {
 
 TEST(Sgi, TypeToSgiArray) {
   auto t = make_array_type(make_int_type());
-  EXPECT_EQ(type_to_sgi(t), "[Int]");
+  EXPECT_EQ(type_to_sgi(t), "Int[]");
 }
 
 TEST(Sgi, TypeToSgiMap) {

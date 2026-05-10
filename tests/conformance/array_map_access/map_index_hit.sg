@@ -1,0 +1,9 @@
+// Spec: `map[key]` returns the value wrapped in `V | Error`; `or`
+// unwraps on hit. (docs/language.md:642-644)
+import "std/io"
+
+pub fn Main() Void {
+  m := {"name": "jane", "city": "ottawa"}
+  v := m["name"] or { "unknown" }
+  io.Println(v)
+}

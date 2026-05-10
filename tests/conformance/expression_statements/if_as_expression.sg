@@ -1,0 +1,9 @@
+// Spec: "`for`, `fn`, `if`, `import`, and `switch` can be used either
+// as a statement or an expression." (docs/language.md:154-156)
+import "std/io"
+
+pub fn Main() Void {
+  y := 20
+  x := if y > 10 { 0 } else { y }
+  io.Println(x.String())
+}

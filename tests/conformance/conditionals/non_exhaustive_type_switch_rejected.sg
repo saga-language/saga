@@ -1,0 +1,13 @@
+// Spec: type-matching switch without `else` must be exhaustive.
+// (docs/language.md:1174-1177)
+import "std/io"
+
+fn Describe(v Int | Float | String) String {
+  switch v {
+    case Int: "int"
+  }
+}
+
+pub fn Main() Void {
+  io.Println(Describe(7))
+}

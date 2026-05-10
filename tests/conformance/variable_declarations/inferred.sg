@@ -1,0 +1,8 @@
+// Spec: `y := 1` declares with inferred type from the initializer.
+// (docs/language.md:1333, "Variable declarations")
+import "std/io"
+
+pub fn Main() Void {
+  y := 1
+  io.Println(y.String())
+}

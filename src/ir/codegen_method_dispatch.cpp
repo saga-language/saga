@@ -22,6 +22,33 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   std::string method(sel->field.name);
 
   auto obj_sem = semantic_type(*sel->object);
+  // Aliases: methods bound directly to the alias (`pub fn (u UserID)
+  // Display()`) live in alias_info.methods and mangle as
+  // `<AliasName>__<Method>`.  Look those up FIRST — only fall through
+  // to the unwrapped underlying-type tables if no alias-specific
+  // method matched (so e.g. `uid.String()` still routes through Int).
+  if (obj_sem && obj_sem->kind == TypeKind::Alias) {
+    auto &ai = std::get<AliasTypeInfo>(obj_sem->detail);
+    for (auto &m : ai.methods) {
+      if (m.name != method) continue;
+      std::string link_name = mangle(type_to_string(obj_sem) + "__" + method);
+      if (auto *callee = module->getFunction(link_name)) {
+        std::vector<llvm::Value *> args;
+        args.push_back(emit_expr(*sel->object));
+        for (auto &arg_node : node.args) {
+          if (auto *v = emit_expr(*arg_node))
+            args.push_back(v);
+        }
+        if (callee->getReturnType()->isVoidTy()) {
+          builder.CreateCall(callee, args);
+          return nullptr;
+        }
+        return builder.CreateCall(callee, args, "alias.mcall");
+      }
+      break;
+    }
+    obj_sem = unwrap_alias(obj_sem);
+  }
 
   // ── Module function call: mod.Func(args) ────────────────────────
   if (obj_sem && obj_sem->kind == TypeKind::Module)
@@ -302,6 +329,20 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
     return builder.CreateCall(
         module->getFunction("saga_int_to_string"), {obj}, "str");
+  }
+
+  // Range methods — emit_range_expr produced obj as a ptr to {i64 lo, i64 hi}.
+  if (obj_sem && obj_sem->kind == TypeKind::Range) {
+    auto *lo_gep = builder.CreateStructGEP(
+        range_struct_type, obj, 0, "rng.lo.gep");
+    auto *hi_gep = builder.CreateStructGEP(
+        range_struct_type, obj, 1, "rng.hi.gep");
+    auto *lo = builder.CreateLoad(i64_type, lo_gep, "rng.lo");
+    auto *hi = builder.CreateLoad(i64_type, hi_gep, "rng.hi");
+    if (method == "Array") {
+      return builder.CreateCall(
+          module->getFunction("saga_range_to_array"), {lo, hi}, "rng.arr");
+    }
   }
 
   // ── Task method calls ─────────────────────────────────────────────
@@ -767,14 +808,18 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         args.push_back(sret_slot);
       }
 
-      // For struct methods, self is a pointer to the struct.
+      // For struct methods, self is a pointer to the struct.  Resolve
+      // through the parameterized cache key so a generic instantiation
+      // (e.g. `lib__Box<Int>`) matches its actual LLVM struct type, not
+      // the unparameterized base name.
+      std::string self_struct_key = struct_cache_key(info);
       llvm::Value *self_ptr = obj;
       if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
         auto local_it = locals.find(std::string(id->name));
         if (local_it != locals.end()) {
           auto *alloca = local_it->second;
           auto *alloca_type = alloca->getAllocatedType();
-          auto st_it = struct_types.find(struct_key);
+          auto st_it = struct_types.find(self_struct_key);
           if (st_it != struct_types.end() && alloca_type == st_it->second) {
             self_ptr = alloca;
           } else if (alloca_type->isPointerTy()) {
@@ -784,7 +829,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
       }
 
       // If self_ptr is a struct value (not a pointer/alloca), spill.
-      auto st_it2 = struct_types.find(struct_key);
+      auto st_it2 = struct_types.find(self_struct_key);
       if (st_it2 != struct_types.end() &&
           self_ptr->getType() == st_it2->second) {
         auto *tmp = create_entry_alloca(parent_fn, "self.tmp",

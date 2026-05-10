@@ -282,12 +282,12 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto *bb_success_end = builder.GetInsertBlock(); // may have changed
     builder.CreateBr(bb_merge);
 
-    // Failure path: wrap Missing in union.
+    // Failure path: wrap a Missing-as-Error fat pointer in the union so
+    // `or |err|` can dispatch err.Message() through the Error interface.
     builder.SetInsertPoint(bb_fail);
-    auto missing_sem = analyzer.builtins.missing_type;
-    auto *missing_val = llvm::Constant::getNullValue(
-        llvm::StructType::get(context)); // Missing is empty struct
-    auto *wrapped_err = emit_union_wrap(missing_val, missing_sem, union_sem);
+    auto *err_fat = emit_missing_fat_ptr("operation failed");
+    auto *wrapped_err =
+        emit_union_wrap(err_fat, analyzer.builtins.error_iface, union_sem);
     auto *bb_fail_end = builder.GetInsertBlock();
     builder.CreateBr(bb_merge);
 
@@ -490,17 +490,36 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       bool is_func_typed = callee_sem && callee_sem->kind == TypeKind::Func;
       if (is_func_typed) {
         auto *ptr_type = llvm::PointerType::getUnqual(context);
-        // The local's alloca holds a ptr; load it to get the fn pointer.
-        auto *fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
+        bool is_closure =
+            alloca->getAllocatedType() == closure_fat_ptr_type;
+
+        // Closure value carries (fn, env); plain function value is just fn.
+        // The trampoline expects env as its first arg.
+        llvm::Value *fn_ptr = nullptr;
+        llvm::Value *env_ptr = nullptr;
+        if (is_closure) {
+          auto *fn_gep = builder.CreateStructGEP(
+              closure_fat_ptr_type, alloca, 0, "closure.fn.gep");
+          fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "closure.fn");
+          auto *env_gep = builder.CreateStructGEP(
+              closure_fat_ptr_type, alloca, 1, "closure.env.gep");
+          env_ptr = builder.CreateLoad(ptr_type, env_gep, "closure.env");
+        } else {
+          fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
+        }
 
         std::vector<llvm::Value *> args;
+        std::vector<llvm::Type *> param_types;
+        if (is_closure) {
+          args.push_back(env_ptr);
+          param_types.push_back(ptr_type);
+        }
         for (auto &arg_node : node.args) {
           auto *val = emit_expr(*arg_node);
           if (val)
             args.push_back(val);
         }
 
-        std::vector<llvm::Type *> param_types;
         llvm::Type *ret_ll = void_ll_type;
         auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
         for (auto &pt : fi.params)
@@ -538,10 +557,69 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   if (callee_sem && callee_sem->kind == TypeKind::Func)
     fi = &std::get<FuncTypeInfo>(callee_sem->detail);
 
+  // Variadic call with multiple scalar args: pack them into a fresh
+  // saga_runtime_array and pass the pointer as the variadic arg.
+  // The array-passthrough case (single array arg matching the variadic
+  // array type) is handled by the per-arg loop below.
+  llvm::Value *variadic_packed = nullptr;
+  size_t variadic_idx = 0;
+  bool variadic_is_passthrough = false;
+  if (fi && fi->is_variadic && !fi->params.empty()) {
+    variadic_idx = fi->params.size() - 1;
+    auto &last = fi->params.back();
+    if (node.args.size() == fi->params.size() &&
+        last && last->kind == TypeKind::Array) {
+      auto last_arg_sem = semantic_type(*node.args.back());
+      if (last_arg_sem && types_equal(last_arg_sem, last))
+        variadic_is_passthrough = true;
+    }
+    if (!variadic_is_passthrough &&
+        last && last->kind == TypeKind::Array) {
+      auto &arr = std::get<ArrayTypeInfo>(last->detail);
+      auto *elem_ll = llvm_type(arr.element);
+      uint64_t elem_size =
+          elem_ll ? module->getDataLayout().getTypeAllocSize(elem_ll)
+                  : 8;
+      auto *new_fn = module->getFunction("saga_array_new");
+      auto *push_fn = module->getFunction("saga_array_push");
+      int64_t var_count = node.args.size() > variadic_idx
+                              ? static_cast<int64_t>(node.args.size() -
+                                                     variadic_idx)
+                              : 0;
+      std::vector<llvm::Value *> new_args = {
+          llvm::ConstantInt::get(i64_type, elem_size),
+          llvm::ConstantInt::get(i64_type,
+                                 std::max<int64_t>(var_count, 4))};
+      auto *arr_val = builder.CreateCall(new_fn, new_args, "var.arr");
+      for (size_t i = variadic_idx; i < node.args.size(); ++i) {
+        auto *val = emit_expr(*node.args[i]);
+        if (!val) continue;
+        auto *tmp =
+            create_entry_alloca(parent_fn, "var.tmp", val->getType());
+        builder.CreateStore(val, tmp);
+        std::vector<llvm::Value *> push_args = {arr_val, tmp};
+        builder.CreateCall(push_fn, push_args);
+      }
+      variadic_packed = arr_val;
+    }
+  }
+
   for (size_t i = 0; i < node.args.size(); ++i) {
+    if (variadic_packed && i >= variadic_idx) {
+      args.push_back(variadic_packed);
+      break;
+    }
     auto *val = emit_expr(*node.args[i]);
     if (!val)
       continue;
+    // Spec docs/language.md:51 — values that escape their scope are
+    // copied. The function-call boundary is an escape, so deep-copy
+    // arrays before passing so the callee operates on its own copy.
+    auto arg_sem = semantic_type(*node.args[i]);
+    if (arg_sem && arg_sem->kind == TypeKind::Array) {
+      val = builder.CreateCall(module->getFunction("saga_array_clone"),
+                               {val}, "arg.clone");
+    }
     // Interface boxing: param expects an interface, arg is a concrete
     // struct.  Spill struct SSA values, then wrap the struct pointer
     // in a fat pointer { data, vtable }.
@@ -559,6 +637,19 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         auto *boxed = emit_interface_box(struct_ptr, arg_sem, fi->params[i]);
         if (boxed)
           val = boxed;
+      }
+    }
+    // Wrap a non-union arg into the union when the param expects one
+    // (`f Int|Float = 7`).  Without this, the byval attribute attaches
+    // to the raw scalar value and the callee's memcpy reads through
+    // address `7` → segfault.
+    if (fi && i < fi->params.size() && fi->params[i] &&
+        fi->params[i]->kind == TypeKind::Union) {
+      auto arg_sem = semantic_type(*node.args[i]);
+      if (arg_sem && arg_sem->kind != TypeKind::Union) {
+        auto *wrapped =
+            emit_union_wrap(val, arg_sem, fi->params[i]);
+        if (wrapped) val = wrapped;
       }
     }
     if (fi && i < fi->params.size() && fi->params[i] &&
@@ -664,6 +755,17 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   // and struct fields are lowered.
   if (auto *fn = module->getFunction(mangle(name)))
     return fn;
+
+  // Top-level constant declared in the current package.  emit_const_decl
+  // creates a GlobalVariable named mangle(name); identifier reads from it.
+  // Struct-typed constants return the pointer (caller GEPs through it);
+  // scalar/string/array/map constants load the stored value.
+  if (auto *gv = module->getGlobalVariable(mangle(name))) {
+    auto sym = analyzer.lookup(name);
+    if (sym && sym->type && sym->type->kind == TypeKind::Struct)
+      return gv;
+    return builder.CreateLoad(gv->getValueType(), gv, name);
+  }
 
   return nullptr;
 }

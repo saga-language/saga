@@ -41,7 +41,7 @@ pub fn (s String) Contains(needle String) Bool {
   intrinsic_runtime("saga_string_contains", s, needle)
 }
 
-pub fn (s String) Split(sep String) [String] {
+pub fn (s String) Split(sep String) String[] {
   intrinsic_runtime("saga_string_split", s, sep)
 }
 
@@ -63,7 +63,7 @@ pub fn (s String) Hash() Int64 {
   intrinsic_runtime("saga_string_hash", s)
 }
 
-pub fn (s String) Bytes() [Byte] {
+pub fn (s String) Bytes() Byte[] {
   intrinsic_runtime("saga_string_bytes", s)
 }
 
@@ -71,7 +71,7 @@ pub fn (s String) Count() Int {
   intrinsic_runtime("saga_string_count", s)
 }
 
-pub fn (s String) Runes() [Int32] {
+pub fn (s String) Runes() Int32[] {
   intrinsic_runtime("saga_string_runes", s)
 }
 

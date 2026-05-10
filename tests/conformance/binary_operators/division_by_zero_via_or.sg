@@ -1,0 +1,8 @@
+// Spec: division by zero produces an impure type that must be
+// resolved with `or`. (docs/language.md:1384-1399)
+import "std/io"
+
+pub fn Main() Void {
+  x := 6 / 0 or { 0 }
+  io.Println(x.String())
+}

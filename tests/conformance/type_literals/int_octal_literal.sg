@@ -1,0 +1,7 @@
+// Spec: integer literal in octal form. (docs/language.md:589)
+import "std/io"
+
+pub fn Main() Void {
+  i := 0o775
+  io.Println(i.String())
+}

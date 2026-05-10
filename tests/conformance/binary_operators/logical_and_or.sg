@@ -1,0 +1,9 @@
+// Spec: && and || logical operators on Bool.
+// (docs/language.md:1382)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println((true && false).String())
+  io.Println((true || false).String())
+  io.Println((false || (3 > 1)).String())
+}

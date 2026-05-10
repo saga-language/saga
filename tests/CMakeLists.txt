@@ -82,3 +82,6 @@ add_subdirectory(runtime/stdlib_methods)
 
 # Phase 4 spike: user-defined struct keys routed through the runtime ops table.
 add_subdirectory(runtime/protocol_user_key)
+
+# Spec conformance tests, organized by docs/language.md section.
+add_subdirectory(conformance)

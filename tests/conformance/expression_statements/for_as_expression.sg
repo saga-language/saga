@@ -1,0 +1,9 @@
+// Spec: for can be used as an expression with accumulator semantics.
+// (docs/language.md:154-156, line 1267-1294 for accumulator details.)
+import "std/io"
+
+pub fn Main() Void {
+  arr := [1, 2, 3, 4]
+  sum Int = for i : arr |acc| { acc += i }
+  io.Println(sum.String())
+}

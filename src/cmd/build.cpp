@@ -447,9 +447,14 @@ int cmd_build(const char *prog, int argc, char **argv) {
   if (!analyzer.errors.errors.empty()) { analyzer.errors.print_errors(); return 1; }
 
   fs::path input_path(source_path);
-  std::string module_name = fs::is_directory(input_path)
-      ? input_path.filename().string()
-      : input_path.stem().string();
+  // Codegen mangling must match analyzer mangling; spec says the
+  // directory determines the package name (not the file stem).
+  std::string module_name = analyzer.current_package_name();
+  if (module_name.empty()) {
+    module_name = fs::is_directory(input_path)
+        ? input_path.filename().string()
+        : input_path.stem().string();
+  }
 
   saga::CodeGen codegen(module_name, analyzer);
   // Best-effort init-symbol discovery: each resolved import's .sgi tells us

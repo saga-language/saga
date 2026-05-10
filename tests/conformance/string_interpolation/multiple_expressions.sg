@@ -1,0 +1,8 @@
+// Spec: multiple interpolated expressions in a single string.
+import "std/io"
+
+pub fn Main() Void {
+  a := 3
+  b := 4
+  io.Println("{a} + {b} = {a + b}")
+}

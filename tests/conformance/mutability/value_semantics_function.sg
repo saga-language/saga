@@ -1,0 +1,16 @@
+// Spec: "Values that escape their scope are copied." (docs/language.md:51)
+// A function-call boundary is an escape; mutating the parameter inside
+// the callee must not be visible to the caller.
+import "std/io"
+
+fn Append(a Int[]) Int {
+  a.Push(99)
+  a.Size()
+}
+
+pub fn Main() Void {
+  arr := [1, 2, 3]
+  inner_size := Append(arr)
+  io.Println(inner_size.String())
+  io.Println(arr.Size().String())
+}

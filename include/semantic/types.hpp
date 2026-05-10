@@ -75,6 +75,10 @@ struct IntType {
 
 struct FloatType {
   uint8_t bits;          // 32, 64; 0 = platform word size (Float)
+  // Untyped float literals: bits=0 and a target context selects the
+  // concrete width.  Distinct from a Float-typed variable (also bits=0
+  // but is_untyped=false).  Mirrors IntType::is_untyped.
+  bool is_untyped = false;
 };
 
 struct StringType {};
@@ -224,6 +228,10 @@ TypePtr make_untyped_int_type();
 /// explicit type) so a stored variable carries a concrete width.
 TypePtr materialize_untyped(const TypePtr &t);
 TypePtr make_float_type(uint8_t bits = 0);
+
+/// Construct the "untyped float literal" type — the type of a bare float
+/// literal before context-driven materialization.
+TypePtr make_untyped_float_type();
 TypePtr make_string_type();
 TypePtr make_error_type();
 

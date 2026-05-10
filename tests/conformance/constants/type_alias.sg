@@ -1,0 +1,10 @@
+// Spec: constants can be used as type aliases.
+// (docs/language.md:85, line 90: `const MyType = Int`)
+import "std/io"
+
+const MyInt = Int
+
+pub fn Main() Void {
+  x MyInt = 5
+  io.Println(x.String())
+}

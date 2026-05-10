@@ -1,0 +1,9 @@
+// Spec: identifiers may start with an underscore. (docs/language.md:21,25)
+// Underscore-starting names are "ignored" — declaration is legal even
+// though the name cannot be read back.
+import "std/io"
+
+pub fn Main() Void {
+  _x := 1
+  io.Println("ok")
+}

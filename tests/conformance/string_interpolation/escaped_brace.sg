@@ -1,0 +1,7 @@
+// Spec: `\{` escapes a literal brace, suppressing interpolation.
+// (docs/language.md:684, lists `'\{'` as a special character)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println("not interp: \{x}")
+}

@@ -1,0 +1,13 @@
+// Spec: optional field via `Type | Missing` resolved with `or`.
+// (docs/language.md:833-846)
+import "std/io"
+
+struct Payload {
+  optional String | Missing
+}
+
+pub fn Main() Void {
+  p := Payload{optional: Missing{}}
+  v := p.optional or { "unknown" }
+  io.Println(v)
+}

@@ -1,0 +1,7 @@
+// Spec: "The last segment of an import is its name. 'std/io' gets
+// bound to 'io'." (docs/language.md:170)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println("io binding works")
+}

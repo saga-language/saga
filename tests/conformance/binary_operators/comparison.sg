@@ -1,0 +1,12 @@
+// Spec: == != > < >= <= comparison operators.
+// (docs/language.md:1381-1382)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println((3 == 3).String())
+  io.Println((3 != 4).String())
+  io.Println((5 > 4).String())
+  io.Println((5 < 4).String())
+  io.Println((5 >= 5).String())
+  io.Println((5 <= 4).String())
+}

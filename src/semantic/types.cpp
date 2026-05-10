@@ -32,16 +32,26 @@ TypePtr make_untyped_int_type() {
 }
 
 TypePtr materialize_untyped(const TypePtr &t) {
-  if (!t || t->kind != TypeKind::Int)
-    return t;
-  auto &info = std::get<IntType>(t->detail);
-  if (!info.is_untyped)
-    return t;
-  return make_int_type(info.bits, info.is_signed);
+  if (!t) return t;
+  if (t->kind == TypeKind::Int) {
+    auto &info = std::get<IntType>(t->detail);
+    if (!info.is_untyped) return t;
+    return make_int_type(info.bits, info.is_signed);
+  }
+  if (t->kind == TypeKind::Float) {
+    auto &info = std::get<FloatType>(t->detail);
+    if (!info.is_untyped) return t;
+    return make_float_type(info.bits);
+  }
+  return t;
 }
 
 TypePtr make_float_type(uint8_t bits) {
-  return std::make_shared<Type>(TypeKind::Float, FloatType{bits});
+  return std::make_shared<Type>(TypeKind::Float, FloatType{bits, false});
+}
+
+TypePtr make_untyped_float_type() {
+  return std::make_shared<Type>(TypeKind::Float, FloatType{0, true});
 }
 
 TypePtr make_string_type() {
@@ -246,7 +256,7 @@ std::string type_to_string(const TypePtr &t) {
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    return "[" + type_to_string(info.element) + "]";
+    return type_to_string(info.element) + "[]";
   }
 
   case TypeKind::Map: {
@@ -483,6 +493,36 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (is_error_type(source) || is_error_type(target))
     return true;
 
+  // Alias assignability: spec says aliases are unique types
+  // (docs/language.md:558).  A typed value of the underlying type is
+  // NOT implicitly assignable to the alias and vice versa — the user
+  // must convert at the boundary.  Two carve-outs:
+  //   1. Untyped literals (e.g. `5`) flow into an alias slot because
+  //      they haven't committed to a type yet.
+  //   2. Aliases whose underlying is Interface or Union stay
+  //      transparent — those are themselves coercion targets, and a
+  //      value satisfying the interface/union doesn't change identity
+  //      when named via an alias.
+  auto alias_underlying_is_iface_or_union = [](const TypePtr &alias) {
+    auto u = unwrap_alias(alias);
+    return u && (u->kind == TypeKind::Interface || u->kind == TypeKind::Union);
+  };
+  bool source_is_untyped =
+      source && source->kind == TypeKind::Int &&
+      std::get<IntType>(source->detail).is_untyped;
+  if (target && target->kind == TypeKind::Alias) {
+    if (source_is_untyped || alias_underlying_is_iface_or_union(target))
+      return is_assignable_to(source, unwrap_alias(target));
+    if (source && source->kind == TypeKind::Alias)
+      return types_equal(source, target);
+    return false;
+  }
+  if (source && source->kind == TypeKind::Alias) {
+    if (alias_underlying_is_iface_or_union(source))
+      return is_assignable_to(unwrap_alias(source), target);
+    return false;
+  }
+
   // Any is a top type — any value is assignable to Any, and Any is assignable
   // to any type.  Used by intrinsic_runtime / intrinsic_field signatures.
   auto is_any = [](const TypePtr &t) {
@@ -507,6 +547,12 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
       target->kind == TypeKind::Int)
     return true;
 
+  // Untyped float literal — assignable to any float width.  Mirrors the
+  // untyped-int rule so `f32 Float32 = 5.0` compiles.
+  if (source->kind == TypeKind::Float && target->kind == TypeKind::Float &&
+      std::get<FloatType>(source->detail).is_untyped)
+    return true;
+
   // Source assignable to any alternative in a union target.
   if (target->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(target->detail);
@@ -516,13 +562,29 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     }
   }
 
-  // Union source: every alternative must be assignable to target.
+  // Union source: when every alternative is an interface, the union is
+  // conjunctive (interface widening — spec language.md:951-953).  A
+  // value of `Reader | Writer` implements *both* sets of methods, so
+  // assignment to either Reader or Writer is fine.  For other unions
+  // (e.g. `Int | String`), the union is disjunctive and every alternative
+  // must independently be assignable to the target.
   if (source->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(source->detail);
-    for (auto &alt : info.alternatives) {
+    bool all_ifaces = !info.alternatives.empty();
+    for (auto &alt : info.alternatives)
+      if (!alt || alt->kind != TypeKind::Interface) {
+        all_ifaces = false;
+        break;
+      }
+    if (all_ifaces) {
+      for (auto &alt : info.alternatives)
+        if (is_assignable_to(alt, target))
+          return true;
+      return false;
+    }
+    for (auto &alt : info.alternatives)
       if (!is_assignable_to(alt, target))
         return false;
-    }
     return true;
   }
 

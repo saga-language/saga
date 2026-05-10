@@ -1,0 +1,15 @@
+// Spec: Bool, Float, Int, String are intrinsic scalar types.
+// (docs/language.md:292-293)
+import "std/io"
+
+pub fn Main() Void {
+  b Bool = true
+  f Float = 3.14
+  i Int = 42
+  s String = "hi"
+
+  io.Println(b.String())
+  io.Println(f.String())
+  io.Println(i.String())
+  io.Println(s)
+}

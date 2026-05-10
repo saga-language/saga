@@ -1,0 +1,9 @@
+// Spec: index iterator form `for i Int; i < N; i += 1 {}`.
+// (docs/language.md:1224)
+import "std/io"
+
+pub fn Main() Void {
+  for i Int; i < 3; i += 1 {
+    io.Println(i.String())
+  }
+}

@@ -1,0 +1,12 @@
+// Spec: dot-access on a struct literal returns the field value.
+// (docs/language.md:1067-1068)
+import "std/io"
+
+struct Box {
+  value Int
+}
+
+pub fn Main() Void {
+  i := Box{value: 42}.value
+  io.Println(i.String())
+}

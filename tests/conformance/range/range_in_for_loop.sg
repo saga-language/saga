@@ -1,0 +1,9 @@
+// Spec: `(a..b)` is exclusive on the high end; `for i : (0..5)`
+// iterates 0..4. (docs/language.md:1041-1050)
+import "std/io"
+
+pub fn Main() Void {
+  for i : (0..5) {
+    io.Println(i.String())
+  }
+}

@@ -1,0 +1,7 @@
+// Spec: `str[..b]` slices from start to b. (docs/language.md:702)
+import "std/io"
+
+pub fn Main() Void {
+  str := "hello"
+  io.Println(str[..3])
+}

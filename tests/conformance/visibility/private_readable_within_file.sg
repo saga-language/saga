@@ -1,0 +1,11 @@
+// Spec: "Everything is private by default." (docs/language.md:149).
+// Within the same file, a private constant is readable.  The "private
+// from outside the file" half of the rule needs a multi-package
+// fixture.
+import "std/io"
+
+const Hidden = 11
+
+pub fn Main() Void {
+  io.Println(Hidden.String())
+}

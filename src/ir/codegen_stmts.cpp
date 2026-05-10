@@ -145,10 +145,6 @@ void CodeGen::apply_func_abi_attrs(llvm::Function *func,
 // ===========================================================================
 
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
-  // Generic functions have no concrete signature.  Emission happens
-  // per call-site specialisation (Step 5 of monomorphism_plan.md).
-  // Receiver methods on generic receiver types (Array/Map) are not
-  // skipped — their T is the element type, not a free type parameter.
   if (fn.generic) {
     if (!fn.receiver)
       return;
@@ -157,6 +153,9 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
                            std::get_if<MapTypeNode>(&rt);
     if (!is_generic_recv)
       return;
+  } else if (fn.receiver) {
+    // Receiver method bodies are emitted by their own paths.
+    return;
   }
 
   std::string name(fn.name.name);
@@ -222,8 +221,13 @@ void CodeGen::emit_function_body_inner(
   // Create allocas for parameters and store the incoming argument values.
   // param_ll has one entry per flattened parameter name so variadic /
   // multi-name params are already expanded.
+  //
+  // Array params are owned by the callee — emit_call_expr clones array
+  // args at the call boundary (spec value semantics, docs/language.md:51).
+  // Tracking them as managed locals releases the clone at function exit.
   size_t ll_idx = 0;
   for (auto &param : fn.signature.params) {
+    auto param_sem = semantic_type(*param.type);
     for (auto &ident : param.names.identifiers) {
       auto *ll_type = ll_idx < param_ll.size()
                           ? param_ll[ll_idx]
@@ -242,6 +246,8 @@ void CodeGen::emit_function_body_inner(
         builder.CreateStore(arg, alloca);
       }
       locals[pname] = alloca;
+      if (param_sem && param_sem->kind == TypeKind::Array)
+        track_managed(pname, param_sem);
       ++ll_idx;
     }
   }
@@ -678,6 +684,23 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       if (alloca->getAllocatedType() == closure_fat_ptr_type) {
         alloca->setName(name);
         locals[name] = alloca;
+        continue;
+      }
+    }
+
+    // Union RHS via pointer (e.g. `result := for ... { break v }`):
+    // emit_for_expr returns a ptr to a union struct.  Allocate a
+    // struct-typed local and memcpy through.
+    if (val && val_sem && val_sem->kind == TypeKind::Union &&
+        val->getType()->isPointerTy()) {
+      auto *union_st = get_union_llvm_type(val_sem);
+      if (union_st) {
+        auto *alloca = create_entry_alloca(func, name, union_st);
+        auto sz = module->getDataLayout().getTypeAllocSize(union_st);
+        auto al = module->getDataLayout().getABITypeAlign(union_st);
+        builder.CreateMemCpy(alloca, al, val, al, sz);
+        locals[name] = alloca;
+        track_managed(name, val_sem);
         continue;
       }
     }

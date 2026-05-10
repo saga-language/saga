@@ -1290,6 +1290,51 @@ static saga_runtime_string *saga_trap_error_message(void *self) {
   return s;
 }
 
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Missing — concrete error returned by index/map lookups and the failure   */
+/* path of intrinsic_runtime_try.                                           */
+/*                                                                          */
+/* Uses the same saga_runtime_iface_fat_ptr shape as TrapError, with a      */
+/* one-slot vtable (Message) so callers can dispatch through the Error      */
+/* interface uniformly.                                                     */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+/* saga_runtime_alloc_string is defined further below; forward-declare it
+ * here so the Missing constructor can reach it. */
+static saga_runtime_string *saga_runtime_alloc_string(const char *buf,
+                                                      int64_t len);
+
+typedef struct {
+  saga_runtime_string *message;
+} saga_runtime_missing;
+
+static saga_runtime_string *saga_missing_message(void *self) {
+  saga_runtime_missing *m = (saga_runtime_missing *)self;
+  if (m && m->message) {
+    if (m->message->refcount > 0) m->message->refcount++;
+    return m->message;
+  }
+  return saga_runtime_alloc_string("", 0);
+}
+
+static const saga_runtime_trap_error_vtable saga_missing_vtable_instance = {
+    .message_fn = (void *)saga_missing_message,
+};
+
+void *saga_missing_new(const char *msg, int64_t len) {
+  saga_runtime_missing *m =
+      (saga_runtime_missing *)malloc(sizeof(saga_runtime_missing));
+  if (!m) return NULL;
+  m->message = saga_runtime_alloc_string(msg ? msg : "", msg ? len : 0);
+
+  saga_runtime_iface_fat_ptr *fat =
+      (saga_runtime_iface_fat_ptr *)malloc(sizeof(saga_runtime_iface_fat_ptr));
+  if (!fat) { free(m); return NULL; }
+  fat->data = m;
+  fat->vtable = (void *)&saga_missing_vtable_instance;
+  return fat;
+}
+
 /*
  * saga_error_from_trap — build an Error interface fat pointer from the
  * trapped actor's stashed reason string.  Returns a heap-allocated
@@ -1338,6 +1383,37 @@ static saga_runtime_string *saga_runtime_alloc_string(const char *buf, int64_t l
   s->len = len;
   s->refcount = 1;
   return s;
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String access (indexing and slicing)                                     */
+/*                                                                          */
+/* Indexing and slicing are byte-indexed.  This matches the spec's          */
+/* one-character examples ("hello"[1] => "e") for ASCII; the runes/bytes    */
+/* split (saga_string_runes / saga_string_bytes) is the path that exposes   */
+/* codepoint-aware iteration when needed.                                   */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+saga_runtime_string *saga_string_at(const saga_runtime_string *s,
+                                    int64_t index) {
+  if (!s || index < 0 || index >= s->len)
+    return saga_runtime_alloc_string("", 0);
+  return saga_runtime_alloc_string(s->data + index, 1);
+}
+
+/* Sentinel high-bound: callers pass INT64_MIN when the slice's high end is */
+/* omitted (str[a..]).  Likewise INT64_MIN signals an omitted low (str[..b]) */
+/* — chosen because no valid index can collide with it.  Out-of-range       */
+/* values are clamped to [0, len], which mirrors how Go and Rust treat      */
+/* slice bounds: `str[..]` == `str[0..len]`.                                */
+saga_runtime_string *saga_string_slice(const saga_runtime_string *s,
+                                       int64_t low, int64_t high) {
+  if (!s) return saga_runtime_alloc_string("", 0);
+  if (low == INT64_MIN || low < 0) low = 0;
+  if (low > s->len) low = s->len;
+  if (high == INT64_MIN || high > s->len) high = s->len;
+  if (high < low) high = low;
+  return saga_runtime_alloc_string(s->data + low, high - low);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -1897,6 +1973,41 @@ void saga_array_set(saga_runtime_array *arr, int64_t index, const void *elem) {
   if (!arr || !elem || index < 0 || index >= arr->len) return;
   memcpy((char *)arr->data + arr->elem_size * index, elem,
          (size_t)arr->elem_size);
+}
+
+/* Materialize a [low, high) range into a fresh i64-element array.  Element  */
+/* widths narrower than i64 (Char, Int8/16/32) share the same in-memory      */
+/* representation by ABI, so a single i64 path covers all integer ranges.    */
+saga_runtime_array *saga_range_to_array(int64_t low, int64_t high) {
+  int64_t len = high > low ? high - low : 0;
+  int64_t cap = len > 4 ? len : 4;
+  saga_runtime_array *arr =
+      (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
+  arr->data = malloc((size_t)(8 * cap));
+  arr->len = len;
+  arr->cap = cap;
+  arr->elem_size = 8;
+  arr->refcount = 1;
+  int64_t *out = (int64_t *)arr->data;
+  for (int64_t i = 0; i < len; i++)
+    out[i] = low + i;
+  return arr;
+}
+
+/* Shallow clone: new struct + new data buffer, contents memcpy'd.            */
+/* Matches saga_array_equals: elements (pointer or aggregate value) are       */
+/* shared by byte-copy, not deeply duplicated.                                */
+saga_runtime_array *saga_array_clone(const saga_runtime_array *src) {
+  if (!src) return NULL;
+  saga_runtime_array *dst = (saga_runtime_array *)malloc(sizeof(*dst));
+  dst->elem_size = src->elem_size;
+  dst->len = src->len;
+  dst->cap = src->cap > 0 ? src->cap : (src->len > 0 ? src->len : 4);
+  dst->refcount = 1;
+  dst->data = malloc((size_t)(dst->elem_size * dst->cap));
+  if (src->len > 0)
+    memcpy(dst->data, src->data, (size_t)(src->elem_size * src->len));
+  return dst;
 }
 
 /* Element-wise byte comparison.  Matches saga_array_find semantics: arrays  */

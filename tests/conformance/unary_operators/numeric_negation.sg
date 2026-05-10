@@ -1,0 +1,8 @@
+// Spec: `-` unary negation on a numeric value.
+// (docs/language.md:1359, 1363)
+import "std/io"
+
+pub fn Main() Void {
+  x := 5
+  io.Println((-x).String())
+}

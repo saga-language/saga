@@ -228,6 +228,25 @@ TEST(TypeCheck, DeclAssignInfersType) {
   EXPECT_TRUE(r.ok());
 }
 
+// Spec: `arr1 := []` is invalid — no declared type means no inferrable
+// element type.  (docs/language.md:601)
+TEST(TypeCheck, DeclAssign_EmptyArrayLiteral_Rejected) {
+  auto r = TC::from("fn f() {\n  arr := []\n}");
+  EXPECT_TRUE(r.has_err("empty array literal"));
+}
+
+TEST(TypeCheck, DeclAssign_EmptyMapLiteral_Rejected) {
+  auto r = TC::from("fn f() {\n  m := {}\n}");
+  EXPECT_TRUE(r.has_err("empty map literal"));
+}
+
+TEST(TypeCheck, VarDecl_EmptyArrayLiteral_Allowed) {
+  // Typed declaration (`arr Int[] = []`) provides the element type, so
+  // the empty literal is fine here even though `:=` would reject it.
+  auto r = TC::from("fn f() {\n  arr Int[] = []\n}");
+  EXPECT_TRUE(r.ok());
+}
+
 // ===========================================================================
 // Assignment
 // ===========================================================================
@@ -576,21 +595,21 @@ TEST(TypeCheck, ReceiverMethodAccess) {
 TEST(TypeCheck, ArrayGenericReceiverMethod) {
   // stdlib-mode array receiver with generic T; Len() returns Int.
   auto r = TC::from(
-      "fn |T| (self [T]) Len() Int { 0 }\n"
+      "fn |T| (self T[]) Len() Int { 0 }\n"
       "fn f() Int {\n  arr := [1, 2, 3]\n  arr.Len()\n}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, ArrayGenericReceiverMethodSubstitution) {
-  // Return type [T] should substitute T→Int for [Int] receiver.
+  // Return type T[] should substitute T→Int for Int[] receiver.
   auto r = TC::from(
-      "fn |T| (self [T]) Clone() [T] { self }\n"
-      "fn f() [Int] {\n  arr := [1, 2, 3]\n  arr.Clone()\n}");
+      "fn |T| (self T[]) Clone() T[] { self }\n"
+      "fn f() Int[] {\n  arr := [1, 2, 3]\n  arr.Clone()\n}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, ArrayGenericReceiverMethodNonStdlibRejected) {
-  auto r = TC::from("fn |T| (self [T]) Len() Int { 0 }",
+  auto r = TC::from("fn |T| (self T[]) Len() Int { 0 }",
                      /*stdlib=*/false);
   EXPECT_TRUE(r.has_err("receiver methods on generic types can only be "
                          "defined in stdlib packages"));
@@ -1069,6 +1088,71 @@ TEST(TypeCheck, SwitchTypeMatch) {
       "  switch x {\n"
       "    case Int: { 0 }\n"
       "    case String: { 1 }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.ok());
+}
+
+// Spec: `const X = A | B` is a type-union alias when A and B resolve
+// to types.  (docs/language.md:945-948)
+TEST(TypeCheck, ConstDecl_UnionOfInterfaces_IsTypeAlias) {
+  auto r = TC::from(
+      "interface Reader { Read() String }\n"
+      "interface Writer { Write(s String) Void }\n"
+      "const ReadWriter = Reader | Writer\n"
+      "struct RW {\n"
+      "  pub fn Read() String { \"\" }\n"
+      "  pub fn Write(s String) Void {}\n"
+      "}\n"
+      "fn use(rw ReadWriter) Void {}\n"
+      "fn f() Void { use(RW{}) }");
+  EXPECT_TRUE(r.ok());
+}
+
+// Spec: arrays of the same element type pass directly into a variadic.
+// (docs/language.md:276-285)
+TEST(TypeCheck, Variadic_AcceptsArrayPassthrough) {
+  auto r = TC::from(
+      "fn Sum(args ...Int) Int { 0 }\n"
+      "fn f() Int { Sum([1, 2, 3]) }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, Variadic_AcceptsScalarArgs) {
+  auto r = TC::from(
+      "fn Sum(args ...Int) Int { 0 }\n"
+      "fn f() Int { Sum(1, 2, 3) }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, Variadic_RejectsMixedArrayAndScalars) {
+  // Spec: "you can't mix and match" (line 286-287).
+  auto r = TC::from(
+      "fn Sum(args ...Int) Int { 0 }\n"
+      "fn f() Int { Sum(1, 2, [3, 4]) }");
+  EXPECT_TRUE(r.has_err("variadic argument"));
+}
+
+TEST(TypeCheck, SwitchTypeMatch_NonExhaustive_Rejected) {
+  // Spec: type matches must be exhaustive without `else`.
+  // (docs/language.md:1174-1177)
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String | Bool = 0\n"
+      "  switch x {\n"
+      "    case Int: { 0 }\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.has_err("non-exhaustive type-switch"));
+}
+
+TEST(TypeCheck, SwitchTypeMatch_WithElse_NotExhaustiveOk) {
+  auto r = TC::from(
+      "fn f() {\n"
+      "  x Int | String | Bool = 0\n"
+      "  switch x {\n"
+      "    case Int: { 0 }\n"
+      "    else: { 1 }\n"
       "  }\n"
       "}");
   EXPECT_TRUE(r.ok());

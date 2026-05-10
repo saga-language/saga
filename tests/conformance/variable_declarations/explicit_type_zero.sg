@@ -1,0 +1,8 @@
+// Spec: `x Int` declares with explicit type; value defaults to the type's
+// zero value. (docs/language.md:1332, "Variable declarations")
+import "std/io"
+
+pub fn Main() Void {
+  x Int
+  io.Println(x.String())
+}

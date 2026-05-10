@@ -1,0 +1,14 @@
+// Spec: "A method can declare multiple return types in its signature.
+// [...] You must use a `return` statement to return multiple
+// expressions." (docs/language.md:240-249)
+import "std/io"
+
+pub fn MultiTypes() Int, String {
+  return 42, "Hello"
+}
+
+pub fn Main() Void {
+  x, y := MultiTypes()
+  io.Println(x.String())
+  io.Println(y)
+}

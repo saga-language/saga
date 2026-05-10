@@ -1,0 +1,8 @@
+// Spec: typed array declaration with initializer.
+// (docs/language.md, "arr2 Int[] = [] // valid, type is known")
+import "std/io"
+
+pub fn Main() Void {
+  arr Int[] = [1, 2, 3]
+  io.Println(arr.Size().String())
+}

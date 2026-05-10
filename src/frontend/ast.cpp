@@ -172,7 +172,8 @@ void dump_signature(const SignatureNode &n, std::ostream &os, int indent) {
 
 void dump_case_arm(const CaseArmNode &n, std::ostream &os, int indent) {
   os << pad(indent) << "CaseArmNode\n";
-  dump_ptr(n.pattern, os, indent + 1);
+  for (const auto &p : n.patterns)
+    dump_ptr(p, os, indent + 1);
   dump_ptr(n.body, os, indent + 1);
 }
 

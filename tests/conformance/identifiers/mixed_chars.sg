@@ -1,0 +1,8 @@
+// Spec: identifiers may contain alphanumerics and underscores after the
+// first character. (docs/language.md:22)
+import "std/io"
+
+pub fn Main() Void {
+  foo_bar1 := 1
+  io.Println(foo_bar1.String())
+}

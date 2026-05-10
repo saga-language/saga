@@ -1,0 +1,8 @@
+// Spec: arrays are fat types backed by struct-with-metadata; .Size()
+// reads the metadata. (docs/language.md:322-329)
+import "std/io"
+
+pub fn Main() Void {
+  arr := [1, 2, 3]
+  io.Println(arr.Size().String())
+}

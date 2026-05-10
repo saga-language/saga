@@ -1,0 +1,9 @@
+// Spec: fn can be used as an expression — a closure literal that can
+// be assigned to a variable and called. (docs/language.md:154-156,
+// line 1015 ff. for closures.)
+import "std/io"
+
+pub fn Main() Void {
+  add1 := fn(x Int) Int { x + 1 }
+  io.Println(add1(5).String())
+}

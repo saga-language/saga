@@ -1,0 +1,16 @@
+// Spec: "If a method has a return type of `Void`, then the `return`
+// must omit a value." (docs/language.md:192-193)
+import "std/io"
+
+fn Logged(s String) Void {
+  if s == "skip" {
+    return
+  }
+  io.Println(s)
+}
+
+pub fn Main() Void {
+  Logged("hi")
+  Logged("skip")
+  Logged("bye")
+}

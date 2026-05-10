@@ -1,0 +1,9 @@
+// Spec: `or { default }` resolves an Error union to its default.
+// (docs/language.md:418-420)
+import "std/io"
+
+pub fn Main() Void {
+  arr := [10, 20, 30]
+  i := arr[99] or { -1 }
+  io.Println(i.String())
+}

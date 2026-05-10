@@ -1,0 +1,8 @@
+// Spec: `str[a..b]` slices [a, b) with inclusive start, exclusive end.
+// (docs/language.md:693-695, 701: `str[1..4] // => "ell"`)
+import "std/io"
+
+pub fn Main() Void {
+  str := "hello"
+  io.Println(str[1..4])
+}

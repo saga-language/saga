@@ -1,0 +1,9 @@
+// Spec: "A value constant can be any simple expression that can be
+// resolve at compile time." (docs/language.md:86-87)
+import "std/io"
+
+const MaxSize = 2 * 1024 * 1024
+
+pub fn Main() Void {
+  io.Println(MaxSize.String())
+}

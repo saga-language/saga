@@ -1,0 +1,11 @@
+// Spec: `spawn {block}` returns a Task; `Wait()` blocks until the
+// task finishes. (docs/language.md:1416-1446)
+import "std/io"
+
+pub fn Main() Void {
+  t := spawn {
+    io.Println("from task")
+  }
+  t.Wait()
+  io.Println("done")
+}

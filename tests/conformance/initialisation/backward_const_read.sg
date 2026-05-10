@@ -1,0 +1,10 @@
+// Spec: "A constant initialiser may read another constant declared
+// earlier — earlier in the same file [...] " (docs/language.md:117-119).
+import "std/io"
+
+const First = 10
+const Second = First * 2
+
+pub fn Main() Void {
+  io.Println(Second.String())
+}

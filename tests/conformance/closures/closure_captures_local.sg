@@ -1,0 +1,8 @@
+// Spec: closure captures local. (docs/language.md:1028-1031)
+import "std/io"
+
+pub fn Main() Void {
+  i := 1
+  closure := fn (x Int) Int { x + i }
+  io.Println(closure(2).String())
+}

@@ -5,19 +5,36 @@ set(SAGA_STD_SGI_DIR_LOCAL "${CMAKE_BINARY_DIR}/lib/std")
 
 # Each stdlib package compiles to an object + interface file.
 # Type packages (int, float, bool, string) are leaf packages with no deps.
-# Build order: type packages first, then unsafe, sys, os, io.
+# Non-type packages auto-load int/float/bool/string/proto via the
+# analyzer's prelude (load_prelude, src/semantic/analyzer.cpp:198).
+# Those .sgi files must therefore exist before any non-type package
+# compiles, so we declare them as explicit deps.  Without these
+# declarations, ninja parallelism schedules the dependent package
+# before its prelude is built — failing under any clean rebuild.
 set(SAGA_STD_PACKAGES proto int float bool string array map unsafe sys os io)
+set(SAGA_STD_PRELUDE_SGI
+    "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi"
+    "${SAGA_STD_SGI_DIR_LOCAL}/int.sgi"
+    "${SAGA_STD_SGI_DIR_LOCAL}/float.sgi"
+    "${SAGA_STD_SGI_DIR_LOCAL}/bool.sgi"
+    "${SAGA_STD_SGI_DIR_LOCAL}/string.sgi"
+    "${SAGA_STD_SGI_DIR_LOCAL}/array.sgi"
+    "${SAGA_STD_SGI_DIR_LOCAL}/map.sgi")
 set(proto_SGI_DEPS  "")
-set(int_SGI_DEPS    "")
-set(float_SGI_DEPS  "")
-set(bool_SGI_DEPS   "")
-set(string_SGI_DEPS "")
-set(array_SGI_DEPS  "")
-set(map_SGI_DEPS    "")
-set(unsafe_SGI_DEPS "")
-set(sys_SGI_DEPS "")
-set(os_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/sys.sgi" "${SAGA_STD_SGI_DIR_LOCAL}/unsafe.sgi")
-set(io_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/os.sgi")
+# Type packages skip the scalar-prelude load but still load proto.sgi
+# for generic-method dispatch through Hashable/Stringable.
+set(int_SGI_DEPS    "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi")
+set(float_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi")
+set(bool_SGI_DEPS   "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi")
+set(string_SGI_DEPS "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi")
+set(array_SGI_DEPS  "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi")
+set(map_SGI_DEPS    "${SAGA_STD_SGI_DIR_LOCAL}/proto.sgi")
+set(unsafe_SGI_DEPS ${SAGA_STD_PRELUDE_SGI})
+set(sys_SGI_DEPS    ${SAGA_STD_PRELUDE_SGI})
+set(os_SGI_DEPS  ${SAGA_STD_PRELUDE_SGI}
+    "${SAGA_STD_SGI_DIR_LOCAL}/sys.sgi" "${SAGA_STD_SGI_DIR_LOCAL}/unsafe.sgi")
+set(io_SGI_DEPS  ${SAGA_STD_PRELUDE_SGI}
+    "${SAGA_STD_SGI_DIR_LOCAL}/os.sgi")
 
 foreach(pkg ${SAGA_STD_PACKAGES})
     file(GLOB ${pkg}_SOURCES "${SAGA_STD_DIR}/${pkg}/*.sg")

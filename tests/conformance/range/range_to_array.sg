@@ -1,0 +1,7 @@
+// Spec: `.Array()` converts a range to an array. (docs/language.md:1054)
+import "std/io"
+
+pub fn Main() Void {
+  arr := (0..3).Array()
+  io.Println(arr.Size().String())
+}

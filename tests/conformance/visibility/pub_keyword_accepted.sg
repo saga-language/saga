@@ -1,0 +1,13 @@
+// Spec: "To make a constant visible outside a file scope, it must be
+// marked as `pub`lic." (docs/language.md:149-150).  This test confirms
+// the `pub` keyword parses on a const declaration and the value is
+// readable from Main.  The cross-package half of the rule (private
+// symbols *not* visible from another package) needs a multi-package
+// fixture; see README.md in this directory.
+import "std/io"
+
+pub const Visible = 7
+
+pub fn Main() Void {
+  io.Println(Visible.String())
+}

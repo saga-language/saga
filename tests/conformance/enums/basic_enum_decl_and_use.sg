@@ -1,0 +1,22 @@
+// Spec: basic enum declaration and `Colors.Variant` usage.
+// (docs/language.md:977-986)
+import "std/io"
+
+enum Colors {
+  Red
+  Green
+  Blue
+}
+
+fn ColorName(c Colors) String {
+  switch c {
+    case Colors.Red:   "red"
+    case Colors.Green: "green"
+    case Colors.Blue:  "blue"
+    else: "?"
+  }
+}
+
+pub fn Main() Void {
+  io.Println(ColorName(Colors.Green))
+}

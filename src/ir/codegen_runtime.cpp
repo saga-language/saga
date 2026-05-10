@@ -186,6 +186,36 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_equals", module.get());
 
+  // saga_runtime_array* saga_array_clone(const saga_runtime_array* src)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_array_clone", module.get());
+
+  // saga_runtime_array* saga_range_to_array(i64 low, i64 high)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_range_to_array", module.get());
+
+  // saga_runtime_string* saga_string_at(saga_runtime_string* s, i64 index)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_at", module.get());
+
+  // saga_runtime_string* saga_string_slice(saga_runtime_string* s,
+  //                                        i64 low, i64 high)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_string_slice", module.get());
+
+  // void* saga_missing_new(const char* msg, i64 len)
+  // Returns a heap-allocated saga_runtime_iface_fat_ptr (data = Missing
+  // instance carrying `msg`, vtable = Missing-as-Error vtable).  Callers
+  // wrap the returned pointer into a `T | Error` union's err payload so
+  // user code can dispatch `err.Message()` through the Error interface.
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_missing_new", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -543,6 +573,25 @@ int CodeGen::union_tag_for_type(const TypePtr &alt_type,
   return -1;
 }
 
+llvm::Value *CodeGen::emit_missing_fat_ptr(const std::string &message) {
+  auto *char_array = llvm::ConstantDataArray::getString(
+      context, message, /*AddNull=*/false);
+  auto *raw_global = new llvm::GlobalVariable(
+      *module, char_array->getType(), /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, char_array, ".missing.msg");
+  raw_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  raw_global->setAlignment(llvm::Align(1));
+  auto *data_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
+      char_array->getType(), raw_global,
+      llvm::ArrayRef<llvm::Constant *>{
+          llvm::ConstantInt::get(i64_type, 0),
+          llvm::ConstantInt::get(i64_type, 0)});
+  auto *len = llvm::ConstantInt::get(i64_type,
+                                     static_cast<int64_t>(message.size()));
+  return builder.CreateCall(module->getFunction("saga_missing_new"),
+                            {data_ptr, len}, "missing.fat");
+}
+
 llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
                                        const TypePtr &val_type,
                                        const TypePtr &union_type) {
@@ -611,6 +660,13 @@ bool CodeGen::is_impure_union(const TypePtr &t) const {
       if (iface.name == "Error")
         return true;
     }
+    // Concrete types that satisfy Error (e.g. Missing) also make the
+    // union impure for or-clause purposes — `String | Missing` reads
+    // the same way as `String | Error` to user code.
+    if (alt && alt->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
+      if (sinfo.name == "Missing") return true;
+    }
   }
   return false;
 }
@@ -621,10 +677,13 @@ TypePtr CodeGen::strip_error_from_union(const TypePtr &t) const {
   auto &info = std::get<UnionTypeInfo>(t->detail);
   std::vector<TypePtr> purified;
   for (auto &alt : info.alternatives) {
-    if (alt->kind == TypeKind::Interface) {
+    if (alt && alt->kind == TypeKind::Interface) {
       auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error")
-        continue;
+      if (iface.name == "Error") continue;
+    }
+    if (alt && alt->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
+      if (sinfo.name == "Missing") continue;
     }
     purified.push_back(alt);
   }

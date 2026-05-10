@@ -11,6 +11,43 @@
 
 namespace saga {
 
+namespace {
+
+// Methods whose body passes the receiver as the first argument to one of
+// these C runtime functions mutate the caller's collection in place. Used
+// to enforce "mutation of global objects is prohibited" (docs/language.md:96)
+// at the call site for stdlib Array/Map methods.
+const std::unordered_set<std::string> kMutatingIntrinsics{
+    "saga_array_push", "saga_array_pop", "saga_array_set",
+    "saga_array_insert", "saga_map_set", "saga_map_remove"};
+
+bool is_kind_method_mutating(const FuncDeclNode &fn) {
+  if (!fn.body || !fn.receiver) return false;
+  auto *blk = std::get_if<BlockNode>(&fn.body->data);
+  if (!blk) return false;
+  std::string_view recv = fn.receiver->name.name;
+  for (auto &stmt : blk->stmts) {
+    auto *call = std::get_if<CallExprNode>(&stmt->data);
+    if (!call) continue;
+    auto *id = std::get_if<IdentifierNode>(&call->callee->data);
+    if (!id || id->name != "intrinsic_runtime" || call->args.size() < 2)
+      continue;
+    auto *lit = std::get_if<StringLiteralNode>(&call->args[0]->data);
+    if (!lit || lit->fragments.size() != 1) continue;
+    auto *frag = std::get_if<StringFragmentNode>(&lit->fragments[0]->data);
+    if (!frag) continue;
+    std::string_view raw = frag->text;
+    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
+      raw = raw.substr(1, raw.size() - 2);
+    if (!kMutatingIntrinsics.count(std::string(raw))) continue;
+    auto *recv_id = std::get_if<IdentifierNode>(&call->args[1]->data);
+    if (recv_id && recv_id->name == recv) return true;
+  }
+  return false;
+}
+
+} // namespace
+
 // ===========================================================================
 // Construction
 // ===========================================================================
@@ -246,9 +283,11 @@ void Analyzer::load_prelude() {
     if (type_name == "Uint16") return builtins.uint16_type.get();
     if (type_name == "Uint32") return builtins.uint32_type.get();
     if (type_name == "Uint64") return builtins.uint64_type.get();
-    if (type_name == "Float")  return builtins.float_type.get();
-    if (type_name == "Bool")   return builtins.bool_type.get();
-    if (type_name == "String") return builtins.string_type.get();
+    if (type_name == "Float")   return builtins.float_type.get();
+    if (type_name == "Float32") return builtins.float32_type.get();
+    if (type_name == "Float64") return builtins.float64_type.get();
+    if (type_name == "Bool")    return builtins.bool_type.get();
+    if (type_name == "String")  return builtins.string_type.get();
     return nullptr;
   };
 
@@ -1862,6 +1901,58 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
   }
 }
 
+// Treat a const-decl RHS as a type expression for alias detection:
+// bare type identifier, module selector to a type, or `A | B | …` union
+// of those.  Returns the resolved TypePtr or null when the RHS doesn't
+// match — at which point the caller treats the const as a value, not
+// a type alias.
+TypePtr Analyzer::try_interpret_as_type_expr(const Node &node) {
+  if (auto *ident = std::get_if<IdentifierNode>(&node.data)) {
+    auto sym = lookup(std::string(ident->name));
+    if (sym && sym->kind == SymbolKind::Type && sym->type)
+      return sym->type;
+    return nullptr;
+  }
+  if (auto *sel = std::get_if<SelectorNode>(&node.data)) {
+    auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data);
+    if (!obj_ident) return nullptr;
+    auto obj_sym = lookup(std::string(obj_ident->name));
+    if (!obj_sym || obj_sym->kind != SymbolKind::Module || !obj_sym->type ||
+        obj_sym->type->kind != TypeKind::Module)
+      return nullptr;
+    auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
+    std::string field_name(sel->field.name);
+    for (auto &exp : mod.exports) {
+      if (exp.name != field_name || !exp.type) continue;
+      if (exp.type->kind == TypeKind::Struct ||
+          exp.type->kind == TypeKind::Enum ||
+          exp.type->kind == TypeKind::Interface ||
+          exp.type->kind == TypeKind::Alias)
+        return exp.type;
+    }
+    return nullptr;
+  }
+  if (auto *bin = std::get_if<BinaryExprNode>(&node.data)) {
+    if (bin->op != Token::Kind::BitwiseOr) return nullptr;
+    auto lhs = try_interpret_as_type_expr(*bin->lhs);
+    auto rhs = try_interpret_as_type_expr(*bin->rhs);
+    if (!lhs || !rhs) return nullptr;
+    std::vector<TypePtr> alts;
+    auto add_alt = [&](const TypePtr &t) {
+      if (t->kind == TypeKind::Union) {
+        for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
+          alts.push_back(a);
+      } else {
+        alts.push_back(t);
+      }
+    };
+    add_alt(lhs);
+    add_alt(rhs);
+    return make_union_type(std::move(alts));
+  }
+  return nullptr;
+}
+
 void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   TypePtr const_type = nullptr;
   if (c.type) {
@@ -1872,35 +1963,7 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   // If the value is an identifier (or selector) that refers to a type,
   // create an alias type so methods can be bound to it.
   if (!const_type && c.value) {
-    TypePtr alias_underlying = nullptr;
-    if (auto *ident = std::get_if<IdentifierNode>(&c.value->data)) {
-      auto sym = lookup(std::string(ident->name));
-      if (sym && sym->kind == SymbolKind::Type && sym->type) {
-        alias_underlying = sym->type;
-      }
-    } else if (auto *sel = std::get_if<SelectorNode>(&c.value->data)) {
-      // Handle math.Point style type aliases.
-      if (auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data)) {
-        auto obj_sym = lookup(std::string(obj_ident->name));
-        if (obj_sym && obj_sym->kind == SymbolKind::Module && obj_sym->type &&
-            obj_sym->type->kind == TypeKind::Module) {
-          auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
-          std::string field_name(sel->field.name);
-          for (auto &exp : mod.exports) {
-            if (exp.name == field_name && exp.type) {
-              // Check if the export is a type (struct, enum, interface, alias).
-              if (exp.type->kind == TypeKind::Struct ||
-                  exp.type->kind == TypeKind::Enum ||
-                  exp.type->kind == TypeKind::Interface ||
-                  exp.type->kind == TypeKind::Alias) {
-                alias_underlying = exp.type;
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
+    TypePtr alias_underlying = try_interpret_as_type_expr(*c.value);
 
     if (alias_underlying) {
       // Create a unique alias type that inherits the underlying type's methods.
@@ -2257,7 +2320,8 @@ void Analyzer::resolve_if_expr(const IfExprNode &node) {
 void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
   resolve_expr(*node.subject);
   for (auto &arm : node.arms) {
-    resolve_expr(*arm.pattern);
+    for (auto &pat : arm.patterns)
+      resolve_expr(*pat);
     // The body may be an expression or a block.
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
@@ -2559,7 +2623,26 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
   declare_parameters(fn.signature);
 
   auto &block = std::get<BlockNode>(fn.body->data);
-  auto body_type = check_block(block);
+  // Tail-position for-expression with accumulator: pass the function's
+  // declared return type as the accumulator hint so the body of
+  // `for i : xs |acc| { acc += i }` typechecks against the return.
+  TypePtr tail_hint;
+  if (current_scope->return_types.size() == 1 &&
+      !types_equal(current_scope->return_types[0], builtins.void_type) &&
+      !block.stmts.empty() &&
+      std::get_if<ForExprNode>(&block.stmts.back()->data))
+    tail_hint = current_scope->return_types[0];
+
+  TypePtr body_type;
+  if (tail_hint) {
+    for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
+      check_expr(*block.stmts[i]);
+    auto &for_node = std::get<ForExprNode>(block.stmts.back()->data);
+    body_type = check_for_expr(for_node, tail_hint);
+    record_type(*block.stmts.back(), body_type);
+  } else {
+    body_type = check_block(block);
+  }
 
   // Check that the tail expression matches the return type (if non-Void).
   // If the last statement always returns (directly or through branches),
@@ -2698,8 +2781,15 @@ TypePtr Analyzer::check_expr(const Node &node) {
 TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
                                    const Node &parent) {
   std::string name(ident.name);
-  if (!name.empty() && name[0] == '_')
-    return builtins.void_type;
+  // Spec docs/language.md:25-27 — underscore-prefixed names are "ignored"
+  // variables: legal to declare, illegal to read back.  Declaration sites
+  // (`_x := 1`) bypass this path entirely; a use here is therefore a
+  // read attempt or a re-assignment, both of which the spec forbids.
+  if (!name.empty() && name[0] == '_') {
+    error(ident.span,
+          std::format("cannot access ignored variable '{}'", name));
+    return builtins.error_type;
+  }
 
   auto sym = lookup(name);
   if (!sym) {
@@ -2711,6 +2801,17 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
   // For module symbols, return the module type directly.
   if (sym->kind == SymbolKind::Module && sym->type)
     return sym->type;
+
+  // Forward reference inside a constant initialiser.  check_const_decl
+  // runs in textual order and assigns each Constant's type as it goes,
+  // so a Constant with no type means it was declared but not yet
+  // checked — i.e. a sibling declared later.  Spec says this is a
+  // compile-time error (docs/language.md:120-122).
+  if (sym->kind == SymbolKind::Constant && !sym->type) {
+    error(ident.span,
+          std::format("constant '{}' read before its own declaration", name));
+    return builtins.error_type;
+  }
 
   return sym->type ? sym->type : builtins.error_type;
 }
@@ -2724,7 +2825,7 @@ TypePtr Analyzer::check_int_literal(const IntegerLiteralNode &) {
 }
 
 TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
-  return builtins.float_type;
+  return make_untyped_float_type();
 }
 
 TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
@@ -3236,6 +3337,19 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       if (km_it != kind_method_decls_.end()) {
         auto m_it = km_it->second.find(std::string(sel->field.name));
         if (m_it != km_it->second.end() &&
+            is_kind_method_mutating(*m_it->second.decl)) {
+          if (auto *recv_id =
+                  std::get_if<IdentifierNode>(&sel->object->data)) {
+            auto sym = lookup(std::string(recv_id->name));
+            if (sym && sym->kind == SymbolKind::Constant) {
+              error(node.span,
+                    std::format("cannot call mutating method '{}' on "
+                                "constant '{}'",
+                                sel->field.name, recv_id->name));
+            }
+          }
+        }
+        if (m_it != km_it->second.end() &&
             kind_method_uses_typeparam_dispatch_.count(m_it->second.decl)) {
           std::unordered_map<uint32_t, TypePtr> bindings;
           auto &tps = m_it->second.type_params;
@@ -3296,11 +3410,26 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     }
   }
 
+  // Spec: arrays of the same element type may be passed directly into
+  // a variadic without spreading.  (docs/language.md:276-285)
+  // Detection: exactly one argument in the variadic position whose type
+  // matches the variadic's array type.
+  bool variadic_array_passthrough =
+      fn_info.is_variadic && !fn_info.params.empty() &&
+      arg_types.size() == fn_info.params.size() &&
+      fn_info.params.back()->kind == TypeKind::Array &&
+      arg_types.back() && arg_types.back()->kind == TypeKind::Array &&
+      types_equal(arg_types.back(), fn_info.params.back());
+
   // Check argument types against the (possibly instantiated) signature.
   for (size_t i = 0; i < arg_types.size(); ++i) {
     bool is_variadic_param = fn_info.is_variadic && !fn_info.params.empty() &&
                              i >= fn_info.params.size() - 1;
-    if (is_variadic_param) {
+    if (is_variadic_param && variadic_array_passthrough) {
+      expect_assignable(node.args[i]->span, fn_info.params.back(),
+                        arg_types[i],
+                        std::format("variadic argument {}", i + 1));
+    } else if (is_variadic_param) {
       // Variadic args are checked against the element type of the
       // array-wrapped last parameter.
       auto &last = fn_info.params.back();
@@ -3407,6 +3536,12 @@ TypePtr substitute_kind_method(TypeKind kind, const TypePtr &effective_type,
     auto &arr_info = std::get<ArrayTypeInfo>(effective_type->detail);
     std::unordered_map<uint32_t, TypePtr> bindings;
     bindings[9990] = arr_info.element;
+    return substitute(sig, bindings);
+  }
+  if (kind == TypeKind::Range) {
+    auto &range_info = std::get<RangeTypeInfo>(effective_type->detail);
+    std::unordered_map<uint32_t, TypePtr> bindings;
+    bindings[9993] = range_info.element;
     return substitute(sig, bindings);
   }
   return sig;
@@ -3719,10 +3854,10 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
     if (auto *id = std::get_if<IdentifierNode>(&node.subject->data)) {
       subject_var = std::string(id->name);
     }
-    // Check if the first arm's pattern is a type name.
-    if (!node.arms.empty()) {
+    // Check if the first arm's first pattern is a type name.
+    if (!node.arms.empty() && !node.arms[0].patterns.empty()) {
       if (auto *pid =
-              std::get_if<IdentifierNode>(&node.arms[0].pattern->data)) {
+              std::get_if<IdentifierNode>(&node.arms[0].patterns[0]->data)) {
         auto sym = lookup(std::string(pid->name));
         if (sym && sym->kind == SymbolKind::Type)
           is_type_match = true;
@@ -3731,47 +3866,58 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   }
 
   for (auto &arm : node.arms) {
-    auto pattern_type = check_expr(*arm.pattern);
+    TypePtr first_pattern_type;
+    for (auto &pat : arm.patterns) {
+      auto pattern_type = check_expr(*pat);
+      if (!first_pattern_type)
+        first_pattern_type = pattern_type;
 
-    if (is_type_match) {
-      // Type matching: verify the pattern type is an alternative of the union.
-      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
-        auto &info = std::get<UnionTypeInfo>(subject_type->detail);
-        bool found = false;
-        for (auto &alt : info.alternatives) {
-          if (types_equal(alt, pattern_type) ||
-              is_assignable_to(pattern_type, alt))
-            found = true;
+      if (is_type_match) {
+        // Type matching: verify the pattern type is an alternative of the union.
+        if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+          auto &info = std::get<UnionTypeInfo>(subject_type->detail);
+          bool found = false;
+          for (auto &alt : info.alternatives) {
+            if (types_equal(alt, pattern_type) ||
+                is_assignable_to(pattern_type, alt))
+              found = true;
+          }
+          if (!found) {
+            error(pat->span,
+                  std::format("type {} is not an alternative of {}",
+                              type_to_string(pattern_type),
+                              type_to_string(subject_type)));
+          }
         }
-        if (!found) {
-          error(arm.pattern->span,
-                std::format("type {} is not an alternative of {}",
-                            type_to_string(pattern_type),
-                            type_to_string(subject_type)));
+      } else {
+        // Value matching: pattern must be same type as subject.
+        if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+          expect_assignable(pat->span, subject_type, pattern_type,
+                            "case pattern");
         }
-      }
-    } else {
-      // Value matching: pattern must be same type as subject.
-      if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
-        expect_assignable(arm.pattern->span, subject_type, pattern_type,
-                          "case pattern");
       }
     }
 
+    // Narrow the subject inside the arm body when there's a single
+    // pattern; with multiple patterns the narrowed type would be their
+    // union, which the analyzer doesn't synthesize here.  Narrowing
+    // applies whether the body is a block or an expression — without
+    // this, `case Int: x.String()` saw x as the unnarrowed union.
+    bool narrowed = is_type_match && !subject_var.empty() &&
+                    arm.patterns.size() == 1 &&
+                    !is_error_type(first_pattern_type);
+    push_scope(ScopeKind::Block);
+    if (narrowed) {
+      current_scope->symbols[subject_var] = Symbol::variable(
+          subject_var, first_pattern_type, arm.patterns[0]->span);
+    }
     TypePtr arm_type;
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
-      push_scope(ScopeKind::Block);
-      // For type matching, narrow the subject variable in the arm scope.
-      if (is_type_match && !subject_var.empty() &&
-          !is_error_type(pattern_type)) {
-        current_scope->symbols[subject_var] =
-            Symbol::variable(subject_var, pattern_type, arm.pattern->span);
-      }
       arm_type = check_block(*block);
-      pop_scope();
     } else {
       arm_type = check_expr(*arm.body);
     }
+    pop_scope();
 
     if (!result_type)
       result_type = arm_type;
@@ -3792,6 +3938,36 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       result_type = else_type;
     else
       result_type = common_type(result_type, else_type);
+  } else if (is_type_match && !is_error_type(subject_type)) {
+    // Spec: type-matching without `else` must be exhaustive.
+    // (docs/language.md:1174-1177)
+    auto &info = std::get<UnionTypeInfo>(subject_type->detail);
+    std::vector<TypePtr> uncovered;
+    for (auto &alt : info.alternatives) {
+      bool covered = false;
+      for (auto &arm : node.arms) {
+        for (auto &pat : arm.patterns) {
+          auto pat_t = check_expr(*pat);
+          if (is_error_type(pat_t)) continue;
+          if (types_equal(alt, pat_t) || is_assignable_to(pat_t, alt)) {
+            covered = true;
+            break;
+          }
+        }
+        if (covered) break;
+      }
+      if (!covered) uncovered.push_back(alt);
+    }
+    if (!uncovered.empty()) {
+      std::string names;
+      for (size_t i = 0; i < uncovered.size(); ++i) {
+        if (i) names += ", ";
+        names += type_to_string(uncovered[i]);
+      }
+      error(node.span,
+            std::format("non-exhaustive type-switch: missing case(s) for {}",
+                        names));
+    }
   }
 
   return result_type ? result_type : builtins.void_type;
@@ -3800,6 +3976,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
 TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                                  TypePtr accumulator_hint) {
   push_scope(ScopeKind::Loop);
+  break_value_types_.emplace_back();
 
   if (node.mode) {
     std::visit(overloaded{
@@ -3971,7 +4148,26 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
   auto &body_block = std::get<BlockNode>(node.body->data);
   check_block(body_block);
 
+  // A `break <value>` anywhere in the body shapes the for-expression's
+  // result as `T | Error` (spec language.md:1284-1295).  When multiple
+  // breaks have differing types the result is `T1 | T2 | … | Error`.
+  std::vector<TypePtr> break_types = std::move(break_value_types_.back());
+  break_value_types_.pop_back();
+
   pop_scope();
+
+  if (!break_types.empty()) {
+    std::vector<TypePtr> alts;
+    for (auto &bt : break_types) {
+      bool seen = false;
+      for (auto &existing : alts)
+        if (types_equal(existing, bt)) { seen = true; break; }
+      if (!seen) alts.push_back(bt);
+    }
+    alts.push_back(builtins.error_iface);
+    return make_union_type(std::move(alts));
+  }
+
   return node.accumulator ? acc_type : builtins.void_type;
 }
 
@@ -4046,34 +4242,40 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
 
   pop_scope();
 
-  // Instantiate Task<T> with the explicit generic argument if provided,
-  // e.g. |Int| spawn { ... } → Task<Int>.
+  // Default Task instantiation: spawn-with-no-explicit-T produces Task<Void>.
+  // Codegen needs a concrete T to lower task.Wait() (the union it produces is
+  // T | Error); without one, the Wait call drops out of the IR and the
+  // parent prints before the spawn body runs.
+  TypePtr chan_type = builtins.void_type;
   if (node.generic && !node.generic->type_params.empty()) {
-    auto chan_type = resolve_type(*node.generic->type_params[0]);
-    if (chan_type && !is_error_type(chan_type)) {
-      std::unordered_map<uint32_t, TypePtr> bindings;
-      bindings[0] = chan_type; // T (id 0) in Task<T>
-
-      auto &info = std::get<StructTypeInfo>(builtins.task_type->detail);
-      std::vector<FieldInfo> new_fields;
-      for (auto &f : info.fields)
-        new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
-      std::vector<MethodInfo> new_methods;
-      for (auto &m : info.methods)
-        new_methods.push_back({m.name, substitute(m.signature, bindings),
-                               m.is_public, m.origin_package});
-
-      auto result = make_struct_type(info.name, std::move(new_fields),
-                                     std::move(new_methods), {},
-                                     info.origin_package);
-      auto &ri = std::get<StructTypeInfo>(result->detail);
-      ri.type_params = info.type_params;
-      ri.type_args.push_back(chan_type);
-      ri.embeds = info.embeds;
-      return result;
-    }
+    auto explicit_t = resolve_type(*node.generic->type_params[0]);
+    if (explicit_t && !is_error_type(explicit_t))
+      chan_type = explicit_t;
   }
-  return builtins.task_type;
+  return instantiate_task_type(chan_type);
+}
+
+TypePtr Analyzer::instantiate_task_type(const TypePtr &chan_type) {
+  std::unordered_map<uint32_t, TypePtr> bindings;
+  bindings[0] = chan_type; // T (id 0) in Task<T>
+
+  auto &info = std::get<StructTypeInfo>(builtins.task_type->detail);
+  std::vector<FieldInfo> new_fields;
+  for (auto &f : info.fields)
+    new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
+  std::vector<MethodInfo> new_methods;
+  for (auto &m : info.methods)
+    new_methods.push_back({m.name, substitute(m.signature, bindings),
+                           m.is_public, m.origin_package});
+
+  auto result = make_struct_type(info.name, std::move(new_fields),
+                                 std::move(new_methods), {},
+                                 info.origin_package);
+  auto &ri = std::get<StructTypeInfo>(result->detail);
+  ri.type_params = info.type_params;
+  ri.type_args.push_back(chan_type);
+  ri.embeds = info.embeds;
+  return result;
 }
 
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
@@ -4277,13 +4479,25 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 
   if (var.init) {
     TypePtr init_type;
-    // When the initializer is a for-expression with an accumulator,
-    // pass the declared type so the accumulator variable is typed.
     if (auto *for_node = std::get_if<ForExprNode>(&(*var.init)->data)) {
       init_type = check_for_expr(*for_node, declared_type);
       record_type(**var.init, init_type);
     } else {
       init_type = check_expr(**var.init);
+    }
+    // An empty `[]` / `{}` literal under a typed declaration adopts the
+    // declared element type; without this, the array-of-error placeholder
+    // produced by check_array_literal would fail expect_assignable.
+    if (declared_type) {
+      bool empty_arr =
+          std::get_if<ArrayLiteralNode>(&(*var.init)->data) != nullptr &&
+          std::get<ArrayLiteralNode>((*var.init)->data).elements.empty();
+      bool empty_map =
+          std::get_if<MapLiteralNode>(&(*var.init)->data) != nullptr &&
+          std::get<MapLiteralNode>((*var.init)->data).entries.empty();
+      if ((empty_arr && declared_type->kind == TypeKind::Array) ||
+          (empty_map && declared_type->kind == TypeKind::Map))
+        init_type = declared_type;
     }
     if (declared_type && !is_error_type(init_type)) {
       expect_assignable((*var.init)->span, declared_type, init_type,
@@ -4305,6 +4519,23 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 }
 
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
+  // The `:=` form has no declared type, so an empty `[]` or `{}` literal
+  // has no source for its element type.  Spec: "arr1 := [] // invalid,
+  // no inferrable type" (docs/language.md:601).  The typed forms
+  // (`arr [Int] = []`) parse as VarDeclNode and are not affected.
+  if (auto *arr_lit = std::get_if<ArrayLiteralNode>(&decl.value->data)) {
+    if (arr_lit->elements.empty())
+      error(decl.value->span,
+            "empty array literal: cannot infer element type without a "
+            "declared type");
+  } else if (auto *map_lit =
+                 std::get_if<MapLiteralNode>(&decl.value->data)) {
+    if (map_lit->entries.empty())
+      error(decl.value->span,
+            "empty map literal: cannot infer key/value type without a "
+            "declared type");
+  }
+
   auto rhs_type = materialize_untyped(check_expr(*decl.value));
 
   // ── Multi-return unpacking ───────────────────────────────────────────
@@ -4357,6 +4588,17 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
+    // Reject assignment to a top-level constant.  Spec: "All top level
+    // constants are immutable" (docs/language.md:50).  Catches
+    // `Pi = 4`, `Pi += 1`, etc. for any compound assignment too.
+    if (auto *id = std::get_if<IdentifierNode>(&node.targets[i]->data)) {
+      auto sym = lookup(std::string(id->name));
+      if (sym && sym->kind == SymbolKind::Constant) {
+        error(node.targets[i]->span,
+              std::format("cannot assign to constant '{}'", id->name));
+      }
+    }
+
     auto target_type = check_expr(*node.targets[i]);
     if (i < node.values.size()) {
       auto val_type = check_expr(*node.values[i]);
@@ -4400,6 +4642,13 @@ void Analyzer::check_assign(const AssignNode &node) {
 }
 
 void Analyzer::check_increment(const IncrementNode &node) {
+  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Constant) {
+      error(node.operand->span,
+            std::format("cannot increment constant '{}'", id->name));
+    }
+  }
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("increment requires integer type, got {}",
@@ -4408,6 +4657,13 @@ void Analyzer::check_increment(const IncrementNode &node) {
 }
 
 void Analyzer::check_decrement(const DecrementNode &node) {
+  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Constant) {
+      error(node.operand->span,
+            std::format("cannot decrement constant '{}'", id->name));
+    }
+  }
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("decrement requires integer type, got {}",
@@ -4450,7 +4706,9 @@ void Analyzer::check_break(const BreakNode &node) {
     return;
   }
   for (auto &val : node.values) {
-    check_expr(*val);
+    auto t = check_expr(*val);
+    if (!break_value_types_.empty())
+      break_value_types_.back().push_back(t);
   }
 }
 
@@ -4539,7 +4797,13 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
                       "constant initializer");
   }
 
-  // Update symbol type.
+  // Forward-ref initializers (e.g. `const A = B * 2` with B declared
+  // later) leave init_type as Error.  Spec: zero value with no
+  // diagnostic.  Fall back to Int so downstream method dispatch
+  // (`A.String()`) and codegen find the right ABI.
+  if (!declared_type && is_error_type(init_type))
+    init_type = builtins.int_type;
+
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = declared_type ? declared_type : init_type;
   }

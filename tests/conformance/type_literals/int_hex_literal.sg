@@ -1,0 +1,7 @@
+// Spec: integer literal in hex form. (docs/language.md:589)
+import "std/io"
+
+pub fn Main() Void {
+  i := 0x1f
+  io.Println(i.String())
+}

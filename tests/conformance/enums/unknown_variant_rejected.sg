@@ -1,0 +1,14 @@
+// Spec: referring to an undeclared enum variant is an error.
+// (docs/language.md:986-987 — `Colors.Purple // error`)
+import "std/io"
+
+enum Colors {
+  Red
+  Green
+  Blue
+}
+
+pub fn Main() Void {
+  c := Colors.Purple
+  io.Println("unreachable")
+}

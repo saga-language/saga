@@ -1,0 +1,14 @@
+// Spec: bare typed declaration uses the type's zero value.
+// (docs/language.md:581-593)
+import "std/io"
+
+pub fn Main() Void {
+  b Bool
+  i Int
+  f Float
+  s String
+  io.Println(b.String())
+  io.Println(i.String())
+  io.Println(f.String())
+  io.Println("[" + s + "]")
+}

@@ -40,19 +40,10 @@ void CodeGen::declare_functions(const SourceNode &src) {
           continue;
       }
 
-      // Skip receiver methods on intrinsic types — handled by
-      // declare_intrinsic_methods or hardcoded codegen.
-      if (fn->receiver) {
-        auto &rt = fn->receiver->type->data;
-        if (auto *ri = std::get_if<IdentifierNode>(&rt)) {
-          if (is_intrinsic_type_name(ri->name))
-            continue;
-        }
-        // Also skip generic receivers ([T], {K:V}) — these are dispatched
-        // through the hardcoded array/map codegen path, not as direct calls.
-        if (std::get_if<ArrayTypeNode>(&rt) || std::get_if<MapTypeNode>(&rt))
-          continue;
-      }
+      // Receiver methods are declared elsewhere with the receiver in
+      // the signature; this path would build a clashing one without it.
+      if (fn->receiver)
+        continue;
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
       std::string link_name = is_main ? "main" : mangle(name);
@@ -186,6 +177,21 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   if (module->getGlobalVariable(link_name))
     return;
 
+  // `const Foo = import "..."` is a named-import binding, not a value
+  // constant.  The analyzer has already rewritten Foo into a Module
+  // symbol; there is no runtime storage to emit and no LLVM type to
+  // assign.  Skip.
+  if (node.value && std::get_if<ImportExprNode>(&node.value->data))
+    return;
+
+  // `const MyType = Int` (and other type aliases) carry no runtime
+  // value — the analyzer rewrites them to SymbolKind::Type.  Codegen
+  // for a use site treats `MyType` as the underlying type, so no
+  // GlobalVariable is needed.
+  if (auto sym = analyzer.lookup(name);
+      sym && sym->kind == SymbolKind::Type)
+    return;
+
   // Determine the semantic type.
   auto sem_type = semantic_type(*node.value);
   if (!sem_type && node.type)
@@ -193,7 +199,18 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   if (!sem_type)
     return;
 
+  // Forward references in const initializers (e.g. `const A = B * 2`
+  // where B is declared later) leave the semantic type unresolved
+  // (Error).  Spec: "the read will see the type's zero value with no
+  // diagnostic" (docs/language.md:120-122).  Without an inferred type
+  // the safest fallback is Int — the spec's primary numeric type and
+  // the common case for compile-time arithmetic.
+  if (is_error_type(sem_type))
+    sem_type = analyzer.builtins.int_type;
+
   auto *ll_type = llvm_type(sem_type);
+  if (!ll_type || ll_type->isVoidTy())
+    return;
 
   // Collection constants (arrays, maps) cannot be built as compile-time
   // LLVM constants — their backing storage is heap-allocated.  Emit a
@@ -248,8 +265,23 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
     }
   }
 
-  if (!init)
-    init = llvm::Constant::getNullValue(ll_type);
+  // No literal initializer: the value is a non-trivial compile-time
+  // expression (e.g. `const MaxSize = 2 * 1024 * 1024`). Create a
+  // mutable-storage global with a zero placeholder and queue the value
+  // expression to run from `<pkg>__init__` before user code observes
+  // the global.  Logically still immutable — semantic analysis enforces
+  // that user code cannot mutate it; isConstant=false here is purely a
+  // codegen necessity so the init function can write the value.
+  if (!init) {
+    auto *gv = new llvm::GlobalVariable(
+        *module, ll_type, /*isConstant=*/false,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::Constant::getNullValue(ll_type), link_name);
+    (void)gv;
+    deferred_const_inits_.push_back(&node);
+    init_function_needed = true;
+    return;
+  }
 
   auto *gv = new llvm::GlobalVariable(
       *module, ll_type, /*isConstant=*/true,
@@ -429,10 +461,31 @@ MethodSig CodeGen::build_method_signature(const FuncDeclNode &fn) {
     }
   }
 
+  // Receiver ABI: structs and interfaces pass by pointer; alias-of-
+  // primitive (e.g. `UserID = Int`) passes by value so the LLVM
+  // signature matches dispatch sites that emit a scalar receiver.
+  // Resolve the receiver via the analyzer's package_scope_ rather
+  // than resolve_type_node — at codegen time current_scope may not
+  // hold the receiver's name, which would silently degrade to void.
+  llvm::Type *self_ll = ptr_type;
+  if (fn.receiver) {
+    if (auto *id = std::get_if<IdentifierNode>(&fn.receiver->type->data)) {
+      auto sym = analyzer.package_scope_
+                     ? analyzer.package_scope_->lookup(std::string(id->name))
+                     : std::optional<Symbol>{};
+      if (sym && sym->type) {
+        auto unwrapped = unwrap_alias(sym->type);
+        if (unwrapped && unwrapped->kind != TypeKind::Struct)
+          self_ll = llvm_type(unwrapped);
+      }
+    }
+  }
+
   std::vector<llvm::Type *> param_types;
   if (sig.sret_struct_ty)
     param_types.push_back(ptr_type);
-  param_types.push_back(ptr_type); // self pointer
+  param_types.push_back(self_ll);
+  sig.self_ll = self_ll;
   for (auto &param : fn.signature.params) {
     auto *ll = resolve_type_node(*param.type);
     bool byval = ll && ll->isStructTy() && !param.is_variadic;
@@ -523,8 +576,13 @@ void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
 
     std::string struct_name(recv_ident->name);
     std::string struct_key = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key))
-      continue;
+    if (!struct_types.count(struct_key)) {
+      auto sym = analyzer.package_scope_
+                     ? analyzer.package_scope_->lookup(struct_name)
+                     : std::optional<Symbol>{};
+      if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+        continue;
+    }
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
@@ -701,8 +759,17 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    if (!struct_types.count(mangle(package_name, struct_name)))
-      continue;
+    TypePtr alias_sem_type;
+    if (!struct_types.count(mangle(package_name, struct_name))) {
+      auto sym = analyzer.package_scope_
+                     ? analyzer.package_scope_->lookup(struct_name)
+                     : std::optional<Symbol>{};
+      if (sym && sym->type && sym->type->kind == TypeKind::Alias)
+        alias_sem_type = sym->type;
+      else
+        continue;
+    }
+    bool is_alias_recv = static_cast<bool>(alias_sem_type);
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
@@ -718,15 +785,24 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     managed_locals.clear();
     current_func_is_main = false;
 
-    // Receiver parameter.
+    size_t arg_idx = 0;
+    bool has_sret = false;
+    if (fn->signature.returns.size() == 1) {
+      auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+      if (r_ll && r_ll->isStructTy()) {
+        has_sret = true;
+        ++arg_idx;
+      }
+    }
+
     std::string recv_name(fn->receiver->name.name);
-    auto *recv_alloca = create_entry_alloca(
-        func, recv_name, llvm::PointerType::getUnqual(context));
-    builder.CreateStore(func->getArg(0), recv_alloca);
+    llvm::Type *recv_alloc_ty = is_alias_recv
+        ? llvm_type(unwrap_alias(alias_sem_type))
+        : llvm::PointerType::getUnqual(context);
+    auto *recv_alloca = create_entry_alloca(func, recv_name, recv_alloc_ty);
+    builder.CreateStore(func->getArg(arg_idx++), recv_alloca);
     locals[recv_name] = recv_alloca;
 
-    // Regular parameters.
-    size_t arg_idx = 1;
     for (auto &param : fn->signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
       for (auto &ident : param.names.identifiers) {
@@ -734,9 +810,6 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
         auto *alloca = create_entry_alloca(func, pname, ll_type);
         auto *arg = func->getArg(arg_idx++);
         if (ll_type && ll_type->isStructTy()) {
-          // Byval struct param: arg is `ptr` to caller's copy.  Memcpy the
-          // bytes into the struct-typed local alloca so field access reads
-          // struct contents instead of the pointer's bits.
           auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
           auto al = module->getDataLayout().getABITypeAlign(ll_type);
           builder.CreateMemCpy(alloca, al, arg, al, sz);
@@ -754,7 +827,15 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     if (!builder.GetInsertBlock()->getTerminator()) {
       emit_release_locals();
       auto *ret_type = func->getReturnType();
-      if (ret_type->isVoidTy()) {
+      if (has_sret && tail_val && tail_val->getType()->isPointerTy()) {
+        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
+          auto *st_ty = ai->getAllocatedType();
+          auto sz = module->getDataLayout().getTypeAllocSize(st_ty);
+          auto al = module->getDataLayout().getABITypeAlign(st_ty);
+          builder.CreateMemCpy(func->getArg(0), al, tail_val, al, sz);
+        }
+        builder.CreateRetVoid();
+      } else if (ret_type->isVoidTy()) {
         builder.CreateRetVoid();
       } else if (tail_val && tail_val->getType() == ret_type) {
         builder.CreateRet(tail_val);

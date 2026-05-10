@@ -1,0 +1,9 @@
+// Spec: `str[i]` returns the single character at index i.
+// (docs/language.md:699-700)
+import "std/io"
+
+pub fn Main() Void {
+  str := "hello"
+  c := str[1]
+  io.Println(c)
+}

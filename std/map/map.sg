@@ -21,7 +21,7 @@ pub fn |K, V| (m {K:V}) Remove(key K) Void {
   intrinsic_runtime("saga_map_remove", m, key)
 }
 
-pub fn |K, V| (m {K:V}) Keys() [K] {
+pub fn |K, V| (m {K:V}) Keys() K[] {
   intrinsic_runtime("saga_map_keys", m)
 }
 

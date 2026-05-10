@@ -87,6 +87,12 @@ struct Analyzer {
   Scope::Ptr global_scope;
   Scope::Ptr current_scope;
 
+  // Stack of per-loop break value-type collections.  check_break pushes
+  // the type of each `break <value>` into the innermost vector; the
+  // enclosing for-expression reads it to shape its result as
+  // `T | Error` (spec language.md:1284-1295).
+  std::vector<std::vector<TypePtr>> break_value_types_;
+
   // ── Resolved information (output tables) ─────────────────────────────
 
   /// Maps each AST node (by Node*) to its resolved type.
@@ -501,6 +507,7 @@ private:
   void resolve_enum_decl(const EnumDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);
   void resolve_const_decl(const ConstDeclNode &node);
+  TypePtr try_interpret_as_type_expr(const Node &node);
 
   // Signature / parameter helpers.
   TypePtr resolve_signature(const SignatureNode &sig);
@@ -593,6 +600,7 @@ private:
                          TypePtr accumulator_hint = nullptr);
   TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
+  TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);

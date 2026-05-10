@@ -1,0 +1,10 @@
+// Spec: & | ^ << >> bitwise operators. (docs/language.md:1379-1380)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println((0b1100 & 0b1010).String())
+  io.Println((0b1100 | 0b1010).String())
+  io.Println((0b1100 ^ 0b1010).String())
+  io.Println((1 << 4).String())
+  io.Println((32 >> 2).String())
+}

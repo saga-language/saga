@@ -1,0 +1,7 @@
+// Spec: constants can be used to create named imports.
+// (docs/language.md:85, line 93: `const Math = import "std/math"`)
+const Out = import "std/io"
+
+pub fn Main() Void {
+  Out.Println("named import")
+}

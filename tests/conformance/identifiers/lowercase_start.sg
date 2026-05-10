@@ -1,0 +1,8 @@
+// Spec: identifiers must start with a lowercase letter, uppercase letter,
+// or underscore. (docs/language.md:21)
+import "std/io"
+
+pub fn Main() Void {
+  foo := 1
+  io.Println(foo.String())
+}

@@ -130,7 +130,7 @@ std::string type_to_sgi(const TypePtr &t) {
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    return "[" + type_to_sgi(info.element) + "]";
+    return type_to_sgi(info.element) + "[]";
   }
 
   case TypeKind::Map: {
@@ -775,7 +775,7 @@ struct SgiParser {
 
   /// Parse a type expression. This handles:
   /// - Primitive: Void, Bool, Int, Float, String, Byte, Int8, etc.
-  /// - Array: [Element]
+  /// - Array: Element[]
   /// - Map: {Key: Value}
   /// - Function: fn(Params) Returns
   /// - Union: A | B | C
@@ -814,13 +814,30 @@ struct SgiParser {
   }
 
   TypePtr parse_single_type() {
+    auto t = parse_atom_type();
+    if (!t) return t;
+    // Apply array suffix: T[], T[][], ...
+    while (!at_end() && content[pos] == '[') {
+      ++pos;
+      skip_whitespace();
+      if (at_end() || content[pos] != ']')
+        break; // sized form `[N]T` not yet supported in SGI
+      ++pos;
+      t = make_array_type(t);
+    }
+    return t;
+  }
+
+  TypePtr parse_atom_type() {
     skip_whitespace();
     if (at_end())
       return nullptr;
 
     char c = content[pos];
 
-    // Array: [Element]
+    // Legacy prefix array form [Element]: accepted on read for
+    // backward-compat with .sgi files emitted before the suffix
+    // migration.  Emission always uses the suffix form.
     if (c == '[') {
       ++pos;
       auto elem = parse_type();

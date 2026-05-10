@@ -1,0 +1,9 @@
+// Spec: a trailing question mark may be appended to an identifier.
+// (docs/language.md:23)  Convention is that "?" is reserved for booleans,
+// but the spec does not enforce it at the language level (line 41).
+import "std/io"
+
+pub fn Main() Void {
+  done? := true
+  io.Println(done?.String())
+}

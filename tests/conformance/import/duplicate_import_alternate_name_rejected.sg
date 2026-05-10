@@ -1,0 +1,9 @@
+// Spec: "Importing the same package more than once is an error, even
+// if bound to an alternate name." (docs/language.md:171-172) — explicit
+// "alternate name" form.
+import "std/io"
+const Out = import "std/io"
+
+pub fn Main() Void {
+  io.Println("unreachable")
+}

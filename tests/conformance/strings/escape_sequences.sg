@@ -1,0 +1,10 @@
+// Spec: \n, \t, \\, \" escapes work in string literals.
+// (docs/language.md:684-685)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println("a\tb")
+  io.Println("a\nb")
+  io.Println("c\\d")
+  io.Println("e\"f")
+}

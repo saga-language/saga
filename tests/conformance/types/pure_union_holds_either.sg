@@ -1,0 +1,17 @@
+// Spec: a pure union (no Error type) holds any of its alternatives.
+// (docs/language.md:363-371) — `Bool | Int` is the canonical example.
+// Direct method dispatch on a union isn't documented; values must be
+// narrowed first via type matching before methods can be called.
+import "std/io"
+
+fn Show(x Bool | Int) Void {
+  switch x {
+    case Int:  io.Println(x.String())
+    case Bool: io.Println(x.String())
+  }
+}
+
+pub fn Main() Void {
+  Show(5)
+  Show(true)
+}

@@ -197,12 +197,15 @@ struct GenericNode {
 // nodes.  Must be fully defined before any struct that embeds them directly.
 // ===========================================================================
 
-// CaseArm = "case" Expression ":" ( Expression | Block )
+// CaseArm = "case" Expression ("," Expression)* ":" ( Expression | Block )
 // Stored by value in std::vector<CaseArmNode> inside SwitchExprNode.
+//
+// Multi-value form: `case A, B, C: body` collects [A, B, C] into patterns
+// and runs body when the subject matches any of them.
 struct CaseArmNode {
   Span span;
-  NodePtr pattern; // expression (value match) or type node (type match)
-  NodePtr body;    // expression or BlockNode
+  std::vector<NodePtr> patterns; // value-match exprs or type nodes
+  NodePtr body;                  // expression or BlockNode
 };
 
 // ParameterType = Type | VariadicType ("..." Type)

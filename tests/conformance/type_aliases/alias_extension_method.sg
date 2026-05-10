@@ -1,0 +1,13 @@
+// Spec: "methods can be bound to any type provided it is within the
+// same file scope." (docs/language.md:561-562) — define a new method
+// on an alias type and call it.
+import "std/io"
+
+const UserID = Int
+
+pub fn (u UserID) Display() String { "user#" + u.String() }
+
+pub fn Main() Void {
+  uid UserID = 7
+  io.Println(uid.Display())
+}

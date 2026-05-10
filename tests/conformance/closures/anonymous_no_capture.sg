@@ -1,0 +1,8 @@
+// Spec: anonymous function assigned and called.
+// (docs/language.md:1024-1026)
+import "std/io"
+
+pub fn Main() Void {
+  anon := fn () Int { 42 }
+  io.Println(anon().String())
+}

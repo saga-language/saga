@@ -6,6 +6,7 @@
 #include <llvm/IR/Constants.h>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace saga {
 
@@ -233,21 +234,26 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
       auto *case_bb = llvm::BasicBlock::Create(context,
           "sw.case." + std::to_string(i), func);
 
-      // Resolve the pattern's semantic type (should be a type name).
-      auto pattern_sem = semantic_type(*arm.pattern);
-      int tag = -1;
-      if (pattern_sem)
-        tag = union_tag_for_type(pattern_sem, subject_sem);
-      if (tag >= 0)
-        sw->addCase(llvm::ConstantInt::get(i8_ty, tag), case_bb);
-      else
-        sw->addCase(llvm::ConstantInt::get(i8_ty, i), case_bb);
+      // Multi-pattern arms route every pattern to the same case block.
+      // Narrowing the subject only makes sense with a single pattern.
+      TypePtr pattern_sem;
+      for (size_t pi = 0; pi < arm.patterns.size(); ++pi) {
+        auto p_sem = semantic_type(*arm.patterns[pi]);
+        if (pi == 0)
+          pattern_sem = p_sem;
+        int tag = -1;
+        if (p_sem)
+          tag = union_tag_for_type(p_sem, subject_sem);
+        if (tag >= 0)
+          sw->addCase(llvm::ConstantInt::get(i8_ty, tag), case_bb);
+        else
+          sw->addCase(llvm::ConstantInt::get(i8_ty, i), case_bb);
+      }
 
       builder.SetInsertPoint(case_bb);
 
-      // Narrow the subject variable for this arm.
       llvm::AllocaInst *saved = nullptr;
-      if (!subject_var.empty() && pattern_sem) {
+      if (!subject_var.empty() && pattern_sem && arm.patterns.size() == 1) {
         auto local_it = locals.find(subject_var);
         if (local_it != locals.end()) {
           auto *extracted = emit_union_extract(union_ptr, pattern_sem,
@@ -282,20 +288,26 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
     // Default / else block.
     func->insert(func->end(), default_bb);
     builder.SetInsertPoint(default_bb);
-    llvm::Value *else_val = nullptr;
-    bool else_terminated = false;
     if (node.else_body) {
+      llvm::Value *else_val = nullptr;
       if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
         else_val = emit_block(*block);
       } else {
         else_val = emit_expr(**node.else_body);
       }
-      else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+      bool else_terminated =
+          builder.GetInsertBlock()->getTerminator() != nullptr;
+      if (!else_terminated)
+        builder.CreateBr(merge_bb);
+      case_results.push_back({else_val, builder.GetInsertBlock(),
+                              else_terminated});
+    } else {
+      // Exhaustiveness is enforced by check_switch_expr — the default
+      // is unreachable when all union alternatives are covered.  Adding
+      // a null-valued case_result here would break the merge-PHI's
+      // all_have_value check.
+      builder.CreateUnreachable();
     }
-    if (!else_terminated)
-      builder.CreateBr(merge_bb);
-    case_results.push_back({else_val, builder.GetInsertBlock(),
-                            else_terminated});
 
   } else if (is_string) {
     // ── String matching: chained icmp + br ──────────────────────────
@@ -308,12 +320,20 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
       auto *next_bb = llvm::BasicBlock::Create(context,
           "sw.next." + std::to_string(i));
 
-      // Emit the pattern comparison.
-      auto *pattern_val = emit_expr(*arm.pattern);
-      auto *cmp = builder.CreateCall(cmp_fn, {subject_val, pattern_val}, "strcmp");
-      auto *is_eq = builder.CreateICmpEQ(cmp,
-          llvm::ConstantInt::get(i64_type, 0), "sw.eq");
-      builder.CreateCondBr(is_eq, case_bb, next_bb);
+      for (size_t pi = 0; pi < arm.patterns.size(); ++pi) {
+        auto *pattern_val = emit_expr(*arm.patterns[pi]);
+        auto *cmp = builder.CreateCall(cmp_fn, {subject_val, pattern_val}, "strcmp");
+        auto *is_eq = builder.CreateICmpEQ(cmp,
+            llvm::ConstantInt::get(i64_type, 0), "sw.eq");
+        bool is_last = (pi + 1 == arm.patterns.size());
+        auto *fail_bb = is_last
+            ? next_bb
+            : llvm::BasicBlock::Create(context,
+                "sw.try." + std::to_string(i) + "." + std::to_string(pi), func);
+        builder.CreateCondBr(is_eq, case_bb, fail_bb);
+        if (!is_last)
+          builder.SetInsertPoint(fail_bb);
+      }
 
       // Emit the case body.
       builder.SetInsertPoint(case_bb);
@@ -369,32 +389,30 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
       auto *case_bb = llvm::BasicBlock::Create(context,
           "sw.case." + std::to_string(i), func);
 
-      // Resolve the case constant. For enum selectors and integer
-      // literals this happens at codegen time.
-      auto *pattern_val = emit_expr(*arm.pattern);
-      if (auto *ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(pattern_val)) {
-        // If the subject is i1 (bool) but the constant is i64, truncate.
-        if (subject_val->getType()->isIntegerTy(1) &&
-            ci->getType()->isIntegerTy(64)) {
-          sw->addCase(llvm::ConstantInt::get(
-              llvm::Type::getInt1Ty(context),
-              ci->getZExtValue() & 1), case_bb);
-        } else if (ci->getType() == subject_val->getType()) {
-          sw->addCase(ci, case_bb);
+      for (auto &pat : arm.patterns) {
+        auto *pattern_val = emit_expr(*pat);
+        if (auto *ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(pattern_val)) {
+          if (subject_val->getType()->isIntegerTy(1) &&
+              ci->getType()->isIntegerTy(64)) {
+            sw->addCase(llvm::ConstantInt::get(
+                llvm::Type::getInt1Ty(context),
+                ci->getZExtValue() & 1), case_bb);
+          } else if (ci->getType() == subject_val->getType()) {
+            sw->addCase(ci, case_bb);
+          } else {
+            auto *cast = llvm::ConstantInt::get(
+                llvm::cast<llvm::IntegerType>(subject_val->getType()),
+                ci->getSExtValue());
+            sw->addCase(cast, case_bb);
+          }
         } else {
-          // Type mismatch — try an intcast.
-          auto *cast = llvm::ConstantInt::get(
-              llvm::cast<llvm::IntegerType>(subject_val->getType()),
-              ci->getSExtValue());
-          sw->addCase(cast, case_bb);
+          // Non-constant pattern — keep the block reachable with a
+          // synthetic case so it isn't orphaned.  Well-formed programs
+          // shouldn't hit this path.
+          sw->addCase(llvm::ConstantInt::get(
+              llvm::cast<llvm::IntegerType>(subject_val->getType()), i),
+              case_bb);
         }
-      } else {
-        // Non-constant pattern — fall back to chained comparison in default.
-        // This shouldn't happen for well-formed programs, but add the
-        // block anyway so it's not orphaned.
-        sw->addCase(llvm::ConstantInt::get(
-            llvm::cast<llvm::IntegerType>(subject_val->getType()), i),
-            case_bb);
       }
 
       // Emit the case body.
@@ -475,6 +493,29 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 // ===========================================================================
 // Array literals
 // ===========================================================================
+
+llvm::Value *CodeGen::emit_range_expr(const RangeExprNode &node) {
+  auto *low = emit_expr(*node.low);
+  auto *high = emit_expr(*node.high);
+  if (!low || !high) return nullptr;
+
+  // Range carries i64 endpoints regardless of element width — the runtime
+  // ABI stores narrow integers as i64 (see CodeGen::llvm_type's Int case).
+  if (low->getType() != i64_type)
+    low = builder.CreateIntCast(low, i64_type, /*isSigned=*/true, "rng.lo");
+  if (high->getType() != i64_type)
+    high = builder.CreateIntCast(high, i64_type, /*isSigned=*/true, "rng.hi");
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *slot = create_entry_alloca(func, "range.lit", range_struct_type);
+  auto *lo_gep =
+      builder.CreateStructGEP(range_struct_type, slot, 0, "range.lo.gep");
+  builder.CreateStore(low, lo_gep);
+  auto *hi_gep =
+      builder.CreateStructGEP(range_struct_type, slot, 1, "range.hi.gep");
+  builder.CreateStore(high, hi_gep);
+  return slot;
+}
 
 llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
   // Determine element size from the semantic type.
@@ -628,13 +669,96 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
 // Index expressions
 // ===========================================================================
 
+llvm::Value *
+CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
+                                            llvm::Type *elem_ll,
+                                            const TypePtr &val_type,
+                                            const std::string &miss_msg) {
+  auto result_union =
+      make_union_type({val_type, analyzer.builtins.error_iface});
+  auto *union_st = get_union_llvm_type(result_union);
+  if (!union_st)
+    return nullptr;
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto *is_null = builder.CreateICmpEQ(
+      elem_ptr, llvm::ConstantPointerNull::get(ptr_ty), "idx.is_null");
+
+  auto *null_bb = llvm::BasicBlock::Create(context, "idx.null", func);
+  auto *ok_bb = llvm::BasicBlock::Create(context, "idx.ok", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "idx.merge", func);
+
+  builder.CreateCondBr(is_null, null_bb, ok_bb);
+
+  builder.SetInsertPoint(null_bb);
+  // The error payload is the Error interface, lowered as a fat pointer.
+  // saga_missing_new allocates one (data = Missing carrying the message,
+  // vtable = single-slot Message vtable) so `or |err| { err.Message() }`
+  // can dispatch through the Error interface without crashing on a null
+  // vtable.
+  auto *err_fat = emit_missing_fat_ptr(miss_msg);
+  auto *err_wrapped =
+      emit_union_wrap(err_fat, analyzer.builtins.error_iface, result_union);
+  auto *null_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(ok_bb);
+  auto *loaded = builder.CreateLoad(elem_ll, elem_ptr, "elem");
+  auto *ok_wrapped = emit_union_wrap(loaded, val_type, result_union);
+  auto *ok_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(merge_bb);
+  auto *phi = builder.CreatePHI(ptr_ty, 2, "idx.union");
+  phi->addIncoming(err_wrapped, null_end_bb);
+  phi->addIncoming(ok_wrapped, ok_end_bb);
+  return phi;
+}
+
 llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
   auto *obj = emit_expr(*node.object);
   if (!obj)
     return nullptr;
 
-  // Check if this is an array index.
   auto obj_sem = semantic_type(*node.object);
+
+  // Slice form: `obj[a..b]`, `obj[..b]`, `obj[a..]`, `obj[..]`.  String
+  // slicing is byte-indexed via saga_string_slice; absent endpoints flow
+  // through as the INT64_MIN sentinel so the runtime clamps to [0, len].
+  if (auto *slice = std::get_if<SliceNode>(&node.index->data)) {
+    if (obj_sem && obj_sem->kind == TypeKind::String) {
+      auto *sentinel = llvm::ConstantInt::get(
+          i64_type, static_cast<uint64_t>(INT64_MIN), /*isSigned=*/true);
+      llvm::Value *lo = sentinel;
+      llvm::Value *hi = sentinel;
+      if (slice->low) {
+        lo = emit_expr(**slice->low);
+        if (lo && lo->getType() != i64_type)
+          lo = builder.CreateIntCast(lo, i64_type, true, "slice.lo");
+      }
+      if (slice->high) {
+        hi = emit_expr(**slice->high);
+        if (hi && hi->getType() != i64_type)
+          hi = builder.CreateIntCast(hi, i64_type, true, "slice.hi");
+      }
+      if (!lo || !hi) return nullptr;
+      return builder.CreateCall(module->getFunction("saga_string_slice"),
+                                {obj, lo, hi}, "str.slice");
+    }
+    return nullptr;
+  }
+
+  // Scalar index form: `obj[i]`.
+  if (obj_sem && obj_sem->kind == TypeKind::String) {
+    auto *idx = emit_expr(*node.index);
+    if (!idx) return nullptr;
+    if (idx->getType() != i64_type)
+      idx = builder.CreateIntCast(idx, i64_type, true, "str.idx");
+    return builder.CreateCall(module->getFunction("saga_string_at"),
+                              {obj, idx}, "str.at");
+  }
+
   if (obj_sem && obj_sem->kind == TypeKind::Array) {
     auto *idx = emit_expr(*node.index);
     if (!idx)
@@ -643,13 +767,13 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
     auto *at_fn = module->getFunction("saga_array_at");
     auto *elem_ptr = builder.CreateCall(at_fn, {obj, idx}, "at");
 
-    // Determine the element type to load.
     auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
     auto *elem_ll = llvm_type(arr_info.element);
-    return builder.CreateLoad(elem_ll, elem_ptr, "elem");
+
+    return wrap_indexed_lookup_in_error_union(
+        elem_ptr, elem_ll, arr_info.element, "index out of bounds");
   }
 
-  // Map indexing: map[key] → loads value from saga_runtime_map_get.
   if (obj_sem && obj_sem->kind == TypeKind::Map) {
     auto *idx = emit_expr(*node.index);
     if (!idx)
@@ -659,16 +783,15 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
 
     auto *func = builder.GetInsertBlock()->getParent();
 
-    // Store key to a temporary for passing by pointer.
     auto *key_tmp = create_entry_alloca(func, "map.idx.key", idx->getType());
     builder.CreateStore(idx, key_tmp);
 
     auto *get_fn = module->getFunction("saga_map_get");
     auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp}, "map.get");
 
-    // Load the value from the returned pointer.
     auto *val_ll = llvm_type(map_info.value);
-    return builder.CreateLoad(val_ll, val_ptr, "map.val");
+    return wrap_indexed_lookup_in_error_union(
+        val_ptr, val_ll, map_info.value, "key not found");
   }
 
   // String indexing — deferred for now.
@@ -726,14 +849,16 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   std::vector<int> non_error_tags;
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
     auto &alt = info.alternatives[i];
-    if (alt->kind == TypeKind::Interface) {
+    bool is_err = false;
+    if (alt && alt->kind == TypeKind::Interface) {
       auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error") {
-        error_tags.push_back(static_cast<int>(i));
-        continue;
-      }
+      if (iface.name == "Error") is_err = true;
+    } else if (alt && alt->kind == TypeKind::Struct) {
+      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
+      if (sinfo.name == "Missing") is_err = true;
     }
-    non_error_tags.push_back(static_cast<int>(i));
+    if (is_err) error_tags.push_back(static_cast<int>(i));
+    else non_error_tags.push_back(static_cast<int>(i));
   }
 
   // Create basic blocks.
@@ -975,6 +1100,24 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
     auto [gep, field_ll] = struct_field_gep(alloca, sem, fname);
     if (!gep)
       continue;
+
+    // Find the field's semantic type for union-wrap detection.
+    TypePtr field_sem;
+    for (auto &fi : info.fields)
+      if (fi.name == fname) { field_sem = fi.type; break; }
+
+    // Field is a union; the supplied value is one alternative.  Wrap
+    // before memcpy so the union's tag is set correctly.  Without this
+    // an `optional String | Missing` field given `Missing{}` would
+    // memcpy zero bytes into a 9-byte slot, leaving the tag at 0
+    // (i.e. interpreted as an empty String).
+    if (field_sem && field_sem->kind == TypeKind::Union) {
+      auto val_sem = semantic_type(*fa.value);
+      if (val_sem && val_sem->kind != TypeKind::Union) {
+        auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
+        if (wrapped) val = wrapped;
+      }
+    }
 
     // D1: aggregate fields are stored inline. If the rhs is a pointer to
     // a struct (e.g. from a nested struct literal), memcpy the bytes

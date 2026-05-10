@@ -1,0 +1,10 @@
+// Spec: "Mutation of global objects is prohibited." (docs/language.md:96)
+// Global const array; attempting to mutate it must be rejected.
+import "std/io"
+
+const Primes = [2, 3, 5]
+
+pub fn Main() Void {
+  Primes.Push(7)
+  io.Println(Primes.Size().String())
+}

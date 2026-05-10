@@ -1,0 +1,19 @@
+// Spec: "The numeric types also have the full compliment of types:
+// Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float32,
+// Float64." (docs/language.md:302-303)
+import "std/io"
+
+pub fn Main() Void {
+  i8  Int8  = 1
+  i16 Int16 = 2
+  i32 Int32 = 3
+  i64 Int64 = 4
+  f32 Float32 = 5.0
+  f64 Float64 = 6.0
+  io.Println(i8.String())
+  io.Println(i16.String())
+  io.Println(i32.String())
+  io.Println(i64.String())
+  io.Println(f32.String())
+  io.Println(f64.String())
+}

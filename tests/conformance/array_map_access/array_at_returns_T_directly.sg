@@ -1,0 +1,9 @@
+// Spec: `arr.At(i)` returns T directly, not a union.
+// (docs/language.md:663-664) — escape hatch for tight loops.
+import "std/io"
+
+pub fn Main() Void {
+  arr := [10, 20, 30]
+  v := arr.At(1)
+  io.Println(v.String())
+}

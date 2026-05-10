@@ -111,11 +111,8 @@ private:
   /// UnionType = SingleType { "|" SingleType }
   NodePtr parse_union_type();
 
-  /// SingleType = Identifier | ArrayType | MapType | FuncType | ...
+  /// SingleType = BaseType { "[" "]" }
   NodePtr parse_single_type();
-
-  /// ArrayType = "[" Type "]"
-  NodePtr parse_array_type();
 
   /// MapType = "{" Type ":" Type "}"
   NodePtr parse_map_type();
@@ -178,7 +175,6 @@ private:
   // ── Statement Parsing ────────────────────────────────────────────────
 
   NodePtr parse_statement();
-  NodePtr parse_var_decl();    // Identifier Type [ "=" Expression ]
   NodePtr parse_decl_assign(); // IdentifierList ":=" ExpressionList
   NodePtr parse_assignment(NodePtr target); // target = ... | += ... | ...
   NodePtr parse_return();

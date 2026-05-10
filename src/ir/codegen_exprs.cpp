@@ -5,6 +5,7 @@
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/Intrinsics.h>
 
 #include <charconv>
 
@@ -42,7 +43,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_if_expr(n);
           },
           [&](const ForExprNode &n) -> llvm::Value * {
-            return emit_for_expr(n);
+            return emit_for_expr(n, node);
           },
           [&](const SwitchExprNode &n) -> llvm::Value * {
             return emit_switch_expr(n);
@@ -59,12 +60,37 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const MapLiteralNode &n) -> llvm::Value * {
             return emit_map_literal(n);
           },
+          [&](const RangeExprNode &n) -> llvm::Value * {
+            return emit_range_expr(n);
+          },
           [&](const IndexExprNode &n) -> llvm::Value * {
             return emit_index_expr(n);
           },
-          [&](const BreakNode &) -> llvm::Value * {
-            if (!loop_stack.empty())
-              builder.CreateBr(loop_stack.back().break_bb);
+          [&](const BreakNode &n) -> llvm::Value * {
+            if (loop_stack.empty()) return nullptr;
+            auto &frame = loop_stack.back();
+            // `break <value>` inside a for-expression typed `T | Error`:
+            // wrap with ok tag, store to the pre-allocated union slot,
+            // then branch to break_bb.  Without this the value is lost.
+            if (frame.result_alloca && !n.values.empty() &&
+                frame.result_value_type && frame.result_union_type) {
+              auto *val = emit_expr(*n.values[0]);
+              if (val) {
+                auto *wrapped = emit_union_wrap(val, frame.result_value_type,
+                                                frame.result_union_type);
+                if (wrapped) {
+                  auto *union_st =
+                      get_union_llvm_type(frame.result_union_type);
+                  auto sz =
+                      module->getDataLayout().getTypeAllocSize(union_st);
+                  auto al =
+                      module->getDataLayout().getABITypeAlign(union_st);
+                  builder.CreateMemCpy(frame.result_alloca, al, wrapped,
+                                       al, sz);
+                }
+              }
+            }
+            builder.CreateBr(frame.break_bb);
             return nullptr;
           },
           [&](const NextNode &) -> llvm::Value * {
@@ -635,6 +661,42 @@ llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
   return result;
 }
 
+llvm::Value *CodeGen::emit_float_pow(llvm::Value *base, llvm::Value *exp) {
+  auto *intrin = llvm::Intrinsic::getDeclaration(
+      module.get(), llvm::Intrinsic::pow, {f64_type});
+  return builder.CreateCall(intrin, {base, exp}, "pow");
+}
+
+llvm::Value *CodeGen::emit_int_pow(llvm::Value *base, llvm::Value *exp) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *result = create_entry_alloca(func, "pow.result", i64_type);
+  auto *idx = create_entry_alloca(func, "pow.i", i64_type);
+  builder.CreateStore(llvm::ConstantInt::get(i64_type, 1), result);
+  builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx);
+
+  auto *cond_bb = llvm::BasicBlock::Create(context, "pow.cond", func);
+  auto *body_bb = llvm::BasicBlock::Create(context, "pow.body", func);
+  auto *end_bb = llvm::BasicBlock::Create(context, "pow.end", func);
+
+  builder.CreateBr(cond_bb);
+  builder.SetInsertPoint(cond_bb);
+  auto *i_val = builder.CreateLoad(i64_type, idx, "pow.i.val");
+  auto *done = builder.CreateICmpSGE(i_val, exp, "pow.done");
+  builder.CreateCondBr(done, end_bb, body_bb);
+
+  builder.SetInsertPoint(body_bb);
+  auto *r_val = builder.CreateLoad(i64_type, result, "pow.r.val");
+  builder.CreateStore(builder.CreateMul(r_val, base, "pow.next.r"), result);
+  builder.CreateStore(
+      builder.CreateAdd(i_val, llvm::ConstantInt::get(i64_type, 1),
+                        "pow.next.i"),
+      idx);
+  builder.CreateBr(cond_bb);
+
+  builder.SetInsertPoint(end_bb);
+  return builder.CreateLoad(i64_type, result, "pow.val");
+}
+
 llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
                                         const Node &parent) {
   // Check semantic types to detect string operations.
@@ -797,10 +859,8 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
     return result;
   }
   case K::Modulo:   return builder.CreateSRem(lhs, rhs, "mod");
-  case K::Pow: {
-    // TODO: proper pow intrinsic.
-    return llvm::ConstantInt::get(i64_type, 0);
-  }
+  case K::Pow:
+    return is_float ? emit_float_pow(lhs, rhs) : emit_int_pow(lhs, rhs);
 
   // ── Comparison ─────────────────────────────────────────────────────
   case K::Equal:

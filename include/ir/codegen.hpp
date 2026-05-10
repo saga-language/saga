@@ -24,6 +24,7 @@ struct MethodSig {
   llvm::FunctionType *fn_type = nullptr;
   llvm::Type *sret_struct_ty = nullptr;
   std::vector<llvm::Type *> byval_struct_tys; // one per regular param
+  llvm::Type *self_ll = nullptr;              // receiver LLVM type
 };
 
 // Stamp argument names onto an already-created LLVM function based on its
@@ -137,6 +138,12 @@ struct CodeGen {
   /// The fat pointer type for closures: { ptr fn, ptr env }.
   llvm::StructType *closure_fat_ptr_type = nullptr;
 
+  /// Backing struct for `(low..high)` literals: { i64 low, i64 high }.  The
+  /// range element type is type-erased to i64; integer/Char/Byte ranges all
+  /// share this layout, with materialising methods (Array/iteration) reading
+  /// the receiver's semantic element type for the produced T[].
+  llvm::StructType *range_struct_type = nullptr;
+
   /// Counter for generating unique closure names.
   int next_closure_id = 0;
 
@@ -173,6 +180,14 @@ struct CodeGen {
   struct LoopContext {
     llvm::BasicBlock *break_bb;   // target of `break`
     llvm::BasicBlock *next_bb;    // target of `next`
+    // For `result := for ... { break v }`: the loop's for-expression
+    // type is `T | Error`.  result_alloca points at a union slot
+    // pre-filled with the error tag; `break v` wraps v with the ok
+    // tag and stores it before branching to break_bb.  Null when the
+    // for-expression isn't an impure-union form.
+    llvm::AllocaInst *result_alloca = nullptr;
+    TypePtr result_union_type;
+    TypePtr result_value_type;
   };
   std::vector<LoopContext> loop_stack;
 
@@ -475,6 +490,8 @@ private:
   llvm::Value *emit_identifier(const IdentifierNode &node);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
+  llvm::Value *emit_int_pow(llvm::Value *base, llvm::Value *exp);
+  llvm::Value *emit_float_pow(llvm::Value *base, llvm::Value *exp);
 
   /// Emit a binary operator that was resolved to a struct method call
   /// (operator overloading). `method` is e.g. "Add", "Compare", "Equals".
@@ -485,7 +502,7 @@ private:
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
-  llvm::Value *emit_for_expr(const ForExprNode &node);
+  llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
 
   // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
   struct ForLoopBlocks {
@@ -511,6 +528,10 @@ private:
                           const ForRangeClauseNode &range,
                           llvm::Value *iterable, const TypePtr &iter_sem,
                           const ForLoopBlocks &bbs);
+  void emit_for_range_range(const ForExprNode &node,
+                            const ForRangeClauseNode &range,
+                            llvm::Value *iterable, const TypePtr &iter_sem,
+                            const ForLoopBlocks &bbs);
   void emit_for_range_task(const ForExprNode &node,
                            const ForRangeClauseNode &range,
                            const StructTypeInfo &task_info,
@@ -526,7 +547,12 @@ private:
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_map_literal(const MapLiteralNode &node);
+  llvm::Value *emit_range_expr(const RangeExprNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
+  llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
+                                                  llvm::Type *elem_ll,
+                                                  const TypePtr &val_type,
+                                                  const std::string &miss_msg);
   llvm::Value *emit_or_expr(const OrExprNode &node);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
@@ -622,6 +648,12 @@ private:
   /// Wrap a concrete value into a union alloca, returning the alloca ptr.
   llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
                                 const TypePtr &union_type);
+
+  /// Build a Missing-as-Error iface fat pointer carrying `message`.  Returns
+  /// the i8* result of `saga_missing_new`, suitable for use as the err
+  /// payload of a `T | Error` union.  Used by wrap_indexed_lookup and the
+  /// failure path of `intrinsic_runtime_try`.
+  llvm::Value *emit_missing_fat_ptr(const std::string &message);
 
   /// Extract a concrete value from a union alloca given the expected alt type.
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,

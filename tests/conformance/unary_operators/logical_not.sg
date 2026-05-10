@@ -1,0 +1,7 @@
+// Spec: `!` logical NOT on a Bool. (docs/language.md:1359, 1362)
+import "std/io"
+
+pub fn Main() Void {
+  io.Println((!true).String())
+  io.Println((!false).String())
+}

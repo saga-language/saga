@@ -1,0 +1,12 @@
+// Spec: "Multiple parameters of the same type can be concatenated
+// with commas, followed by a Type, then more parameters."
+// (docs/language.md:212-216, "fn MultiParam(a, b Int, c String) Void")
+import "std/io"
+
+fn Combine(a, b Int, c String) String {
+  c + " " + (a + b).String()
+}
+
+pub fn Main() Void {
+  io.Println(Combine(2, 3, "sum:"))
+}

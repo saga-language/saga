@@ -1,0 +1,9 @@
+// Spec: two-variable form `for k, v : arr {}` yields index and value.
+// (docs/language.md:1236)
+import "std/io"
+
+pub fn Main() Void {
+  for k, v : [10, 20, 30] {
+    io.Println(k.String() + ":" + v.String())
+  }
+}

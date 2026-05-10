@@ -1,0 +1,16 @@
+// Spec: case clauses can match multiple values via comma.
+// (docs/language.md:1110-1111)
+import "std/io"
+
+fn ClassifyDigit(n Int) String {
+  switch n {
+    case 0, 2, 4, 6, 8: "even"
+    case 1, 3, 5, 7, 9: "odd"
+    else: "?"
+  }
+}
+
+pub fn Main() Void {
+  io.Println(ClassifyDigit(3))
+  io.Println(ClassifyDigit(8))
+}
