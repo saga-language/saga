@@ -524,7 +524,7 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   }
 
   // Any is a top type — any value is assignable to Any, and Any is assignable
-  // to any type.  Used by intrinsic_runtime / intrinsic_field signatures.
+  // to any type.  Scheduled for removal in Phase 4 of the intrinsics cleanup.
   auto is_any = [](const TypePtr &t) {
     if (t->kind != TypeKind::Struct) return false;
     return std::get<StructTypeInfo>(t->detail).name == "Any";

@@ -15,6 +15,7 @@ inline static const std::unordered_map<std::string_view, Token::Kind> keywords =
      {"const", Token::Kind::Const},
      {"else", Token::Kind::Else},
      {"enum", Token::Kind::Enum},
+     {"extern", Token::Kind::Extern},
      {"false", Token::Kind::BoolLiteral},
      {"fn", Token::Kind::Fn},
      {"for", Token::Kind::For},

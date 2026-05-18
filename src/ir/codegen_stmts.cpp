@@ -6,6 +6,8 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
 
+#include <unordered_set>
+
 namespace saga {
 
 
@@ -106,6 +108,46 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   return llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
 }
 
+llvm::FunctionType *
+CodeGen::build_extern_generic_func_type(const FuncDeclNode &fn) {
+  std::unordered_set<std::string> generic_names;
+  if (fn.generic) {
+    for (auto &tp : fn.generic->type_params) {
+      if (auto *id = std::get_if<IdentifierNode>(&tp->data))
+        generic_names.insert(std::string(id->name));
+    }
+  }
+
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto lower = [&](const Node &type_node) -> llvm::Type * {
+    if (auto *id = std::get_if<IdentifierNode>(&type_node.data))
+      if (generic_names.count(std::string(id->name)))
+        return ptr_ty;
+    return resolve_type_node(type_node);
+  };
+
+  llvm::Type *ret_type = void_ll_type;
+  if (fn.signature.returns.size() == 1) {
+    ret_type = lower(*fn.signature.returns[0]);
+  } else if (fn.signature.returns.size() > 1) {
+    std::vector<llvm::Type *> rfs;
+    for (auto &r : fn.signature.returns)
+      rfs.push_back(lower(*r));
+    ret_type = llvm::StructType::create(
+        context, rfs, "saga.ret." + std::string(fn.name.name));
+  }
+
+  std::vector<llvm::Type *> param_types;
+  for (auto &param : fn.signature.params) {
+    auto *ll_type = lower(*param.type);
+    if (ll_type && ll_type->isStructTy())
+      ll_type = ptr_ty;
+    for (size_t i = 0; i < param.names.identifiers.size(); ++i)
+      param_types.push_back(ll_type);
+  }
+  return llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
+}
+
 void CodeGen::apply_func_abi_attrs(llvm::Function *func,
                                     const FuncDeclNode &fn) {
   if (fn.name.name == "Main")
@@ -145,6 +187,10 @@ void CodeGen::apply_func_abi_attrs(llvm::Function *func,
 // ===========================================================================
 
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
+  if (fn.is_extern) {
+    // Bodiless declaration — the link-time symbol is resolved externally.
+    return;
+  }
   if (fn.generic) {
     if (!fn.receiver)
       return;

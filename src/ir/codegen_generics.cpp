@@ -22,7 +22,6 @@ CodeGen::FuncEmissionScope::FuncEmissionScope(CodeGen &cg) : cg_(cg) {
   saved_managed_locals_ = std::move(cg.managed_locals);
   saved_loop_stack_ = std::move(cg.loop_stack);
   saved_current_func_is_main_ = cg.current_func_is_main;
-  saved_current_func_return_sem_ = cg.current_func_return_sem;
   saved_current_instantiation_ = cg.current_instantiation_;
   saved_current_actor_ = cg.current_actor;
   saved_pending_channel_alloca_ = cg.pending_channel_alloca_;
@@ -32,7 +31,6 @@ CodeGen::FuncEmissionScope::FuncEmissionScope(CodeGen &cg) : cg_(cg) {
   cg.managed_locals.clear();
   cg.loop_stack.clear();
   cg.current_func_is_main = false;
-  cg.current_func_return_sem = nullptr;
   cg.current_instantiation_ = nullptr;
   cg.current_actor = nullptr;
   cg.pending_channel_alloca_ = nullptr;
@@ -43,7 +41,6 @@ CodeGen::FuncEmissionScope::~FuncEmissionScope() {
   cg_.managed_locals = std::move(saved_managed_locals_);
   cg_.loop_stack = std::move(saved_loop_stack_);
   cg_.current_func_is_main = saved_current_func_is_main_;
-  cg_.current_func_return_sem = saved_current_func_return_sem_;
   cg_.current_instantiation_ = saved_current_instantiation_;
   cg_.current_actor = saved_current_actor_;
   cg_.pending_channel_alloca_ = saved_pending_channel_alloca_;
@@ -248,8 +245,6 @@ llvm::Function *CodeGen::emit_specialisation(
       locals.clear();
       managed_locals.clear();
       current_func_is_main = false;
-      current_func_return_sem = fi.returns.empty()
-          ? nullptr : fi.returns[0];
 
       // Self parameter.
       std::string recv_name(fn.receiver->name.name);

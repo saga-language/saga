@@ -232,24 +232,6 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
           {make_union_type({types.string_type, make_array_type(types.byte_type)})},
           {types.int_type})));
 
-  // intrinsic_runtime(name: String, args...: Any) -> Any
-  // Calls the named C runtime function; scalar args are auto-promoted to
-  // stack pointers when the C function expects void*.  The return type is
-  // Any; codegen uses the actual C function's return type.
-  {
-    auto variadic_any = make_array_type(types.any_type);
-    auto fn = make_func_type({types.string_type, variadic_any}, {types.any_type});
-    std::get<FuncTypeInfo>(fn->detail).is_variadic = true;
-    global_scope->declare(Symbol::builtin("intrinsic_runtime",
-                                          SymbolKind::Function, fn));
-  }
-
-  // intrinsic_field(value: Any, index: Int) -> Any
-  // GEP + load on the value's backing struct at the given field index.
-  global_scope->declare(Symbol::builtin(
-      "intrinsic_field", SymbolKind::Function,
-      make_func_type({types.any_type, types.int_type}, {types.any_type})));
-
   // intrinsic_sitofp(value: Any) -> Any
   // LLVM sitofp i64 → double. Returns Any so the stdlib can cast to Float,
   // Float32, Float64, etc.  Value is Any so any integer-kind input
@@ -297,14 +279,6 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   global_scope->declare(Symbol::builtin(
       "intrinsic_fpext", SymbolKind::Function,
       make_func_type({types.any_type}, {types.any_type})));
-
-  // intrinsic_runtime_try(name: String, args...) -> Any
-  // Like intrinsic_runtime but for C functions that return a status code
-  // and write the result to an auto-appended out-param. Status 0 = success,
-  // non-zero = failure (wraps Missing as error variant).
-  global_scope->declare(Symbol::builtin(
-      "intrinsic_runtime_try", SymbolKind::Function,
-      make_func_type({types.string_type}, {types.any_type}, true)));
 
   // intrinsic_is_string(value: Any) -> Bool
   // Compile-time predicate folded by codegen against the argument's static

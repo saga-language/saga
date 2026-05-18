@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1518,6 +1519,10 @@ typedef struct {
 static saga_runtime_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap);
 static void saga_array_push_internal(saga_runtime_array *arr, const void *elem);
 
+int64_t saga_string_size(const saga_runtime_string *s) {
+  return s ? s->len : 0;
+}
+
 saga_runtime_array *saga_string_bytes(const saga_runtime_string *s) {
   int64_t len = (s && s->data) ? s->len : 0;
   saga_runtime_array *arr = saga_array_new_internal(1, len > 4 ? len : 4);
@@ -1705,12 +1710,55 @@ saga_runtime_array *saga_string_split(const saga_runtime_string *s,
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
-/* String: parsing (try-style: returns 0 on success, non-zero on failure)   */
+/* Saga union ABI                                                            */
+/*                                                                           */
+/* Matches the LLVM struct `{ i8, [8 x i8] }` used by every union whose     */
+/* largest alternative is 8 bytes (Int/Float/interface fat ptr).            */
+/* Layout: 1 byte tag, 8 bytes raw payload, alignment 1.                     */
+/*                                                                           */
+/* Callers in Saga land allocate this struct as the sret slot for any        */
+/* extern fn returning a union whose payload is 8 bytes.  If a new try-      */
+/* style extern needs a wider payload, define a new `saga_union_<N>` rather  */
+/* than widening this one — the static_asserts below pin the contract.       */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-int64_t saga_string_to_int(const saga_runtime_string *s, int64_t *out) {
-  if (!s || !s->data || s->len == 0) return 1;
-  /* Copy to null-terminated buffer for strtoll. */
+typedef struct {
+  uint8_t tag;
+  uint8_t payload[8];
+} saga_union_8;
+
+_Static_assert(sizeof(saga_union_8) == 9,
+               "saga_union_8 must be 9 bytes to match LLVM { i8, [8 x i8] }");
+_Static_assert(offsetof(saga_union_8, payload) == 1,
+               "saga_union_8 payload must start at offset 1");
+_Static_assert(_Alignof(saga_union_8) == 1,
+               "saga_union_8 must have alignment 1 to match LLVM layout");
+
+static void saga_union_8_set_i64(saga_union_8 *out, uint8_t tag, int64_t v) {
+  out->tag = tag;
+  memcpy(out->payload, &v, sizeof v);
+}
+
+static void saga_union_8_set_double(saga_union_8 *out, uint8_t tag, double v) {
+  out->tag = tag;
+  memcpy(out->payload, &v, sizeof v);
+}
+
+static void saga_union_8_set_ptr(saga_union_8 *out, uint8_t tag, void *v) {
+  out->tag = tag;
+  memcpy(out->payload, &v, sizeof v);
+}
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* String: parsing                                                          */
+/*                                                                          */
+/* Return a Saga union (T | Error) directly via the sret out-pointer:       */
+/* success → tag 0 with the parsed value; failure → tag 1 with a Missing    */
+/* fat pointer carrying a human-readable message.                           */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+static int parse_int64(const saga_runtime_string *s, int64_t *out) {
+  if (!s || !s->data || s->len == 0) return 0;
   char buf[64];
   int64_t copy_len = s->len < 63 ? s->len : 63;
   memcpy(buf, s->data, (size_t)copy_len);
@@ -1718,13 +1766,13 @@ int64_t saga_string_to_int(const saga_runtime_string *s, int64_t *out) {
   char *end = NULL;
   errno = 0;
   long long v = strtoll(buf, &end, 10);
-  if (errno != 0 || end == buf || *end != '\0') return 1;
+  if (errno != 0 || end == buf || *end != '\0') return 0;
   *out = (int64_t)v;
-  return 0;
+  return 1;
 }
 
-int64_t saga_string_to_float(const saga_runtime_string *s, double *out) {
-  if (!s || !s->data || s->len == 0) return 1;
+static int parse_double(const saga_runtime_string *s, double *out) {
+  if (!s || !s->data || s->len == 0) return 0;
   char buf[256];
   int64_t copy_len = s->len < 255 ? s->len : 255;
   memcpy(buf, s->data, (size_t)copy_len);
@@ -1732,9 +1780,31 @@ int64_t saga_string_to_float(const saga_runtime_string *s, double *out) {
   char *end = NULL;
   errno = 0;
   double v = strtod(buf, &end);
-  if (errno != 0 || end == buf || *end != '\0') return 1;
+  if (errno != 0 || end == buf || *end != '\0') return 0;
   *out = v;
-  return 0;
+  return 1;
+}
+
+void saga_string_to_int(saga_union_8 *out, const saga_runtime_string *s) {
+  int64_t v;
+  if (parse_int64(s, &v)) {
+    saga_union_8_set_i64(out, 0, v);
+    return;
+  }
+  static const char msg[] = "string is not a valid integer";
+  saga_union_8_set_ptr(out, 1,
+      saga_missing_new(msg, (int64_t)(sizeof msg - 1)));
+}
+
+void saga_string_to_float(saga_union_8 *out, const saga_runtime_string *s) {
+  double v;
+  if (parse_double(s, &v)) {
+    saga_union_8_set_double(out, 0, v);
+    return;
+  }
+  static const char msg[] = "string is not a valid float";
+  saga_union_8_set_ptr(out, 1,
+      saga_missing_new(msg, (int64_t)(sizeof msg - 1)));
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -1931,16 +2001,20 @@ int64_t saga_array_size(saga_runtime_array *arr) {
   return arr ? arr->len : 0;
 }
 
-int64_t saga_array_find(saga_runtime_array *arr, const void *elem, int64_t *out) {
-  if (!arr || !elem) return 1;
-  for (int64_t i = 0; i < arr->len; i++) {
-    void *cur = (char *)arr->data + arr->elem_size * i;
-    if (memcmp(cur, elem, (size_t)arr->elem_size) == 0) {
-      *out = i;
-      return 0;
+void saga_array_find(saga_union_8 *out, saga_runtime_array *arr,
+                     const void *elem) {
+  if (arr && elem) {
+    for (int64_t i = 0; i < arr->len; i++) {
+      void *cur = (char *)arr->data + arr->elem_size * i;
+      if (memcmp(cur, elem, (size_t)arr->elem_size) == 0) {
+        saga_union_8_set_i64(out, 0, i);
+        return;
+      }
     }
   }
-  return 1; /* not found */
+  static const char msg[] = "element not found";
+  saga_union_8_set_ptr(out, 1,
+      saga_missing_new(msg, (int64_t)(sizeof msg - 1)));
 }
 
 void saga_array_insert(saga_runtime_array *arr, const void *elem, int64_t index) {

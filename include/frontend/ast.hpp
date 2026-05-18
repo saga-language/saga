@@ -459,14 +459,16 @@ struct ReceiverNode {
 };
 
 // FuncDecl = [ "pub" ] "fn" [ Generic ] [ Receiver ] Identifier Signature Block
+//          | "extern" "fn" Identifier Signature
 struct FuncDeclNode {
   Span span;
   bool is_public;
+  bool is_extern;
   std::optional<GenericNode> generic;
   std::optional<ReceiverNode> receiver;
   IdentifierNode name;
   SignatureNode signature;
-  NodePtr body; // BlockNode
+  NodePtr body; // BlockNode; nullptr when `extern`
 };
 
 // ImportDecl = "import" StringLiteral  (used as a declaration)

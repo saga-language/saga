@@ -1,32 +1,40 @@
 // Package map provides methods on the Map intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
+extern fn |K, V| saga_map_size(m {K:V}) Int
+extern fn |K, V| saga_map_set(m {K:V}, key K, value V) Void
+extern fn |K, V| saga_map_get(m {K:V}, key K) V
+extern fn |K, V| saga_map_has(m {K:V}, key K) Bool
+extern fn |K, V| saga_map_remove(m {K:V}, key K) Void
+extern fn |K, V| saga_map_keys(m {K:V}) K[]
+extern fn |K, V| saga_map_equals(m {K:V}, other {K:V}) Bool
+
 pub fn |K, V| (m {K:V}) Size() Int {
-  intrinsic_runtime("saga_map_size", m)
+  saga_map_size(m)
 }
 
 pub fn |K, V| (m {K:V}) Set(key K, value V) Void {
-  intrinsic_runtime("saga_map_set", m, key, value)
+  saga_map_set(m, key, value)
 }
 
 pub fn |K, V| (m {K:V}) At(key K) V {
-  intrinsic_runtime("saga_map_get", m, key)
+  saga_map_get(m, key)
 }
 
 pub fn |K, V| (m {K:V}) Key?(key K) Bool {
-  intrinsic_runtime("saga_map_has", m, key)
+  saga_map_has(m, key)
 }
 
 pub fn |K, V| (m {K:V}) Remove(key K) Void {
-  intrinsic_runtime("saga_map_remove", m, key)
+  saga_map_remove(m, key)
 }
 
 pub fn |K, V| (m {K:V}) Keys() K[] {
-  intrinsic_runtime("saga_map_keys", m)
+  saga_map_keys(m)
 }
 
 pub fn |K, V| (m {K:V}) Equals(other {K:V}) Bool {
-  intrinsic_runtime("saga_map_equals", m, other)
+  saga_map_equals(m, other)
 }
 
 pub fn |K, V| (m {K:V}) String() String {

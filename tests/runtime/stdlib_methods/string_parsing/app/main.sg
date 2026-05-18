@@ -1,0 +1,22 @@
+// Verify String.Int() and String.Float() — extern functions that return
+// `Int | Error` / `Float | Error` unions directly from the C runtime.
+import "std/io"
+
+pub fn Main() Void {
+  // Int success
+  io.Println(("42".Int() or { -1 }).String())
+  io.Println(("-7".Int() or { -1 }).String())
+
+  // Int failure (or-fallback fires)
+  io.Println(("abc".Int() or { -1 }).String())
+  io.Println(("".Int() or { -1 }).String())
+  io.Println(("12abc".Int() or { -1 }).String())
+
+  // Float success
+  io.Println(("3.14".Float() or { 0.0 }).String())
+  io.Println(("-0.5".Float() or { 0.0 }).String())
+
+  // Float failure
+  io.Println(("xyz".Float() or { -1.0 }).String())
+  io.Println(("".Float() or { -1.0 }).String())
+}

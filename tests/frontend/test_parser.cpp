@@ -2373,6 +2373,72 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_Variadic) {
   EXPECT_TRUE(fn->signature.params[0].is_variadic);
 }
 
+TEST_F(ParserDeclCoverageTest, ExternFuncDecl_Basic) {
+  auto r = ParseResult::from("extern fn saga_int_hash(i Int) Int\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *fn = r.decl_as<FuncDeclNode>(0);
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->is_extern);
+  EXPECT_FALSE(fn->is_public);
+  EXPECT_EQ(fn->name.name, "saga_int_hash");
+  ASSERT_EQ(fn->signature.params.size(), 1);
+  ASSERT_EQ(fn->signature.returns.size(), 1);
+  EXPECT_EQ(fn->body, nullptr);
+}
+
+TEST_F(ParserDeclCoverageTest, ExternFuncDecl_NoReturn) {
+  auto r = ParseResult::from("extern fn saga_noop(x Int)\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *fn = r.decl_as<FuncDeclNode>(0);
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->is_extern);
+  EXPECT_TRUE(fn->signature.returns.empty());
+  EXPECT_EQ(fn->body, nullptr);
+}
+
+TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsBody) {
+  auto r = ParseResult::from("extern fn saga_x() Void { 1 }\n");
+  ASSERT_FALSE(r.errors.empty());
+  bool found = false;
+  for (auto &e : r.errors)
+    if (e.message.find("must not have a body") != std::string::npos)
+      found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsPubBefore) {
+  auto r = ParseResult::from("pub extern fn saga_x() Int\n");
+  ASSERT_FALSE(r.errors.empty());
+  bool found = false;
+  for (auto &e : r.errors)
+    if (e.message.find("'pub' cannot be applied to an 'extern'")
+        != std::string::npos)
+      found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsPubAfter) {
+  auto r = ParseResult::from("extern pub fn saga_x() Int\n");
+  ASSERT_FALSE(r.errors.empty());
+  bool found = false;
+  for (auto &e : r.errors)
+    if (e.message.find("'pub' cannot be applied to an 'extern'")
+        != std::string::npos)
+      found = true;
+  EXPECT_TRUE(found);
+}
+
+TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsVariadic) {
+  auto r = ParseResult::from("extern fn saga_print(args ...Int) Void\n");
+  ASSERT_FALSE(r.errors.empty());
+  bool found = false;
+  for (auto &e : r.errors)
+    if (e.message.find("variadic parameters are not permitted") !=
+        std::string::npos)
+      found = true;
+  EXPECT_TRUE(found);
+}
+
 TEST_F(ParserDeclCoverageTest, ConstDecl_ImportExpr) {
   auto r = ParseResult::from("const Math = import \"std/math\"\n");
   EXPECT_TRUE(r.errors.empty());

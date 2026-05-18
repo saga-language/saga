@@ -29,8 +29,12 @@ void CodeGen::declare_functions(const SourceNode &src) {
       // specialisations at each call site (see monomorphism_plan.md,
       // Step 5).  The template itself has no concrete LLVM signature.
       // Receiver methods on generic receiver types (Array/Map) are
-      // handled through their own codegen path.
-      if (fn->generic) {
+      // handled through their own codegen path.  Extern declarations
+      // are always emitted directly — there is a single C symbol
+      // regardless of T; TypeParam params lower to opaque pointers,
+      // matching how polymorphic runtime functions take elements via
+      // void*.
+      if (fn->generic && !fn->is_extern) {
         if (!fn->receiver)
           continue;
         auto &rt = fn->receiver->type->data;
@@ -46,22 +50,35 @@ void CodeGen::declare_functions(const SourceNode &src) {
         continue;
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
-      std::string link_name = is_main ? "main" : mangle(name);
+      // Extern declarations link to a C symbol of the same name without
+      // package mangling.
+      std::string link_name = is_main      ? "main"
+                              : fn->is_extern ? name
+                                              : mangle(name);
 
       // Skip if already declared (e.g. by a previous source file).
       if (module->getFunction(link_name))
         continue;
 
-      auto *fn_type = build_func_type(*fn);
+      llvm::FunctionType *fn_type = nullptr;
+      if (fn->is_extern && fn->generic) {
+        // Generic extern: resolve generic-param identifiers to opaque
+        // pointers without consulting the analyzer's scope (T may not
+        // be in any live scope at codegen time).
+        fn_type = build_extern_generic_func_type(*fn);
+      } else {
+        fn_type = build_func_type(*fn);
+      }
       auto *func = llvm::Function::Create(
           fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
 
-      apply_func_abi_attrs(func, *fn);
+      if (!(fn->is_extern && fn->generic))
+        apply_func_abi_attrs(func, *fn);
 
       // Name the arguments for readability.
       size_t arg_idx = 0;
       // Skip the hidden sret arg if present.
-      if (fn->signature.returns.size() == 1) {
+      if (fn->signature.returns.size() == 1 && !(fn->is_extern && fn->generic)) {
         auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
         if (r_ll && r_ll->isStructTy()) {
           if (arg_idx < func->arg_size())
@@ -984,9 +1001,6 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
     locals.clear();
     managed_locals.clear();
     current_func_is_main = false;
-    current_func_return_sem = fn->signature.returns.empty()
-        ? nullptr
-        : semantic_type(*fn->signature.returns[0]);
 
     // Collect generic param names for type resolution.
     auto gnames = collect_generic_names(*fn);
@@ -1028,6 +1042,10 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
         builder.CreateRetVoid();
       } else if (tail_val && tail_val->getType() == ret_type) {
         builder.CreateRet(tail_val);
+      } else if (tail_val && ret_type->isStructTy() &&
+                 tail_val->getType()->isPointerTy()) {
+        auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
+        builder.CreateRet(loaded);
       } else if (tail_val && ret_type->isIntegerTy() &&
                  tail_val->getType()->isIntegerTy() &&
                  tail_val->getType() != ret_type) {

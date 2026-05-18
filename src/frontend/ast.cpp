@@ -477,12 +477,14 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           [&](const ReceiverNode &n) { dump_receiver(n, os, indent); },
           [&](const FuncDeclNode &n) {
             os << pad(indent) << "FuncDeclNode" << (n.is_public ? " pub" : "")
+               << (n.is_extern ? " extern" : "")
                << " \"" << n.name.name << "\"\n";
             dump_opt_generic(n.generic, os, c);
             if (n.receiver)
               dump_receiver(*n.receiver, os, c);
             dump_signature(n.signature, os, c);
-            dump_ptr(n.body, os, c);
+            if (n.body)
+              dump_ptr(n.body, os, c);
           },
           [&](const ImportDeclNode &n) {
             os << pad(indent) << "ImportDeclNode \"" << n.path << "\"\n";

@@ -1,52 +1,71 @@
 // Package string provides methods on the String intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
+extern fn saga_string_size(s String) Int
+extern fn saga_string_lower(s String) String
+extern fn saga_string_upper(s String) String
+extern fn saga_string_trim(s String) String
+extern fn saga_string_capitalize(s String) String
+extern fn saga_string_title(s String) String
+extern fn saga_string_has_prefix(s String, prefix String) Bool
+extern fn saga_string_has_suffix(s String, suffix String) Bool
+extern fn saga_string_contains(s String, needle String) Bool
+extern fn saga_string_split(s String, sep String) String[]
+extern fn saga_string_compare(s String, other String) Int
+extern fn saga_string_hash(s String) Int64
+extern fn saga_string_bytes(s String) Byte[]
+extern fn saga_string_count(s String) Int
+extern fn saga_string_runes(s String) Int32[]
+extern fn saga_string_format(s String, fmt String) String
+extern fn saga_string_to_int(s String) Int | Error
+extern fn saga_string_to_float(s String) Float | Error
+
 pub fn (s String) String() String {
   s
 }
 
 pub fn (s String) Size() Int {
-  intrinsic_field(s, 1)
+  saga_string_size(s)
 }
 
 pub fn (s String) Lower() String {
-  intrinsic_runtime("saga_string_lower", s)
+  saga_string_lower(s)
 }
 
 pub fn (s String) Upper() String {
-  intrinsic_runtime("saga_string_upper", s)
+  saga_string_upper(s)
 }
 
 pub fn (s String) Trim() String {
-  intrinsic_runtime("saga_string_trim", s)
+  saga_string_trim(s)
 }
 
 pub fn (s String) Capitalize() String {
-  intrinsic_runtime("saga_string_capitalize", s)
+  saga_string_capitalize(s)
 }
 
 pub fn (s String) Title() String {
-  intrinsic_runtime("saga_string_title", s)
+  saga_string_title(s)
 }
 
 pub fn (s String) HasPrefix(prefix String) Bool {
-  intrinsic_runtime("saga_string_has_prefix", s, prefix)
+  saga_string_has_prefix(s, prefix)
 }
 
 pub fn (s String) HasSuffix(suffix String) Bool {
-  intrinsic_runtime("saga_string_has_suffix", s, suffix)
+  saga_string_has_suffix(s, suffix)
 }
 
 pub fn (s String) Contains(needle String) Bool {
-  intrinsic_runtime("saga_string_contains", s, needle)
+  saga_string_contains(s, needle)
 }
 
 pub fn (s String) Split(sep String) String[] {
-  intrinsic_runtime("saga_string_split", s, sep)
+  saga_string_split(s, sep)
 }
 
 pub fn (s String) Compare(other String) Comparison {
-  v := intrinsic_runtime("saga_string_compare", s, other)
+  v := saga_string_compare(s, other)
   if v < 0 {
     Comparison.Less
   } else {
@@ -56,33 +75,33 @@ pub fn (s String) Compare(other String) Comparison {
 }
 
 pub fn (s String) Equals(other String) Bool {
-  intrinsic_runtime("saga_string_compare", s, other) == 0
+  saga_string_compare(s, other) == 0
 }
 
 pub fn (s String) Hash() Int64 {
-  intrinsic_runtime("saga_string_hash", s)
+  saga_string_hash(s)
 }
 
 pub fn (s String) Bytes() Byte[] {
-  intrinsic_runtime("saga_string_bytes", s)
+  saga_string_bytes(s)
 }
 
 pub fn (s String) Count() Int {
-  intrinsic_runtime("saga_string_count", s)
+  saga_string_count(s)
 }
 
 pub fn (s String) Runes() Int32[] {
-  intrinsic_runtime("saga_string_runes", s)
+  saga_string_runes(s)
 }
 
 pub fn (s String) Format(fmt String) String {
-  intrinsic_runtime("saga_string_format", s, fmt)
+  saga_string_format(s, fmt)
 }
 
 pub fn (s String) Int() Int | Error {
-  intrinsic_runtime_try("saga_string_to_int", s)
+  saga_string_to_int(s)
 }
 
 pub fn (s String) Float() Float | Error {
-  intrinsic_runtime_try("saga_string_to_float", s)
+  saga_string_to_float(s)
 }

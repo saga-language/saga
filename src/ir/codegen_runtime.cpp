@@ -116,16 +116,6 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_string_runes", module.get());
 
-  // i64 saga_string_to_int(saga_runtime_string* s, i64* out)
-  llvm::Function::Create(
-      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
-      llvm::Function::ExternalLinkage, "saga_string_to_int", module.get());
-
-  // i64 saga_string_to_float(saga_runtime_string* s, double* out)
-  llvm::Function::Create(
-      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
-      llvm::Function::ExternalLinkage, "saga_string_to_float", module.get());
-
   // saga_runtime_string* saga_string_format(saga_runtime_string* self, saga_runtime_string* fmt)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
@@ -160,11 +150,6 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_size", module.get());
-
-  // i64 saga_array_find(saga_runtime_array* arr, void* elem, i64* out)
-  llvm::Function::Create(
-      llvm::FunctionType::get(i64_type, {ptr_type, ptr_type, ptr_type}, false),
-      llvm::Function::ExternalLinkage, "saga_array_find", module.get());
 
   // void saga_array_insert(saga_runtime_array* arr, void* elem, i64 index)
   llvm::Function::Create(

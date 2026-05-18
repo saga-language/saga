@@ -286,6 +286,82 @@ sum2 := Sum([1, 2, 3, 4, 5]) // Int[] matches the argument's actual type
 sum3 := Sum(1, 2, [3, 4]) // The types are Int and Int[], no match
 ```
 
+## External declarations
+
+External (non-Saga) functions are declared with the `extern` keyword as a
+prefix to a bodiless `fn` declaration. The Saga code that wraps them lives in
+the same file.
+
+```
+extern fn saga_int_to_string(i Int) String
+extern fn saga_int_hash(i Int) Int
+
+fn ToString(i Int) String { saga_int_to_string(i) }
+fn Hash(i Int) Int       { saga_int_hash(i) }
+```
+
+The type checker validates calls against the extern declaration the same way
+it validates any other call.
+
+### Form
+
+An `extern fn` declaration is a `fn` declaration with no body. The signature
+must be complete — parameter types and the return type are required and are
+used by the type checker exactly like Saga function signatures. Receivers
+and variadic parameters are not permitted. A generic type parameter is
+permitted so that a polymorphic C function (which typically takes elements
+via `void*`) can be wrapped in a type-safe Saga signature; the single
+link-time symbol stays the same regardless of `T`.
+
+```
+extern fn saga_string_size(s String) Int           // ok
+extern fn |T| saga_array_push(a T[], elem T) Void  // ok — generic wrapper
+extern fn saga_oops(x) Void                        // error: missing type
+extern fn saga_oops(x Int) Void { return }         // error: extern has no body
+```
+
+### Visibility
+
+Extern declarations are always package-private. `pub extern fn` and `extern
+pub fn` are compile errors. The external symbol is an implementation detail
+of the package; the Saga wrapper is the public surface.
+
+This keeps the modifier count on a function declaration at exactly one, and
+`extern` does real work — it tells the parser to skip body parsing and the
+linker that this symbol comes from outside.
+
+### OS-specific declarations
+
+Extern declarations compose with the existing per-OS file pattern
+(`_<os>.sg`). A package that wraps platform-divergent functions declares
+them in the per-OS source file alongside the Saga code that uses them.
+
+```
+// system_linux.sg
+extern fn getpid() Int
+pub fn ProcessId() Int { getpid() }
+
+// system_windows.sg
+extern fn GetCurrentProcessId() Int
+pub fn ProcessId() Int { GetCurrentProcessId() }
+```
+
+### Calling convention
+
+Saga's codegen emits every function using the platform's standard C ABI
+(System V AMD64 on Linux/macOS, MS x64 on Windows, AAPCS on ARM).
+Saga-to-Saga and Saga-to-extern calls are byte-identical at the machine
+level; there is no ABI translation at the boundary, so `extern` is purely a
+declaration concern.
+
+Extern calls are also exempt from the call-site array deep-copy that
+normally enforces Saga's value semantics: an array passed to an `extern fn`
+is forwarded by reference so the C side can mutate the backing buffer in
+place (which is how the runtime's polymorphic `saga_array_push` /
+`saga_array_set` / `saga_array_pop` operate). A pure-Saga function would
+receive a defensive clone; an extern callee does not. This is the deliberate
+trust contract at the C boundary — author extern wrappers accordingly.
+
 ## Types
 
 There are nine standard intrinsic types. Six have identifiers: Bool, Byte,

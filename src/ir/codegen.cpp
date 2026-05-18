@@ -466,7 +466,6 @@ void CodeGen::emit_init_function() {
   locals.clear();
   managed_locals.clear();
   current_func_is_main = false;
-  current_func_return_sem = nullptr;
 
   for (const ConstDeclNode *node : deferred_const_inits_) {
     std::string global_name = mangle(std::string(node->name.name));

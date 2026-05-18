@@ -30,6 +30,7 @@ struct Token {
     Const,     // "const"
     Else,      // "else"
     Enum,      // "enum"
+    Extern,    // "extern"
     Fn,        // "fn"
     For,       // "for"
     If,        // "if"

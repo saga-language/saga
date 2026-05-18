@@ -194,6 +194,7 @@ private:
   NodePtr parse_declaration();
   NodePtr parse_const_decl(bool is_public);
   NodePtr parse_enum_decl(bool is_public);
+  NodePtr parse_extern_decl();
   NodePtr parse_func_decl(bool is_public);
   NodePtr parse_import_decl();
   NodePtr parse_interface_decl(bool is_public);

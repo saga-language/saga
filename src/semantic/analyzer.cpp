@@ -26,21 +26,15 @@ bool is_kind_method_mutating(const FuncDeclNode &fn) {
   auto *blk = std::get_if<BlockNode>(&fn.body->data);
   if (!blk) return false;
   std::string_view recv = fn.receiver->name.name;
+
   for (auto &stmt : blk->stmts) {
     auto *call = std::get_if<CallExprNode>(&stmt->data);
     if (!call) continue;
     auto *id = std::get_if<IdentifierNode>(&call->callee->data);
-    if (!id || id->name != "intrinsic_runtime" || call->args.size() < 2)
-      continue;
-    auto *lit = std::get_if<StringLiteralNode>(&call->args[0]->data);
-    if (!lit || lit->fragments.size() != 1) continue;
-    auto *frag = std::get_if<StringFragmentNode>(&lit->fragments[0]->data);
-    if (!frag) continue;
-    std::string_view raw = frag->text;
-    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
-      raw = raw.substr(1, raw.size() - 2);
-    if (!kMutatingIntrinsics.count(std::string(raw))) continue;
-    auto *recv_id = std::get_if<IdentifierNode>(&call->args[1]->data);
+    if (!id) continue;
+    if (!kMutatingIntrinsics.count(std::string(id->name))) continue;
+    if (call->args.empty()) continue;
+    auto *recv_id = std::get_if<IdentifierNode>(&call->args[0]->data);
     if (recv_id && recv_id->name == recv) return true;
   }
   return false;
@@ -742,10 +736,13 @@ void Analyzer::collect_declaration(const Node &node) {
                    // Receiver methods are bound to a type; they're not
                    // callable as free functions and must not shadow types
                    // (e.g. Bool.String() must not shadow the String type).
-                   if (!fn.receiver)
-                     declare(Symbol::function(std::string(fn.name.name),
-                                              nullptr, fn.name.span,
-                                              fn.is_public));
+                   if (!fn.receiver) {
+                     auto sym = Symbol::function(std::string(fn.name.name),
+                                                 nullptr, fn.name.span,
+                                                 fn.is_public);
+                     sym.is_extern = fn.is_extern;
+                     declare(std::move(sym));
+                   }
                  },
                  [&](const StructDeclNode &s) {
                    declare(Symbol::type_sym(std::string(s.name.name), nullptr,
@@ -1172,8 +1169,8 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   // as the authoritative name for the loaded sub-analyzer.
   sub_analyzer->current_package_name_override = origin;
   // Inherit stdlib mode when loading a stdlib package's source — stdlib
-  // packages use intrinsic_runtime and define receiver methods on
-  // intrinsic types, both of which are gated to stdlib mode.
+  // packages use intrinsics and define receiver methods on intrinsic
+  // types, both of which are gated to stdlib mode.
   static const std::unordered_set<std::string> stdlib_origins{
       "proto", "int", "float", "bool", "string", "array", "map",
       "unsafe", "sys", "os", "io"};
@@ -2008,6 +2005,10 @@ void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
 
 void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
                                       const TypePtr &enclosing_struct) {
+  // Extern declarations have no body to resolve.
+  if (fn.is_extern)
+    return;
+
   // Generic functions are analysed lazily, once per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
   // through the normal path because their T is the element type.
@@ -2580,6 +2581,10 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 
 void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
                                     const TypePtr &enclosing_struct) {
+  // Extern declarations have no body to type-check.
+  if (fn.is_extern)
+    return;
+
   // Generic functions are type-checked lazily per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
   // through the eager path because their T is the element type.
@@ -3303,6 +3308,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     if (!bindings.empty() && callee_type) {
       auto fd_it = func_decl_by_type_.find(callee_type.get());
       if (fd_it != func_decl_by_type_.end() &&
+          !fd_it->second->is_extern &&
           generic_templates_.find(fd_it->second) != generic_templates_.end()) {
         instantiate_generic_body(*fd_it->second, bindings, parent);
         if (current_instantiation_) {

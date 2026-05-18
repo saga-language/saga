@@ -1557,4 +1557,36 @@ TEST(TypeCheck, TypeAliasMultipleMethods) {
   EXPECT_TRUE(r.ok());
 }
 
+// ===========================================================================
+// Extern function declarations
+// ===========================================================================
+
+TEST(TypeCheck, ExternFunction_CallWithCorrectTypes) {
+  auto r = TC::from(
+      "extern fn saga_add(a Int, b Int) Int\n"
+      "fn Use() Int { saga_add(1, 2) }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, ExternFunction_CallWithWrongArity) {
+  auto r = TC::from(
+      "extern fn saga_add(a Int, b Int) Int\n"
+      "fn Use() Int { saga_add(1) }");
+  EXPECT_FALSE(r.ok());
+}
+
+TEST(TypeCheck, ExternFunction_CallWithWrongType) {
+  auto r = TC::from(
+      "extern fn saga_add(a Int, b Int) Int\n"
+      "fn Use() Int { saga_add(1, \"two\") }");
+  EXPECT_FALSE(r.ok());
+}
+
+TEST(TypeCheck, ExternFunction_ReturnTypeFlowsThrough) {
+  auto r = TC::from(
+      "extern fn saga_label(i Int) String\n"
+      "fn Use() Int { saga_label(1) }");
+  EXPECT_FALSE(r.ok());
+}
+
 } // namespace saga
