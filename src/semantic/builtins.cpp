@@ -64,11 +64,6 @@ void BuiltinTypes::init() {
       {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
        EnumVariant{"Greater", {}}});
 
-  // -- Any -----------------------------------------------------------------
-  // Any is a special fat type; represented as a struct with no user-visible
-  // fields.  Its conversion methods are registered as built-in methods.
-  any_type = make_struct_type("Any");
-
   // -- Task (returned from spawn) ------------------------------------------
   task_type = make_struct_type(
       "Task", /*fields=*/{},
@@ -183,7 +178,6 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
 
   // -- Internal structs ----------------------------------------------------
   reg_type("Missing", types.missing_type);
-  reg_type("Any", types.any_type);
   reg_type("Task", types.task_type);
   reg_type("Context", types.context_type);
 

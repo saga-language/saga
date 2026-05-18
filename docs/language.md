@@ -525,46 +525,11 @@ data := http.Get(...) or |err| {
 }
 ```
 
-### The 'Any' type
-
-`Any` is a special type and behaves a little differently than in most
-languages. Any isn't an empty interface that all types implicitly implement,
-nor is handy way to avoid strict typing. Any is more like a union of all
-intrinsic types.
-
-`Any` is intended for use for the rare moments when the type can be many
-non-deterministic types. Like all types, it can only be a type of itself, and
-it must be narrowed to actually use it. In order to instantiate an `Any` type,
-you must use the `"std/unsafe"` package.
-
-Like most data structures in the language, it's a fat struct that has multiple
-conversion methods on it. Every conversion method returns an impure union and
-must be checked.
-
-The `Any` type comes with many helper methods to check what type, or types, it
-contains. It is meant to be a bridge between non-deterministic input like JSON.
-
-```
-// inside a library
-import "std/unsafe"
-
-data := unsafe.Any{value: 0} // creating a variable of type any from an integer
-
-fn ReturnAny() Any { data }
-
-// inside a consumer
-any := lib.ReturnAny()
-i Int = any // error, Any can not be type Int
-i Int = any.Int() or {} // attempt to extract an integer
-i Int = if any == Int { any } else {} // Error, Any is not an Int
-i Int = if any.Int?() { any.Int() } // Compiler detects the type was narrowed
-```
-
 ### Generics
 
 Generics are not tacked; types flow through pipes. Generics are available to
 only structs and functions. When used appropriately, in combination with
-interfaces, union types, and `Any`, they can be a powerful tool.
+interfaces and union types, they can be a powerful tool.
 
 When a generic is instantiated, if it's type can be inferred, the generic type
 can be omitted.

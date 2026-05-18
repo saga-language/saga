@@ -3123,13 +3123,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
-  // Exception: Any is the stdlib top/bottom type — skip method dispatch and
-  // fall through to the built-in operator paths below.
-  auto is_any_type = [](const TypePtr &t) {
-    if (!t || t->kind != TypeKind::Struct) return false;
-    return std::get<StructTypeInfo>(t->detail).name == "Any";
-  };
-  if (lhs->kind == TypeKind::Struct && !is_any_type(lhs)) {
+  if (lhs->kind == TypeKind::Struct) {
     return check_struct_binary_expr(node, parent, lhs, rhs);
   }
 

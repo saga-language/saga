@@ -59,7 +59,6 @@ struct BuiltinTypes {
   TypePtr missing_type;    // Missing (implements Error)
   TypePtr task_type;       // Task (returned from spawn)
   TypePtr context_type;    // Context (available inside spawn block)
-  TypePtr any_type;        // Any
 
   // Internal enums
   TypePtr comparison_type; // Comparison { Less, Equal, Greater }

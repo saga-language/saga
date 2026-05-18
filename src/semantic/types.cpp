@@ -204,11 +204,6 @@ bool satisfies_constraint(const TypePtr &t, TypeConstraint c) {
 bool is_ordered(const TypePtr &t) {
   auto u = unwrap_alias(t);
   if (!u) return false;
-  // Any is the top/bottom type used by intrinsics; treat as orderable.
-  if (u->kind == TypeKind::Struct) {
-    auto &info = std::get<StructTypeInfo>(u->detail);
-    if (info.name == "Any") return true;
-  }
   return u->kind == TypeKind::Int || u->kind == TypeKind::Float ||
          u->kind == TypeKind::String;
 }
@@ -217,11 +212,6 @@ bool is_equatable(const TypePtr &t) {
   auto u = unwrap_alias(t);
   if (!u)
     return false;
-  // Any is the top/bottom type used by intrinsics; treat as equatable.
-  if (u->kind == TypeKind::Struct) {
-    auto &info = std::get<StructTypeInfo>(u->detail);
-    if (info.name == "Any") return true;
-  }
   switch (u->kind) {
   case TypeKind::Bool:
   case TypeKind::Int:
@@ -554,15 +544,6 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
       return is_assignable_to(unwrap_alias(source), target);
     return false;
   }
-
-  // Any is a top type — any value is assignable to Any, and Any is
-  // assignable to any type.  Scheduled for removal from the language.
-  auto is_any = [](const TypePtr &t) {
-    if (t->kind != TypeKind::Struct) return false;
-    return std::get<StructTypeInfo>(t->detail).name == "Any";
-  };
-  if (is_any(source) || is_any(target))
-    return true;
 
   // Exact match.
   if (types_equal(source, target))

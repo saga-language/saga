@@ -89,13 +89,6 @@ TEST(Builtins, ComparisonEnum) {
   EXPECT_EQ(info.variants[2].name, "Greater");
 }
 
-TEST(Builtins, AnyType) {
-  BuiltinTypes types;
-  types.init();
-  EXPECT_NE(types.any_type, nullptr);
-  EXPECT_EQ(types.any_type->kind, TypeKind::Struct);
-}
-
 TEST(Builtins, TaskAndContextTypes) {
   BuiltinTypes types;
   types.init();
@@ -147,7 +140,6 @@ TEST(Builtins, RegisterPopulatesScope) {
 
   // Internal structs.
   EXPECT_TRUE(scope->lookup("Missing").has_value());
-  EXPECT_TRUE(scope->lookup("Any").has_value());
   EXPECT_TRUE(scope->lookup("Task").has_value());
   EXPECT_TRUE(scope->lookup("Context").has_value());
 

@@ -108,7 +108,6 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   if (name == "intrinsic_zext_u64") return sext_zext_to_width(64, false);
 
   if (name == "intrinsic_is_string") {
-    // intrinsic_is_string(value: Any) -> Bool
     // Compile-time predicate: the argument's static type (after
     // monomorphisation, via semantic_type) folds to a constant i1.
     // LLVM constant-folds the surrounding branch, so the dead arm is
