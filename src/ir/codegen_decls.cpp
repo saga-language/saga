@@ -247,38 +247,40 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // Try to build a constant initializer.
   llvm::Constant *init = nullptr;
 
-  // Integer literal.
-  if (auto *int_lit = std::get_if<IntegerLiteralNode>(&node.value->data)) {
-    int64_t val = 0;
-    auto sv = int_lit->literal;
-    std::from_chars(sv.data(), sv.data() + sv.size(), val);
-    init = llvm::ConstantInt::get(i64_type, val);
-  }
-  // Float literal.
-  else if (auto *flt_lit = std::get_if<FloatLiteralNode>(&node.value->data)) {
-    double val = std::stod(std::string(flt_lit->literal));
-    init = llvm::ConstantFP::get(f64_type, val);
-  }
-  // Bool literal.
-  else if (auto *bool_lit = std::get_if<BoolLiteralNode>(&node.value->data)) {
-    init = llvm::ConstantInt::get(i1_type, bool_lit->literal == "true" ? 1 : 0);
-  }
-  // String literal (plain, no interpolation in const context).
-  else if (auto *str_lit = std::get_if<StringLiteralNode>(&node.value->data)) {
-    std::string text;
-    for (auto &frag_node : str_lit->fragments) {
-      if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
-        text += unescape_fragment(frag->text);
+  // If the analyzer folded the initialiser to a scalar, emit a literal
+  // global so the const skips the deferred __init__ store path.
+  if (auto cv_it = analyzer.const_decl_values_.find(name);
+      cv_it != analyzer.const_decl_values_.end()) {
+    auto &cv = cv_it->second;
+    switch (cv.kind) {
+      case ConstValue::Kind::Int:
+        init = llvm::ConstantInt::get(i64_type, cv.i, /*isSigned=*/true);
+        break;
+      case ConstValue::Kind::Float:
+        init = llvm::ConstantFP::get(f64_type, cv.f);
+        break;
+      case ConstValue::Kind::Bool:
+        init = llvm::ConstantInt::get(i1_type, cv.b ? 1 : 0);
+        break;
     }
-    // make_string_constant returns GlobalVariable* (a Constant* subclass).
-    init = llvm::cast<llvm::Constant>(make_string_constant(text));
-    ll_type = llvm::PointerType::getUnqual(context);
   }
-  // Struct literal.
-  else if (std::get_if<StructLiteralNode>(&node.value->data)) {
-    if (auto *c = build_const_value(*node.value, sem_type)) {
-      init = c;
-      ll_type = c->getType();
+
+  // String and struct literals are not modelled by the scalar evaluator
+  // and stay on this per-AST-shape path.
+  if (!init) {
+    if (auto *str_lit = std::get_if<StringLiteralNode>(&node.value->data)) {
+      std::string text;
+      for (auto &frag_node : str_lit->fragments) {
+        if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
+          text += unescape_fragment(frag->text);
+      }
+      init = llvm::cast<llvm::Constant>(make_string_constant(text));
+      ll_type = llvm::PointerType::getUnqual(context);
+    } else if (std::get_if<StructLiteralNode>(&node.value->data)) {
+      if (auto *c = build_const_value(*node.value, sem_type)) {
+        init = c;
+        ll_type = c->getType();
+      }
     }
   }
 

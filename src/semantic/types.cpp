@@ -555,8 +555,8 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     return false;
   }
 
-  // Any is a top type — any value is assignable to Any, and Any is assignable
-  // to any type.  Scheduled for removal in Phase 4 of the intrinsics cleanup.
+  // Any is a top type — any value is assignable to Any, and Any is
+  // assignable to any type.  Scheduled for removal from the language.
   auto is_any = [](const TypePtr &t) {
     if (t->kind != TypeKind::Struct) return false;
     return std::get<StructTypeInfo>(t->detail).name == "Any";

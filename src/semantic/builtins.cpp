@@ -254,20 +254,42 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       make_func_type({bounded_tp(TypeConstraint::Float)},
                      {types.int_type})));
 
-  // intrinsic_zext(value: Any, bits: Int) -> Any
-  // Truncate value to `bits`, then zero-extend back to i64.  Value is Any
-  // so any integer-kind input is accepted.  Migration to bounded generics
-  // + const bits is deferred to Phase 3.
+  // One symbol per destination width keeps the return type concrete —
+  // a generic-over-output-type signature would need return-context
+  // inference which Saga does not have.
   global_scope->declare(Symbol::builtin(
-      "intrinsic_zext", SymbolKind::Function,
-      make_func_type({types.any_type, types.int_type}, {types.any_type})));
+      "intrinsic_sext_i8", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.int8_type})));
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sext_i16", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.int16_type})));
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sext_i32", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.int32_type})));
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_sext_i64", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.int64_type})));
 
-  // intrinsic_sext(value: Any, bits: Int) -> Any
-  // Truncate to `bits`, then sign-extend back to i64.  Migration to
-  // bounded generics + const bits is deferred to Phase 3.
   global_scope->declare(Symbol::builtin(
-      "intrinsic_sext", SymbolKind::Function,
-      make_func_type({types.any_type, types.int_type}, {types.any_type})));
+      "intrinsic_zext_u8", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.uint8_type})));
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_zext_u16", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.uint16_type})));
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_zext_u32", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.uint32_type})));
+  global_scope->declare(Symbol::builtin(
+      "intrinsic_zext_u64", SymbolKind::Function,
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.uint64_type})));
 
   // intrinsic_sitofp32 |T Integer| (value: T) -> Float32
   // LLVM sitofp T → f32.

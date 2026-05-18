@@ -4258,23 +4258,23 @@ TEST(CodeGen, IntrinsicFptosiProducesFPToSI) {
 
 TEST(CodeGen, IntrinsicZextWidens) {
   auto r = CG::from(
-      "fn f(x Int) Int { intrinsic_zext(x, 32) }\n"
+      "fn f(x Int) Uint32 { intrinsic_zext_u32(x) }\n"
       "pub fn Main() Void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   // Should contain a trunc (64→32) instruction since we're narrowing.
   auto *trunc = find_inst<llvm::TruncInst>(func);
-  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for zext(i64, 32)";
+  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for zext_u32";
 }
 
 TEST(CodeGen, IntrinsicSextWidens) {
   auto r = CG::from(
-      "fn f(x Int) Int { intrinsic_sext(x, 32) }\n"
+      "fn f(x Int) Int32 { intrinsic_sext_i32(x) }\n"
       "pub fn Main() Void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   auto *trunc = find_inst<llvm::TruncInst>(func);
-  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for sext(i64, 32)";
+  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for sext_i32";
 }
 
 TEST(CodeGen, ExternFunc_AutoPromotesScalarToPointer) {
@@ -4577,6 +4577,38 @@ TEST(CodeGen, ExternFunc_CallTargetsBareName) {
     }
   }
   EXPECT_TRUE(saw_call) << "Use() should call saga_int_hash directly";
+}
+
+// ===========================================================================
+// Top-level const initialiser folding
+// ===========================================================================
+
+TEST(CodeGen, ConstDecl_ArithExprFoldedToLiteralGlobal) {
+  auto r = CG::from(
+      "pub const MaxSize = 2 * 1024 * 1024\n"
+      "pub fn Main() Void {}");
+  auto *gv = r.mod().getNamedGlobal("test__MaxSize");
+  ASSERT_NE(gv, nullptr);
+  ASSERT_TRUE(gv->isConstant())
+      << "folded const should be emitted as an isConstant global, "
+         "not a runtime-initialised placeholder";
+  ASSERT_TRUE(gv->hasInitializer());
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(gv->getInitializer());
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->getSExtValue(), 2 * 1024 * 1024);
+}
+
+TEST(CodeGen, ConstDecl_ChainedRefFolded) {
+  auto r = CG::from(
+      "pub const A = 7\n"
+      "pub const B = A * 3\n"
+      "pub fn Main() Void {}");
+  auto *gv = r.mod().getNamedGlobal("test__B");
+  ASSERT_NE(gv, nullptr);
+  EXPECT_TRUE(gv->isConstant());
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(gv->getInitializer());
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->getSExtValue(), 21);
 }
 
 } // namespace saga

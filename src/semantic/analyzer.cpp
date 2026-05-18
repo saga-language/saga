@@ -6,6 +6,7 @@
 #include "frontend/parser.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <format>
 
@@ -4840,6 +4841,9 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = declared_type ? declared_type : init_type;
   }
+
+  if (auto cv = evaluate_constant(*c.value))
+    const_decl_values_[std::string(c.name.name)] = *cv;
 }
 
 void Analyzer::check_enum_decl(const EnumDeclNode &e) {
@@ -5478,6 +5482,147 @@ bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
     return k && v;
   }
   return check_satisfies_protocol(t, ProtocolKind::Stringable, at, context);
+}
+
+// ---------------------------------------------------------------------------
+// Constant-expression evaluator
+// ---------------------------------------------------------------------------
+
+namespace {
+
+int64_t parse_int_literal_text(std::string_view lit) {
+  std::string clean;
+  clean.reserve(lit.size());
+  for (char c : lit)
+    if (c != '_') clean += c;
+
+  int base = 10;
+  std::string_view digits = clean;
+  if (digits.size() > 2 && digits[0] == '0') {
+    switch (digits[1]) {
+      case 'b': case 'B': base = 2;  digits = digits.substr(2); break;
+      case 'o': case 'O': base = 8;  digits = digits.substr(2); break;
+      case 'x': case 'X': base = 16; digits = digits.substr(2); break;
+      default: break;
+    }
+  }
+  int64_t v = 0;
+  std::from_chars(digits.data(), digits.data() + digits.size(), v, base);
+  return v;
+}
+
+double parse_float_literal_text(std::string_view lit) {
+  std::string clean;
+  clean.reserve(lit.size());
+  for (char c : lit)
+    if (c != '_') clean += c;
+  double v = 0.0;
+  std::from_chars(clean.data(), clean.data() + clean.size(), v);
+  return v;
+}
+
+} // namespace
+
+std::optional<ConstValue> Analyzer::evaluate_constant(const Node &expr) {
+  if (auto *il = std::get_if<IntegerLiteralNode>(&expr.data))
+    return ConstValue::make_int(parse_int_literal_text(il->literal));
+
+  if (auto *fl = std::get_if<FloatLiteralNode>(&expr.data))
+    return ConstValue::make_float(parse_float_literal_text(fl->literal));
+
+  if (auto *bl = std::get_if<BoolLiteralNode>(&expr.data))
+    return ConstValue::make_bool(bl->literal == "true");
+
+  if (auto *grp = std::get_if<GroupExprNode>(&expr.data))
+    return evaluate_constant(*grp->inner);
+
+  if (auto *un = std::get_if<UnaryExprNode>(&expr.data)) {
+    auto inner = evaluate_constant(*un->operand);
+    if (!inner) return std::nullopt;
+    if (un->op == Token::Kind::Sub) {
+      if (inner->kind == ConstValue::Kind::Int)
+        return ConstValue::make_int(-inner->i);
+      if (inner->kind == ConstValue::Kind::Float)
+        return ConstValue::make_float(-inner->f);
+    }
+    if (un->op == Token::Kind::Not) {
+      if (inner->kind == ConstValue::Kind::Bool)
+        return ConstValue::make_bool(!inner->b);
+    }
+    if (un->op == Token::Kind::BitwiseNot) {
+      if (inner->kind == ConstValue::Kind::Int)
+        return ConstValue::make_int(~inner->i);
+    }
+    return std::nullopt;
+  }
+
+  if (auto *bin = std::get_if<BinaryExprNode>(&expr.data)) {
+    auto lhs = evaluate_constant(*bin->lhs);
+    auto rhs = evaluate_constant(*bin->rhs);
+    if (!lhs || !rhs) return std::nullopt;
+    if (lhs->kind != rhs->kind) return std::nullopt;
+
+    if (lhs->kind == ConstValue::Kind::Int) {
+      int64_t l = lhs->i, r = rhs->i;
+      switch (bin->op) {
+        case Token::Kind::Add:        return ConstValue::make_int(l + r);
+        case Token::Kind::Sub:        return ConstValue::make_int(l - r);
+        case Token::Kind::Multiply:   return ConstValue::make_int(l * r);
+        case Token::Kind::Divide:
+          if (r == 0) {
+            error(expr.span, "division by zero in constant expression");
+            return std::nullopt;
+          }
+          return ConstValue::make_int(l / r);
+        case Token::Kind::Modulo:
+          if (r == 0) {
+            error(expr.span, "modulo by zero in constant expression");
+            return std::nullopt;
+          }
+          return ConstValue::make_int(l % r);
+        case Token::Kind::BitwiseAnd: return ConstValue::make_int(l & r);
+        case Token::Kind::BitwiseOr:  return ConstValue::make_int(l | r);
+        case Token::Kind::BitwiseXor: return ConstValue::make_int(l ^ r);
+        case Token::Kind::LeftShift:
+        case Token::Kind::RightShift:
+          if (r < 0 || r >= 64) {
+            error(expr.span,
+                  std::format("shift count {} out of range [0, 64) in "
+                              "constant expression", r));
+            return std::nullopt;
+          }
+          return bin->op == Token::Kind::LeftShift
+                     ? ConstValue::make_int(l << r)
+                     : ConstValue::make_int(l >> r);
+        default: return std::nullopt;
+      }
+    }
+    if (lhs->kind == ConstValue::Kind::Float) {
+      double l = lhs->f, r = rhs->f;
+      switch (bin->op) {
+        case Token::Kind::Add:      return ConstValue::make_float(l + r);
+        case Token::Kind::Sub:      return ConstValue::make_float(l - r);
+        case Token::Kind::Multiply: return ConstValue::make_float(l * r);
+        case Token::Kind::Divide:
+          if (r == 0.0) {
+            error(expr.span, "division by zero in constant expression");
+            return std::nullopt;
+          }
+          return ConstValue::make_float(l / r);
+        default: return std::nullopt;
+      }
+    }
+    return std::nullopt;
+  }
+
+  if (auto *id = std::get_if<IdentifierNode>(&expr.data)) {
+    auto it = const_decl_values_.find(std::string(id->name));
+    if (it != const_decl_values_.end())
+      return it->second;
+    return std::nullopt;
+  }
+
+  return std::nullopt;
 }
 
 } // namespace saga

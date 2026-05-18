@@ -83,35 +83,29 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return builder.CreateFPToSI(val, i64_type, "fptosi");
   }
 
-  if (name == "intrinsic_zext") {
-    // intrinsic_zext(value: Int, bits: Int) -> Int (i64-stored)
-    // Truncate the input to `bits`, then zero-extend back to i64 so the
-    // result matches the runtime's uniform i64 storage for narrow Ints.
+  // Trunc-then-extend back to i64 keeps the runtime's uniform i64
+  // storage convention for narrow ints.
+  auto sext_zext_to_width = [&](int width, bool is_signed)
+      -> llvm::Value * {
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
-    auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
-    if (!bits_node) return nullptr;
-    int64_t bits = parse_int_literal(bits_node->literal);
-    if (bits >= 64) return val;
-    auto *narrow_ty = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
-    auto *narrow = builder.CreateTrunc(val, narrow_ty, "ztrunc");
-    return builder.CreateZExt(narrow, i64_type, "zext");
-  }
+    if (width >= 64) return val;
+    auto *narrow_ty =
+        llvm::IntegerType::get(context, static_cast<unsigned>(width));
+    auto *narrow = builder.CreateTrunc(
+        val, narrow_ty, is_signed ? "strunc" : "ztrunc");
+    return is_signed ? builder.CreateSExt(narrow, i64_type, "sext")
+                     : builder.CreateZExt(narrow, i64_type, "zext");
+  };
 
-  if (name == "intrinsic_sext") {
-    // intrinsic_sext(value: Int, bits: Int) -> Int (i64-stored)
-    // Truncate to `bits`, then sign-extend back to i64.  Mirrors zext
-    // above; see the runtime-ABI note in CodeGen::llvm_type.
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
-    if (!bits_node) return nullptr;
-    int64_t bits = parse_int_literal(bits_node->literal);
-    if (bits >= 64) return val;
-    auto *narrow_ty = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
-    auto *narrow = builder.CreateTrunc(val, narrow_ty, "strunc");
-    return builder.CreateSExt(narrow, i64_type, "sext");
-  }
+  if (name == "intrinsic_sext_i8")  return sext_zext_to_width(8,  true);
+  if (name == "intrinsic_sext_i16") return sext_zext_to_width(16, true);
+  if (name == "intrinsic_sext_i32") return sext_zext_to_width(32, true);
+  if (name == "intrinsic_sext_i64") return sext_zext_to_width(64, true);
+  if (name == "intrinsic_zext_u8")  return sext_zext_to_width(8,  false);
+  if (name == "intrinsic_zext_u16") return sext_zext_to_width(16, false);
+  if (name == "intrinsic_zext_u32") return sext_zext_to_width(32, false);
+  if (name == "intrinsic_zext_u64") return sext_zext_to_width(64, false);
 
   if (name == "intrinsic_is_string") {
     // intrinsic_is_string(value: Any) -> Bool

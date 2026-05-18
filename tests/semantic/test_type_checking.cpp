@@ -531,6 +531,26 @@ TEST(TypeCheck, ConstDeclTypeMismatch) {
   EXPECT_TRUE(r.has_err("constant initializer"));
 }
 
+TEST(TypeCheck, ConstDecl_DivByZero_Errors) {
+  auto r = TC::from("const Bad = 1 / 0");
+  EXPECT_TRUE(r.has_err("division by zero"));
+}
+
+TEST(TypeCheck, ConstDecl_ModByZero_Errors) {
+  auto r = TC::from("const Bad = 7 % 0");
+  EXPECT_TRUE(r.has_err("modulo by zero"));
+}
+
+TEST(TypeCheck, ConstDecl_ShiftOutOfRange_Errors) {
+  auto r = TC::from("const Bad = 1 << 64");
+  EXPECT_TRUE(r.has_err("shift count"));
+}
+
+TEST(TypeCheck, ConstDecl_NegativeShift_Errors) {
+  auto r = TC::from("const Bad = 1 << -1");
+  EXPECT_TRUE(r.has_err("shift count"));
+}
+
 // ===========================================================================
 // Struct duplicate checking
 // ===========================================================================
