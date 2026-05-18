@@ -632,6 +632,58 @@ val := list.Peek() or { 0 }
 for node : list {} // Next() lets you iterate over the list.
 ```
 
+### Bounded generics
+
+A generic type parameter can be constrained to a named built-in type set by
+writing the constraint immediately after the parameter name inside the pipe
+syntax. The constraint follows by adjacency, matching the patterns used
+elsewhere in the language (`enum Severity Int`, wire-name field slots):
+
+```
+fn |T Numeric| Add(a T, b T) T { a + b }
+
+Add(1, 2)       // T = Int
+Add(1.0, 2.0)   // T = Float
+Add("a", "b")   // compile error: String is not Numeric
+```
+
+The constraint slot is optional — bare `|T|` still means "any type":
+
+```
+fn |T| Identity(x T) T { x }
+```
+
+Multiple type parameters each carry their own optional constraint:
+
+```
+fn |T Integer, U Numeric| Mix(a T, b U) U { ... }
+```
+
+Three named constraints are built into the compiler. They are
+compiler-only identifiers and cannot appear as the type of a variable,
+parameter, or return value — only in a constraint slot.
+
+| Constraint | Members |
+|---|---|
+| `Integer` | `Int`, `Int8`, `Int16`, `Int32`, `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Byte` |
+| `Float`   | `Float`, `Float32`, `Float64` |
+| `Numeric` | All members of `Integer` and `Float` |
+
+Each constraint implicitly permits the operators that are valid across
+every member of its set:
+
+- `Integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
+  `==`, `!=`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
+- `Float`: `+`, `-`, `*`, `/`, comparison
+- `Numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
+  valid on floats)
+
+Inside a function with a constrained generic, the listed operators are
+usable on the constrained type without further declaration. The compiler
+validates at instantiation that the actual type belongs to the constraint
+set; if not, the call fails with an error naming both the constraint and
+the offending type.
+
 ## Type Aliases
 
 A type may be aliased to a new identifier. Aliases are constants and therefore

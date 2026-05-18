@@ -122,7 +122,8 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound) {
   return std::make_shared<Type>(
       TypeKind::TypeParam,
-      TypeParamInfo{TypeParam{id, name}, std::move(bound)});
+      TypeParamInfo{TypeParam{id, name, TypeConstraint::None},
+                    std::move(bound)});
 }
 
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
@@ -167,6 +168,37 @@ bool is_error_type(const TypePtr &t) {
 bool is_numeric(const TypePtr &t) {
   auto u = unwrap_alias(t);
   return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float);
+}
+
+std::string_view constraint_name(TypeConstraint c) {
+  switch (c) {
+  case TypeConstraint::Integer: return "Integer";
+  case TypeConstraint::Float:   return "Float";
+  case TypeConstraint::Numeric: return "Numeric";
+  case TypeConstraint::None:    return "";
+  }
+  return "";
+}
+
+TypeConstraint constraint_from_name(std::string_view name) {
+  if (name == "Integer") return TypeConstraint::Integer;
+  if (name == "Float")   return TypeConstraint::Float;
+  if (name == "Numeric") return TypeConstraint::Numeric;
+  return TypeConstraint::None;
+}
+
+bool satisfies_constraint(const TypePtr &t, TypeConstraint c) {
+  if (c == TypeConstraint::None) return false;
+  auto u = unwrap_alias(t);
+  if (!u) return false;
+  switch (c) {
+  case TypeConstraint::Integer: return u->kind == TypeKind::Int;
+  case TypeConstraint::Float:   return u->kind == TypeKind::Float;
+  case TypeConstraint::Numeric:
+    return u->kind == TypeKind::Int || u->kind == TypeKind::Float;
+  case TypeConstraint::None:    return false;
+  }
+  return false;
 }
 
 bool is_ordered(const TypePtr &t) {
@@ -552,6 +584,29 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (source->kind == TypeKind::Float && target->kind == TypeKind::Float &&
       std::get<FloatType>(source->detail).is_untyped)
     return true;
+
+  // Platform-default ↔ explicit 64-bit aliases.  Saga's `Float` (bits=0)
+  // and `Float64` (bits=64) lower to the same LLVM type on the supported
+  // 64-bit targets, so a `Float` value flows into a `Float64` slot (and
+  // vice versa).  Same for `Int` ↔ `Int64`.  Distinct widths (Float32,
+  // Int32, etc.) remain unrelated.
+  if (source->kind == TypeKind::Float && target->kind == TypeKind::Float) {
+    auto &s = std::get<FloatType>(source->detail);
+    auto &t = std::get<FloatType>(target->detail);
+    bool s_word = s.bits == 0;
+    bool t_word = t.bits == 0;
+    if ((s_word && t.bits == 64) || (t_word && s.bits == 64))
+      return true;
+  }
+  if (source->kind == TypeKind::Int && target->kind == TypeKind::Int) {
+    auto &s = std::get<IntType>(source->detail);
+    auto &t = std::get<IntType>(target->detail);
+    bool s_word_signed = s.bits == 0 && s.is_signed;
+    bool t_word_signed = t.bits == 0 && t.is_signed;
+    if ((s_word_signed && t.bits == 64 && t.is_signed) ||
+        (t_word_signed && s.bits == 64 && s.is_signed))
+      return true;
+  }
 
   // Source assignable to any alternative in a union target.
   if (target->kind == TypeKind::Union) {

@@ -1565,7 +1565,7 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   std::optional<ReceiverNode> receiver = parse_receiver();
 
@@ -1602,7 +1602,7 @@ NodePtr Parser::parse_extern_decl() {
 
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
@@ -1666,7 +1666,7 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Interface);
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
@@ -1734,7 +1734,7 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
@@ -2135,6 +2135,54 @@ std::optional<GenericNode> Parser::parse_generic() {
   while (check(Token::Kind::Comma)) {
     advance(); // consume ","
     type_params.push_back(parse_single_type());
+  }
+
+  expect(Token::Kind::BitwiseOr); // consume closing "|"
+
+  return GenericNode{span_from(start), std::move(type_params)};
+}
+
+// parse_generic_params — declaration-position type-parameter list.
+//
+// GenericParams = "|" TypeParam { "," TypeParam } "|"
+// TypeParam     = Identifier [ Identifier ]
+//
+//   fn |T|              Identity(x T) T          — bare parameter
+//   fn |T Integer|      ShiftLeft(x T, n Int) T  — constrained parameter
+//   fn |T Integer, U|   Mix(t T, u U) U          — multiple, mixed
+//
+// The constraint is a bare identifier (no path, no generic application).
+// Constraint validation — that the name resolves to one of the built-in
+// constraints (Integer | Float | Numeric) — happens in the analyzer.
+std::optional<GenericNode> Parser::parse_generic_params() {
+  if (!check(Token::Kind::BitwiseOr))
+    return std::nullopt;
+
+  auto start = mark();
+  advance(); // consume opening "|"
+
+  auto parse_one = [&]() -> NodePtr {
+    auto tp_start = mark();
+    Token name_tok = expect(Token::Kind::Identifier);
+    IdentifierNode name{span_from(tp_start), name_tok.literal};
+
+    std::optional<IdentifierNode> constraint;
+    if (check(Token::Kind::Identifier)) {
+      auto c_start = mark();
+      Token c_tok = advance();
+      constraint = IdentifierNode{span_from(c_start), c_tok.literal};
+    }
+
+    return make_node<TypeParamNode>(span_from(tp_start), std::move(name),
+                                    std::move(constraint));
+  };
+
+  std::vector<NodePtr> type_params;
+  type_params.push_back(parse_one());
+
+  while (check(Token::Kind::Comma)) {
+    advance(); // consume ","
+    type_params.push_back(parse_one());
   }
 
   expect(Token::Kind::BitwiseOr); // consume closing "|"
@@ -3020,7 +3068,7 @@ NodePtr Parser::parse_func_expr() {
   auto start = mark();
   expect(Token::Kind::Fn);
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
   SignatureNode sig = parse_signature();
 
   skip_terminators();

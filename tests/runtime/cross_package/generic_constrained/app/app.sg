@@ -1,0 +1,9 @@
+import "io"
+import "lib"
+
+pub fn Main() Void {
+  bi := lib.Box{value: 21}
+  io.Println(bi.Twice().String())
+  bf := lib.Box{value: 0.5}
+  io.Println(bf.Twice().String())
+}

@@ -904,8 +904,8 @@ collect_generic_names(const FuncDeclNode &fn) {
   std::unordered_set<std::string> names;
   if (fn.generic) {
     for (auto &tp : fn.generic->type_params) {
-      if (auto *id = std::get_if<IdentifierNode>(&tp->data))
-        names.insert(std::string(id->name));
+      if (auto opt_name = type_param_name(*tp))
+        names.insert(std::string(*opt_name));
     }
   }
   return names;

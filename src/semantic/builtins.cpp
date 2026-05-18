@@ -232,62 +232,76 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
           {make_union_type({types.string_type, make_array_type(types.byte_type)})},
           {types.int_type})));
 
-  // intrinsic_sitofp(value: Any) -> Any
-  // LLVM sitofp i64 → double. Returns Any so the stdlib can cast to Float,
-  // Float32, Float64, etc.  Value is Any so any integer-kind input
-  // (Int, Int8/16/32/64, Uint*) flows through without an extra conversion.
+  // Helper: build a TypeParam carrying a Phase-2 constraint.
+  auto bounded_tp = [](TypeConstraint c) {
+    auto tp = make_type_param(0, "T");
+    std::get<TypeParamInfo>(tp->detail).param.constraint = c;
+    return tp;
+  };
+
+  // intrinsic_sitofp |T Integer| (value: T) -> Float
+  // LLVM sitofp T → f64.  Constraint accepts any integer-kind input
+  // (Int, Int8/16/32/64, Uint*, Byte).
   global_scope->declare(Symbol::builtin(
       "intrinsic_sitofp", SymbolKind::Function,
-      make_func_type({types.any_type}, {types.any_type})));
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.float_type})));
 
-  // intrinsic_fptosi(value: Any) -> Any
-  // LLVM fptosi float-kind → i64.  Value is Any so Float32/Float64 inputs
-  // flow through without an extra conversion.
+  // intrinsic_fptosi |T Float| (value: T) -> Int
+  // LLVM fptosi T → i64.  Constraint accepts Float, Float32, Float64.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fptosi", SymbolKind::Function,
-      make_func_type({types.any_type}, {types.any_type})));
+      make_func_type({bounded_tp(TypeConstraint::Float)},
+                     {types.int_type})));
 
   // intrinsic_zext(value: Any, bits: Int) -> Any
   // Truncate value to `bits`, then zero-extend back to i64.  Value is Any
-  // so any integer-kind input is accepted.
+  // so any integer-kind input is accepted.  Migration to bounded generics
+  // + const bits is deferred to Phase 3.
   global_scope->declare(Symbol::builtin(
       "intrinsic_zext", SymbolKind::Function,
       make_func_type({types.any_type, types.int_type}, {types.any_type})));
 
   // intrinsic_sext(value: Any, bits: Int) -> Any
-  // Truncate value to `bits`, then sign-extend back to i64.
+  // Truncate to `bits`, then sign-extend back to i64.  Migration to
+  // bounded generics + const bits is deferred to Phase 3.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sext", SymbolKind::Function,
       make_func_type({types.any_type, types.int_type}, {types.any_type})));
 
-  // intrinsic_sitofp32(value: Any) -> Any
-  // LLVM sitofp i64 → float (32-bit). Returns Any so stdlib can cast.
+  // intrinsic_sitofp32 |T Integer| (value: T) -> Float32
+  // LLVM sitofp T → f32.
   global_scope->declare(Symbol::builtin(
       "intrinsic_sitofp32", SymbolKind::Function,
-      make_func_type({types.any_type}, {types.any_type})));
+      make_func_type({bounded_tp(TypeConstraint::Integer)},
+                     {types.float32_type})));
 
-  // intrinsic_fptrunc(value: Any) -> Any
-  // LLVM fptrunc to float (32-bit).  Value is Any so Float/Float64 inputs
-  // are accepted without a prior conversion.
+  // intrinsic_fptrunc |T Float| (value: T) -> Float32
+  // LLVM fptrunc T → f32.  Float/Float64 narrowed to f32; an f32 input
+  // is passed through unchanged at codegen time.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fptrunc", SymbolKind::Function,
-      make_func_type({types.any_type}, {types.any_type})));
+      make_func_type({bounded_tp(TypeConstraint::Float)},
+                     {types.float32_type})));
 
-  // intrinsic_fpext(value: Any) -> Any
-  // LLVM fpext to double (64-bit).  Value is Any so Float/Float32 inputs
-  // are accepted; same-width inputs are passed through unchanged.
+  // intrinsic_fpext |T Float| (value: T) -> Float
+  // LLVM fpext T → f64.  Float32 widened to f64; f64 input passes through.
   global_scope->declare(Symbol::builtin(
       "intrinsic_fpext", SymbolKind::Function,
-      make_func_type({types.any_type}, {types.any_type})));
+      make_func_type({bounded_tp(TypeConstraint::Float)},
+                     {types.float_type})));
 
-  // intrinsic_is_string(value: Any) -> Bool
+  // intrinsic_is_string |T| (value T) -> Bool
   // Compile-time predicate folded by codegen against the argument's static
   // type after monomorphisation: i1 1 when the type is String, i1 0
   // otherwise.  Used by stdlib formatters (Map/Array String) to add
   // surrounding quotes only when rendering a String value.
-  global_scope->declare(Symbol::builtin(
-      "intrinsic_is_string", SymbolKind::Function,
-      make_func_type({types.any_type}, {types.bool_type})));
+  {
+    auto t = make_type_param(0, "T");
+    global_scope->declare(Symbol::builtin(
+        "intrinsic_is_string", SymbolKind::Function,
+        make_func_type({t}, {types.bool_type})));
+  }
 }
 
 } // namespace saga

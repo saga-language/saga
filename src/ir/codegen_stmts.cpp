@@ -113,8 +113,8 @@ CodeGen::build_extern_generic_func_type(const FuncDeclNode &fn) {
   std::unordered_set<std::string> generic_names;
   if (fn.generic) {
     for (auto &tp : fn.generic->type_params) {
-      if (auto *id = std::get_if<IdentifierNode>(&tp->data))
-        generic_names.insert(std::string(id->name));
+      if (auto opt_name = type_param_name(*tp))
+        generic_names.insert(std::string(*opt_name));
     }
   }
 

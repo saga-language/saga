@@ -1633,9 +1633,10 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Single) {
 
   ASSERT_TRUE(n->generic.has_value());
   ASSERT_EQ(n->generic->type_params.size(), 1u);
-  auto *tp = std::get_if<IdentifierNode>(&n->generic->type_params[0]->data);
+  auto *tp = std::get_if<TypeParamNode>(&n->generic->type_params[0]->data);
   ASSERT_NE(tp, nullptr);
-  EXPECT_EQ(tp->name, "T");
+  EXPECT_EQ(tp->name.name, "T");
+  EXPECT_FALSE(tp->constraint.has_value());
 
   ASSERT_EQ(n->signature.params.size(), 1u);
   auto *pt = std::get_if<IdentifierNode>(&n->signature.params[0].type->data);
@@ -1650,6 +1651,36 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Multi) {
   ASSERT_NE(n, nullptr);
   ASSERT_TRUE(n->generic.has_value());
   EXPECT_EQ(n->generic->type_params.size(), 2u);
+}
+
+TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained) {
+  auto r = ExprResult::from("fn |T Integer| (x T) T { x }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = func_expr(r);
+  ASSERT_NE(n, nullptr);
+  ASSERT_TRUE(n->generic.has_value());
+  ASSERT_EQ(n->generic->type_params.size(), 1u);
+  auto *tp = std::get_if<TypeParamNode>(&n->generic->type_params[0]->data);
+  ASSERT_NE(tp, nullptr);
+  EXPECT_EQ(tp->name.name, "T");
+  ASSERT_TRUE(tp->constraint.has_value());
+  EXPECT_EQ(tp->constraint->name, "Integer");
+}
+
+TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained_Mixed) {
+  auto r = ExprResult::from("fn |T Integer, U| (x T, y U) U { y }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = func_expr(r);
+  ASSERT_NE(n, nullptr);
+  ASSERT_TRUE(n->generic.has_value());
+  ASSERT_EQ(n->generic->type_params.size(), 2u);
+  auto *tp0 = std::get_if<TypeParamNode>(&n->generic->type_params[0]->data);
+  ASSERT_NE(tp0, nullptr);
+  ASSERT_TRUE(tp0->constraint.has_value());
+  EXPECT_EQ(tp0->constraint->name, "Integer");
+  auto *tp1 = std::get_if<TypeParamNode>(&n->generic->type_params[1]->data);
+  ASSERT_NE(tp1, nullptr);
+  EXPECT_FALSE(tp1->constraint.has_value());
 }
 
 // ── body content ─────────────────────────────────────────────────────────────
@@ -2334,6 +2365,20 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithGeneric) {
   ASSERT_TRUE(fn->generic.has_value());
   ASSERT_EQ(fn->generic->type_params.size(), 1);
   EXPECT_FALSE(fn->receiver.has_value());
+}
+
+TEST_F(ParserDeclCoverageTest, FuncDecl_WithConstrainedGeneric) {
+  auto r = ParseResult::from("fn |T Numeric| Double(x T) T { x + x }\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *fn = r.decl_as<FuncDeclNode>(0);
+  ASSERT_NE(fn, nullptr);
+  ASSERT_TRUE(fn->generic.has_value());
+  ASSERT_EQ(fn->generic->type_params.size(), 1);
+  auto *tp = std::get_if<TypeParamNode>(&fn->generic->type_params[0]->data);
+  ASSERT_NE(tp, nullptr);
+  EXPECT_EQ(tp->name.name, "T");
+  ASSERT_TRUE(tp->constraint.has_value());
+  EXPECT_EQ(tp->constraint->name, "Numeric");
 }
 
 TEST_F(ParserDeclCoverageTest, FuncDecl_WithReceiver) {

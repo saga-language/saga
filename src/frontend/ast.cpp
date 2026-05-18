@@ -304,6 +304,12 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_impl(*n.base_type, os, c);
           },
           [&](const GenericNode &n) { dump_generic(n, os, indent); },
+          [&](const TypeParamNode &n) {
+            os << pad(indent) << "TypeParamNode \"" << n.name.name << "\"";
+            if (n.constraint)
+              os << " constraint=\"" << n.constraint->name << "\"";
+            os << "\n";
+          },
 
           // -----------------------------------------------------------------------
           // Shared sub-nodes
@@ -542,6 +548,14 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
 
 void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
+}
+
+std::optional<std::string_view> type_param_name(const Node &node) {
+  if (auto *tp = std::get_if<TypeParamNode>(&node.data))
+    return tp->name.name;
+  if (auto *id = std::get_if<IdentifierNode>(&node.data))
+    return id->name;
+  return std::nullopt;
 }
 
 } // namespace saga

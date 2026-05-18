@@ -204,6 +204,36 @@ TEST(Types, AssignableErrorPropagates) {
   EXPECT_TRUE(is_assignable_to(make_int_type(), make_error_type()));
 }
 
+// Platform-default Float (bits=0) and explicit Float64 (bits=64) lower to
+// the same LLVM type on the supported 64-bit targets, so they flow into
+// each other's slots.  Distinct widths (Float32) stay incompatible.  This
+// pins the rule added alongside the bounded-generics migration of
+// `intrinsic_sitofp` and friends so a future is_assignable_to refactor
+// can't quietly regress the stdlib.
+TEST(Types, AssignableFloatPlatformAlias) {
+  auto f   = make_float_type(0);
+  auto f64 = make_float_type(64);
+  auto f32 = make_float_type(32);
+  EXPECT_TRUE(is_assignable_to(f, f64));
+  EXPECT_TRUE(is_assignable_to(f64, f));
+  EXPECT_FALSE(is_assignable_to(f, f32));
+  EXPECT_FALSE(is_assignable_to(f32, f));
+  EXPECT_FALSE(is_assignable_to(f32, f64));
+}
+
+TEST(Types, AssignableIntPlatformAlias) {
+  auto i   = make_int_type(0, true);
+  auto i64 = make_int_type(64, true);
+  auto i32 = make_int_type(32, true);
+  auto u64 = make_int_type(64, false);
+  EXPECT_TRUE(is_assignable_to(i, i64));
+  EXPECT_TRUE(is_assignable_to(i64, i));
+  EXPECT_FALSE(is_assignable_to(i, i32));
+  // Signedness matters — platform Int is signed, so Uint64 stays unrelated.
+  EXPECT_FALSE(is_assignable_to(i, u64));
+  EXPECT_FALSE(is_assignable_to(u64, i));
+}
+
 // ===========================================================================
 // common_type
 // ===========================================================================

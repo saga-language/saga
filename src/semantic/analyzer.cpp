@@ -401,12 +401,39 @@ uint32_t Analyzer::fresh_type_param_id() { return next_type_param_id++; }
 std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
   std::vector<TypeParam> params;
   for (auto &tp_node : generic.type_params) {
-    auto &ident = std::get<IdentifierNode>(tp_node->data);
-    uint32_t id = fresh_type_param_id();
-    TypeParam tp{id, std::string(ident.name)};
-    auto tp_type = make_type_param(id, tp.name);
+    std::string_view name;
+    Span span = tp_node->span;
+    TypeConstraint constraint = TypeConstraint::None;
 
-    declare(Symbol::type_param(tp.name, tp_type, ident.span));
+    if (auto *tp = std::get_if<TypeParamNode>(&tp_node->data)) {
+      name = tp->name.name;
+      span = tp->name.span;
+      if (tp->constraint) {
+        constraint = constraint_from_name(tp->constraint->name);
+        if (constraint == TypeConstraint::None) {
+          error(tp->constraint->span,
+                std::format("unknown type constraint '{}' — expected one of "
+                            "Integer, Float, Numeric",
+                            tp->constraint->name));
+        }
+      }
+    } else if (auto *ident = std::get_if<IdentifierNode>(&tp_node->data)) {
+      // Legacy / instantiation-position shape; no constraint slot.
+      name = ident->name;
+      span = ident->span;
+    } else {
+      continue; // shape unrecognised; analyzer cannot bind it
+    }
+
+    uint32_t id = fresh_type_param_id();
+    TypeParam tp{id, std::string(name), constraint};
+    auto tp_type = make_type_param(id, tp.name);
+    if (tp_type) {
+      auto &info = std::get<TypeParamInfo>(tp_type->detail);
+      info.param.constraint = constraint;
+    }
+
+    declare(Symbol::type_param(tp.name, tp_type, span));
     current_scope->type_bindings[id] = tp_type;
 
     params.push_back(std::move(tp));
@@ -1766,15 +1793,15 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
                      // reuse names from the enclosing struct's type params.
                      if (fn.generic && !type_params.empty()) {
                        for (auto &tp_node : fn.generic->type_params) {
-                         auto &tp_ident =
-                             std::get<IdentifierNode>(tp_node->data);
+                         auto opt_name = type_param_name(*tp_node);
+                         if (!opt_name) continue;
                          for (auto &stp : type_params) {
-                           if (stp.name == std::string(tp_ident.name)) {
+                           if (stp.name == std::string(*opt_name)) {
                              error(tp_node->span,
                                    std::format("type parameter '{}' shadows "
                                                "enclosing struct type "
                                                "parameter",
-                                               tp_ident.name));
+                                               *opt_name));
                            }
                          }
                        }
@@ -4915,6 +4942,63 @@ Analyzer::instantiate_generic_call(
       return builtins.error_type;
     }
   }
+
+  // Validate each binding against the type-parameter's constraint, if any.
+  // Constraints are carried on the TypeParam nodes embedded in the function's
+  // parameter/return types — walk the type tree to recover them.
+  std::unordered_map<uint32_t, TypeConstraint> constraints;
+  auto collect = [&](auto &self, const TypePtr &t) -> void {
+    if (!t) return;
+    if (t->kind == TypeKind::TypeParam) {
+      auto &info = std::get<TypeParamInfo>(t->detail);
+      if (info.param.constraint != TypeConstraint::None)
+        constraints[info.param.id] = info.param.constraint;
+      return;
+    }
+    switch (t->kind) {
+    case TypeKind::Array:
+      self(self, std::get<ArrayTypeInfo>(t->detail).element);
+      break;
+    case TypeKind::Map: {
+      auto &m = std::get<MapTypeInfo>(t->detail);
+      self(self, m.key);
+      self(self, m.value);
+      break;
+    }
+    case TypeKind::Range:
+      self(self, std::get<RangeTypeInfo>(t->detail).element);
+      break;
+    case TypeKind::Func: {
+      auto &f = std::get<FuncTypeInfo>(t->detail);
+      for (auto &p : f.params) self(self, p);
+      for (auto &r : f.returns) self(self, r);
+      break;
+    }
+    case TypeKind::Union:
+      for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
+        self(self, a);
+      break;
+    default:
+      break;
+    }
+  };
+  for (auto &p : fn_info.params) collect(collect, p);
+  for (auto &r : fn_info.returns) collect(collect, r);
+
+  bool constraint_violation = false;
+  for (auto &[id, concrete] : bindings) {
+    auto it = constraints.find(id);
+    if (it == constraints.end()) continue;
+    if (!satisfies_constraint(concrete, it->second)) {
+      error(call_span,
+            std::format("type {} does not satisfy constraint {}",
+                        type_to_string(concrete),
+                        constraint_name(it->second)));
+      constraint_violation = true;
+    }
+  }
+  if (constraint_violation)
+    return builtins.error_type;
 
   if (out_bindings)
     *out_bindings = bindings;
