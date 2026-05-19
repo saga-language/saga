@@ -6,6 +6,7 @@
 #include "frontend/parser.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <format>
 
@@ -26,21 +27,15 @@ bool is_kind_method_mutating(const FuncDeclNode &fn) {
   auto *blk = std::get_if<BlockNode>(&fn.body->data);
   if (!blk) return false;
   std::string_view recv = fn.receiver->name.name;
+
   for (auto &stmt : blk->stmts) {
     auto *call = std::get_if<CallExprNode>(&stmt->data);
     if (!call) continue;
     auto *id = std::get_if<IdentifierNode>(&call->callee->data);
-    if (!id || id->name != "intrinsic_runtime" || call->args.size() < 2)
-      continue;
-    auto *lit = std::get_if<StringLiteralNode>(&call->args[0]->data);
-    if (!lit || lit->fragments.size() != 1) continue;
-    auto *frag = std::get_if<StringFragmentNode>(&lit->fragments[0]->data);
-    if (!frag) continue;
-    std::string_view raw = frag->text;
-    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
-      raw = raw.substr(1, raw.size() - 2);
-    if (!kMutatingIntrinsics.count(std::string(raw))) continue;
-    auto *recv_id = std::get_if<IdentifierNode>(&call->args[1]->data);
+    if (!id) continue;
+    if (!kMutatingIntrinsics.count(std::string(id->name))) continue;
+    if (call->args.empty()) continue;
+    auto *recv_id = std::get_if<IdentifierNode>(&call->args[0]->data);
     if (recv_id && recv_id->name == recv) return true;
   }
   return false;
@@ -407,12 +402,39 @@ uint32_t Analyzer::fresh_type_param_id() { return next_type_param_id++; }
 std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
   std::vector<TypeParam> params;
   for (auto &tp_node : generic.type_params) {
-    auto &ident = std::get<IdentifierNode>(tp_node->data);
-    uint32_t id = fresh_type_param_id();
-    TypeParam tp{id, std::string(ident.name)};
-    auto tp_type = make_type_param(id, tp.name);
+    std::string_view name;
+    Span span = tp_node->span;
+    TypeConstraint constraint = TypeConstraint::None;
 
-    declare(Symbol::type_param(tp.name, tp_type, ident.span));
+    if (auto *tp = std::get_if<TypeParamNode>(&tp_node->data)) {
+      name = tp->name.name;
+      span = tp->name.span;
+      if (tp->constraint) {
+        constraint = constraint_from_name(tp->constraint->name);
+        if (constraint == TypeConstraint::None) {
+          error(tp->constraint->span,
+                std::format("unknown type constraint '{}' — expected one of "
+                            "Integer, Float, Numeric",
+                            tp->constraint->name));
+        }
+      }
+    } else if (auto *ident = std::get_if<IdentifierNode>(&tp_node->data)) {
+      // Legacy / instantiation-position shape; no constraint slot.
+      name = ident->name;
+      span = ident->span;
+    } else {
+      continue; // shape unrecognised; analyzer cannot bind it
+    }
+
+    uint32_t id = fresh_type_param_id();
+    TypeParam tp{id, std::string(name), constraint};
+    auto tp_type = make_type_param(id, tp.name);
+    if (tp_type) {
+      auto &info = std::get<TypeParamInfo>(tp_type->detail);
+      info.param.constraint = constraint;
+    }
+
+    declare(Symbol::type_param(tp.name, tp_type, span));
     current_scope->type_bindings[id] = tp_type;
 
     params.push_back(std::move(tp));
@@ -742,10 +764,13 @@ void Analyzer::collect_declaration(const Node &node) {
                    // Receiver methods are bound to a type; they're not
                    // callable as free functions and must not shadow types
                    // (e.g. Bool.String() must not shadow the String type).
-                   if (!fn.receiver)
-                     declare(Symbol::function(std::string(fn.name.name),
-                                              nullptr, fn.name.span,
-                                              fn.is_public));
+                   if (!fn.receiver) {
+                     auto sym = Symbol::function(std::string(fn.name.name),
+                                                 nullptr, fn.name.span,
+                                                 fn.is_public);
+                     sym.is_extern = fn.is_extern;
+                     declare(std::move(sym));
+                   }
                  },
                  [&](const StructDeclNode &s) {
                    declare(Symbol::type_sym(std::string(s.name.name), nullptr,
@@ -1172,8 +1197,8 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   // as the authoritative name for the loaded sub-analyzer.
   sub_analyzer->current_package_name_override = origin;
   // Inherit stdlib mode when loading a stdlib package's source — stdlib
-  // packages use intrinsic_runtime and define receiver methods on
-  // intrinsic types, both of which are gated to stdlib mode.
+  // packages use intrinsics and define receiver methods on intrinsic
+  // types, both of which are gated to stdlib mode.
   static const std::unordered_set<std::string> stdlib_origins{
       "proto", "int", "float", "bool", "string", "array", "map",
       "unsafe", "sys", "os", "io"};
@@ -1769,15 +1794,15 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
                      // reuse names from the enclosing struct's type params.
                      if (fn.generic && !type_params.empty()) {
                        for (auto &tp_node : fn.generic->type_params) {
-                         auto &tp_ident =
-                             std::get<IdentifierNode>(tp_node->data);
+                         auto opt_name = type_param_name(*tp_node);
+                         if (!opt_name) continue;
                          for (auto &stp : type_params) {
-                           if (stp.name == std::string(tp_ident.name)) {
+                           if (stp.name == std::string(*opt_name)) {
                              error(tp_node->span,
                                    std::format("type parameter '{}' shadows "
                                                "enclosing struct type "
                                                "parameter",
-                                               tp_ident.name));
+                                               *opt_name));
                            }
                          }
                        }
@@ -2008,6 +2033,10 @@ void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
 
 void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
                                       const TypePtr &enclosing_struct) {
+  // Extern declarations have no body to resolve.
+  if (fn.is_extern)
+    return;
+
   // Generic functions are analysed lazily, once per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
   // through the normal path because their T is the element type.
@@ -2580,6 +2609,10 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 
 void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
                                     const TypePtr &enclosing_struct) {
+  // Extern declarations have no body to type-check.
+  if (fn.is_extern)
+    return;
+
   // Generic functions are type-checked lazily per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
   // through the eager path because their T is the element type.
@@ -3090,13 +3123,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
-  // Exception: Any is the stdlib top/bottom type — skip method dispatch and
-  // fall through to the built-in operator paths below.
-  auto is_any_type = [](const TypePtr &t) {
-    if (!t || t->kind != TypeKind::Struct) return false;
-    return std::get<StructTypeInfo>(t->detail).name == "Any";
-  };
-  if (lhs->kind == TypeKind::Struct && !is_any_type(lhs)) {
+  if (lhs->kind == TypeKind::Struct) {
     return check_struct_binary_expr(node, parent, lhs, rhs);
   }
 
@@ -3303,6 +3330,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     if (!bindings.empty() && callee_type) {
       auto fd_it = func_decl_by_type_.find(callee_type.get());
       if (fd_it != func_decl_by_type_.end() &&
+          !fd_it->second->is_extern &&
           generic_templates_.find(fd_it->second) != generic_templates_.end()) {
         instantiate_generic_body(*fd_it->second, bindings, parent);
         if (current_instantiation_) {
@@ -4807,6 +4835,9 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = declared_type ? declared_type : init_type;
   }
+
+  if (auto cv = evaluate_constant(*c.value))
+    const_decl_values_[std::string(c.name.name)] = *cv;
 }
 
 void Analyzer::check_enum_decl(const EnumDeclNode &e) {
@@ -4909,6 +4940,63 @@ Analyzer::instantiate_generic_call(
       return builtins.error_type;
     }
   }
+
+  // Validate each binding against the type-parameter's constraint, if any.
+  // Constraints are carried on the TypeParam nodes embedded in the function's
+  // parameter/return types — walk the type tree to recover them.
+  std::unordered_map<uint32_t, TypeConstraint> constraints;
+  auto collect = [&](auto &self, const TypePtr &t) -> void {
+    if (!t) return;
+    if (t->kind == TypeKind::TypeParam) {
+      auto &info = std::get<TypeParamInfo>(t->detail);
+      if (info.param.constraint != TypeConstraint::None)
+        constraints[info.param.id] = info.param.constraint;
+      return;
+    }
+    switch (t->kind) {
+    case TypeKind::Array:
+      self(self, std::get<ArrayTypeInfo>(t->detail).element);
+      break;
+    case TypeKind::Map: {
+      auto &m = std::get<MapTypeInfo>(t->detail);
+      self(self, m.key);
+      self(self, m.value);
+      break;
+    }
+    case TypeKind::Range:
+      self(self, std::get<RangeTypeInfo>(t->detail).element);
+      break;
+    case TypeKind::Func: {
+      auto &f = std::get<FuncTypeInfo>(t->detail);
+      for (auto &p : f.params) self(self, p);
+      for (auto &r : f.returns) self(self, r);
+      break;
+    }
+    case TypeKind::Union:
+      for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
+        self(self, a);
+      break;
+    default:
+      break;
+    }
+  };
+  for (auto &p : fn_info.params) collect(collect, p);
+  for (auto &r : fn_info.returns) collect(collect, r);
+
+  bool constraint_violation = false;
+  for (auto &[id, concrete] : bindings) {
+    auto it = constraints.find(id);
+    if (it == constraints.end()) continue;
+    if (!satisfies_constraint(concrete, it->second)) {
+      error(call_span,
+            std::format("type {} does not satisfy constraint {}",
+                        type_to_string(concrete),
+                        constraint_name(it->second)));
+      constraint_violation = true;
+    }
+  }
+  if (constraint_violation)
+    return builtins.error_type;
 
   if (out_bindings)
     *out_bindings = bindings;
@@ -5388,6 +5476,147 @@ bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
     return k && v;
   }
   return check_satisfies_protocol(t, ProtocolKind::Stringable, at, context);
+}
+
+// ---------------------------------------------------------------------------
+// Constant-expression evaluator
+// ---------------------------------------------------------------------------
+
+namespace {
+
+int64_t parse_int_literal_text(std::string_view lit) {
+  std::string clean;
+  clean.reserve(lit.size());
+  for (char c : lit)
+    if (c != '_') clean += c;
+
+  int base = 10;
+  std::string_view digits = clean;
+  if (digits.size() > 2 && digits[0] == '0') {
+    switch (digits[1]) {
+      case 'b': case 'B': base = 2;  digits = digits.substr(2); break;
+      case 'o': case 'O': base = 8;  digits = digits.substr(2); break;
+      case 'x': case 'X': base = 16; digits = digits.substr(2); break;
+      default: break;
+    }
+  }
+  int64_t v = 0;
+  std::from_chars(digits.data(), digits.data() + digits.size(), v, base);
+  return v;
+}
+
+double parse_float_literal_text(std::string_view lit) {
+  std::string clean;
+  clean.reserve(lit.size());
+  for (char c : lit)
+    if (c != '_') clean += c;
+  double v = 0.0;
+  std::from_chars(clean.data(), clean.data() + clean.size(), v);
+  return v;
+}
+
+} // namespace
+
+std::optional<ConstValue> Analyzer::evaluate_constant(const Node &expr) {
+  if (auto *il = std::get_if<IntegerLiteralNode>(&expr.data))
+    return ConstValue::make_int(parse_int_literal_text(il->literal));
+
+  if (auto *fl = std::get_if<FloatLiteralNode>(&expr.data))
+    return ConstValue::make_float(parse_float_literal_text(fl->literal));
+
+  if (auto *bl = std::get_if<BoolLiteralNode>(&expr.data))
+    return ConstValue::make_bool(bl->literal == "true");
+
+  if (auto *grp = std::get_if<GroupExprNode>(&expr.data))
+    return evaluate_constant(*grp->inner);
+
+  if (auto *un = std::get_if<UnaryExprNode>(&expr.data)) {
+    auto inner = evaluate_constant(*un->operand);
+    if (!inner) return std::nullopt;
+    if (un->op == Token::Kind::Sub) {
+      if (inner->kind == ConstValue::Kind::Int)
+        return ConstValue::make_int(-inner->i);
+      if (inner->kind == ConstValue::Kind::Float)
+        return ConstValue::make_float(-inner->f);
+    }
+    if (un->op == Token::Kind::Not) {
+      if (inner->kind == ConstValue::Kind::Bool)
+        return ConstValue::make_bool(!inner->b);
+    }
+    if (un->op == Token::Kind::BitwiseNot) {
+      if (inner->kind == ConstValue::Kind::Int)
+        return ConstValue::make_int(~inner->i);
+    }
+    return std::nullopt;
+  }
+
+  if (auto *bin = std::get_if<BinaryExprNode>(&expr.data)) {
+    auto lhs = evaluate_constant(*bin->lhs);
+    auto rhs = evaluate_constant(*bin->rhs);
+    if (!lhs || !rhs) return std::nullopt;
+    if (lhs->kind != rhs->kind) return std::nullopt;
+
+    if (lhs->kind == ConstValue::Kind::Int) {
+      int64_t l = lhs->i, r = rhs->i;
+      switch (bin->op) {
+        case Token::Kind::Add:        return ConstValue::make_int(l + r);
+        case Token::Kind::Sub:        return ConstValue::make_int(l - r);
+        case Token::Kind::Multiply:   return ConstValue::make_int(l * r);
+        case Token::Kind::Divide:
+          if (r == 0) {
+            error(expr.span, "division by zero in constant expression");
+            return std::nullopt;
+          }
+          return ConstValue::make_int(l / r);
+        case Token::Kind::Modulo:
+          if (r == 0) {
+            error(expr.span, "modulo by zero in constant expression");
+            return std::nullopt;
+          }
+          return ConstValue::make_int(l % r);
+        case Token::Kind::BitwiseAnd: return ConstValue::make_int(l & r);
+        case Token::Kind::BitwiseOr:  return ConstValue::make_int(l | r);
+        case Token::Kind::BitwiseXor: return ConstValue::make_int(l ^ r);
+        case Token::Kind::LeftShift:
+        case Token::Kind::RightShift:
+          if (r < 0 || r >= 64) {
+            error(expr.span,
+                  std::format("shift count {} out of range [0, 64) in "
+                              "constant expression", r));
+            return std::nullopt;
+          }
+          return bin->op == Token::Kind::LeftShift
+                     ? ConstValue::make_int(l << r)
+                     : ConstValue::make_int(l >> r);
+        default: return std::nullopt;
+      }
+    }
+    if (lhs->kind == ConstValue::Kind::Float) {
+      double l = lhs->f, r = rhs->f;
+      switch (bin->op) {
+        case Token::Kind::Add:      return ConstValue::make_float(l + r);
+        case Token::Kind::Sub:      return ConstValue::make_float(l - r);
+        case Token::Kind::Multiply: return ConstValue::make_float(l * r);
+        case Token::Kind::Divide:
+          if (r == 0.0) {
+            error(expr.span, "division by zero in constant expression");
+            return std::nullopt;
+          }
+          return ConstValue::make_float(l / r);
+        default: return std::nullopt;
+      }
+    }
+    return std::nullopt;
+  }
+
+  if (auto *id = std::get_if<IdentifierNode>(&expr.data)) {
+    auto it = const_decl_values_.find(std::string(id->name));
+    if (it != const_decl_values_.end())
+      return it->second;
+    return std::nullopt;
+  }
+
+  return std::nullopt;
 }
 
 } // namespace saga

@@ -128,7 +128,9 @@ Type = UnionType ;
 UnionType = BaseType { "|" BaseType } ;
 BaseType = SingleType { ArraySuffix } ;
 SingleType = Identifier | Selector | IntrinsicType | StructType ;
-Generic = "|" TypeList "|" ;
+Generic = "|" TypeParam { "," TypeParam } "|" ;
+TypeParam = Identifier [ Constraint ] ;
+Constraint = "Integer" | "Float" | "Numeric" ;
 TypeList = Type { "," Type } ;
 
 

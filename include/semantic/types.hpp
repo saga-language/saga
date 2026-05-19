@@ -45,14 +45,44 @@ enum class TypeKind : uint8_t {
 };
 
 // ---------------------------------------------------------------------------
+// TypeConstraint — a named built-in type-set that a generic parameter may
+// be constrained to.  None means the parameter is unconstrained.
+//
+// The set membership for each constraint is fixed by the compiler:
+//   Integer = {Int, Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32,
+//              Uint64, Byte}
+//   Float   = {Float, Float32, Float64}
+//   Numeric = Integer ∪ Float
+// ---------------------------------------------------------------------------
+enum class TypeConstraint : uint8_t {
+  None,
+  Integer,
+  Float,
+  Numeric,
+};
+
+/// Map a constraint to its canonical source spelling. Returns "" for None.
+std::string_view constraint_name(TypeConstraint c);
+
+/// Reverse of constraint_name. Returns TypeConstraint::None when `name`
+/// does not match any built-in constraint.
+TypeConstraint constraint_from_name(std::string_view name);
+
+/// True if `t` is a member of the named constraint's type set.
+/// Always false for TypeConstraint::None — None is meaningless as a check.
+bool satisfies_constraint(const TypePtr &t, TypeConstraint c);
+
+// ---------------------------------------------------------------------------
 // TypeParam — a single generic type variable.
 //
 //   |T|, |T, U|  →  each T / U is a TypeParam with a unique id.
+//   |T Integer|  →  T carries TypeConstraint::Integer.
 // ---------------------------------------------------------------------------
 
 struct TypeParam {
   uint32_t id;           // unique within one analysis pass
   std::string name;      // source name, e.g. "T"
+  TypeConstraint constraint = TypeConstraint::None;
 };
 
 // ---------------------------------------------------------------------------

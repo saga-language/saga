@@ -131,8 +131,17 @@ private:
   /// StructType = "struct" "{" FieldSpec { "," FieldSpec } "}"
   NodePtr parse_struct_type();
 
-  /// Generic = "|" TypeList "|"
+  /// Generic = "|" TypeList "|"  (instantiation position — types only)
   std::optional<GenericNode> parse_generic();
+
+  /// GenericParams = "|" TypeParam { "," TypeParam } "|"
+  /// TypeParam     = Identifier [ Identifier ]   (name [ constraint ])
+  ///
+  /// Used in declaration position (fn / struct / interface / extern / fn-expr).
+  /// Produces a GenericNode whose entries are TypeParamNodes.  In contrast,
+  /// parse_generic() is used in instantiation position and produces type
+  /// expressions.
+  std::optional<GenericNode> parse_generic_params();
 
   // ── Expression Parsing (Pratt) ───────────────────────────────────────
 
@@ -194,6 +203,7 @@ private:
   NodePtr parse_declaration();
   NodePtr parse_const_decl(bool is_public);
   NodePtr parse_enum_decl(bool is_public);
+  NodePtr parse_extern_decl();
   NodePtr parse_func_decl(bool is_public);
   NodePtr parse_import_decl();
   NodePtr parse_interface_decl(bool is_public);

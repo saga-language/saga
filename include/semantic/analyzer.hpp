@@ -11,10 +11,41 @@
 #include "semantic/types.hpp"
 
 #include <list>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace saga {
+
+// A compile-time-known scalar produced by `Analyzer::evaluate_constant`
+// and consumed by codegen to emit literal globals for folded top-level
+// `const` initialisers.
+struct ConstValue {
+  enum class Kind : uint8_t { Int, Float, Bool };
+  Kind kind = Kind::Int;
+  int64_t i = 0;  // valid when kind == Int
+  double f = 0;   // valid when kind == Float
+  bool b = false; // valid when kind == Bool
+
+  static ConstValue make_int(int64_t v) {
+    ConstValue cv;
+    cv.kind = Kind::Int;
+    cv.i = v;
+    return cv;
+  }
+  static ConstValue make_float(double v) {
+    ConstValue cv;
+    cv.kind = Kind::Float;
+    cv.f = v;
+    return cv;
+  }
+  static ConstValue make_bool(bool v) {
+    ConstValue cv;
+    cv.kind = Kind::Bool;
+    cv.b = v;
+    return cv;
+  }
+};
 
 // ---------------------------------------------------------------------------
 // PackageResolver — resolves import paths to filesystem directories,
@@ -104,6 +135,11 @@ struct Analyzer {
   /// Maps each generic instantiation site to its type-argument bindings.
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
+
+  /// Folded top-level `const` initialisers.  Keyed by bare name —
+  /// consts are always top-level per spec, so no scope qualification
+  /// is needed.
+  std::unordered_map<std::string, ConstValue> const_decl_values_;
 
   /// Auxiliary type map keyed by byte-offset span, for identifiers that are
   /// not wrapped in a Node (e.g. struct-literal field names, accumulator
@@ -619,6 +655,15 @@ private:
 
   // Phase 7: Top-level declaration checking.
   void check_const_decl(const ConstDeclNode &node);
+
+  /// Evaluate `expr` as a constant expression, returning nullopt when
+  /// it is not reducible at compile time.  Recognised forms: scalar
+  /// literals, unary `-`/`!`/`~`, binary arithmetic and bitwise on
+  /// constant operands, and references to folded top-level `const`s.
+  /// Diagnostics are emitted when all operands are constant but the
+  /// operation is undefined (divide/modulo by zero, shift out of
+  /// range); other unreducible shapes return nullopt silently.
+  std::optional<ConstValue> evaluate_constant(const Node &expr);
 
   // Struct operator overloading helper.
   TypePtr check_struct_binary_expr(const BinaryExprNode &node,

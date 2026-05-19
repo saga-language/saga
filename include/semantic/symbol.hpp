@@ -44,6 +44,8 @@ struct Symbol {
   bool is_public = false;
   bool is_mutable = true;   // false for constants and parameters
   bool is_builtin = false;  // true for compiler-provided symbols
+  bool is_extern = false;   // true for `extern fn` declarations; the link name
+                            // is the bare symbol name, not the mangled name
 
   // Convenience constructors
   static Symbol variable(const std::string &name, TypePtr type, Span span,

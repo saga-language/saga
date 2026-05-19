@@ -1,8 +1,8 @@
 // Regression: conversion methods on every integer kind round-trip
-// values correctly.  Before the codegen fix, intrinsic_sext / zext
-// produced narrow LLVM values that didn't match the i64 storage of
-// narrow Ints, so the generated function silently fell through to a
-// zero return.
+// values correctly.  Before the codegen fix, the int-extension
+// intrinsics produced narrow LLVM values that didn't match the i64
+// storage of narrow Ints, so the generated function silently fell
+// through to a zero return.
 import "std/io"
 
 pub fn Main() Void {

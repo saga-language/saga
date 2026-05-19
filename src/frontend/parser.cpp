@@ -60,6 +60,8 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
     return "'else'";
   case Token::Kind::Enum:
     return "'enum'";
+  case Token::Kind::Extern:
+    return "'extern'";
   case Token::Kind::Fn:
     return "'fn'";
   case Token::Kind::For:
@@ -1563,7 +1565,7 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   std::optional<ReceiverNode> receiver = parse_receiver();
 
@@ -1577,8 +1579,55 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   NodePtr body = parse_block();
 
   return make_node<FuncDeclNode>(
-      span_from(start), is_public, std::move(generic), std::move(receiver),
-      std::move(name), std::move(sig), std::move(body));
+      span_from(start), is_public, /*is_extern=*/false, std::move(generic),
+      std::move(receiver), std::move(name), std::move(sig), std::move(body));
+}
+
+// parse_extern_decl — ExternFuncDecl = "extern" "fn" [ Generic ] Identifier
+//                                      Signature
+//
+// Bodiless function declaration that links to an external (C) symbol of the
+// same name. Receivers and variadic parameters are not permitted; a generic
+// parameter is allowed so that polymorphic C runtime functions (which take
+// elements via void*) can be wrapped in a type-safe Saga signature — the
+// single link-time symbol stays the same regardless of T.
+NodePtr Parser::parse_extern_decl() {
+  auto start = mark();
+  expect(Token::Kind::Extern); // consume "extern"
+
+  if (check(Token::Kind::Pub)) {
+    error("'pub' cannot be applied to an 'extern' declaration");
+    advance(); // consume "pub" and continue
+  }
+
+  expect(Token::Kind::Fn); // consume "fn"
+
+  std::optional<GenericNode> generic = parse_generic_params();
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  SignatureNode sig = parse_signature();
+
+  for (auto &p : sig.params) {
+    if (p.is_variadic) {
+      error("variadic parameters are not permitted on 'extern fn'");
+      break;
+    }
+  }
+
+  skip_terminators();
+  if (check(Token::Kind::LeftBrace)) {
+    error("'extern fn' declarations must not have a body");
+    // Consume the body so the parser can keep going.
+    parse_block();
+  }
+
+  return make_node<FuncDeclNode>(
+      span_from(start), /*is_public=*/false, /*is_extern=*/true,
+      std::move(generic), std::optional<ReceiverNode>{},
+      std::move(name), std::move(sig), NodePtr{});
 }
 
 // parse_receiver — Receiver = "(" Identifier Type ")"
@@ -1617,7 +1666,7 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Interface);
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
@@ -1685,7 +1734,7 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
@@ -1771,6 +1820,10 @@ NodePtr Parser::parse_declaration() {
     return parse_const_decl(is_public);
   case Token::Kind::Enum:
     return parse_enum_decl(is_public);
+  case Token::Kind::Extern:
+    if (is_public)
+      error("'pub' cannot be applied to an 'extern' declaration");
+    return parse_extern_decl();
   case Token::Kind::Fn:
     return parse_func_decl(is_public);
   case Token::Kind::Interface:
@@ -2082,6 +2135,54 @@ std::optional<GenericNode> Parser::parse_generic() {
   while (check(Token::Kind::Comma)) {
     advance(); // consume ","
     type_params.push_back(parse_single_type());
+  }
+
+  expect(Token::Kind::BitwiseOr); // consume closing "|"
+
+  return GenericNode{span_from(start), std::move(type_params)};
+}
+
+// parse_generic_params — declaration-position type-parameter list.
+//
+// GenericParams = "|" TypeParam { "," TypeParam } "|"
+// TypeParam     = Identifier [ Identifier ]
+//
+//   fn |T|              Identity(x T) T          — bare parameter
+//   fn |T Integer|      ShiftLeft(x T, n Int) T  — constrained parameter
+//   fn |T Integer, U|   Mix(t T, u U) U          — multiple, mixed
+//
+// The constraint is a bare identifier (no path, no generic application).
+// Constraint validation — that the name resolves to one of the built-in
+// constraints (Integer | Float | Numeric) — happens in the analyzer.
+std::optional<GenericNode> Parser::parse_generic_params() {
+  if (!check(Token::Kind::BitwiseOr))
+    return std::nullopt;
+
+  auto start = mark();
+  advance(); // consume opening "|"
+
+  auto parse_one = [&]() -> NodePtr {
+    auto tp_start = mark();
+    Token name_tok = expect(Token::Kind::Identifier);
+    IdentifierNode name{span_from(tp_start), name_tok.literal};
+
+    std::optional<IdentifierNode> constraint;
+    if (check(Token::Kind::Identifier)) {
+      auto c_start = mark();
+      Token c_tok = advance();
+      constraint = IdentifierNode{span_from(c_start), c_tok.literal};
+    }
+
+    return make_node<TypeParamNode>(span_from(tp_start), std::move(name),
+                                    std::move(constraint));
+  };
+
+  std::vector<NodePtr> type_params;
+  type_params.push_back(parse_one());
+
+  while (check(Token::Kind::Comma)) {
+    advance(); // consume ","
+    type_params.push_back(parse_one());
   }
 
   expect(Token::Kind::BitwiseOr); // consume closing "|"
@@ -2967,7 +3068,7 @@ NodePtr Parser::parse_func_expr() {
   auto start = mark();
   expect(Token::Kind::Fn);
 
-  std::optional<GenericNode> generic = parse_generic();
+  std::optional<GenericNode> generic = parse_generic_params();
   SignatureNode sig = parse_signature();
 
   skip_terminators();

@@ -271,4 +271,79 @@ TEST(Generics, InstantiatingGenericStructPreservesMethodOrigin) {
   }
 }
 
+// ===========================================================================
+// Phase 2 — bounded generics (Integer | Float | Numeric)
+// ===========================================================================
+
+TEST(Generics, BoundedGenericIntegerAcceptsInt) {
+  auto r = GR::from(
+      "fn |T Integer| Id(x T) T { x }\n"
+      "fn f() Int { Id(42) }");
+  EXPECT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
+}
+
+TEST(Generics, BoundedGenericIntegerRejectsString) {
+  auto r = GR::from(
+      "fn |T Integer| Id(x T) T { x }\n"
+      "fn f() { Id(\"hi\") }");
+  EXPECT_TRUE(r.has_err("Integer"));
+}
+
+TEST(Generics, BoundedGenericFloatRejectsInt) {
+  auto r = GR::from(
+      "fn |T Float| Id(x T) T { x }\n"
+      "fn f() { Id(42) }");
+  EXPECT_TRUE(r.has_err("Float"));
+}
+
+TEST(Generics, BoundedGenericFloatAcceptsFloat) {
+  auto r = GR::from(
+      "fn |T Float| Id(x T) T { x }\n"
+      "fn f() Float { Id(1.5) }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(Generics, BoundedGenericNumericAcceptsBoth) {
+  auto r = GR::from(
+      "fn |T Numeric| Add(a T, b T) T { a + b }\n"
+      "fn f() Int { Add(1, 2) }\n"
+      "fn g() Float { Add(1.5, 2.5) }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(Generics, BoundedGenericNumericRejectsString) {
+  auto r = GR::from(
+      "fn |T Numeric| Add(a T, b T) T { a + b }\n"
+      "fn f() { Add(\"a\", \"b\") }");
+  EXPECT_TRUE(r.has_err("Numeric"));
+}
+
+TEST(Generics, BoundedGenericUnknownConstraintRejected) {
+  auto r = GR::from("fn |T Bogus| Id(x T) T { x }");
+  EXPECT_TRUE(r.has_err("Bogus"));
+}
+
+TEST(Generics, BoundedGenericArithmeticOperatorsInsideBody) {
+  // + must work on a T Numeric without further declaration.
+  auto r = GR::from(
+      "fn |T Numeric| Triple(x T) T { x + x + x }\n"
+      "fn f() Int { Triple(7) }");
+  EXPECT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
+}
+
+TEST(Generics, BoundedGenericBitwiseOnlyOnInteger) {
+  // Bitwise & is valid on Integer.
+  auto r_ok = GR::from(
+      "fn |T Integer| Mask(x T, m T) T { x & m }\n"
+      "fn f() Int { Mask(7, 3) }");
+  EXPECT_TRUE(r_ok.ok());
+
+  // Float doesn't support bitwise — the bad body surfaces when the function
+  // is instantiated against a concrete Float.
+  auto r_bad = GR::from(
+      "fn |T Float| Mask(x T, m T) T { x & m }\n"
+      "fn f() { Mask(1.5, 2.5) }");
+  EXPECT_FALSE(r_bad.ok());
+}
+
 } // namespace saga

@@ -1,8 +1,11 @@
 // Package bool provides methods on the Bool intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
+extern fn saga_bool_to_string(b Bool) String
+extern fn saga_bool_hash(b Bool) Int64
+
 pub fn (b Bool) String() String {
-  intrinsic_runtime("saga_bool_to_string", b)
+  saga_bool_to_string(b)
 }
 
 pub fn (b Bool) Equals(other Bool) Bool {
@@ -10,5 +13,5 @@ pub fn (b Bool) Equals(other Bool) Bool {
 }
 
 pub fn (b Bool) Hash() Int64 {
-  intrinsic_runtime("saga_bool_hash", b)
+  saga_bool_hash(b)
 }

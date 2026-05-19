@@ -130,9 +130,6 @@ struct CodeGen {
   /// True when the current function is Main (return type is i32).
   bool current_func_is_main = false;
 
-  /// Semantic return type of the current function (used by intrinsic_runtime_try).
-  TypePtr current_func_return_sem = nullptr;
-
   // ── Closure support ──────────────────────────────────────────────────
 
   /// The fat pointer type for closures: { ptr fn, ptr env }.
@@ -226,7 +223,6 @@ struct CodeGen {
     std::vector<ManagedLocal> saved_managed_locals_;
     std::vector<LoopContext> saved_loop_stack_;
     bool saved_current_func_is_main_;
-    TypePtr saved_current_func_return_sem_;
     const Analyzer::BodyInstantiation *saved_current_instantiation_;
     llvm::Value *saved_current_actor_;
     llvm::AllocaInst *saved_pending_channel_alloca_;
@@ -429,6 +425,12 @@ private:
 
   /// Build the LLVM FunctionType for a Saga function declaration.
   llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
+
+  /// Build the LLVM FunctionType for a generic `extern fn` — generic
+  /// parameter identifiers in the signature lower to opaque pointers
+  /// without consulting the analyzer's scope (the generic params are
+  /// not in any live scope at codegen time).
+  llvm::FunctionType *build_extern_generic_func_type(const FuncDeclNode &fn);
 
   /// Apply byval/sret/align param attributes to a freshly-created Function
   /// based on its AST signature.  Must be called once after Function::Create.
@@ -651,8 +653,7 @@ private:
 
   /// Build a Missing-as-Error iface fat pointer carrying `message`.  Returns
   /// the i8* result of `saga_missing_new`, suitable for use as the err
-  /// payload of a `T | Error` union.  Used by wrap_indexed_lookup and the
-  /// failure path of `intrinsic_runtime_try`.
+  /// payload of a `T | Error` union.
   llvm::Value *emit_missing_fat_ptr(const std::string &message);
 
   /// Extract a concrete value from a union alloca given the expected alt type.

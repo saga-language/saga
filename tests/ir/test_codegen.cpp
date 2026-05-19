@@ -4258,62 +4258,39 @@ TEST(CodeGen, IntrinsicFptosiProducesFPToSI) {
 
 TEST(CodeGen, IntrinsicZextWidens) {
   auto r = CG::from(
-      "fn f(x Int) Int { intrinsic_zext(x, 32) }\n"
+      "fn f(x Int) Uint32 { intrinsic_zext_u32(x) }\n"
       "pub fn Main() Void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   // Should contain a trunc (64→32) instruction since we're narrowing.
   auto *trunc = find_inst<llvm::TruncInst>(func);
-  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for zext(i64, 32)";
+  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for zext_u32";
 }
 
 TEST(CodeGen, IntrinsicSextWidens) {
   auto r = CG::from(
-      "fn f(x Int) Int { intrinsic_sext(x, 32) }\n"
+      "fn f(x Int) Int32 { intrinsic_sext_i32(x) }\n"
       "pub fn Main() Void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   auto *trunc = find_inst<llvm::TruncInst>(func);
-  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for sext(i64, 32)";
+  EXPECT_NE(trunc, nullptr) << "Expected trunc instruction for sext_i32";
 }
 
-TEST(CodeGen, IntrinsicRuntimeCallsNamedFunction) {
+TEST(CodeGen, ExternFunc_AutoPromotesScalarToPointer) {
+  // saga_array_push expects (ptr, ptr) — the second ptr needs auto-promotion
+  // when called through the typed extern declaration (T → opaque ptr).
   auto r = CG::from(
-      "fn f(x Int) String { intrinsic_runtime(\"saga_int_to_string\", x) }\n"
-      "pub fn Main() Void {}");
-  auto *func = r.func("f");
-  ASSERT_NE(func, nullptr);
-  auto *call = find_call(func, "saga_int_to_string");
-  EXPECT_NE(call, nullptr) << "Expected call to saga_int_to_string";
-}
-
-TEST(CodeGen, IntrinsicRuntimeAutoPromotesScalar) {
-  // saga_array_push expects (ptr, ptr) — the second ptr needs auto-promotion.
-  auto r = CG::from(
-      "fn f(arr Int[], val Int) Void {\n"
-      "  intrinsic_runtime(\"saga_array_push\", arr, val)\n"
-      "}\n"
-      "pub fn Main() Void {}");
+      "extern fn |T| saga_array_push(a T[], elem T) Void\n"
+      "fn f(arr Int[], val Int) Void { saga_array_push(arr, val) }\n"
+      "pub fn Main() Void {}",
+      /*stdlib=*/false);
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   auto *call = find_call(func, "saga_array_push");
-  EXPECT_NE(call, nullptr) << "Expected call to saga_array_push";
-  if (call) {
-    // Both args should be pointers (second was auto-promoted from i64).
-    EXPECT_TRUE(call->getArgOperand(1)->getType()->isPointerTy())
-        << "Second arg should be auto-promoted to pointer";
-  }
-}
-
-TEST(CodeGen, IntrinsicFieldLoadsFromStruct) {
-  auto r = CG::from(
-      "fn f(s String) Int { intrinsic_field(s, 1) }\n"
-      "pub fn Main() Void {}");
-  auto *func = r.func("f");
-  ASSERT_NE(func, nullptr);
-  // Should contain a GEP + load.
-  auto *load = find_inst<llvm::LoadInst>(func);
-  EXPECT_NE(load, nullptr) << "Expected load instruction from field access";
+  ASSERT_NE(call, nullptr) << "Expected call to saga_array_push";
+  EXPECT_TRUE(call->getArgOperand(1)->getType()->isPointerTy())
+      << "Second arg should be auto-promoted to pointer";
 }
 
 TEST(CodeGen, IntrinsicCallGateRejectsNonStdlib) {
@@ -4566,6 +4543,72 @@ TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
   }
   EXPECT_TRUE(saw_channel_new_with_struct_size)
       << "Expected saga_channel_new called with elem_size=16 for Msg{Int,String}";
+}
+
+// ===========================================================================
+// Extern function declarations
+// ===========================================================================
+
+TEST(CodeGen, ExternFunc_DeclaredUnderBareName) {
+  auto r = CG::from(
+      "extern fn saga_int_hash(i Int) Int\n"
+      "pub fn Main() Void {}");
+  auto *fn = r.mod().getFunction("saga_int_hash");
+  ASSERT_NE(fn, nullptr);
+  EXPECT_TRUE(fn->isDeclaration()) << "extern fn must have no body";
+  // Mangled form must NOT exist — the link name is the bare C symbol.
+  EXPECT_EQ(r.mod().getFunction(CG::mangled("saga_int_hash")), nullptr);
+}
+
+TEST(CodeGen, ExternFunc_CallTargetsBareName) {
+  auto r = CG::from(
+      "extern fn saga_int_hash(i Int) Int\n"
+      "fn Use() Int { saga_int_hash(7) }\n"
+      "pub fn Main() Void {}");
+  auto *use = r.func("Use");
+  ASSERT_NE(use, nullptr);
+  bool saw_call = false;
+  for (auto &bb : *use) {
+    for (auto &inst : bb) {
+      auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+      if (!call || !call->getCalledFunction()) continue;
+      if (call->getCalledFunction()->getName() == "saga_int_hash")
+        saw_call = true;
+    }
+  }
+  EXPECT_TRUE(saw_call) << "Use() should call saga_int_hash directly";
+}
+
+// ===========================================================================
+// Top-level const initialiser folding
+// ===========================================================================
+
+TEST(CodeGen, ConstDecl_ArithExprFoldedToLiteralGlobal) {
+  auto r = CG::from(
+      "pub const MaxSize = 2 * 1024 * 1024\n"
+      "pub fn Main() Void {}");
+  auto *gv = r.mod().getNamedGlobal("test__MaxSize");
+  ASSERT_NE(gv, nullptr);
+  ASSERT_TRUE(gv->isConstant())
+      << "folded const should be emitted as an isConstant global, "
+         "not a runtime-initialised placeholder";
+  ASSERT_TRUE(gv->hasInitializer());
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(gv->getInitializer());
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->getSExtValue(), 2 * 1024 * 1024);
+}
+
+TEST(CodeGen, ConstDecl_ChainedRefFolded) {
+  auto r = CG::from(
+      "pub const A = 7\n"
+      "pub const B = A * 3\n"
+      "pub fn Main() Void {}");
+  auto *gv = r.mod().getNamedGlobal("test__B");
+  ASSERT_NE(gv, nullptr);
+  EXPECT_TRUE(gv->isConstant());
+  auto *ci = llvm::dyn_cast<llvm::ConstantInt>(gv->getInitializer());
+  ASSERT_NE(ci, nullptr);
+  EXPECT_EQ(ci->getSExtValue(), 21);
 }
 
 } // namespace saga

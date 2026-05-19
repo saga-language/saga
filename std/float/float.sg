@@ -1,8 +1,11 @@
 // Package float provides methods on the Float intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
+extern fn saga_float_to_string(f Float) String
+extern fn saga_float_format(f Float, fmt String) String
+
 pub fn (f Float) String() String {
-  intrinsic_runtime("saga_float_to_string", f)
+  saga_float_to_string(f)
 }
 
 pub fn (f Float) Int() Int {
@@ -23,7 +26,7 @@ pub fn (f Float) Compare(other Float) Comparison {
 }
 
 pub fn (f Float) Format(fmt String) String {
-  intrinsic_runtime("saga_float_format", f, fmt)
+  saga_float_format(f, fmt)
 }
 
 pub fn (f Float) Float32() Float32 {
@@ -35,10 +38,12 @@ pub fn (f Float) Float64() Float64 {
 }
 
 // --- Float32 ---
+//
+// Float32/Float64 String/Format delegate to Float — the C runtime
+// only carries a double entry point and Saga's Float is the platform
+// word-size float (f64 on 64-bit targets).
 
-pub fn (f Float32) String() String {
-  intrinsic_runtime("saga_float_to_string", intrinsic_fpext(f))
-}
+pub fn (f Float32) String() String { f.Float().String() }
 
 pub fn (f Float32) Int() Int {
   intrinsic_fptosi(intrinsic_fpext(f))
@@ -57,9 +62,7 @@ pub fn (f Float32) Compare(other Float32) Comparison {
   }
 }
 
-pub fn (f Float32) Format(fmt String) String {
-  intrinsic_runtime("saga_float_format", intrinsic_fpext(f), fmt)
-}
+pub fn (f Float32) Format(fmt String) String { f.Float().Format(fmt) }
 
 pub fn (f Float32) Float() Float     { intrinsic_fpext(f) }
 pub fn (f Float32) Float32() Float32 { f }
@@ -67,9 +70,7 @@ pub fn (f Float32) Float64() Float64 { intrinsic_fpext(f) }
 
 // --- Float64 ---
 
-pub fn (f Float64) String() String {
-  intrinsic_runtime("saga_float_to_string", f)
-}
+pub fn (f Float64) String() String { f.Float().String() }
 
 pub fn (f Float64) Int() Int {
   intrinsic_fptosi(f)
@@ -88,9 +89,7 @@ pub fn (f Float64) Compare(other Float64) Comparison {
   }
 }
 
-pub fn (f Float64) Format(fmt String) String {
-  intrinsic_runtime("saga_float_format", f, fmt)
-}
+pub fn (f Float64) Format(fmt String) String { f.Float().Format(fmt) }
 
 pub fn (f Float64) Float() Float     { intrinsic_fpext(f) }
 pub fn (f Float64) Float32() Float32 { intrinsic_fptrunc(f) }

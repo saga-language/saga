@@ -304,6 +304,12 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_impl(*n.base_type, os, c);
           },
           [&](const GenericNode &n) { dump_generic(n, os, indent); },
+          [&](const TypeParamNode &n) {
+            os << pad(indent) << "TypeParamNode \"" << n.name.name << "\"";
+            if (n.constraint)
+              os << " constraint=\"" << n.constraint->name << "\"";
+            os << "\n";
+          },
 
           // -----------------------------------------------------------------------
           // Shared sub-nodes
@@ -477,12 +483,14 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           [&](const ReceiverNode &n) { dump_receiver(n, os, indent); },
           [&](const FuncDeclNode &n) {
             os << pad(indent) << "FuncDeclNode" << (n.is_public ? " pub" : "")
+               << (n.is_extern ? " extern" : "")
                << " \"" << n.name.name << "\"\n";
             dump_opt_generic(n.generic, os, c);
             if (n.receiver)
               dump_receiver(*n.receiver, os, c);
             dump_signature(n.signature, os, c);
-            dump_ptr(n.body, os, c);
+            if (n.body)
+              dump_ptr(n.body, os, c);
           },
           [&](const ImportDeclNode &n) {
             os << pad(indent) << "ImportDeclNode \"" << n.path << "\"\n";
@@ -540,6 +548,14 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
 
 void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
+}
+
+std::optional<std::string_view> type_param_name(const Node &node) {
+  if (auto *tp = std::get_if<TypeParamNode>(&node.data))
+    return tp->name.name;
+  if (auto *id = std::get_if<IdentifierNode>(&node.data))
+    return id->name;
+  return std::nullopt;
 }
 
 } // namespace saga

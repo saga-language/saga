@@ -1,0 +1,3 @@
+pub struct |T| Box { value T }
+
+pub fn |T Numeric| (b |T| Box) Twice() T { b.value + b.value }

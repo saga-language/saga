@@ -340,10 +340,10 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     // Runtime ABI policy: every integer kind — platform Int *and* the
     // narrow Int8/Int16/Int32/Int64 family — is stored as i64.  The
     // narrow widths exist in the type system for assignment/conversion
-    // checking; truncation to the requested width happens lazily in
-    // intrinsic_sext / intrinsic_zext, which then sign- or zero-extend
-    // back to i64 so the runtime ABI stays uniform.  Phase 6b makes this
-    // policy explicit; honoring narrow widths in storage is deferred.
+    // checking; truncation to the requested width happens lazily in the
+    // `intrinsic_sext_iN` / `intrinsic_zext_uN` family, which then
+    // sign- or zero-extend back to i64 so the runtime ABI stays
+    // uniform.  Honoring narrow widths in storage is deferred.
     return i64_type;
   case TypeKind::Float:
     return f64_type;
@@ -466,7 +466,6 @@ void CodeGen::emit_init_function() {
   locals.clear();
   managed_locals.clear();
   current_func_is_main = false;
-  current_func_return_sem = nullptr;
 
   for (const ConstDeclNode *node : deferred_const_inits_) {
     std::string global_name = mangle(std::string(node->name.name));

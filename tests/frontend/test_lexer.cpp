@@ -869,6 +869,17 @@ TEST(Lexer, Scan_EnumKeyword) {
   ASSERT_EQ(t.offset, 0);
 }
 
+TEST(Lexer, Scan_ExternKeyword) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "extern");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Extern);
+  ASSERT_EQ(t.literal, "extern");
+  ASSERT_EQ(t.offset, 0);
+}
+
 TEST(Lexer, Scan_FalseKeyword) {
   Lexer l;
   auto f = File::from_source("test.txt", "false");

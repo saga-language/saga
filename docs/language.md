@@ -286,6 +286,82 @@ sum2 := Sum([1, 2, 3, 4, 5]) // Int[] matches the argument's actual type
 sum3 := Sum(1, 2, [3, 4]) // The types are Int and Int[], no match
 ```
 
+## External declarations
+
+External (non-Saga) functions are declared with the `extern` keyword as a
+prefix to a bodiless `fn` declaration. The Saga code that wraps them lives in
+the same file.
+
+```
+extern fn saga_int_to_string(i Int) String
+extern fn saga_int_hash(i Int) Int
+
+fn ToString(i Int) String { saga_int_to_string(i) }
+fn Hash(i Int) Int       { saga_int_hash(i) }
+```
+
+The type checker validates calls against the extern declaration the same way
+it validates any other call.
+
+### Form
+
+An `extern fn` declaration is a `fn` declaration with no body. The signature
+must be complete — parameter types and the return type are required and are
+used by the type checker exactly like Saga function signatures. Receivers
+and variadic parameters are not permitted. A generic type parameter is
+permitted so that a polymorphic C function (which typically takes elements
+via `void*`) can be wrapped in a type-safe Saga signature; the single
+link-time symbol stays the same regardless of `T`.
+
+```
+extern fn saga_string_size(s String) Int           // ok
+extern fn |T| saga_array_push(a T[], elem T) Void  // ok — generic wrapper
+extern fn saga_oops(x) Void                        // error: missing type
+extern fn saga_oops(x Int) Void { return }         // error: extern has no body
+```
+
+### Visibility
+
+Extern declarations are always package-private. `pub extern fn` and `extern
+pub fn` are compile errors. The external symbol is an implementation detail
+of the package; the Saga wrapper is the public surface.
+
+This keeps the modifier count on a function declaration at exactly one, and
+`extern` does real work — it tells the parser to skip body parsing and the
+linker that this symbol comes from outside.
+
+### OS-specific declarations
+
+Extern declarations compose with the existing per-OS file pattern
+(`_<os>.sg`). A package that wraps platform-divergent functions declares
+them in the per-OS source file alongside the Saga code that uses them.
+
+```
+// system_linux.sg
+extern fn getpid() Int
+pub fn ProcessId() Int { getpid() }
+
+// system_windows.sg
+extern fn GetCurrentProcessId() Int
+pub fn ProcessId() Int { GetCurrentProcessId() }
+```
+
+### Calling convention
+
+Saga's codegen emits every function using the platform's standard C ABI
+(System V AMD64 on Linux/macOS, MS x64 on Windows, AAPCS on ARM).
+Saga-to-Saga and Saga-to-extern calls are byte-identical at the machine
+level; there is no ABI translation at the boundary, so `extern` is purely a
+declaration concern.
+
+Extern calls are also exempt from the call-site array deep-copy that
+normally enforces Saga's value semantics: an array passed to an `extern fn`
+is forwarded by reference so the C side can mutate the backing buffer in
+place (which is how the runtime's polymorphic `saga_array_push` /
+`saga_array_set` / `saga_array_pop` operate). A pure-Saga function would
+receive a defensive clone; an extern callee does not. This is the deliberate
+trust contract at the C boundary — author extern wrappers accordingly.
+
 ## Types
 
 There are nine standard intrinsic types. Six have identifiers: Bool, Byte,
@@ -449,46 +525,11 @@ data := http.Get(...) or |err| {
 }
 ```
 
-### The 'Any' type
-
-`Any` is a special type and behaves a little differently than in most
-languages. Any isn't an empty interface that all types implicitly implement,
-nor is handy way to avoid strict typing. Any is more like a union of all
-intrinsic types.
-
-`Any` is intended for use for the rare moments when the type can be many
-non-deterministic types. Like all types, it can only be a type of itself, and
-it must be narrowed to actually use it. In order to instantiate an `Any` type,
-you must use the `"std/unsafe"` package.
-
-Like most data structures in the language, it's a fat struct that has multiple
-conversion methods on it. Every conversion method returns an impure union and
-must be checked.
-
-The `Any` type comes with many helper methods to check what type, or types, it
-contains. It is meant to be a bridge between non-deterministic input like JSON.
-
-```
-// inside a library
-import "std/unsafe"
-
-data := unsafe.Any{value: 0} // creating a variable of type any from an integer
-
-fn ReturnAny() Any { data }
-
-// inside a consumer
-any := lib.ReturnAny()
-i Int = any // error, Any can not be type Int
-i Int = any.Int() or {} // attempt to extract an integer
-i Int = if any == Int { any } else {} // Error, Any is not an Int
-i Int = if any.Int?() { any.Int() } // Compiler detects the type was narrowed
-```
-
 ### Generics
 
 Generics are not tacked; types flow through pipes. Generics are available to
 only structs and functions. When used appropriately, in combination with
-interfaces, union types, and `Any`, they can be a powerful tool.
+interfaces and union types, they can be a powerful tool.
 
 When a generic is instantiated, if it's type can be inferred, the generic type
 can be omitted.
@@ -555,6 +596,58 @@ val := list.Peek() or { 0 }
 
 for node : list {} // Next() lets you iterate over the list.
 ```
+
+### Bounded generics
+
+A generic type parameter can be constrained to a named built-in type set by
+writing the constraint immediately after the parameter name inside the pipe
+syntax. The constraint follows by adjacency, matching the patterns used
+elsewhere in the language (`enum Severity Int`, wire-name field slots):
+
+```
+fn |T Numeric| Add(a T, b T) T { a + b }
+
+Add(1, 2)       // T = Int
+Add(1.0, 2.0)   // T = Float
+Add("a", "b")   // compile error: String is not Numeric
+```
+
+The constraint slot is optional — bare `|T|` still means "any type":
+
+```
+fn |T| Identity(x T) T { x }
+```
+
+Multiple type parameters each carry their own optional constraint:
+
+```
+fn |T Integer, U Numeric| Mix(a T, b U) U { ... }
+```
+
+Three named constraints are built into the compiler. They are
+compiler-only identifiers and cannot appear as the type of a variable,
+parameter, or return value — only in a constraint slot.
+
+| Constraint | Members |
+|---|---|
+| `Integer` | `Int`, `Int8`, `Int16`, `Int32`, `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Byte` |
+| `Float`   | `Float`, `Float32`, `Float64` |
+| `Numeric` | All members of `Integer` and `Float` |
+
+Each constraint implicitly permits the operators that are valid across
+every member of its set:
+
+- `Integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
+  `==`, `!=`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
+- `Float`: `+`, `-`, `*`, `/`, comparison
+- `Numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
+  valid on floats)
+
+Inside a function with a constrained generic, the listed operators are
+usable on the constrained type without further declaration. The compiler
+validates at instantiation that the actual type belongs to the constraint
+set; if not, the call fails with an error naming both the constraint and
+the offending type.
 
 ## Type Aliases
 

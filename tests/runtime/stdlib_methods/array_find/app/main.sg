@@ -1,0 +1,26 @@
+// Verify Array.Find() — returns `Int | Error` from the C runtime via
+// the typed extern path.  Covers success (matched element), miss (no
+// matching element), and an empty-array miss.
+import "std/io"
+
+pub fn Main() Void {
+  ints := [10, 20, 30, 40]
+
+  // Success: first hit returns its index.
+  io.Println((ints.Find(10) or { -1 }).String())  // 0
+  io.Println((ints.Find(30) or { -1 }).String())  // 2
+  io.Println((ints.Find(40) or { -1 }).String())  // 3
+
+  // Miss: or-fallback fires.
+  io.Println((ints.Find(99) or { -1 }).String())  // -1
+
+  // Empty array: always a miss.
+  empty := [0]
+  empty.Pop()
+  io.Println((empty.Find(5) or { -1 }).String())  // -1
+
+  // String elements work too.
+  words := ["alpha", "beta", "gamma"]
+  io.Println((words.Find("beta") or { -1 }).String())   // 1
+  io.Println((words.Find("delta") or { -1 }).String())  // -1
+}

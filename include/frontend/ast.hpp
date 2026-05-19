@@ -186,10 +186,30 @@ struct GenericTypeAppNode {
   NodePtr base_type;              // the generic type being parameterized
 };
 
-// Generic = "|" TypeList "|"   e.g. |T|, |T, U|
+// Generic = "|" GenericList "|"   e.g. |T|, |T, U|, |T Integer|, |Int|
+//
+// Two roles share the same surface and AST node:
+//   - Declaration position (`fn |T C| Name`, `struct |T| Box`) — each entry
+//     is a TypeParamNode carrying a name and optional constraint.
+//   - Instantiation position (`|String| spawn`, `|Int| Task`) — each entry
+//     is a type expression (IdentifierNode, SelectorNode, etc).
+// Readers branch on the variant tag of `type_params[i]->data` accordingly.
 struct GenericNode {
   Span span;
-  std::vector<NodePtr> type_params; // IdentifierNode for each type variable
+  std::vector<NodePtr> type_params;
+};
+
+// TypeParam = Identifier [ Constraint ]
+// Constraint = Identifier  (compiler-only: Integer | Float | Numeric)
+//
+// Stored inside GenericNode::type_params when the pipe is in declaration
+// position.  The constraint is an IdentifierNode rather than a richer Type
+// because user-declared constraints are deferred — only the three built-in
+// names are accepted by the analyzer.
+struct TypeParamNode {
+  Span span;
+  IdentifierNode name;
+  std::optional<IdentifierNode> constraint;
 };
 
 // ===========================================================================
@@ -459,14 +479,16 @@ struct ReceiverNode {
 };
 
 // FuncDecl = [ "pub" ] "fn" [ Generic ] [ Receiver ] Identifier Signature Block
+//          | "extern" "fn" Identifier Signature
 struct FuncDeclNode {
   Span span;
   bool is_public;
+  bool is_extern;
   std::optional<GenericNode> generic;
   std::optional<ReceiverNode> receiver;
   IdentifierNode name;
   SignatureNode signature;
-  NodePtr body; // BlockNode
+  NodePtr body; // BlockNode; nullptr when `extern`
 };
 
 // ImportDecl = "import" StringLiteral  (used as a declaration)
@@ -560,6 +582,7 @@ struct Node {
     // --- Types ---
     UnionTypeNode,  ArrayTypeNode,  MapTypeNode,   FuncTypeNode,
     RangeTypeNode,  StructTypeNode, GenericTypeAppNode, GenericNode,
+    TypeParamNode,
 
     // --- Shared sub-nodes ---
     CaseArmNode, ParameterNode,
@@ -623,5 +646,13 @@ NodePtr make_node(Span span, Args &&...args) {
 // child nodes recursively indented by two spaces per level.
 // ---------------------------------------------------------------------------
 void dump_ast(const Node &node, std::ostream &os, int indent = 0);
+
+// ---------------------------------------------------------------------------
+// Pull a type-parameter name from a GenericNode::type_params entry,
+// regardless of whether it's a TypeParamNode (declaration position) or a
+// bare IdentifierNode (legacy / instantiation position). Returns nullopt
+// when the entry is neither shape.
+// ---------------------------------------------------------------------------
+std::optional<std::string_view> type_param_name(const Node &node);
 
 } // namespace saga

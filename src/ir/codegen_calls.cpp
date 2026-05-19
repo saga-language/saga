@@ -83,38 +83,31 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return builder.CreateFPToSI(val, i64_type, "fptosi");
   }
 
-  if (name == "intrinsic_zext") {
-    // intrinsic_zext(value: Int, bits: Int) -> Int (i64-stored)
-    // Truncate the input to `bits`, then zero-extend back to i64 so the
-    // result matches the runtime's uniform i64 storage for narrow Ints.
+  // Trunc-then-extend back to i64 keeps the runtime's uniform i64
+  // storage convention for narrow ints.
+  auto sext_zext_to_width = [&](int width, bool is_signed)
+      -> llvm::Value * {
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
-    auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
-    if (!bits_node) return nullptr;
-    int64_t bits = parse_int_literal(bits_node->literal);
-    if (bits >= 64) return val;
-    auto *narrow_ty = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
-    auto *narrow = builder.CreateTrunc(val, narrow_ty, "ztrunc");
-    return builder.CreateZExt(narrow, i64_type, "zext");
-  }
+    if (width >= 64) return val;
+    auto *narrow_ty =
+        llvm::IntegerType::get(context, static_cast<unsigned>(width));
+    auto *narrow = builder.CreateTrunc(
+        val, narrow_ty, is_signed ? "strunc" : "ztrunc");
+    return is_signed ? builder.CreateSExt(narrow, i64_type, "sext")
+                     : builder.CreateZExt(narrow, i64_type, "zext");
+  };
 
-  if (name == "intrinsic_sext") {
-    // intrinsic_sext(value: Int, bits: Int) -> Int (i64-stored)
-    // Truncate to `bits`, then sign-extend back to i64.  Mirrors zext
-    // above; see the runtime-ABI note in CodeGen::llvm_type.
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    auto *bits_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
-    if (!bits_node) return nullptr;
-    int64_t bits = parse_int_literal(bits_node->literal);
-    if (bits >= 64) return val;
-    auto *narrow_ty = llvm::IntegerType::get(context, static_cast<unsigned>(bits));
-    auto *narrow = builder.CreateTrunc(val, narrow_ty, "strunc");
-    return builder.CreateSExt(narrow, i64_type, "sext");
-  }
+  if (name == "intrinsic_sext_i8")  return sext_zext_to_width(8,  true);
+  if (name == "intrinsic_sext_i16") return sext_zext_to_width(16, true);
+  if (name == "intrinsic_sext_i32") return sext_zext_to_width(32, true);
+  if (name == "intrinsic_sext_i64") return sext_zext_to_width(64, true);
+  if (name == "intrinsic_zext_u8")  return sext_zext_to_width(8,  false);
+  if (name == "intrinsic_zext_u16") return sext_zext_to_width(16, false);
+  if (name == "intrinsic_zext_u32") return sext_zext_to_width(32, false);
+  if (name == "intrinsic_zext_u64") return sext_zext_to_width(64, false);
 
   if (name == "intrinsic_is_string") {
-    // intrinsic_is_string(value: Any) -> Bool
     // Compile-time predicate: the argument's static type (after
     // monomorphisation, via semantic_type) folds to a constant i1.
     // LLVM constant-folds the surrounding branch, so the dead arm is
@@ -128,177 +121,6 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return llvm::ConstantInt::get(i1_type, is_string ? 1 : 0);
   }
 
-  if (name == "intrinsic_field") {
-    // intrinsic_field(value: Any, index: Int) -> Any
-    // Second arg must be an integer literal (field index).
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    auto *idx_node = std::get_if<IntegerLiteralNode>(&node.args[1]->data);
-    if (!idx_node) return nullptr;
-    unsigned field_idx = static_cast<unsigned>(parse_int_literal(idx_node->literal));
-
-    // The value must be a pointer; determine the backing struct type.
-    // For String (saga_runtime_string*), use the string_type struct.
-    auto arg_sem = semantic_type(*node.args[0]);
-    llvm::StructType *backing_st = nullptr;
-    if (arg_sem && arg_sem->kind == TypeKind::String) {
-      backing_st = string_type;
-    } else {
-      // Try to find a struct type matching the value's pointee.
-      // Walk struct_types looking for a match.
-      for (auto &[sname, st] : struct_types) {
-        (void)sname;
-        if (val->getType() == llvm::PointerType::getUnqual(context)) {
-          backing_st = st;
-          break;
-        }
-      }
-    }
-    if (!backing_st) return nullptr;
-
-    auto *gep = builder.CreateStructGEP(backing_st, val, field_idx, "field.ptr");
-    // Return type: load the field. We return i64 for most fields.
-    auto *field_type = backing_st->getElementType(field_idx);
-    return builder.CreateLoad(field_type, gep, "field.val");
-  }
-
-  if (name == "intrinsic_runtime") {
-    // intrinsic_runtime("func_name", args...) -> result
-    // First arg must be a plain string literal naming a declared C runtime
-    // function.  Extract the name from the first fragment of the string.
-    if (node.args.empty()) return nullptr;
-    auto *name_node = std::get_if<StringLiteralNode>(&node.args[0]->data);
-    if (!name_node || name_node->fragments.empty()) return nullptr;
-    auto *frag = std::get_if<StringFragmentNode>(&name_node->fragments[0]->data);
-    if (!frag) return nullptr;
-    // Strip surrounding quotes from the raw fragment text.
-    std::string_view raw = frag->text;
-    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
-      raw = raw.substr(1, raw.size() - 2);
-    std::string func_name(raw);
-    auto *callee = module->getFunction(func_name);
-    if (!callee) {
-      // The function isn't in the module — this is a compile-time error.
-      // Return null to signal failure; semantic analysis gates this.
-      return nullptr;
-    }
-
-    // Build argument list: skip args[0] (the name literal), emit the rest.
-    std::vector<llvm::Value *> args;
-    auto *fn_type = callee->getFunctionType();
-    for (size_t i = 1; i < node.args.size(); ++i) {
-      auto *val = emit_expr(*node.args[i]);
-      if (!val) continue;
-
-      // Auto-promote scalar to pointer if the C param expects a pointer.
-      size_t param_idx = i - 1;
-      if (param_idx < fn_type->getNumParams()) {
-        auto *expected = fn_type->getParamType(param_idx);
-        if (expected->isPointerTy() && !val->getType()->isPointerTy()) {
-          auto *func = builder.GetInsertBlock()->getParent();
-          auto *tmp = create_entry_alloca(func, "rt.tmp", val->getType());
-          builder.CreateStore(val, tmp);
-          val = tmp;
-        }
-      }
-      args.push_back(val);
-    }
-
-    auto *ret_type = fn_type->getReturnType();
-    if (ret_type->isVoidTy()) {
-      builder.CreateCall(callee, args);
-      return nullptr;
-    }
-    return builder.CreateCall(callee, args, "rt.call");
-  }
-
-  if (name == "intrinsic_runtime_try") {
-    // intrinsic_runtime_try("func_name", args...) -> union
-    // Calls a C function that writes its result to an auto-appended out-param
-    // and returns i64 status (0 = success, non-zero = failure).
-    // On success, wraps the out-param value as the success variant.
-    // On failure, wraps Missing as the error/missing variant.
-    if (node.args.empty()) return nullptr;
-    auto *name_node = std::get_if<StringLiteralNode>(&node.args[0]->data);
-    if (!name_node || name_node->fragments.empty()) return nullptr;
-    auto *frag = std::get_if<StringFragmentNode>(&name_node->fragments[0]->data);
-    if (!frag) return nullptr;
-    std::string_view raw = frag->text;
-    if (raw.size() >= 2 && raw.front() == '"' && raw.back() == '"')
-      raw = raw.substr(1, raw.size() - 2);
-    std::string func_name(raw);
-    auto *callee = module->getFunction(func_name);
-    if (!callee) return nullptr;
-
-    // The enclosing function's semantic return type is the union we produce.
-    auto union_sem = current_func_return_sem;
-    if (!union_sem || union_sem->kind != TypeKind::Union) return nullptr;
-
-    // Determine the success type (non-error/non-missing alternative).
-    auto success_sem = strip_error_from_union(union_sem);
-    if (!success_sem) return nullptr;
-    auto *success_ll = llvm_type(success_sem);
-
-    // Build argument list (same as intrinsic_runtime).
-    std::vector<llvm::Value *> args;
-    auto *fn_type = callee->getFunctionType();
-    for (size_t i = 1; i < node.args.size(); ++i) {
-      auto *val = emit_expr(*node.args[i]);
-      if (!val) continue;
-      size_t param_idx = i - 1;
-      if (param_idx < fn_type->getNumParams()) {
-        auto *expected = fn_type->getParamType(param_idx);
-        if (expected->isPointerTy() && !val->getType()->isPointerTy()) {
-          auto *parent_fn = builder.GetInsertBlock()->getParent();
-          auto *tmp = create_entry_alloca(parent_fn, "rt.tmp", val->getType());
-          builder.CreateStore(val, tmp);
-          val = tmp;
-        }
-      }
-      args.push_back(val);
-    }
-
-    // Create out-param alloca and append to args.
-    auto *parent_fn = builder.GetInsertBlock()->getParent();
-    auto *out_alloca = create_entry_alloca(parent_fn, "try.out", success_ll);
-    builder.CreateStore(llvm::Constant::getNullValue(success_ll), out_alloca);
-    args.push_back(out_alloca);
-
-    // Call: returns i64 status.
-    auto *status = builder.CreateCall(callee, args, "try.status");
-
-    // Branch on status == 0.
-    auto *is_ok = builder.CreateICmpEQ(
-        status, llvm::ConstantInt::get(i64_type, 0), "try.ok");
-    auto *bb_success = llvm::BasicBlock::Create(context, "try.success", parent_fn);
-    auto *bb_fail = llvm::BasicBlock::Create(context, "try.fail", parent_fn);
-    auto *bb_merge = llvm::BasicBlock::Create(context, "try.merge", parent_fn);
-    builder.CreateCondBr(is_ok, bb_success, bb_fail);
-
-    // Success path: load result, wrap in union.
-    builder.SetInsertPoint(bb_success);
-    auto *result_val = builder.CreateLoad(success_ll, out_alloca, "try.val");
-    auto *wrapped_ok = emit_union_wrap(result_val, success_sem, union_sem);
-    auto *bb_success_end = builder.GetInsertBlock(); // may have changed
-    builder.CreateBr(bb_merge);
-
-    // Failure path: wrap a Missing-as-Error fat pointer in the union so
-    // `or |err|` can dispatch err.Message() through the Error interface.
-    builder.SetInsertPoint(bb_fail);
-    auto *err_fat = emit_missing_fat_ptr("operation failed");
-    auto *wrapped_err =
-        emit_union_wrap(err_fat, analyzer.builtins.error_iface, union_sem);
-    auto *bb_fail_end = builder.GetInsertBlock();
-    builder.CreateBr(bb_merge);
-
-    // Merge with PHI.
-    builder.SetInsertPoint(bb_merge);
-    auto *union_st = get_union_llvm_type(union_sem);
-    auto *phi = builder.CreatePHI(llvm::PointerType::getUnqual(context), 2, "try.result");
-    phi->addIncoming(wrapped_ok, bb_success_end);
-    phi->addIncoming(wrapped_err, bb_fail_end);
-    return phi;
-  }
 
   if (name == "intrinsic_yield") {
     // intrinsic_yield() → saga_actor_yield()
@@ -425,7 +247,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       auto fd_it = analyzer.func_decl_by_type_.find(callee_sem.get());
       if (fd_it != analyzer.func_decl_by_type_.end()) {
         const FuncDeclNode *fn_decl = fd_it->second;
-        if (fn_decl->generic && !fn_decl->receiver) {
+        if (fn_decl->generic && !fn_decl->receiver && !fn_decl->is_extern) {
           auto *ta_ptr = node_type_args_of(parent);
           if (ta_ptr) {
             auto &bindings = *ta_ptr;
@@ -471,11 +293,19 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   }
 
   // ── Regular function dispatch ───────────────────────────────────────
+  auto pkg_lookup = [&]() -> std::optional<Symbol> {
+    if (analyzer.package_scope_)
+      return analyzer.package_scope_->lookup(name);
+    return std::nullopt;
+  };
   std::string link_name;
-  if (name == "intrinsic_print")
+  if (name == "intrinsic_print") {
     link_name = "saga_intrinsic_print";
-  else
+  } else if (auto sym = pkg_lookup(); sym && sym->is_extern) {
+    link_name = name;
+  } else {
     link_name = mangle(name);
+  }
 
   auto *callee = module->getFunction(link_name);
 
@@ -604,6 +434,9 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     }
   }
 
+  bool callee_is_extern = false;
+  if (auto sym = pkg_lookup(); sym && sym->is_extern)
+    callee_is_extern = true;
   for (size_t i = 0; i < node.args.size(); ++i) {
     if (variadic_packed && i >= variadic_idx) {
       args.push_back(variadic_packed);
@@ -615,8 +448,11 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // Spec docs/language.md:51 — values that escape their scope are
     // copied. The function-call boundary is an escape, so deep-copy
     // arrays before passing so the callee operates on its own copy.
+    // Extern (C) callees are the low-level boundary where Push/Pop/Set
+    // intentionally mutate the backing buffer; skip the clone there so
+    // the C runtime can operate on the actual array.
     auto arg_sem = semantic_type(*node.args[i]);
-    if (arg_sem && arg_sem->kind == TypeKind::Array) {
+    if (arg_sem && arg_sem->kind == TypeKind::Array && !callee_is_extern) {
       val = builder.CreateCall(module->getFunction("saga_array_clone"),
                                {val}, "arg.clone");
     }
@@ -660,6 +496,22 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
         builder.CreateStore(val, tmp);
         val = tmp;
+      }
+    }
+    // Extern (C) callees: when the declared param is a pointer at the
+    // LLVM level (e.g. TypeParam → void*) and the Saga value is a scalar,
+    // spill it to a stack alloca and pass the pointer.  Polymorphic
+    // runtime functions like saga_array_push take elements via void*.
+    if (callee_is_extern) {
+      size_t param_idx = sret_slot ? i + 1 : i;
+      if (param_idx < callee->getFunctionType()->getNumParams()) {
+        auto *expected = callee->getFunctionType()->getParamType(param_idx);
+        if (expected->isPointerTy() && !val->getType()->isPointerTy()) {
+          auto *tmp = create_entry_alloca(parent_fn, "extern.tmp",
+                                           val->getType());
+          builder.CreateStore(val, tmp);
+          val = tmp;
+        }
       }
     }
     args.push_back(val);
