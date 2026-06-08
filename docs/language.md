@@ -364,9 +364,9 @@ trust contract at the C boundary — author extern wrappers accordingly.
 
 ## Types
 
-There are nine standard intrinsic types. Six have identifiers: Bool, Byte,
-Float, Int, String, and Void. Three are identfied by their shapes:
-`Type[]` (array), `{Type: Type}` (map), and `(Expr..Expr)` (range). The two
+There are eight standard intrinsic types. Six have identifiers: Bool, Byte,
+Float, Int, String, and Void. Two are identfied by their shapes:
+`Type[]` (array) and `{Type: Type}` (map). The two
 numeric types (Int and  Float) are aliases of the word size variant (Int32 and
 Float32 on a 32bit  system, and Int64 and Float64 on a 64bit system, and so
 on). Byte is an alias of UInt8.
@@ -378,7 +378,7 @@ access form share a shape. The map type, in contrast, mirrors the map
 shape. Each container's type expression is shaped like the syntactic context
 where the container is used.
 
-Arrays, maps, and ranges are shapes, so the names `array`, `map`, and `range`
+Arrays and maps are shapes, so the names `array` and `map`
 are not reserved words. Feel free to use them in your code.
 
 The numeric types also have the full compliment of types: Int8, Int16, Int32,
@@ -403,7 +403,7 @@ precision of a type is a non-reversible action.
 
 ### Fat Types
 
-Arrays, maps, ranges, and strings are all fat types. Each is backed by struct
+Arrays, maps, and strings are all fat types. Each is backed by struct
 that contains a reference to backing data and metadata, like size.
 
 ```
@@ -1134,26 +1134,6 @@ generic := fn |T| (value T) Void { io.Print(value) }
 |Int| generic(42)
 ```
 
-## Range
-
-A range is an iterator type that represents a range of values. It takes two
-basic expressions. Like slices, the first value is inclusive and the
-second value is exclusive.
-
-```
-(0..10) // => 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
-
-for i : (0..10) {
-  io.Println(i)
-}
-```
-
-Only integer types and Char or Byte can be used.
-
-It can be converted to an array of the same type with `.Array() T[]`
-
-_Note: There is no "step" value at this time but may be added later._
-
 ## Selectors
 
 To access sub-elements of a package, map, or struct you need to use the dot
@@ -1290,7 +1270,7 @@ i8 := if value == Int8 {
 ## Looping
 
 There is only one looping constract: "for". It has multiple forms: infinite,
-condition-only, iteration, and range. For loops can be be advanced with 
+condition-only, and iteration. For loops can be be advanced with 
 `next` and exited early with `break`. A `return` inside the loops exits the
 function scope entirely but can also "early exit" a loop.
 
@@ -1323,7 +1303,7 @@ for running {
 for i Int; i < 10; i += 1 {}
 ```
 
-Collections like arrays, maps, ranges, and string can be iterated over using
+Collections like arrays, maps, and strings can be iterated over using
 the for-range form. If only a single variable is supplied, the value of each
 element is captured. If using two variables, both the key and value are
 returned.
@@ -1338,11 +1318,6 @@ for k, v : arr {} // index, value form (0,1) => (1,2) => (2,3)
 map {String: Int} = {"a": 1, "b": 2, "c": 3}
 for v : map {} // 1 => 2 => 3
 for k, v : map {} // ("a", 1) => ("b", 2) => ("c", 3)
-
-// ranges
-range := (1..4)
-for v : range {} // 1 => 2 => 3
-for k, v : range {} // index, value form (0,1) => (1,2) => (2,3)
 
 // strings
 string := "abc"

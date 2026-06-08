@@ -98,7 +98,6 @@ TEST(Types, IsCallable) {
 TEST(Types, IsIterable) {
   EXPECT_TRUE(is_iterable(make_array_type(make_int_type())));
   EXPECT_TRUE(is_iterable(make_map_type(make_string_type(), make_int_type())));
-  EXPECT_TRUE(is_iterable(make_range_type(make_int_type())));
   EXPECT_TRUE(is_iterable(make_string_type()));
   EXPECT_FALSE(is_iterable(make_bool_type()));
 }

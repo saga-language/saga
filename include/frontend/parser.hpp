@@ -125,9 +125,6 @@ private:
   /// FuncType = "fn" Signature
   NodePtr parse_func_type();
 
-  /// RangeType = "(" Type ")"
-  NodePtr parse_range_type();
-
   /// StructType = "struct" "{" FieldSpec { "," FieldSpec } "}"
   NodePtr parse_struct_type();
 
@@ -167,7 +164,7 @@ private:
   NodePtr parse_map_or_block();   // disambiguate "{" — map literal vs block
 
   NodePtr parse_struct_literal(NodePtr type_expr); // after type identifier
-  NodePtr parse_group_or_range(); // "(" ... ")" — group expr or range
+  NodePtr parse_group_expr(); // "(" Expression ")"
 
   // ── Compound Expressions ─────────────────────────────────────────────
 

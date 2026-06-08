@@ -494,29 +494,6 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 // Array literals
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_range_expr(const RangeExprNode &node) {
-  auto *low = emit_expr(*node.low);
-  auto *high = emit_expr(*node.high);
-  if (!low || !high) return nullptr;
-
-  // Range carries i64 endpoints regardless of element width — the runtime
-  // ABI stores narrow integers as i64 (see CodeGen::llvm_type's Int case).
-  if (low->getType() != i64_type)
-    low = builder.CreateIntCast(low, i64_type, /*isSigned=*/true, "rng.lo");
-  if (high->getType() != i64_type)
-    high = builder.CreateIntCast(high, i64_type, /*isSigned=*/true, "rng.hi");
-
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto *slot = create_entry_alloca(func, "range.lit", range_struct_type);
-  auto *lo_gep =
-      builder.CreateStructGEP(range_struct_type, slot, 0, "range.lo.gep");
-  builder.CreateStore(low, lo_gep);
-  auto *hi_gep =
-      builder.CreateStructGEP(range_struct_type, slot, 1, "range.hi.gep");
-  builder.CreateStore(high, hi_gep);
-  return slot;
-}
-
 llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
   // Determine element size from the semantic type.
   auto sem = semantic_type(

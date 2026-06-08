@@ -45,9 +45,6 @@ static void collect_type_params(const TypePtr &t,
     collect_type_params(m.value, out, seen);
     return;
   }
-  case TypeKind::Range:
-    collect_type_params(std::get<RangeTypeInfo>(t->detail).element, out, seen);
-    return;
   case TypeKind::Func: {
     auto &f = std::get<FuncTypeInfo>(t->detail);
     for (auto &p : f.params) collect_type_params(p, out, seen);
@@ -136,11 +133,6 @@ std::string type_to_sgi(const TypePtr &t) {
   case TypeKind::Map: {
     auto &info = std::get<MapTypeInfo>(t->detail);
     return "{" + type_to_sgi(info.key) + ": " + type_to_sgi(info.value) + "}";
-  }
-
-  case TypeKind::Range: {
-    auto &info = std::get<RangeTypeInfo>(t->detail);
-    return "Range|" + type_to_sgi(info.element) + "|";
   }
 
   case TypeKind::Func: {
@@ -779,7 +771,6 @@ struct SgiParser {
   /// - Map: {Key: Value}
   /// - Function: fn(Params) Returns
   /// - Union: A | B | C
-  /// - Range: Range|Element|
   /// - Named: StructName, EnumName, etc.
   TypePtr parse_type() {
     skip_whitespace();
@@ -797,8 +788,6 @@ struct SgiParser {
       alts.push_back(t);
       while (!at_end() && content[pos] == '|') {
         ++pos; // skip |
-        // Disambiguate: if next char is not a space/alpha, this might be
-        // a Range|T| delimiter, not a union.
         skip_whitespace();
         auto next = parse_single_type();
         if (!next)
@@ -913,19 +902,6 @@ struct SgiParser {
       return make_float_type(64);
     if (name == "String")
       return make_string_type();
-
-    // Range|Element|
-    if (name == "Range") {
-      skip_whitespace();
-      if (!at_end() && content[pos] == '|') {
-        ++pos;
-        auto elem = parse_single_type();
-        skip_whitespace();
-        if (!at_end() && content[pos] == '|')
-          ++pos;
-        return elem ? make_range_type(elem) : nullptr;
-      }
-    }
 
     // Well-known builtin types that need correct TypeKind for type equality.
     if (name == "Comparison")

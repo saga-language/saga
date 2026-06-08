@@ -406,20 +406,6 @@ TEST(TypeCheck, MapLiteralMixedValues) {
 }
 
 // ===========================================================================
-// Range expressions
-// ===========================================================================
-
-TEST(TypeCheck, RangeExpr) {
-  auto r = TC::from("fn f() { (0..10) }");
-  EXPECT_TRUE(r.ok());
-}
-
-TEST(TypeCheck, RangeExprNonNumeric) {
-  auto r = TC::from("fn f() { (\"a\"..\"z\") }");
-  EXPECT_TRUE(r.has_err("range requires numeric type"));
-}
-
-// ===========================================================================
 // For loops
 // ===========================================================================
 

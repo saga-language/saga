@@ -1313,9 +1313,6 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const FuncTypeNode &n) -> TypePtr {
             return resolve_func_type(n);
           },
-          [&](const RangeTypeNode &n) -> TypePtr {
-            return resolve_range_type(n);
-          },
           [&](const StructTypeNode &n) -> TypePtr {
             return resolve_struct_type(n);
           },
@@ -1395,11 +1392,6 @@ TypePtr Analyzer::resolve_func_type(const FuncTypeNode &node) {
   for (auto &r : node.returns)
     rets.push_back(resolve_type(*r));
   return make_func_type(std::move(params), std::move(rets));
-}
-
-TypePtr Analyzer::resolve_range_type(const RangeTypeNode &node) {
-  auto elem = resolve_type(*node.element_type);
-  return make_range_type(std::move(elem));
 }
 
 TypePtr Analyzer::resolve_struct_type(const StructTypeNode &node) {
@@ -2109,7 +2101,6 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const IfExprNode &n) { resolve_if_expr(n); },
           [&](const SwitchExprNode &n) { resolve_switch_expr(n); },
           [&](const ForExprNode &n) { resolve_for_expr(n); },
-          [&](const RangeExprNode &n) { resolve_range_expr(n); },
           [&](const SpawnExprNode &n) { resolve_spawn_expr(n, node); },
           [&](const OrExprNode &n) { resolve_or_expr(n); },
           [&](const FuncExprNode &n) { resolve_func_expr(n, node); },
@@ -2413,11 +2404,6 @@ void Analyzer::resolve_for_expr(const ForExprNode &node) {
   resolve_block(body_block);
 
   pop_scope();
-}
-
-void Analyzer::resolve_range_expr(const RangeExprNode &node) {
-  resolve_expr(*node.low);
-  resolve_expr(*node.high);
 }
 
 void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
@@ -2754,9 +2740,6 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_switch_expr(n);
           },
           [&](const ForExprNode &n) -> TypePtr { return check_for_expr(n); },
-          [&](const RangeExprNode &n) -> TypePtr {
-            return check_range_expr(n);
-          },
           [&](const SpawnExprNode &n) -> TypePtr {
             return check_spawn_expr(n, node);
           },
@@ -3566,12 +3549,6 @@ TypePtr substitute_kind_method(TypeKind kind, const TypePtr &effective_type,
     bindings[9990] = arr_info.element;
     return substitute(sig, bindings);
   }
-  if (kind == TypeKind::Range) {
-    auto &range_info = std::get<RangeTypeInfo>(effective_type->detail);
-    std::unordered_map<uint32_t, TypePtr> bindings;
-    bindings[9993] = range_info.element;
-    return substitute(sig, bindings);
-  }
   return sig;
 }
 
@@ -4027,11 +4004,6 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                          elem_type = m.value;
                          break;
                        }
-                       case TypeKind::Range: {
-                         auto &r = std::get<RangeTypeInfo>(iter_type->detail);
-                         elem_type = r.element;
-                         break;
-                       }
                        case TypeKind::String:
                          elem_type = builtins.string_type;
                          break;
@@ -4197,23 +4169,6 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
   }
 
   return node.accumulator ? acc_type : builtins.void_type;
-}
-
-TypePtr Analyzer::check_range_expr(const RangeExprNode &node) {
-  auto low = check_expr(*node.low);
-  auto high = check_expr(*node.high);
-
-  if (!is_error_type(low) && !is_numeric(low)) {
-    error(node.low->span, std::format("range requires numeric type, got {}",
-                                      type_to_string(low)));
-  }
-  if (!is_error_type(high) && !is_numeric(high)) {
-    error(node.high->span, std::format("range requires numeric type, got {}",
-                                       type_to_string(high)));
-  }
-
-  auto elem = common_type(low, high);
-  return make_range_type(elem ? elem : builtins.int_type);
 }
 
 TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
@@ -4963,9 +4918,6 @@ Analyzer::instantiate_generic_call(
       self(self, m.value);
       break;
     }
-    case TypeKind::Range:
-      self(self, std::get<RangeTypeInfo>(t->detail).element);
-      break;
     case TypeKind::Func: {
       auto &f = std::get<FuncTypeInfo>(t->detail);
       for (auto &p : f.params) self(self, p);

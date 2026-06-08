@@ -196,7 +196,6 @@ constexpr bool is_type_start(Token::Kind kind) {
   case Token::Kind::LeftBracket:     // ArrayType   "[" Type "]"
   case Token::Kind::LeftBrace:       // MapType     "{" Type ":" Type "}"
   case Token::Kind::Fn:              // FuncType    "fn" Signature
-  case Token::Kind::LeftParenthesis: // RangeType   "(" Type ")"
   case Token::Kind::Struct:          // StructType  "struct" "{" … "}"
   case Token::Kind::BitwiseOr:       // GenericType  "|" TypeList "|" Type
     return true;
@@ -464,7 +463,7 @@ Span Parser::span_from(size_t start) const {
 //    50  Comparison:  ==  !=  >  <  >=  <=
 //    40  Logical AND: &&
 //    30  Logical OR:  ||
-//    25  Range:       ..
+//    25  Slice:       ..
 //    20  Or clause:   or
 int Parser::infix_binding_power(Token::Kind kind) {
   switch (kind) {
@@ -512,7 +511,7 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::LogicalOr:
     return 30;
 
-  // 8. Range / slice
+  // 8. Slice
   case Token::Kind::DotDot:
     return 25;
 
@@ -607,7 +606,7 @@ NodePtr Parser::parse_union_type() {
 //
 // Grammar recap:
 //   BaseType      = Identifier | Selector | IntrinsicType | StructType
-//   IntrinsicType = FuncType | MapType | RangeType | StructType
+//   IntrinsicType = FuncType | MapType | StructType
 //                 | basic_type | float_type | integer_type | void_type
 //   basic_type    = "Bool" | "Byte" | "Int" | "Float" | "String"
 //   float_type    = "Float32" | "Float64"
@@ -624,7 +623,6 @@ NodePtr Parser::parse_union_type() {
 // Dispatch summary for the base type:
 //   "{"      → MapType
 //   "fn"     → FuncType
-//   "("      → RangeType
 //   "struct" → StructType
 //   "|"      → GenericTypeApp
 //   Identifier → plain IdentifierNode, or SelectorNode if "." follows
@@ -638,9 +636,6 @@ NodePtr Parser::parse_single_type() {
     break;
   case Token::Kind::Fn:
     base = parse_func_type();
-    break;
-  case Token::Kind::LeftParenthesis:
-    base = parse_range_type();
     break;
   case Token::Kind::Struct:
     base = parse_struct_type();
@@ -976,15 +971,6 @@ NodePtr Parser::parse_map_type() {
                                 std::move(value));
 }
 
-// parse_range_type — RangeType = "(" Type ")"
-NodePtr Parser::parse_range_type() {
-  auto start = mark();
-  expect(Token::Kind::LeftParenthesis); // "("
-  NodePtr element = parse_type();
-  expect(Token::Kind::RightParenthesis); // ")"
-  return make_node<RangeTypeNode>(span_from(start), std::move(element));
-}
-
 // parse_struct_type — StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ]
 // "}"
 //
@@ -1171,7 +1157,7 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
 //
 //   Atoms           Identifier | number | bool | string
 //   Unary ops       !  -  ~   →  UnaryExprNode (inline)
-//   Grouped / range "(" … ")" →  parse_group_or_range()
+//   Grouped "(" … ")" →  parse_group_expr()
 //   Array literal   "[" … "]" →  parse_array_literal()
 //   Import expr     "import"  →  parse_import_expr()
 //
@@ -1216,12 +1202,11 @@ NodePtr Parser::parse_prefix() {
                                     std::move(operand));
   }
 
-  // ── Grouped expression or range literal ────────────────────────────────
+  // ── Grouped expression ──────────────────────────────────────────────────
   //
   // Grammar: GroupExpr = "(" Expression ")"
-  //          RangeExpr = "(" Expression ".." Expression ")"
   case Token::Kind::LeftParenthesis:
-    return parse_group_or_range();
+    return parse_group_expr();
 
   // ── Array literal ───────────────────────────────────────────────────────
   //
@@ -2208,60 +2193,27 @@ NodePtr Parser::parse_import_expr() {
   return make_node<ImportExprNode>(span_from(start), path);
 }
 
-// parse_group_or_range — "(" Expression ")" or "(" Expression ".." Expression
-// ")"
+// parse_group_expr — GroupExpr = "(" Expression ")"
 //
-// Grammar:
-//   GroupExpr = "(" Expression ")"
-//   RangeExpr = "(" Expression ".." Expression ")"
-//
-// Disambiguation: the first sub-expression is parsed with parse_expr_bp(25),
-// a minimum binding power equal to ".."'s own left-bp (25).  This stops the
-// Pratt loop before it would consume ".." as an infix operator, keeping it
-// visible for an explicit check below.
-//
-// Consequence: operators with left-bp ≤ 25 ("or" at 20, ".." at 25) are not
-// parsed as the outermost operator of a grouped expression.  In practice this
-// is not a restriction — "or" requires a block body and is uncommon in grouped
-// position; ".." as a raw binary operator belongs in index/slice context.
-NodePtr Parser::parse_group_or_range() {
+// The inner expression is parsed with parse_expr_bp(25) so the Pratt loop
+// stops before "or" (bp 20), letting it be admitted explicitly as a
+// continuation — the spec uses `(6 / 0 or { 0 }) + 1` (language.md:1399).
+NodePtr Parser::parse_group_expr() {
   auto start = mark();
   expect(Token::Kind::LeftParenthesis);
   skip_terminators();
 
-  // Parse up to (but not including) ".." so we can distinguish the two forms.
   NodePtr first = parse_expr_bp(25);
   if (!first)
     return nullptr;
 
   skip_terminators();
 
-  // `or` has lower BP than `..`, so the Pratt cutoff above also stops
-  // before it.  The spec uses `(6 / 0 or { 0 }) + 1` (language.md:1399),
-  // so admit `or` as a continuation here — but only when there's no
-  // `..` ahead, since range parsing owns that case.
   if (check(Token::Kind::Or)) {
     first = parse_or_expr(std::move(first));
     skip_terminators();
   }
 
-  if (check(Token::Kind::DotDot)) {
-    // ── RangeExpr = "(" Expression ".." Expression ")" ──────────────────
-    advance(); // consume ".."
-    skip_terminators();
-
-    NodePtr second =
-        parse_expr_bp(25); // symmetric: stop before any nested ".."
-    if (!second)
-      return nullptr;
-
-    skip_terminators_before(Token::Kind::RightParenthesis);
-    expect(Token::Kind::RightParenthesis);
-    return make_node<RangeExprNode>(span_from(start), std::move(first),
-                                    std::move(second));
-  }
-
-  // ── GroupExpr = "(" Expression ")" ──────────────────────────────────────
   skip_terminators_before(Token::Kind::RightParenthesis);
   expect(Token::Kind::RightParenthesis);
   return make_node<GroupExprNode>(span_from(start), std::move(first));

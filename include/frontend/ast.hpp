@@ -159,12 +159,6 @@ struct FuncTypeNode {
   std::vector<NodePtr> returns;
 };
 
-// RangeType = "(" Type ")"
-struct RangeTypeNode {
-  Span span;
-  NodePtr element_type;
-};
-
 // FieldSpec = IdentifierList Type  (one field declaration in a struct)
 struct FieldSpecNode {
   Span span;
@@ -338,13 +332,6 @@ struct ForExprNode {
                                // absent = infinite loop
   std::optional<IdentifierNode> accumulator; // |acc| pipe name, if present
   NodePtr body;                              // BlockNode
-};
-
-// RangeExpr = "(" Expression ".." Expression ")"
-struct RangeExprNode {
-  Span span;
-  NodePtr low;  // inclusive start
-  NodePtr high; // exclusive end
 };
 
 // SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block | Identifier )
@@ -581,7 +568,7 @@ struct Node {
 
     // --- Types ---
     UnionTypeNode,  ArrayTypeNode,  MapTypeNode,   FuncTypeNode,
-    RangeTypeNode,  StructTypeNode, GenericTypeAppNode, GenericNode,
+    StructTypeNode, GenericTypeAppNode, GenericNode,
     TypeParamNode,
 
     // --- Shared sub-nodes ---
@@ -592,7 +579,7 @@ struct Node {
     CallExprNode,       IndexExprNode,     SliceNode,          SelectorNode,
     IfExprNode,         SwitchExprNode,
     ForExprNode,        ForRangeClauseNode, ForIterClauseNode,
-    RangeExprNode,      SpawnExprNode,     OrExprNode,
+    SpawnExprNode,     OrExprNode,
     FuncExprNode,       ImportExprNode,
 
     // --- Statements ---

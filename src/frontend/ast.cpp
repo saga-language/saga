@@ -287,10 +287,6 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             for (const auto &r : n.returns)
               dump_ptr(r, os, c);
           },
-          [&](const RangeTypeNode &n) {
-            os << pad(indent) << "RangeTypeNode\n";
-            dump_ptr(n.element_type, os, c);
-          },
           [&](const FieldSpecNode &n) { dump_field_spec(n, os, indent); },
           [&](const StructTypeNode &n) {
             os << pad(indent) << "StructTypeNode\n";
@@ -390,11 +386,6 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             os << "\n";
             dump_opt_ptr(n.mode, os, c);
             dump_ptr(n.body, os, c);
-          },
-          [&](const RangeExprNode &n) {
-            os << pad(indent) << "RangeExprNode\n";
-            dump_ptr(n.low, os, c);
-            dump_ptr(n.high, os, c);
           },
           [&](const SpawnExprNode &n) {
             os << pad(indent) << "SpawnExprNode";

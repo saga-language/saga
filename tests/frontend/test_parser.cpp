@@ -726,35 +726,6 @@ TEST_F(ParserPrefixTest, Group_OrClause_Inside) {
   EXPECT_NE(std::get_if<OrExprNode>(&n->inner->data), nullptr);
 }
 
-// ── Range expressions
-// ─────────────────────────────────────────────────────────
-
-TEST_F(ParserPrefixTest, Range_IntegerLiterals) {
-  auto r = ExprResult::from("(1..10)");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<RangeExprNode>();
-  ASSERT_NE(n, nullptr);
-  auto *lo = std::get_if<IntegerLiteralNode>(&n->low->data);
-  auto *hi = std::get_if<IntegerLiteralNode>(&n->high->data);
-  ASSERT_NE(lo, nullptr);
-  ASSERT_NE(hi, nullptr);
-  EXPECT_EQ(lo->literal, "1");
-  EXPECT_EQ(hi->literal, "10");
-}
-
-TEST_F(ParserPrefixTest, Range_Identifiers) {
-  auto r = ExprResult::from("(start..end)");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<RangeExprNode>();
-  ASSERT_NE(n, nullptr);
-  auto *lo = std::get_if<IdentifierNode>(&n->low->data);
-  auto *hi = std::get_if<IdentifierNode>(&n->high->data);
-  ASSERT_NE(lo, nullptr);
-  ASSERT_NE(hi, nullptr);
-  EXPECT_EQ(lo->name, "start");
-  EXPECT_EQ(hi->name, "end");
-}
-
 // ── Array literals
 // ────────────────────────────────────────────────────────────
 
@@ -2767,19 +2738,6 @@ TEST_F(ParserTypeCoverageTest, MapType) {
   ASSERT_NE(v, nullptr);
   EXPECT_EQ(k->name, "String");
   EXPECT_EQ(v->name, "Int");
-}
-
-TEST_F(ParserTypeCoverageTest, RangeType) {
-  auto r = ParseResult::from("fn Foo() (Int) { (0..1) }\n");
-  EXPECT_TRUE(r.errors.empty());
-  auto *fn = r.decl_as<FuncDeclNode>(0);
-  ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
-  auto *rt = std::get_if<RangeTypeNode>(&fn->signature.returns[0]->data);
-  ASSERT_NE(rt, nullptr);
-  auto *elem = std::get_if<IdentifierNode>(&rt->element_type->data);
-  ASSERT_NE(elem, nullptr);
-  EXPECT_EQ(elem->name, "Int");
 }
 
 TEST_F(ParserTypeCoverageTest, FuncType) {

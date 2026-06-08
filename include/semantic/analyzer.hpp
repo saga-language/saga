@@ -530,7 +530,6 @@ private:
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
   TypePtr resolve_func_type(const FuncTypeNode &node);
-  TypePtr resolve_range_type(const RangeTypeNode &node);
   TypePtr resolve_struct_type(const StructTypeNode &node);
   TypePtr resolve_union_type(const UnionTypeNode &node);
   TypePtr resolve_generic_type_app(const GenericTypeAppNode &node);
@@ -580,7 +579,6 @@ private:
   void resolve_if_expr(const IfExprNode &node);
   void resolve_switch_expr(const SwitchExprNode &node);
   void resolve_for_expr(const ForExprNode &node);
-  void resolve_range_expr(const RangeExprNode &node);
   void resolve_spawn_expr(const SpawnExprNode &node, const Node &parent);
   void resolve_or_expr(const OrExprNode &node);
   void resolve_func_expr(const FuncExprNode &node, const Node &parent);
@@ -634,7 +632,6 @@ private:
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,
                          TypePtr accumulator_hint = nullptr);
-  TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);

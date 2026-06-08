@@ -72,11 +72,6 @@ TypePtr make_map_type(TypePtr key, TypePtr value) {
       TypeKind::Map, MapTypeInfo{std::move(key), std::move(value)});
 }
 
-TypePtr make_range_type(TypePtr element) {
-  return std::make_shared<Type>(TypeKind::Range,
-                                RangeTypeInfo{std::move(element)});
-}
-
 TypePtr make_func_type(std::vector<TypePtr> params,
                        std::vector<TypePtr> returns, bool is_variadic) {
   return std::make_shared<Type>(
@@ -236,7 +231,6 @@ bool is_iterable(const TypePtr &t) {
   switch (u->kind) {
   case TypeKind::Array:
   case TypeKind::Map:
-  case TypeKind::Range:
   case TypeKind::String:
     return true;
   default:
@@ -285,11 +279,6 @@ std::string type_to_string(const TypePtr &t) {
     auto &info = std::get<MapTypeInfo>(t->detail);
     return "{" + type_to_string(info.key) + ": " +
            type_to_string(info.value) + "}";
-  }
-
-  case TypeKind::Range: {
-    auto &info = std::get<RangeTypeInfo>(t->detail);
-    return "(" + type_to_string(info.element) + ")";
   }
 
   case TypeKind::Func: {
@@ -410,12 +399,6 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     auto &ai = std::get<MapTypeInfo>(a->detail);
     auto &bi = std::get<MapTypeInfo>(b->detail);
     return types_equal(ai.key, bi.key) && types_equal(ai.value, bi.value);
-  }
-
-  case TypeKind::Range: {
-    auto &ai = std::get<RangeTypeInfo>(a->detail);
-    auto &bi = std::get<RangeTypeInfo>(b->detail);
-    return types_equal(ai.element, bi.element);
   }
 
   case TypeKind::Func: {
@@ -735,14 +718,6 @@ TypePtr substitute(const TypePtr &t,
     return make_map_type(std::move(k), std::move(v));
   }
 
-  case TypeKind::Range: {
-    auto &info = std::get<RangeTypeInfo>(t->detail);
-    auto elem = substitute(info.element, bindings);
-    if (elem == info.element)
-      return t;
-    return make_range_type(std::move(elem));
-  }
-
   case TypeKind::Func: {
     auto &info = std::get<FuncTypeInfo>(t->detail);
     bool changed = false;
@@ -814,8 +789,6 @@ bool has_type_params(const TypePtr &t) {
     auto &m = std::get<MapTypeInfo>(t->detail);
     return has_type_params(m.key) || has_type_params(m.value);
   }
-  case TypeKind::Range:
-    return has_type_params(std::get<RangeTypeInfo>(t->detail).element);
   case TypeKind::Func: {
     auto &f = std::get<FuncTypeInfo>(t->detail);
     for (auto &p : f.params)
@@ -871,12 +844,6 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
     auto &pi = std::get<MapTypeInfo>(param_type->detail);
     auto &ai = std::get<MapTypeInfo>(arg_type->detail);
     return unify(pi.key, ai.key, out) && unify(pi.value, ai.value, out);
-  }
-
-  case TypeKind::Range: {
-    auto &pi = std::get<RangeTypeInfo>(param_type->detail);
-    auto &ai = std::get<RangeTypeInfo>(arg_type->detail);
-    return unify(pi.element, ai.element, out);
   }
 
   case TypeKind::Func: {

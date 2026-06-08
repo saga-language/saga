@@ -473,14 +473,6 @@ TEST(Analyzer, ResolveAccumulator) {
   EXPECT_TRUE(r.has_no_errors());
 }
 
-TEST(Analyzer, ResolveRangeExpr) {
-  auto r = AnalysisResult::from(
-      "fn foo() {\n"
-      "  for i : (0..10) { i }\n"
-      "}");
-  EXPECT_TRUE(r.has_no_errors());
-}
-
 TEST(Analyzer, DuplicateTopLevelDecl) {
   auto r = AnalysisResult::from(
       "fn foo() {}\n"

@@ -2049,25 +2049,6 @@ void saga_array_set(saga_runtime_array *arr, int64_t index, const void *elem) {
          (size_t)arr->elem_size);
 }
 
-/* Materialize a [low, high) range into a fresh i64-element array.  Element  */
-/* widths narrower than i64 (Char, Int8/16/32) share the same in-memory      */
-/* representation by ABI, so a single i64 path covers all integer ranges.    */
-saga_runtime_array *saga_range_to_array(int64_t low, int64_t high) {
-  int64_t len = high > low ? high - low : 0;
-  int64_t cap = len > 4 ? len : 4;
-  saga_runtime_array *arr =
-      (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
-  arr->data = malloc((size_t)(8 * cap));
-  arr->len = len;
-  arr->cap = cap;
-  arr->elem_size = 8;
-  arr->refcount = 1;
-  int64_t *out = (int64_t *)arr->data;
-  for (int64_t i = 0; i < len; i++)
-    out[i] = low + i;
-  return arr;
-}
-
 /* Shallow clone: new struct + new data buffer, contents memcpy'd.            */
 /* Matches saga_array_equals: elements (pointer or aggregate value) are       */
 /* shared by byte-copy, not deeply duplicated.                                */
