@@ -211,25 +211,13 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
   // Determine sret lowering for struct returns.
   llvm::Type *sret_struct_ty = nullptr;
   llvm::Type *ret_ll = void_ll_type;
-  if (!fi.returns.empty() && fi.returns[0]->kind != TypeKind::Void) {
-    if (fi.returns.size() == 1) {
-      auto *r = llvm_type(fi.returns[0]);
-      if (r && r->isStructTy()) {
-        sret_struct_ty = r;
-        ret_ll = void_ll_type;
-      } else {
-        ret_ll = r;
-      }
+  if (fi.return_type && fi.return_type->kind != TypeKind::Void) {
+    auto *r = llvm_type(fi.return_type);
+    if (r && r->isStructTy()) {
+      sret_struct_ty = r;
+      ret_ll = void_ll_type;
     } else {
-      // Multi-return: create a struct type.
-      std::vector<llvm::Type *> ret_types;
-      for (auto &r : fi.returns)
-        ret_types.push_back(llvm_type(r));
-      auto *st = llvm::StructType::create(context, ret_types,
-                                           "saga.ret." + link_name);
-      multi_return_types[link_name] = st;
-      multi_return_counts[link_name] = fi.returns.size();
-      ret_ll = st;
+      ret_ll = r;
     }
   }
 

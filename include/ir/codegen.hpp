@@ -72,14 +72,6 @@ struct CodeGen {
   /// Maps enum name → true (tracks which enums have been declared).
   std::unordered_map<std::string, bool> enum_types;
 
-  // ── Multi-return registry ────────────────────────────────────────────
-
-  /// Maps function link-name → LLVM struct type used for multi-return.
-  std::unordered_map<std::string, llvm::StructType *> multi_return_types;
-
-  /// Maps function link-name → number of return values (only for multi).
-  std::unordered_map<std::string, size_t> multi_return_counts;
-
   // ── Interface registry ──────────────────────────────────────────────
 
   /// The fat pointer type for interface values: { ptr data, ptr vtable }.

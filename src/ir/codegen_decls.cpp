@@ -78,8 +78,8 @@ void CodeGen::declare_functions(const SourceNode &src) {
       // Name the arguments for readability.
       size_t arg_idx = 0;
       // Skip the hidden sret arg if present.
-      if (fn->signature.returns.size() == 1 && !(fn->is_extern && fn->generic)) {
-        auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+      if (fn->signature.return_type && !(fn->is_extern && fn->generic)) {
+        auto *r_ll = resolve_type_node(*fn->signature.return_type);
         if (r_ll && r_ll->isStructTy()) {
           if (arg_idx < func->arg_size())
             func->getArg(arg_idx++)->setName("sret.out");
@@ -449,10 +449,10 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
       for (size_t i = 0; i < p.names.identifiers.size(); ++i)
         params.push_back(pt);
     }
-    std::vector<TypePtr> returns;
-    for (auto &r : m.signature.returns)
-      returns.push_back(analyzer.resolve_type(*r));
-    auto fn_type = make_func_type(std::move(params), std::move(returns));
+    TypePtr ret = m.signature.return_type
+                      ? analyzer.resolve_type(*m.signature.return_type)
+                      : nullptr;
+    auto fn_type = make_func_type(std::move(params), std::move(ret));
     sem_methods.push_back(
         {std::string(m.name.name), fn_type, m.is_public, package_name});
   }
@@ -470,8 +470,8 @@ MethodSig CodeGen::build_method_signature(const FuncDeclNode &fn) {
 
   // Sret lowering for struct returns.
   llvm::Type *ret_type = void_ll_type;
-  if (!fn.signature.returns.empty()) {
-    auto *r = resolve_type_node(*fn.signature.returns[0]);
+  if (fn.signature.return_type) {
+    auto *r = resolve_type_node(*fn.signature.return_type);
     if (r && r->isStructTy()) {
       sig.sret_struct_ty = r;
       ret_type = void_ll_type;
@@ -658,8 +658,8 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
 
     size_t arg_idx = 0;
     bool has_sret = false;
-    if (fn->signature.returns.size() == 1) {
-      auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+    if (fn->signature.return_type) {
+      auto *r_ll = resolve_type_node(*fn->signature.return_type);
       if (r_ll && r_ll->isStructTy()) {
         has_sret = true;
         ++arg_idx;
@@ -809,8 +809,8 @@ void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
     }
 
     llvm::Type *ret_type = void_ll_type;
-    if (!fn->signature.returns.empty())
-      ret_type = resolve_or_ptr(*fn->signature.returns[0]);
+    if (fn->signature.return_type)
+      ret_type = resolve_or_ptr(*fn->signature.return_type);
 
     auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
     auto *func = llvm::Function::Create(

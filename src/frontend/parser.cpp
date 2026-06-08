@@ -818,39 +818,19 @@ SignatureNode Parser::parse_signature() {
 
   expect(Token::Kind::RightParenthesis); // ")"
 
-  // ── Return types (TypeList) ───────────────────────────────────────────
-  // An absent TypeList is valid and means Void (returns stays empty).
+  // ── Return type ───────────────────────────────────────────────────────
+  // An absent type is valid and means Void (return_type stays null).
   //
-  // LeftBrace is explicitly excluded from the type-start check: a "{" after
-  // the closing ")" always begins the function body, never a map-type return
-  // annotation.  Without this exclusion, "fn(x Int) { }" would attempt to
-  // parse the body block as a return type and fail.
-  //
-  // The comma loop advances past "," before re-checking, which is the only
-  // way to inspect the token that follows the comma without a peek function.
-  // Consequence: if a comma is consumed and the next token turns out not to
-  // be a type start, that comma is lost (no backtracking).  In practice this
-  // only arises when a FuncType appears as a parameter type inside another
-  // signature (e.g. fn(f fn(Int) Bool, x Int)); the inner TypeList would
-  // greedily consume the outer comma.  That case is deferred to parse_infix
-  // implementation where the full call-site context is available.
-  std::vector<NodePtr> returns;
+  // LeftBrace is excluded from the type-start check: a "{" after the closing
+  // ")" always begins the function body, never a map-type return annotation.
+  // Without this exclusion, "fn(x Int) { }" would attempt to parse the body
+  // block as a return type and fail.
+  NodePtr return_type;
+  if (current.kind != Token::Kind::LeftBrace && is_type_start(current.kind))
+    return_type = parse_type();
 
-  auto is_return_type_start = [](Token::Kind k) {
-    return k != Token::Kind::LeftBrace && is_type_start(k);
-  };
-
-  if (is_return_type_start(current.kind)) {
-    returns.push_back(parse_type());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      if (!is_return_type_start(current.kind))
-        break;
-      returns.push_back(parse_type());
-    }
-  }
-
-  return SignatureNode{span_from(start), std::move(params), std::move(returns)};
+  return SignatureNode{span_from(start), std::move(params),
+                       std::move(return_type)};
 }
 
 // parse_interface_signature — same as parse_signature but parameter names
@@ -938,21 +918,12 @@ SignatureNode Parser::parse_interface_signature() {
 
   expect(Token::Kind::RightParenthesis);
 
-  std::vector<NodePtr> returns;
-  auto is_return_type_start = [](Token::Kind k) {
-    return k != Token::Kind::LeftBrace && is_type_start(k);
-  };
-  if (is_return_type_start(current.kind)) {
-    returns.push_back(parse_type());
-    // Peek so a stray "," (member separator) stays for the interface_decl
-    // member-loop diagnostic instead of being silently dropped here.
-    while (check(Token::Kind::Comma) && is_return_type_start(peek().kind)) {
-      advance();
-      returns.push_back(parse_type());
-    }
-  }
+  NodePtr return_type;
+  if (current.kind != Token::Kind::LeftBrace && is_type_start(current.kind))
+    return_type = parse_type();
 
-  return SignatureNode{span_from(start), std::move(params), std::move(returns)};
+  return SignatureNode{span_from(start), std::move(params),
+                       std::move(return_type)};
 }
 
 // ============================================================================
@@ -1073,21 +1044,12 @@ NodePtr Parser::parse_func_type() {
   expect(Token::Kind::RightParenthesis); // ")"
 
   // ── Return type ───────────────────────────────────────────────────────
-  // Parse a single return type only.  Multi-return in function types would
-  // be ambiguous with commas separating outer parameters (e.g.
-  // `fn(f fn(Int) Int, x Int)` — the `,` after `Int` belongs to the outer
-  // parameter list, not to the inner return type list).
-  auto is_return_type_start = [](Token::Kind k) {
-    return k != Token::Kind::LeftBrace && is_type_start(k);
-  };
-
-  std::vector<NodePtr> returns;
-  if (is_return_type_start(current.kind)) {
-    returns.push_back(parse_type());
-  }
+  NodePtr return_type;
+  if (current.kind != Token::Kind::LeftBrace && is_type_start(current.kind))
+    return_type = parse_type();
 
   return make_node<FuncTypeNode>(span_from(start), std::move(params),
-                                 std::move(returns));
+                                 std::move(return_type));
 }
 
 // ============================================================================
@@ -2376,27 +2338,21 @@ NodePtr Parser::parse_map_or_block() {
 // Statement Helpers — partial (parse_statement / parse_block in Group 2)
 // ============================================================================
 
-// parse_return — ReturnStatement = "return" [ ExpressionList ]
+// parse_return — ReturnStatement = "return" [ Expression ]
 //
 // A bare "return" with no following expression is valid.  Whether a value is
 // present is determined by is_expression_start(): if the current token cannot
 // begin an expression it must be a terminator, "}", or EOF, all of which
-// signal a value-less return.  Multiple comma-separated values are collected
-// into the values vector (multi-return).
+// signal a value-less return.
 NodePtr Parser::parse_return() {
   auto start = mark();
   expect(Token::Kind::Return);
 
-  std::vector<NodePtr> values;
-  if (is_expression_start(current.kind)) {
-    values.push_back(parse_expression());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      values.push_back(parse_expression());
-    }
-  }
+  NodePtr value;
+  if (is_expression_start(current.kind))
+    value = parse_expression();
 
-  return make_node<ReturnNode>(span_from(start), std::move(values));
+  return make_node<ReturnNode>(span_from(start), std::move(value));
 }
 
 // parse_break — break_statement = "break" [ ExpressionList ]

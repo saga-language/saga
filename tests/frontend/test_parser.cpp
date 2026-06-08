@@ -910,7 +910,7 @@ TEST_F(ParserBlockTest, Statement_Return_NoValue) {
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<ReturnNode>(0);
   ASSERT_NE(n, nullptr);
-  EXPECT_TRUE(n->values.empty());
+  EXPECT_EQ(n->value, nullptr);
 }
 
 TEST_F(ParserBlockTest, Statement_Return_WithValue) {
@@ -918,18 +918,10 @@ TEST_F(ParserBlockTest, Statement_Return_WithValue) {
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<ReturnNode>(0);
   ASSERT_NE(n, nullptr);
-  ASSERT_EQ(n->values.size(), 1u);
-  auto *val = std::get_if<IntegerLiteralNode>(&n->values[0]->data);
+  ASSERT_NE(n->value, nullptr);
+  auto *val = std::get_if<IntegerLiteralNode>(&n->value->data);
   ASSERT_NE(val, nullptr);
   EXPECT_EQ(val->literal, "42");
-}
-
-TEST_F(ParserBlockTest, Statement_Return_MultipleValues) {
-  auto r = BlockResult::from("{ return 1, 2 }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.stmt_as<ReturnNode>(0);
-  ASSERT_NE(n, nullptr);
-  EXPECT_EQ(n->values.size(), 2u);
 }
 
 TEST_F(ParserBlockTest, Statement_Break_NoValue) {
@@ -1514,7 +1506,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_NoParamsNoReturn) {
   ASSERT_NE(n, nullptr);
   EXPECT_FALSE(n->generic.has_value());
   EXPECT_TRUE(n->signature.params.empty());
-  EXPECT_TRUE(n->signature.returns.empty());
+  EXPECT_EQ(n->signature.return_type, nullptr);
   EXPECT_NE(std::get_if<BlockNode>(&n->body->data), nullptr);
 }
 
@@ -1533,8 +1525,8 @@ TEST_F(ParserFuncExprTest, FuncExpr_SingleParam_SingleReturn) {
   EXPECT_EQ(pt->name, "Int");
   EXPECT_FALSE(p.is_variadic);
 
-  ASSERT_EQ(n->signature.returns.size(), 1u);
-  auto *rt = std::get_if<IdentifierNode>(&n->signature.returns[0]->data);
+  ASSERT_NE(n->signature.return_type, nullptr);
+  auto *rt = std::get_if<IdentifierNode>(&n->signature.return_type->data);
   ASSERT_NE(rt, nullptr);
   EXPECT_EQ(rt->name, "Bool");
 }
@@ -1551,7 +1543,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_MultiName_Param) {
   ASSERT_EQ(p.names.identifiers.size(), 2u);
   EXPECT_EQ(p.names.identifiers[0].name, "x");
   EXPECT_EQ(p.names.identifiers[1].name, "y");
-  EXPECT_TRUE(n->signature.returns.empty());
+  EXPECT_EQ(n->signature.return_type, nullptr);
 }
 
 // Multiple parameter groups
@@ -1561,21 +1553,6 @@ TEST_F(ParserFuncExprTest, FuncExpr_MultiParam_Groups) {
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
   EXPECT_EQ(n->signature.params.size(), 2u);
-}
-
-// Multiple return types
-TEST_F(ParserFuncExprTest, FuncExpr_MultiReturn) {
-  auto r = ExprResult::from("fn(x Int) Int, Bool { }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = func_expr(r);
-  ASSERT_NE(n, nullptr);
-  ASSERT_EQ(n->signature.returns.size(), 2u);
-  auto *r0 = std::get_if<IdentifierNode>(&n->signature.returns[0]->data);
-  auto *r1 = std::get_if<IdentifierNode>(&n->signature.returns[1]->data);
-  ASSERT_NE(r0, nullptr);
-  EXPECT_EQ(r0->name, "Int");
-  ASSERT_NE(r1, nullptr);
-  EXPECT_EQ(r1->name, "Bool");
 }
 
 // Variadic parameter
@@ -1903,8 +1880,8 @@ TEST_F(ParserStructLiteralTest, StructLit_InReturn) {
   EXPECT_TRUE(r.errors.empty());
   auto *ret = r.stmt_as<ReturnNode>(0);
   ASSERT_NE(ret, nullptr);
-  ASSERT_EQ(ret->values.size(), 1u);
-  EXPECT_NE(std::get_if<StructLiteralNode>(&ret->values[0]->data), nullptr);
+  ASSERT_NE(ret->value, nullptr);
+  EXPECT_NE(std::get_if<StructLiteralNode>(&ret->value->data), nullptr);
 }
 
 // ── if/switch bodies are not confused with struct initialisers
@@ -2361,20 +2338,6 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithReceiver) {
   EXPECT_EQ(rty->name, "User");
 }
 
-TEST_F(ParserDeclCoverageTest, FuncDecl_MultipleReturnTypes) {
-  auto r = ParseResult::from("fn Pair() Int, String { return 1, \"a\" }\n");
-  EXPECT_TRUE(r.errors.empty());
-  auto *fn = r.decl_as<FuncDeclNode>(0);
-  ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 2);
-  auto *r0 = std::get_if<IdentifierNode>(&fn->signature.returns[0]->data);
-  auto *r1 = std::get_if<IdentifierNode>(&fn->signature.returns[1]->data);
-  ASSERT_NE(r0, nullptr);
-  ASSERT_NE(r1, nullptr);
-  EXPECT_EQ(r0->name, "Int");
-  EXPECT_EQ(r1->name, "String");
-}
-
 TEST_F(ParserDeclCoverageTest, FuncDecl_Variadic) {
   auto r = ParseResult::from("fn Sum(args ...Int) Int { 0 }\n");
   EXPECT_TRUE(r.errors.empty());
@@ -2393,7 +2356,7 @@ TEST_F(ParserDeclCoverageTest, ExternFuncDecl_Basic) {
   EXPECT_FALSE(fn->is_public);
   EXPECT_EQ(fn->name.name, "saga_int_hash");
   ASSERT_EQ(fn->signature.params.size(), 1);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
+  ASSERT_NE(fn->signature.return_type, nullptr);
   EXPECT_EQ(fn->body, nullptr);
 }
 
@@ -2403,7 +2366,7 @@ TEST_F(ParserDeclCoverageTest, ExternFuncDecl_NoReturn) {
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->is_extern);
-  EXPECT_TRUE(fn->signature.returns.empty());
+  EXPECT_EQ(fn->signature.return_type, nullptr);
   EXPECT_EQ(fn->body, nullptr);
 }
 
@@ -2710,8 +2673,8 @@ TEST_F(ParserTypeCoverageTest, ArrayType) {
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
-  auto *at = std::get_if<ArrayTypeNode>(&fn->signature.returns[0]->data);
+  ASSERT_NE(fn->signature.return_type, nullptr);
+  auto *at = std::get_if<ArrayTypeNode>(&fn->signature.return_type->data);
   ASSERT_NE(at, nullptr);
   auto *elem = std::get_if<IdentifierNode>(&at->element_type->data);
   ASSERT_NE(elem, nullptr);
@@ -2748,7 +2711,7 @@ TEST_F(ParserTypeCoverageTest, FuncType) {
   auto *ft = std::get_if<FuncTypeNode>(&(*vd->type)->data);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->params.size(), 1);
-  ASSERT_EQ(ft->returns.size(), 1);
+  ASSERT_NE(ft->return_type, nullptr);
 }
 
 TEST_F(ParserTypeCoverageTest, StructType_AsAnnotation) {
@@ -2772,8 +2735,8 @@ TEST_F(ParserTypeCoverageTest, SelectorType) {
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
-  auto *sel = std::get_if<SelectorNode>(&fn->signature.returns[0]->data);
+  ASSERT_NE(fn->signature.return_type, nullptr);
+  auto *sel = std::get_if<SelectorNode>(&fn->signature.return_type->data);
   ASSERT_NE(sel, nullptr);
   EXPECT_EQ(sel->field.name, "Type");
   auto *obj = std::get_if<IdentifierNode>(&sel->object->data);

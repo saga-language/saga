@@ -124,7 +124,7 @@ struct MapTypeInfo {
 
 struct FuncTypeInfo {
   std::vector<TypePtr> params;
-  std::vector<TypePtr> returns;
+  TypePtr return_type; // nullptr = Void
   bool is_variadic = false;
 };
 
@@ -262,7 +262,7 @@ TypePtr make_error_type();
 TypePtr make_array_type(TypePtr element);
 TypePtr make_map_type(TypePtr key, TypePtr value);
 TypePtr make_func_type(std::vector<TypePtr> params,
-                       std::vector<TypePtr> returns,
+                       TypePtr return_type,
                        bool is_variadic = false);
 TypePtr make_struct_type(const std::string &name,
                          std::vector<FieldInfo> fields = {},

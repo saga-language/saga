@@ -90,10 +90,10 @@ std::string CodeGen::mangle_type(const TypePtr &t) const {
       out += mangle_type(fi.params[i]);
     }
     out += "_to_";
-    if (fi.returns.empty())
+    if (!fi.return_type)
       out += "Void";
     else
-      out += mangle_type(fi.returns[0]);
+      out += mangle_type(fi.return_type);
     out += "_End";
     return out;
   }
@@ -202,17 +202,9 @@ llvm::Function *CodeGen::emit_specialisation(
     param_ll.push_back(ll);
   }
   llvm::Type *ret_ll = void_ll_type;
-  if (fi.returns.size() == 1) {
-    ret_ll = to_param_ll(fi.returns[0]);
+  if (fi.return_type) {
+    ret_ll = to_param_ll(fi.return_type);
     if (!ret_ll) return nullptr;
-  } else if (fi.returns.size() > 1) {
-    std::vector<llvm::Type *> rfs;
-    for (auto &r : fi.returns) rfs.push_back(to_param_ll(r));
-    auto *st =
-        llvm::StructType::create(context, rfs, "saga.ret." + mangled);
-    multi_return_types[mangled] = st;
-    multi_return_counts[mangled] = fi.returns.size();
-    ret_ll = st;
   }
 
   auto *ft = llvm::FunctionType::get(ret_ll, param_ll, /*isVarArg=*/false);

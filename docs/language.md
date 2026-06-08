@@ -232,32 +232,6 @@ pub fn Greeting(evening? Bool) String {
 ```
 
 By convension, prefer a "naked" return value in the tail position of a method.
-For methods multiple return types, a return statement is required.
-
-### Multiple return values
-
-A method can declare multiple return types in its signature. There are two
-caveats multiple return values:
-
-1. You must use a `return` statement to return multiple expressions.
-2. The `or` expression can not be used directly to purify the types.
-
-```
-pub fn MultiTypes() Int, String {
-  return 42, "Hello"
-}
-
-x, y := MultiTypes() // lhs receiver values must match count of return types
-
-pub fn MultiTypeError() Int, String | Error {
-  return 42, Missing
-}
-
-x, y := MultiTypeError() or { ... } // invalid
-s := y or { "Unknown" } // okay
-```
-
-_Note: This could be relaxed in the future for tail types._
 
 ### Variadics
 

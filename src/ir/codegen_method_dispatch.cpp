@@ -98,8 +98,8 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         auto *val = emit_expr(*arg_node);
         if (val) args.push_back(val);
       }
-      llvm::Type *ret_ll = fi.returns.empty()
-                               ? void_ll_type : llvm_type(fi.returns[0]);
+      llvm::Type *ret_ll = !fi.return_type
+                               ? void_ll_type : llvm_type(fi.return_type);
       auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
       if (ret_ll->isVoidTy()) {
         builder.CreateCall(fn_type, fn_ptr, args);
@@ -213,9 +213,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
             param_ll.push_back(self_ll); // self
             for (auto &p : fi.params)
               param_ll.push_back(llvm_type(p));
-            llvm::Type *ret_ll = fi.returns.empty()
+            llvm::Type *ret_ll = !fi.return_type
                                      ? void_ll_type
-                                     : llvm_type(fi.returns[0]);
+                                     : llvm_type(fi.return_type);
             auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
             callee = llvm::Function::Create(
                 ft, llvm::Function::ExternalLinkage, cross_link,
@@ -289,15 +289,15 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
           // load — the slot stores the pointer itself.
           if (result->getType()->isPointerTy() && m.signature) {
             auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-            if (!fi.returns.empty() &&
-                fi.returns[0]->kind == TypeKind::TypeParam) {
+            if (fi.return_type &&
+                fi.return_type->kind == TypeKind::TypeParam) {
               TypePtr concrete_ret;
               if (obj_sem->kind == TypeKind::Array) {
                 auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
                 concrete_ret = arr_info.element;
               } else if (obj_sem->kind == TypeKind::Map) {
                 auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
-                auto &tp = std::get<TypeParamInfo>(fi.returns[0]->detail);
+                auto &tp = std::get<TypeParamInfo>(fi.return_type->detail);
                 if (tp.param.id == 9991)
                   concrete_ret = map_info.key;
                 else
@@ -583,9 +583,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
             param_ll.push_back(self_ll); // self
             for (auto &p : fi.params)
               param_ll.push_back(llvm_type(p));
-            llvm::Type *ret_ll = fi.returns.empty()
+            llvm::Type *ret_ll = !fi.return_type
                                      ? void_ll_type
-                                     : llvm_type(fi.returns[0]);
+                                     : llvm_type(fi.return_type);
             auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
             callee = llvm::Function::Create(
                 ft, llvm::Function::ExternalLinkage, cross_link,
@@ -769,9 +769,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
           param_ll.push_back(ptr_type); // self
           for (auto &p : finfo.params)
             param_ll.push_back(llvm_type(p));
-          llvm::Type *ret_ll = finfo.returns.empty()
+          llvm::Type *ret_ll = !finfo.return_type
                                    ? void_ll_type
-                                   : llvm_type(finfo.returns[0]);
+                                   : llvm_type(finfo.return_type);
           auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
           callee = llvm::Function::Create(
               ft, llvm::Function::ExternalLinkage, link_name, module.get());
@@ -1121,8 +1121,8 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
   for (auto &im : iface_info.methods) {
     if (im.name == method && im.signature) {
       auto &fi = std::get<FuncTypeInfo>(im.signature->detail);
-      if (!fi.returns.empty())
-        ret_ll = llvm_type(fi.returns[0]);
+      if (fi.return_type)
+        ret_ll = llvm_type(fi.return_type);
       break;
     }
   }

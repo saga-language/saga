@@ -478,8 +478,8 @@ void CodeGen::emit_for_range_iterable_struct(const ForExprNode &node,
     if (m.name == "Next" && m.signature &&
         m.signature->kind == TypeKind::Func) {
       auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-      if (!fi.returns.empty())
-        next_ret_sem = fi.returns[0];
+      if (fi.return_type)
+        next_ret_sem = fi.return_type;
       break;
     }
   }

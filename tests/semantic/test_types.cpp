@@ -44,11 +44,11 @@ TEST(Types, MapFactory) {
 
 TEST(Types, FuncFactory) {
   auto fn = make_func_type({make_int_type(), make_string_type()},
-                           {make_bool_type()});
+                           make_bool_type());
   EXPECT_EQ(fn->kind, TypeKind::Func);
   auto &info = std::get<FuncTypeInfo>(fn->detail);
   EXPECT_EQ(info.params.size(), 2u);
-  EXPECT_EQ(info.returns.size(), 1u);
+  EXPECT_NE(info.return_type, nullptr);
   EXPECT_FALSE(info.is_variadic);
 }
 

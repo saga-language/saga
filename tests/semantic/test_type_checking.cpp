@@ -94,11 +94,6 @@ TEST(TypeCheck, ReturnMissingValue) {
   EXPECT_TRUE(r.has_err("missing return value"));
 }
 
-TEST(TypeCheck, ReturnCountMismatch) {
-  auto r = TC::from("fn f() Int, String { return 42 }");
-  EXPECT_TRUE(r.has_err("return has 1 value(s), expected 2"));
-}
-
 // ===========================================================================
 // Arithmetic operators
 // ===========================================================================

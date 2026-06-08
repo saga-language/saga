@@ -181,19 +181,19 @@ static TypePtr normalize_generic_receiver_sig(const TypePtr &t,
   case TypeKind::Func: {
     auto &info = std::get<FuncTypeInfo>(t->detail);
     bool changed = false;
-    std::vector<TypePtr> params, rets;
+    std::vector<TypePtr> params;
     for (auto &p : info.params) {
       auto np = normalize_generic_receiver_sig(p, recv_kind);
       if (np != p) changed = true;
       params.push_back(std::move(np));
     }
-    for (auto &r : info.returns) {
-      auto nr = normalize_generic_receiver_sig(r, recv_kind);
-      if (nr != r) changed = true;
-      rets.push_back(std::move(nr));
+    TypePtr ret;
+    if (info.return_type) {
+      ret = normalize_generic_receiver_sig(info.return_type, recv_kind);
+      if (ret != info.return_type) changed = true;
     }
     if (!changed) return t;
-    auto result = make_func_type(std::move(params), std::move(rets));
+    auto result = make_func_type(std::move(params), std::move(ret));
     std::get<FuncTypeInfo>(result->detail).is_variadic = info.is_variadic;
     return result;
   }
@@ -1334,10 +1334,8 @@ TypePtr Analyzer::resolve_func_type(const FuncTypeNode &node) {
   std::vector<TypePtr> params;
   for (auto &p : node.params)
     params.push_back(resolve_type(*p));
-  std::vector<TypePtr> rets;
-  for (auto &r : node.returns)
-    rets.push_back(resolve_type(*r));
-  return make_func_type(std::move(params), std::move(rets));
+  TypePtr ret = node.return_type ? resolve_type(*node.return_type) : nullptr;
+  return make_func_type(std::move(params), std::move(ret));
 }
 
 TypePtr Analyzer::resolve_struct_type(const StructTypeNode &node) {
@@ -1438,10 +1436,8 @@ TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
       }
     }
   }
-  std::vector<TypePtr> returns;
-  for (auto &r : sig.returns)
-    returns.push_back(resolve_type(*r));
-  return make_func_type(std::move(params), std::move(returns));
+  TypePtr ret = sig.return_type ? resolve_type(*sig.return_type) : nullptr;
+  return make_func_type(std::move(params), std::move(ret));
 }
 
 void Analyzer::declare_parameters(const SignatureNode &sig) {
@@ -1934,6 +1930,9 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
   // Extern declarations have no body to resolve.
   if (fn.is_extern)
     return;
+  // A parse error can leave a non-extern function without a body.
+  if (!fn.body)
+    return;
 
   // Generic functions are analysed lazily, once per instantiation.
   // Receiver methods on generic receiver types (Array/Map) still flow
@@ -1963,9 +1962,8 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
   }
 
   // Set return types on the function scope.
-  for (auto &r : fn.signature.returns) {
-    current_scope->return_types.push_back(resolve_type(*r));
-  }
+  if (fn.signature.return_type)
+    current_scope->return_types.push_back(resolve_type(*fn.signature.return_type));
 
   // Declare parameters.
   declare_parameters(fn.signature);
@@ -2405,9 +2403,8 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node, const Node &parent) {
   }
 
   // Set return types.
-  for (auto &r : node.signature.returns) {
-    current_scope->return_types.push_back(resolve_type(*r));
-  }
+  if (node.signature.return_type)
+    current_scope->return_types.push_back(resolve_type(*node.signature.return_type));
 
   declare_parameters(node.signature);
 
@@ -2468,9 +2465,8 @@ void Analyzer::resolve_return(const ReturnNode &node) {
   if (!current_scope->is_inside(ScopeKind::Function)) {
     error(node.span, "'return' outside of function");
   }
-  for (auto &val : node.values) {
-    resolve_expr(*val);
-  }
+  if (node.value)
+    resolve_expr(*node.value);
 }
 
 void Analyzer::resolve_break(const BreakNode &node) {
@@ -2497,6 +2493,9 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
   // Extern declarations have no body to type-check.
   if (fn.is_extern)
+    return;
+  // A parse error can leave a non-extern function without a body.
+  if (!fn.body)
     return;
 
   // Generic functions are type-checked lazily per instantiation.
@@ -2531,8 +2530,8 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
                                     recv_type, fn.receiver->name.span));
   }
 
-  for (auto &r : fn.signature.returns)
-    current_scope->return_types.push_back(resolve_type(*r));
+  if (fn.signature.return_type)
+    current_scope->return_types.push_back(resolve_type(*fn.signature.return_type));
 
   declare_parameters(fn.signature);
 
@@ -3351,11 +3350,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
   }
 
   // Return type.
-  if (fn_info.returns.empty())
-    return builtins.void_type;
-  if (fn_info.returns.size() == 1)
-    return fn_info.returns[0];
-  return builtins.void_type;
+  return fn_info.return_type ? fn_info.return_type : builtins.void_type;
 }
 
 TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
@@ -3594,10 +3589,10 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
         }
         return t;
       };
-      std::vector<TypePtr> nparams, nreturns;
+      std::vector<TypePtr> nparams;
       for (auto &p : fi.params)  nparams.push_back(subst_one(p));
-      for (auto &r : fi.returns) nreturns.push_back(subst_one(r));
-      auto out = make_func_type(std::move(nparams), std::move(nreturns));
+      TypePtr nret = fi.return_type ? subst_one(fi.return_type) : nullptr;
+      auto out = make_func_type(std::move(nparams), std::move(nret));
       std::get<FuncTypeInfo>(out->detail).is_variadic = fi.is_variadic;
       return out;
     };
@@ -3920,8 +3915,8 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                                  m.signature->kind == TypeKind::Func) {
                                auto &fi = std::get<FuncTypeInfo>(
                                    m.signature->detail);
-                               if (!fi.returns.empty()) {
-                                 auto &ret = fi.returns[0];
+                               if (fi.return_type) {
+                                 auto &ret = fi.return_type;
                                  if (ret->kind == TypeKind::Union) {
                                    auto &ui = std::get<UnionTypeInfo>(
                                        ret->detail);
@@ -3955,12 +3950,12 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                              // Next() takes no explicit params (just self).
                              if (!fi.params.empty())
                                break;
-                             if (fi.returns.size() != 1 ||
-                                 fi.returns[0]->kind != TypeKind::Union)
+                             if (!fi.return_type ||
+                                 fi.return_type->kind != TypeKind::Union)
                                break;
                              // Extract T from T | Error.
                              auto &ui = std::get<UnionTypeInfo>(
-                                 fi.returns[0]->detail);
+                                 fi.return_type->detail);
                              for (auto &alt : ui.alternatives) {
                                if (alt->kind == TypeKind::Interface)
                                  continue; // skip Error
@@ -4255,8 +4250,8 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
 
   auto fn_type = resolve_signature(node.signature);
 
-  for (auto &r : node.signature.returns)
-    current_scope->return_types.push_back(resolve_type(*r));
+  if (node.signature.return_type)
+    current_scope->return_types.push_back(resolve_type(*node.signature.return_type));
 
   // Re-declare parameters into the type-checking scope.
   for (auto &p : node.signature.params) {
@@ -4276,10 +4271,10 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
   auto &fn_info = std::get<FuncTypeInfo>(fn_type->detail);
   bool tail_is_return =
       !block.stmts.empty() && always_returns(*block.stmts.back());
-  if (!tail_is_return && fn_info.returns.size() == 1 &&
+  if (!tail_is_return && fn_info.return_type &&
       !is_error_type(body_type)) {
-    if (!types_equal(fn_info.returns[0], builtins.void_type)) {
-      expect_assignable(node.body->span, fn_info.returns[0], body_type,
+    if (!types_equal(fn_info.return_type, builtins.void_type)) {
+      expect_assignable(node.body->span, fn_info.return_type, body_type,
                         "return type");
     }
   }
@@ -4416,39 +4411,6 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
 
   auto rhs_type = materialize_untyped(check_expr(*decl.value));
 
-  // ── Multi-return unpacking ───────────────────────────────────────────
-  // If there are multiple targets and the RHS is a call to a function with
-  // multiple returns, assign each target the corresponding return type.
-  if (decl.targets.identifiers.size() > 1) {
-    if (auto *call = std::get_if<CallExprNode>(&decl.value->data)) {
-      auto callee_type = check_expr(*call->callee);
-      if (!is_error_type(callee_type) && callee_type->kind == TypeKind::Func) {
-        auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
-        if (fn_info.returns.size() > 1) {
-          if (decl.targets.identifiers.size() != fn_info.returns.size()) {
-            error(decl.span, std::format("expected {} receiver(s), got {}",
-                                         fn_info.returns.size(),
-                                         decl.targets.identifiers.size()));
-          }
-          size_t count =
-              std::min(decl.targets.identifiers.size(), fn_info.returns.size());
-          for (size_t i = 0; i < count; ++i) {
-            std::string name(decl.targets.identifiers[i].name);
-            auto sym_it = current_scope->symbols.find(name);
-            if (sym_it != current_scope->symbols.end()) {
-              sym_it->second.type = fn_info.returns[i];
-            } else {
-              current_scope->symbols.emplace(
-                  name, Symbol::variable(name, fn_info.returns[i],
-                                         decl.targets.identifiers[i].span));
-            }
-          }
-          return;
-        }
-      }
-    }
-  }
-
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
     auto sym_it = current_scope->symbols.find(name);
@@ -4557,25 +4519,21 @@ void Analyzer::check_return(const ReturnNode &node) {
   }
 
   auto &expected = func_scope->return_types;
-  if (node.values.empty()) {
-    // Bare return — function must be Void or have no return types.
+  if (!node.value) {
+    // Bare return — function must be Void or have no return type.
     if (!expected.empty() && !types_equal(expected[0], builtins.void_type)) {
       error(node.span, "missing return value");
     }
     return;
   }
 
-  if (node.values.size() != expected.size()) {
-    error(node.span, std::format("return has {} value(s), expected {}",
-                                 node.values.size(), expected.size()));
+  if (expected.empty()) {
+    error(node.span, "return has a value, expected none");
     return;
   }
 
-  for (size_t i = 0; i < node.values.size(); ++i) {
-    auto val_type = check_expr(*node.values[i]);
-    expect_assignable(node.values[i]->span, expected[i], val_type,
-                      "return value");
-  }
+  auto val_type = check_expr(*node.value);
+  expect_assignable(node.value->span, expected[0], val_type, "return value");
 }
 
 void Analyzer::check_break(const BreakNode &node) {
@@ -4816,7 +4774,7 @@ Analyzer::instantiate_generic_call(
     case TypeKind::Func: {
       auto &f = std::get<FuncTypeInfo>(t->detail);
       for (auto &p : f.params) self(self, p);
-      for (auto &r : f.returns) self(self, r);
+      if (f.return_type) self(self, f.return_type);
       break;
     }
     case TypeKind::Union:
@@ -4828,7 +4786,7 @@ Analyzer::instantiate_generic_call(
     }
   };
   for (auto &p : fn_info.params) collect(collect, p);
-  for (auto &r : fn_info.returns) collect(collect, r);
+  if (fn_info.return_type) collect(collect, fn_info.return_type);
 
   bool constraint_violation = false;
   for (auto &[id, concrete] : bindings) {
@@ -4934,9 +4892,9 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
                                     recv_type, fn.receiver->name.span));
   }
 
-  // Substituted return types for return-stmt checking.
-  for (auto &r : fn.signature.returns) {
-    auto rt = resolve_type(*r);
+  // Substituted return type for return-stmt checking.
+  if (fn.signature.return_type) {
+    auto rt = resolve_type(*fn.signature.return_type);
     current_scope->return_types.push_back(substitute(rt, bindings));
   }
 
@@ -5071,7 +5029,7 @@ static bool signatures_match_with_self(const TypePtr &iface_sig,
   auto &b = std::get<FuncTypeInfo>(concrete_sig->detail);
   if (a.params.size() != b.params.size())
     return false;
-  if (a.returns.size() != b.returns.size())
+  if (static_cast<bool>(a.return_type) != static_cast<bool>(b.return_type))
     return false;
   if (a.is_variadic != b.is_variadic)
     return false;
@@ -5103,10 +5061,8 @@ static bool signatures_match_with_self(const TypePtr &iface_sig,
     if (!self_match(a.params[i], b.params[i]))
       return false;
   }
-  for (size_t i = 0; i < a.returns.size(); ++i) {
-    if (!self_match(a.returns[i], b.returns[i]))
-      return false;
-  }
+  if (a.return_type && !self_match(a.return_type, b.return_type))
+    return false;
   return true;
 }
 
@@ -5226,8 +5182,8 @@ static std::string format_protocol_method(const std::string &name,
     s += render(fi.params[i]);
   }
   s += ")";
-  if (!fi.returns.empty())
-    s += " " + render(fi.returns[0]);
+  if (fi.return_type)
+    s += " " + render(fi.return_type);
   return s;
 }
 

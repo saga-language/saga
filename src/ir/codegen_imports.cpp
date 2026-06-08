@@ -184,8 +184,8 @@ CodeGen::forward_declare_method(const std::string &link_name,
 
   llvm::Type *sret_ty = nullptr;
   llvm::Type *ret_ll = void_ll_type;
-  if (!fi.returns.empty()) {
-    auto *r = llvm_type(fi.returns[0]);
+  if (fi.return_type) {
+    auto *r = llvm_type(fi.return_type);
     if (r && r->isStructTy()) {
       sret_ty = r;
     } else {

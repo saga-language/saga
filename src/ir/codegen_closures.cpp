@@ -53,8 +53,8 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   }
 
   llvm::Type *ret_type = void_ll_type;
-  if (!node.signature.returns.empty())
-    ret_type = resolve_type_node(*node.signature.returns[0]);
+  if (node.signature.return_type)
+    ret_type = resolve_type_node(*node.signature.return_type);
 
   auto *tramp_fn_type = llvm::FunctionType::get(ret_type, tramp_param_types,
                                                   false);

@@ -73,10 +73,10 @@ TypePtr make_map_type(TypePtr key, TypePtr value) {
 }
 
 TypePtr make_func_type(std::vector<TypePtr> params,
-                       std::vector<TypePtr> returns, bool is_variadic) {
+                       TypePtr return_type, bool is_variadic) {
   return std::make_shared<Type>(
       TypeKind::Func,
-      FuncTypeInfo{std::move(params), std::move(returns), is_variadic});
+      FuncTypeInfo{std::move(params), std::move(return_type), is_variadic});
 }
 
 TypePtr make_struct_type(const std::string &name,
@@ -293,20 +293,8 @@ std::string type_to_string(const TypePtr &t) {
       os << type_to_string(info.params[i]);
     }
     os << ")";
-    if (!info.returns.empty()) {
-      os << " ";
-      if (info.returns.size() == 1) {
-        os << type_to_string(info.returns[0]);
-      } else {
-        os << "(";
-        for (size_t i = 0; i < info.returns.size(); ++i) {
-          if (i > 0)
-            os << ", ";
-          os << type_to_string(info.returns[i]);
-        }
-        os << ")";
-      }
-    }
+    if (info.return_type)
+      os << " " << type_to_string(info.return_type);
     return os.str();
   }
 
@@ -406,7 +394,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     auto &bi = std::get<FuncTypeInfo>(b->detail);
     if (ai.params.size() != bi.params.size())
       return false;
-    if (ai.returns.size() != bi.returns.size())
+    if (static_cast<bool>(ai.return_type) != static_cast<bool>(bi.return_type))
       return false;
     if (ai.is_variadic != bi.is_variadic)
       return false;
@@ -414,10 +402,8 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
       if (!types_equal(ai.params[i], bi.params[i]))
         return false;
     }
-    for (size_t i = 0; i < ai.returns.size(); ++i) {
-      if (!types_equal(ai.returns[i], bi.returns[i]))
-        return false;
-    }
+    if (ai.return_type && !types_equal(ai.return_type, bi.return_type))
+      return false;
     return true;
   }
 
@@ -729,17 +715,15 @@ TypePtr substitute(const TypePtr &t,
         changed = true;
       params.push_back(std::move(sp));
     }
-    std::vector<TypePtr> rets;
-    rets.reserve(info.returns.size());
-    for (auto &r : info.returns) {
-      auto sr = substitute(r, bindings);
-      if (sr != r)
+    TypePtr ret;
+    if (info.return_type) {
+      ret = substitute(info.return_type, bindings);
+      if (ret != info.return_type)
         changed = true;
-      rets.push_back(std::move(sr));
     }
     if (!changed)
       return t;
-    return make_func_type(std::move(params), std::move(rets), info.is_variadic);
+    return make_func_type(std::move(params), std::move(ret), info.is_variadic);
   }
 
   case TypeKind::Union: {
@@ -794,9 +778,8 @@ bool has_type_params(const TypePtr &t) {
     for (auto &p : f.params)
       if (has_type_params(p))
         return true;
-    for (auto &r : f.returns)
-      if (has_type_params(r))
-        return true;
+    if (f.return_type && has_type_params(f.return_type))
+      return true;
     return false;
   }
   case TypeKind::Alias:
@@ -851,16 +834,14 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
     auto &ai = std::get<FuncTypeInfo>(arg_type->detail);
     if (pi.params.size() != ai.params.size())
       return false;
-    if (pi.returns.size() != ai.returns.size())
+    if (static_cast<bool>(pi.return_type) != static_cast<bool>(ai.return_type))
       return false;
     for (size_t i = 0; i < pi.params.size(); ++i) {
       if (!unify(pi.params[i], ai.params[i], out))
         return false;
     }
-    for (size_t i = 0; i < pi.returns.size(); ++i) {
-      if (!unify(pi.returns[i], ai.returns[i], out))
-        return false;
-    }
+    if (pi.return_type && !unify(pi.return_type, ai.return_type, out))
+      return false;
     return true;
   }
 

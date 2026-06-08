@@ -48,7 +48,7 @@ static void collect_type_params(const TypePtr &t,
   case TypeKind::Func: {
     auto &f = std::get<FuncTypeInfo>(t->detail);
     for (auto &p : f.params) collect_type_params(p, out, seen);
-    for (auto &r : f.returns) collect_type_params(r, out, seen);
+    if (f.return_type) collect_type_params(f.return_type, out, seen);
     return;
   }
   case TypeKind::Union: {
@@ -147,17 +147,8 @@ std::string type_to_sgi(const TypePtr &t) {
       os << type_to_sgi(info.params[i]);
     }
     os << ")";
-    if (info.returns.size() == 1) {
-      os << " " << type_to_sgi(info.returns[0]);
-    } else if (info.returns.size() > 1) {
-      os << " (";
-      for (size_t i = 0; i < info.returns.size(); ++i) {
-        if (i > 0)
-          os << ", ";
-        os << type_to_sgi(info.returns[i]);
-      }
-      os << ")";
-    }
+    if (info.return_type)
+      os << " " << type_to_sgi(info.return_type);
     return os.str();
   }
 
@@ -245,20 +236,8 @@ static void write_func_export(std::ostringstream &os, const std::string &name,
     }
   }
   os << ")";
-  if (!info.returns.empty()) {
-    if (info.returns.size() == 1 &&
-        info.returns[0]->kind != TypeKind::Void) {
-      os << " " << type_to_sgi(info.returns[0]);
-    } else if (info.returns.size() > 1) {
-      os << " (";
-      for (size_t i = 0; i < info.returns.size(); ++i) {
-        if (i > 0)
-          os << ", ";
-        os << type_to_sgi(info.returns[i]);
-      }
-      os << ")";
-    }
-  }
+  if (info.return_type && info.return_type->kind != TypeKind::Void)
+    os << " " << type_to_sgi(info.return_type);
   os << "\n";
 }
 
@@ -311,20 +290,8 @@ static void write_struct_export(std::ostringstream &os,
         os << type_to_sgi(sig.params[i]);
       }
       os << ")";
-      if (!sig.returns.empty()) {
-        if (sig.returns.size() == 1 &&
-            sig.returns[0]->kind != TypeKind::Void) {
-          os << " " << type_to_sgi(sig.returns[0]);
-        } else if (sig.returns.size() > 1) {
-          os << " (";
-          for (size_t i = 0; i < sig.returns.size(); ++i) {
-            if (i > 0)
-              os << ", ";
-            os << type_to_sgi(sig.returns[i]);
-          }
-          os << ")";
-        }
-      }
+      if (sig.return_type && sig.return_type->kind != TypeKind::Void)
+        os << " " << type_to_sgi(sig.return_type);
       os << "\n";
     }
   }
@@ -401,20 +368,8 @@ static void write_interface_export(std::ostringstream &os,
       os << type_to_sgi(sig.params[i]);
     }
     os << ")";
-    if (!sig.returns.empty()) {
-      if (sig.returns.size() == 1 &&
-          sig.returns[0]->kind != TypeKind::Void) {
-        os << " " << type_to_sgi(sig.returns[0]);
-      } else if (sig.returns.size() > 1) {
-        os << " (";
-        for (size_t i = 0; i < sig.returns.size(); ++i) {
-          if (i > 0)
-            os << ", ";
-          os << type_to_sgi(sig.returns[i]);
-        }
-        os << ")";
-      }
-    }
+    if (sig.return_type && sig.return_type->kind != TypeKind::Void)
+      os << " " << type_to_sgi(sig.return_type);
     os << "\n";
   }
   os << "}\n";
@@ -444,20 +399,8 @@ static void write_receiver_methods(std::ostringstream &os,
       os << type_to_sgi(sig.params[i]);
     }
     os << ")";
-    if (!sig.returns.empty()) {
-      if (sig.returns.size() == 1 &&
-          sig.returns[0]->kind != TypeKind::Void) {
-        os << " " << type_to_sgi(sig.returns[0]);
-      } else if (sig.returns.size() > 1) {
-        os << " (";
-        for (size_t i = 0; i < sig.returns.size(); ++i) {
-          if (i > 0)
-            os << ", ";
-          os << type_to_sgi(sig.returns[i]);
-        }
-        os << ")";
-      }
-    }
+    if (sig.return_type && sig.return_type->kind != TypeKind::Void)
+      os << " " << type_to_sgi(sig.return_type);
     os << "\n";
   }
   os << "}\n";
@@ -1009,37 +952,17 @@ struct SgiParser {
       ++pos;
 
     // Return types
-    std::vector<TypePtr> returns;
+    TypePtr return_type;
     skip_whitespace();
     if (!at_end() && content[pos] != '\n' && content[pos] != '}' &&
         content[pos] != ')') {
-      // Check for multiple return types: (A, B)
-      if (content[pos] == '(') {
-        ++pos;
-        while (true) {
-          skip_whitespace();
-          auto rt = parse_type();
-          if (rt)
-            returns.push_back(rt);
-          skip_whitespace();
-          if (at_end() || content[pos] != ',')
-            break;
-          ++pos;
-        }
-        skip_whitespace();
-        if (!at_end() && content[pos] == ')')
-          ++pos;
-      } else {
-        auto rt = parse_type();
-        if (rt && rt->kind != TypeKind::Void)
-          returns.push_back(rt);
-      }
+      auto rt = parse_type();
+      if (rt && rt->kind != TypeKind::Void)
+        return_type = rt;
     }
 
-    if (returns.empty())
-      returns.push_back(make_void_type());
-
-    return make_func_type(std::move(params), std::move(returns), is_variadic);
+    return make_func_type(std::move(params), std::move(return_type),
+                          is_variadic);
   }
 
   // ── Top-level declaration parsing ─────────────────────────────────

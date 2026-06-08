@@ -156,7 +156,7 @@ struct MapTypeNode {
 struct FuncTypeNode {
   Span span;
   std::vector<NodePtr> params; // type nodes only (no names at type level)
-  std::vector<NodePtr> returns;
+  NodePtr return_type;         // nullptr = Void
 };
 
 // FieldSpec = IdentifierList Type  (one field declaration in a struct)
@@ -231,12 +231,12 @@ struct ParameterNode {
   bool is_variadic; // true for "...Type"
 };
 
-// Signature = "(" [ ParameterList ] ")" TypeList
+// Signature = "(" [ ParameterList ] ")" [ Type ]
 // Stored by value inside FuncExprNode, FuncDeclNode, InterfaceFieldNode.
 struct SignatureNode {
   Span span;
   std::vector<ParameterNode> params;
-  std::vector<NodePtr> returns; // type nodes; empty means Void
+  NodePtr return_type; // type node; nullptr = Void
 };
 
 // ===========================================================================
@@ -403,10 +403,10 @@ struct DecrementNode {
   NodePtr operand;
 };
 
-// "return" [ ExpressionList ]
+// "return" [ Expression ]
 struct ReturnNode {
   Span span;
-  std::vector<NodePtr> values; // empty = bare `return`
+  NodePtr value; // nullptr = bare `return`
 };
 
 // "break" [ ExpressionList ]
