@@ -6,9 +6,9 @@ interface Greeter {
   Greet() String
 }
 
-struct EnglishGreeter {
-  pub fn Greet() String { "Hello!" }
-}
+struct EnglishGreeter {}
+
+pub fn (g EnglishGreeter) Greet() String { "Hello!" }
 
 fn UseGreeter(g Greeter) Void {
   io.Println(g.Greet())

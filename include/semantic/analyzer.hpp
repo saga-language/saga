@@ -549,17 +549,10 @@ private:
   void declare_parameters(const SignatureNode &sig);
 
   // Phase 3: Resolve names inside function/method bodies.
-  // If `enclosing_struct` is non-null, the struct's fields are injected
-  // into the function scope (for in-bound methods).
-  void resolve_func_decl_body(const FuncDeclNode &fn,
-                               const TypePtr &enclosing_struct = nullptr);
+  void resolve_func_decl_body(const FuncDeclNode &fn);
 
   // Phase 4: Type-check function/method bodies.
-  void check_func_decl_body(const FuncDeclNode &fn,
-                             const TypePtr &enclosing_struct = nullptr);
-
-  /// Inject a struct's fields into the current scope as local variables.
-  void inject_struct_fields(const TypePtr &struct_type);
+  void check_func_decl_body(const FuncDeclNode &fn);
 
   /// Returns true if a node always terminates via `return` on every
   /// control-flow path (e.g. if/else where both branches return, or

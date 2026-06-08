@@ -12,9 +12,9 @@ interface Writer {
 
 const ReadWriter = Reader | Writer
 
-struct ReadOnly {
-  pub fn Read() String { "data" }
-}
+struct ReadOnly {}
+
+pub fn (r ReadOnly) Read() String { "data" }
 
 fn UseRW(rw ReadWriter) Void {
   io.Println(rw.Read())

@@ -553,37 +553,7 @@ void name_method_args(llvm::Function *func, const MethodSig &sig,
 }
 
 void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
-  // In-bound methods (defined inside a struct body).
-  for (auto &decl : src.declarations) {
-    auto *s = std::get_if<StructDeclNode>(&decl->data);
-    if (!s)
-      continue;
-
-    std::string struct_name(s->name.name);
-    std::string struct_key = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key))
-      continue;
-
-    for (auto &member : s->members) {
-      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn || fn->generic)
-        continue;
-
-      std::string method_name(fn->name.name);
-      std::string link_name = mangle(struct_name + "__" + method_name);
-      if (module->getFunction(link_name))
-        continue;
-
-      auto sig = build_method_signature(*fn);
-      auto *func = llvm::Function::Create(
-          sig.fn_type, llvm::Function::ExternalLinkage, link_name,
-          module.get());
-      apply_method_abi_attrs(func, sig);
-      name_method_args(func, sig, *fn, "self");
-    }
-  }
-
-  // Out-bound methods (top-level functions with a receiver).
+  // Methods are top-level functions with a receiver.
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver || fn->generic)
@@ -629,24 +599,6 @@ void CodeGen::register_struct_method_links(const SourceNode &src) {
   };
 
   for (auto &decl : src.declarations) {
-    auto *s = std::get_if<StructDeclNode>(&decl->data);
-    if (!s)
-      continue;
-
-    std::string struct_name(s->name.name);
-    std::string struct_key = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key))
-      continue;
-
-    for (auto &member : s->members) {
-      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn || fn->generic)
-        continue;
-      register_link(struct_key, struct_name, std::string(fn->name.name));
-    }
-  }
-
-  for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver || fn->generic)
       continue;
@@ -665,107 +617,7 @@ void CodeGen::register_struct_method_links(const SourceNode &src) {
 }
 
 void CodeGen::emit_struct_methods(const SourceNode &src) {
-  // Emit in-bound method bodies.
-  for (auto &decl : src.declarations) {
-    auto *s = std::get_if<StructDeclNode>(&decl->data);
-    if (!s)
-      continue;
-
-    std::string struct_name(s->name.name);
-    std::string struct_key = mangle(package_name, struct_name);
-
-    for (auto &member : s->members) {
-      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn)
-        continue;
-      if (fn->generic)
-        continue;
-
-      std::string method_name(fn->name.name);
-      std::string link_name = mangle(struct_name + "__" + method_name);
-
-      auto *func = module->getFunction(link_name);
-      if (!func || !func->empty())
-        continue;
-
-      auto *entry = llvm::BasicBlock::Create(context, "entry", func);
-      builder.SetInsertPoint(entry);
-
-      locals.clear();
-      managed_locals.clear();
-      current_func_is_main = false;
-
-      // Self parameter — alloca for the struct pointer.
-      auto *self_alloca = create_entry_alloca(
-          func, "self", llvm::PointerType::getUnqual(context));
-      builder.CreateStore(func->getArg(0), self_alloca);
-      locals["self"] = self_alloca;
-
-      // Inject struct fields as locals so bare names (e.g. `fd`) resolve.
-      // Load each field from self via GEP and copy into a local alloca.
-      {
-        auto st_it = struct_types.find(struct_key);
-        if (st_it != struct_types.end()) {
-          auto *st = st_it->second;
-          auto &fields = struct_fields[struct_key];
-          auto *self_ptr = builder.CreateLoad(
-              llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
-          for (size_t fi = 0; fi < fields.size(); ++fi) {
-            auto *ftype = st->getElementType(fi);
-            auto *gep = builder.CreateStructGEP(st, self_ptr, fi, fields[fi]);
-            auto *val = builder.CreateLoad(ftype, gep, fields[fi] + ".val");
-            auto *field_alloca = create_entry_alloca(func, fields[fi], ftype);
-            builder.CreateStore(val, field_alloca);
-            locals[fields[fi]] = field_alloca;
-          }
-        }
-      }
-
-      // Regular parameters.
-      size_t arg_idx = 1;
-      for (auto &param : fn->signature.params) {
-        auto *ll_type = resolve_type_node(*param.type);
-        for (auto &ident : param.names.identifiers) {
-          std::string pname(ident.name);
-          auto *alloca = create_entry_alloca(func, pname, ll_type);
-          builder.CreateStore(func->getArg(arg_idx++), alloca);
-          locals[pname] = alloca;
-        }
-      }
-
-      // Emit body.
-      auto &block = std::get<BlockNode>(fn->body->data);
-      auto *tail_val = emit_block(block);
-
-      if (!builder.GetInsertBlock()->getTerminator()) {
-        emit_release_locals();
-        auto *ret_type = func->getReturnType();
-        if (ret_type->isVoidTy()) {
-          builder.CreateRetVoid();
-        } else if (tail_val && tail_val->getType() == ret_type) {
-          builder.CreateRet(tail_val);
-        } else if (tail_val && ret_type->isStructTy() &&
-                   tail_val->getType()->isPointerTy()) {
-          if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-            if (ai->getAllocatedType() == ret_type) {
-              auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
-              builder.CreateRet(loaded);
-            } else {
-              builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-            }
-          } else {
-            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-          }
-        } else {
-          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-        }
-      }
-
-      llvm::verifyFunction(*func);
-    }
-  }
-
-  // Emit out-bound method bodies (top-level functions with receivers).
+  // Emit method bodies for top-level functions with receivers.
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver)

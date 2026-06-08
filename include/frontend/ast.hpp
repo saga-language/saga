@@ -502,12 +502,11 @@ struct InterfaceDeclNode {
   std::vector<InterfaceFieldNode> methods;
 };
 
-// StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
-// The member field holds either a FieldSpecNode or a FuncDeclNode.
+// StructMember = [ "pub" ] FieldSpec
 struct StructMemberNode {
   Span span;
   bool is_public;
-  NodePtr member; // FieldSpecNode or FuncDeclNode
+  NodePtr member; // FieldSpecNode
 };
 
 // StructDecl = [ "pub" ] "struct" [ Generic ] Identifier [ "<" IdentifierList ]

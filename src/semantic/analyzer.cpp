@@ -633,19 +633,6 @@ void Analyzer::visit_package(const PackageNode &pkg) {
       std::visit(
           overloaded{
               [&](const FuncDeclNode &fn) { resolve_func_decl_body(fn); },
-              [&](const StructDeclNode &s) {
-                TypePtr struct_type = nullptr;
-                auto sym = lookup(std::string(s.name.name));
-                if (sym)
-                  struct_type = sym->type;
-
-                for (auto &member : s.members) {
-                  if (auto *fn =
-                          std::get_if<FuncDeclNode>(&member.member->data)) {
-                    resolve_func_decl_body(*fn, struct_type);
-                  }
-                }
-              },
               [&](const auto &) {},
           },
           decl->data);
@@ -660,21 +647,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
       std::visit(
           overloaded{
               [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
-              [&](const StructDeclNode &s) {
-                check_struct_decl(s);
-
-                TypePtr struct_type = nullptr;
-                auto sym = lookup(std::string(s.name.name));
-                if (sym)
-                  struct_type = sym->type;
-
-                for (auto &member : s.members) {
-                  if (auto *fn =
-                          std::get_if<FuncDeclNode>(&member.member->data)) {
-                    check_func_decl_body(*fn, struct_type);
-                  }
-                }
-              },
+              [&](const StructDeclNode &s) { check_struct_decl(s); },
               [&](const EnumDeclNode &e) { check_enum_decl(e); },
               [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
               [&](const ConstDeclNode &c) { check_const_decl(c); },
@@ -709,19 +682,6 @@ void Analyzer::visit_source(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     std::visit(overloaded{
                    [&](const FuncDeclNode &fn) { resolve_func_decl_body(fn); },
-                   [&](const StructDeclNode &s) {
-                     TypePtr struct_type = nullptr;
-                     auto sym = lookup(std::string(s.name.name));
-                     if (sym)
-                       struct_type = sym->type;
-
-                     for (auto &member : s.members) {
-                       if (auto *fn = std::get_if<FuncDeclNode>(
-                               &member.member->data)) {
-                         resolve_func_decl_body(*fn, struct_type);
-                       }
-                     }
-                   },
                    [&](const auto &) {},
                },
                decl->data);
@@ -731,21 +691,7 @@ void Analyzer::visit_source(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     std::visit(overloaded{
                    [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
-                   [&](const StructDeclNode &s) {
-                     check_struct_decl(s);
-
-                     TypePtr struct_type = nullptr;
-                     auto sym = lookup(std::string(s.name.name));
-                     if (sym)
-                       struct_type = sym->type;
-
-                     for (auto &member : s.members) {
-                       if (auto *fn = std::get_if<FuncDeclNode>(
-                               &member.member->data)) {
-                         check_func_decl_body(*fn, struct_type);
-                       }
-                     }
-                   },
+                   [&](const StructDeclNode &s) { check_struct_decl(s); },
                    [&](const EnumDeclNode &e) { check_enum_decl(e); },
                    [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
                    [&](const ConstDeclNode &c) { check_const_decl(c); },
@@ -1771,42 +1717,16 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
     type_params = enter_generics(*s.generic);
   }
 
-  // Resolve fields and methods.
+  // Resolve fields.  Methods are bound externally (`fn (x T) M()`) and
+  // registered onto the struct type by resolve_func_decl.
   for (auto &member : s.members) {
-    std::visit(overloaded{
-                   [&](const FieldSpecNode &fs) {
-                     auto ft = resolve_type(*fs.type);
-                     for (auto &ident : fs.names.identifiers) {
-                       fields.push_back(
-                           {std::string(ident.name), ft, member.is_public});
-                     }
-                   },
-                   [&](const FuncDeclNode &fn) {
-                     // Shadowing check: method-level type params must not
-                     // reuse names from the enclosing struct's type params.
-                     if (fn.generic && !type_params.empty()) {
-                       for (auto &tp_node : fn.generic->type_params) {
-                         auto opt_name = type_param_name(*tp_node);
-                         if (!opt_name) continue;
-                         for (auto &stp : type_params) {
-                           if (stp.name == std::string(*opt_name)) {
-                             error(tp_node->span,
-                                   std::format("type parameter '{}' shadows "
-                                               "enclosing struct type "
-                                               "parameter",
-                                               *opt_name));
-                           }
-                         }
-                       }
-                     }
-                     auto fn_type = resolve_signature(fn.signature);
-                     methods.push_back({std::string(fn.name.name), fn_type,
-                                        member.is_public,
-                                        current_package_name()});
-                   },
-                   [&](const auto &) {},
-               },
-               member.member->data);
+    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
+    if (!fs)
+      continue;
+    auto ft = resolve_type(*fs->type);
+    for (auto &ident : fs->names.identifiers) {
+      fields.push_back({std::string(ident.name), ft, member.is_public});
+    }
   }
 
   // Resolve embeds. Each entry is an IdentifierNode (local) or a
@@ -2010,21 +1930,7 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
 
 // Helper: resolve names inside a function declaration body.  Called from
 // visit_source after all declarations have been resolved.
-void Analyzer::inject_struct_fields(const TypePtr &struct_type) {
-  if (!struct_type || struct_type->kind != TypeKind::Struct)
-    return;
-  auto &info = std::get<StructTypeInfo>(struct_type->detail);
-  for (auto &field : info.fields) {
-    // Inject as a variable so the field name resolves in scope.
-    // Use declare() (not declare_local) to avoid shadowing errors
-    // against the outer struct scope.
-    current_scope->symbols.emplace(
-        field.name, Symbol::variable(field.name, field.type, Span{}));
-  }
-}
-
-void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
-                                      const TypePtr &enclosing_struct) {
+void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
   // Extern declarations have no body to resolve.
   if (fn.is_extern)
     return;
@@ -2047,11 +1953,6 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn,
   // Enter generics if present.
   if (fn.generic) {
     enter_generics(*fn.generic);
-  }
-
-  // For in-bound methods, inject the enclosing struct's fields into scope.
-  if (enclosing_struct) {
-    inject_struct_fields(enclosing_struct);
   }
 
   // Declare the receiver if present.
@@ -2593,8 +2494,7 @@ void Analyzer::resolve_decrement(const DecrementNode &node) {
 // Phase 4 — Type-check function/method bodies
 // ===========================================================================
 
-void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
-                                    const TypePtr &enclosing_struct) {
+void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
   // Extern declarations have no body to type-check.
   if (fn.is_extern)
     return;
@@ -2624,11 +2524,6 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn,
 
   if (fn.generic)
     enter_generics(*fn.generic);
-
-  // For in-bound methods, inject the enclosing struct's fields into scope.
-  if (enclosing_struct) {
-    inject_struct_fields(enclosing_struct);
-  }
 
   if (fn.receiver) {
     auto recv_type = resolve_type(*fn.receiver->type);

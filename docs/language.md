@@ -832,16 +832,14 @@ Structs are not types themselves but describe the shape of a type. Only once
 a struct is bound to an Identifier, does it become an actual type.
 
 Structs don't have constructors, they're just the shape of data, but they do 
-have a literal format for initializing them. Methods are bound to structs when
-they are defined or they can be post-declaration-bound provided the binding
-occurs within the scope in which the struct was defined (File scope).
+have a literal format for initializing them. Methods are bound to a struct
+externally, with a receiver, within the file scope where the struct is defined.
 
 ```
 struct Point {
   x, y Int
 }
 
-// Post declaration binding, or "out-bound"
 fn (p Point) Add(other Point) Point {
   Point{x: p.x + other.x, y: p.y + other.y}
 }
@@ -849,17 +847,16 @@ fn (p Point) Add(other Point) Point {
 struct User {
   pub firstName, lastName String // public
   email String                   // private by default
- 
- // a structs fields enter the local scope when not using a receiver 
-  pub fn FullName() String {
-    "{firstName} {lastName}"
-  }
+}
 
-  // Reciever binding, or "in-bound", struct fields are not added to the local
-  // scope. a public method can be used to extract a copy of private data 
-  pub fn (u User) Email() String {
-    u.email
-  }
+// Methods are bound with a receiver; field access goes through it.
+// A public method can expose otherwise-private data.
+fn (u User) FullName() String {
+  "{u.firstName} {u.lastName}"
+}
+
+pub fn (u User) Email() String {
+  u.email
 }
 ```
 
@@ -874,34 +871,21 @@ pub fn Foo() String {
 }
 ```
 
-The choice between in-bound and out-bound methods is whether you need to "shadow"
-a variable or provide clarity on the receiver of the field access. Instead of
-`this` or `self`, you name the receiver. Prefer in-bound definitions unless
-direct receiver access is required.
+Instead of `this` or `self`, you name the receiver. Field access always goes
+through the receiver name — struct fields are never injected as bare locals.
 
 ```
 struct Foo {
   name String // private
-  
-  // shadows the struct's field, which would raise an error
-  fn (f Foo) SetName(name String) String {
-    f.name = name
-  }
 }
 
-struct Bar < Foo {
-  name String // erases Foo's name field from Bar's scope
- 
-  // disambiguates ownership 
-  fn (b Bar) SetName(name String) String {
-    b.name = Foo.SetName(name)
-  }
+fn (f Foo) SetName(value String) Void {
+  f.name = value
 }
 ```
 
-Internally, the compiler treats all struct functions as having a hidden
-receiver. The receiver syntax is only a method for the user to gain access
-to a reference to the struct for disambiguation. 
+A receiver method is a plain function namespaced to its type; there is no
+hidden receiver or privileged field access.
 
 ### Struct literals
 

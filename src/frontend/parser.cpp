@@ -1713,8 +1713,8 @@ NodePtr Parser::parse_embed_name() {
 //
 // StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
 //
-// Disambiguation: after optional "pub", "fn" starts a FuncDecl; anything
-// else starts a FieldSpec.  Members are separated by terminators (newlines).
+// Struct members are field specs only.  Methods are bound externally
+// (`fn (x T) M()`), so a non-field token in the body is a syntax error.
 NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
@@ -1745,17 +1745,11 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
     auto member_start = mark();
     bool member_public = match(Token::Kind::Pub);
 
-    if (check(Token::Kind::Fn)) {
-      NodePtr func = parse_func_decl(member_public);
-      members.push_back(StructMemberNode{span_from(member_start), member_public,
-                                         std::move(func)});
-    } else {
-      FieldSpecNode field = parse_field_spec();
-      NodePtr field_node = make_node<FieldSpecNode>(
-          field.span, std::move(field.names), std::move(field.type));
-      members.push_back(StructMemberNode{span_from(member_start), member_public,
-                                         std::move(field_node)});
-    }
+    FieldSpecNode field = parse_field_spec();
+    NodePtr field_node = make_node<FieldSpecNode>(
+        field.span, std::move(field.names), std::move(field.type));
+    members.push_back(StructMemberNode{span_from(member_start), member_public,
+                                       std::move(field_node)});
 
     consume_stray_member_separator("struct");
     skip_terminators();

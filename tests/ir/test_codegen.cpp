@@ -4039,8 +4039,8 @@ TEST(CodeGen, AutoCloseCalledAtFuncExit) {
   auto r = CG::from(
       "struct Res {\n"
       "  n Int\n"
-      "  pub fn Close() Void { }\n"
       "}\n"
+      "pub fn (r Res) Close() Void { }\n"
       "pub fn Main() Void {\n"
       "  r := Res{n: 1}\n"
       "}\n");
@@ -4061,8 +4061,8 @@ TEST(CodeGen, AutoCloseCalledBeforeReturn) {
   auto r = CG::from(
       "struct Handle {\n"
       "  x Int\n"
-      "  pub fn Close() Void { }\n"
       "}\n"
+      "pub fn (h Handle) Close() Void { }\n"
       "fn f() Int {\n"
       "  h := Handle{x: 42}\n"
       "  return 1\n"
@@ -4103,8 +4103,8 @@ TEST(CodeGen, AutoCloseMethodDeclared) {
   auto r = CG::from(
       "struct Res {\n"
       "  n Int\n"
-      "  pub fn Close() Void { }\n"
       "}\n"
+      "pub fn (r Res) Close() Void { }\n"
       "pub fn Main() Void {\n"
       "  r := Res{n: 1}\n"
       "}\n");

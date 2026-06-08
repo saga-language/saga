@@ -3,8 +3,8 @@ import "unsafe"
 
 pub struct File {
   fd Int
+}
 
-  pub fn Write(s String) Void {
-    sys.Call(sys.Number.Write, fd, unsafe.Ptr(s), s.Size())
-  }
+pub fn (f File) Write(s String) Void {
+  sys.Call(sys.Number.Write, f.fd, unsafe.Ptr(s), s.Size())
 }

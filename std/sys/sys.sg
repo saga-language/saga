@@ -20,10 +20,10 @@
 // message. The errnoMessage() lookup is defined per-platform.
 pub struct Errno {
   code Int
-
-  pub fn Code() Int { code }
-  pub fn Message() String { "({code}) {errnoMessage(code)}" }
 }
+
+pub fn (e Errno) Code() Int { e.code }
+pub fn (e Errno) Message() String { "({e.code}) {errnoMessage(e.code)}" }
 
 // Call invokes a raw syscall identified by num with up to 6 integer arguments.
 // Returns the non-negative result on success, or an Errno on failure.

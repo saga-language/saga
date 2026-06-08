@@ -386,7 +386,6 @@ TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   auto r = ParseResult::from(
       "pub struct |T| Node < Base, Mixin {\n"
       "  pub value T\n"
-      "  fn Get() T { value }\n"
       "}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
@@ -404,14 +403,10 @@ TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   auto *e1 = std::get_if<saga::IdentifierNode>(&s->embeds[1]->data);
   ASSERT_NE(e1, nullptr);
   EXPECT_EQ(e1->name, "Mixin");
-  ASSERT_EQ(s->members.size(), 2);
+  ASSERT_EQ(s->members.size(), 1);
   EXPECT_TRUE(s->members[0].is_public);
   auto *field = std::get_if<saga::FieldSpecNode>(&s->members[0].member->data);
   ASSERT_NE(field, nullptr);
-  EXPECT_FALSE(s->members[1].is_public);
-  auto *method = std::get_if<saga::FuncDeclNode>(&s->members[1].member->data);
-  ASSERT_NE(method, nullptr);
-  EXPECT_EQ(method->name.name, "Get");
 }
 
 TEST(ParserDeclaration, Dispatch_Enum) {

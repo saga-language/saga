@@ -2,9 +2,9 @@
 // inherits parent's fields and methods. (docs/language.md:849-879)
 import "std/io"
 
-struct Greeter {
-  pub fn Greet() String { "Hello!" }
-}
+struct Greeter {}
+
+pub fn (g Greeter) Greet() String { "Hello!" }
 
 struct User < Greeter {
   name String

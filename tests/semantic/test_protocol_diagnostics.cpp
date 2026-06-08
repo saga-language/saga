@@ -213,9 +213,9 @@ TEST(ProtocolDiag, StructWithStringAcceptedInInterpolation) {
   auto r = Diag::from(R"(
     struct Pretty {
       x Int
-
-      pub fn (p Pretty) String() String { "P" }
     }
+
+    pub fn (p Pretty) String() String { "P" }
 
     fn f() String {
       p := Pretty{x: 1}

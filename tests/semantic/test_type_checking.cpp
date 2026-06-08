@@ -742,71 +742,6 @@ TEST(TypeCheck, TypedIntNotAssignableToNarrowInt) {
 }
 
 // ===========================================================================
-// In-bound struct methods — field access by name
-// ===========================================================================
-
-TEST(TypeCheck, InBoundMethodAccessesField) {
-  auto r = TC::from(
-      "struct Dog {\n"
-      "  name String\n"
-      "  pub fn Speak() String { name }\n"
-      "}");
-  EXPECT_TRUE(r.ok()) << "In-bound method should access struct fields by name";
-}
-
-TEST(TypeCheck, InBoundMethodAccessesMultipleFields) {
-  auto r = TC::from(
-      "struct Point {\n"
-      "  x, y Int\n"
-      "  pub fn Sum() Int { x + y }\n"
-      "}");
-  EXPECT_TRUE(r.ok());
-}
-
-TEST(TypeCheck, InBoundMethodWithParams) {
-  auto r = TC::from(
-      "struct Counter {\n"
-      "  n Int\n"
-      "  pub fn Add(x Int) Int { n + x }\n"
-      "}");
-  EXPECT_TRUE(r.ok());
-}
-
-TEST(TypeCheck, InBoundMethodFieldTypeChecked) {
-  // Using a field in an incompatible way should still produce a type error.
-  auto r = TC::from(
-      "struct Foo {\n"
-      "  name String\n"
-      "  pub fn Bad() Int { name }\n"
-      "}");
-  EXPECT_FALSE(r.ok());
-  EXPECT_TRUE(r.has_err("return type"));
-}
-
-TEST(TypeCheck, InBoundMethodUndefinedFieldStillErrors) {
-  // Accessing a name that isn't a field should still error.
-  auto r = TC::from(
-      "struct Foo {\n"
-      "  x Int\n"
-      "  pub fn Bad() Int { unknown }\n"
-      "}");
-  EXPECT_FALSE(r.ok());
-  EXPECT_TRUE(r.has_err("undefined"));
-}
-
-TEST(TypeCheck, InBoundMethodDoesNotLeakFields) {
-  // Fields should not be visible outside the struct's methods.
-  auto r = TC::from(
-      "struct Foo {\n"
-      "  x Int\n"
-      "  pub fn Get() Int { x }\n"
-      "}\n"
-      "fn f() Int { x }");
-  EXPECT_FALSE(r.ok());
-  EXPECT_TRUE(r.has_err("undefined"));
-}
-
-// ===========================================================================
 // Interface method resolution
 // ===========================================================================
 
@@ -1106,12 +1041,11 @@ TEST(TypeCheck, ConstDecl_UnionOfInterfaces_IsTypeAlias) {
       "interface Reader { Read() String }\n"
       "interface Writer { Write(s String) Void }\n"
       "const ReadWriter = Reader | Writer\n"
-      "struct RW {\n"
-      "  pub fn Read() String { \"\" }\n"
-      "  pub fn Write(s String) Void {}\n"
-      "}\n"
+      "struct Buffer {}\n"
+      "pub fn (b Buffer) Read() String { \"\" }\n"
+      "pub fn (b Buffer) Write(s String) Void {}\n"
       "fn use(rw ReadWriter) Void {}\n"
-      "fn f() Void { use(RW{}) }");
+      "fn f() Void { use(Buffer{}) }");
   EXPECT_TRUE(r.ok());
 }
 
@@ -1238,27 +1172,24 @@ TEST(TypeCheck, IntrinsicTrapInsideSpawn) {
 
 TEST(TypeCheck, StructOperatorAdd) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Add(other V) V { V{n: n + other.n} }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Add(other V) V { V{n: v.n + other.n} }\n"
       "fn f(a V, b V) V { a + b }\n");
   EXPECT_TRUE(r.ok()) << "V + V should resolve to Add method";
 }
 
 TEST(TypeCheck, StructOperatorSub) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Sub(other V) V { V{n: n - other.n} }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Sub(other V) V { V{n: v.n - other.n} }\n"
       "fn f(a V, b V) V { a - b }\n");
   EXPECT_TRUE(r.ok()) << "V - V should resolve to Sub method";
 }
 
 TEST(TypeCheck, StructOperatorMul) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Mul(other V) V { V{n: n * other.n} }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Mul(other V) V { V{n: v.n * other.n} }\n"
       "fn f(a V, b V) V { a * b }\n");
   EXPECT_TRUE(r.ok()) << "V * V should resolve to Mul method";
 }
@@ -1266,63 +1197,56 @@ TEST(TypeCheck, StructOperatorMul) {
 TEST(TypeCheck, StructOperatorDiv) {
   // Div returns V | Error per the Divisable interface.
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Div(other V) V | Error { V{n: n} }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Div(other V) V | Error { V{n: v.n} }\n"
       "fn f(a V, b V) V | Error { a / b }\n");
   EXPECT_TRUE(r.ok()) << "V / V should resolve to Div method (returns T|Error)";
 }
 
 TEST(TypeCheck, StructOperatorEqual) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Equals(other V) Bool { n == other.n }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Equals(other V) Bool { v.n == other.n }\n"
       "fn f(a V, b V) Bool { a == b }\n");
   EXPECT_TRUE(r.ok()) << "V == V should resolve to Equals method";
 }
 
 TEST(TypeCheck, StructOperatorNotEqual) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Equals(other V) Bool { n == other.n }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Equals(other V) Bool { v.n == other.n }\n"
       "fn f(a V, b V) Bool { a != b }\n");
   EXPECT_TRUE(r.ok()) << "V != V should resolve to Equals method (negated)";
 }
 
 TEST(TypeCheck, StructOperatorLessThan) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Compare(other V) Comparison { v.n.Compare(other.n) }\n"
       "fn f(a V, b V) Bool { a < b }\n");
   EXPECT_TRUE(r.ok()) << "V < V should resolve to Compare method";
 }
 
 TEST(TypeCheck, StructOperatorGreaterThan) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Compare(other V) Comparison { v.n.Compare(other.n) }\n"
       "fn f(a V, b V) Bool { a > b }\n");
   EXPECT_TRUE(r.ok()) << "V > V should resolve to Compare method";
 }
 
 TEST(TypeCheck, StructOperatorLessThanEqual) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Compare(other V) Comparison { v.n.Compare(other.n) }\n"
       "fn f(a V, b V) Bool { a <= b }\n");
   EXPECT_TRUE(r.ok()) << "V <= V should resolve to Compare method";
 }
 
 TEST(TypeCheck, StructOperatorGreaterThanEqual) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Compare(other V) Comparison { v.n.Compare(other.n) }\n"
       "fn f(a V, b V) Bool { a >= b }\n");
   EXPECT_TRUE(r.ok()) << "V >= V should resolve to Compare method";
 }
@@ -1330,9 +1254,8 @@ TEST(TypeCheck, StructOperatorGreaterThanEqual) {
 // Fallback: type has only Compare, no Equals — == and != fall back via Compare.
 TEST(TypeCheck, StructEqualFallsBackToCompare) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Compare(other V) Comparison { v.n.Compare(other.n) }\n"
       "fn f(a V, b V) Bool { a == b }\n");
   EXPECT_TRUE(r.ok())
       << "== should fall back to Compare when Equals is absent";
@@ -1340,9 +1263,8 @@ TEST(TypeCheck, StructEqualFallsBackToCompare) {
 
 TEST(TypeCheck, StructNotEqualFallsBackToCompare) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Compare(other V) Comparison { n.Compare(other.n) }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Compare(other V) Comparison { v.n.Compare(other.n) }\n"
       "fn f(a V, b V) Bool { a != b }\n");
   EXPECT_TRUE(r.ok())
       << "!= should fall back to Compare when Equals is absent";
@@ -1373,9 +1295,8 @@ TEST(TypeCheck, StructEqualityMissingMethod) {
 // struct_operator_methods table must be populated so codegen can use it.
 TEST(TypeCheck, StructOperatorMethodTablePopulated) {
   auto r = TC::from(
-      "struct V { n Int\n"
-      "  pub fn Add(other V) V { V{n: n + other.n} }\n"
-      "}\n"
+      "struct V { n Int }\n"
+      "pub fn (v V) Add(other V) V { V{n: v.n + other.n} }\n"
       "fn f(a V, b V) V { a + b }\n");
   ASSERT_TRUE(r.ok());
   // Exactly one binary expression was resolved to a struct method.
@@ -1393,11 +1314,11 @@ TEST(TypeCheck, IterableStructBasic) {
   auto r = TC::from(
       "struct Counter {\n"
       "  n, limit Int\n"
-      "  pub fn Next() Int | Error {\n"
-      "    if n >= limit { return Missing{} }\n"
-      "    n++\n"
-      "    n - 1\n"
-      "  }\n"
+      "}\n"
+      "pub fn (c Counter) Next() Int | Error {\n"
+      "  if c.n >= c.limit { return Missing{} }\n"
+      "  c.n++\n"
+      "  c.n - 1\n"
       "}\n"
       "fn f(c Counter) Void {\n"
       "  for v : c { intrinsic_print(v.String()) }\n"
@@ -1411,8 +1332,8 @@ TEST(TypeCheck, IterableStructElemTypeInferred) {
   auto r = TC::from(
       "struct Src {\n"
       "  val Int\n"
-      "  pub fn Next() String | Error { \"hi\" }\n"
       "}\n"
+      "pub fn (s Src) Next() String | Error { \"hi\" }\n"
       "fn f(s Src) String {\n"
       "  for v : s { return v }\n"
       "  \"\"\n"
@@ -1424,9 +1345,8 @@ TEST(TypeCheck, IterableStructElemTypeInferred) {
 TEST(TypeCheck, IterableStructElemTypeUsable) {
   // The loop variable should be usable as its inferred type (Int here).
   auto r = TC::from(
-      "struct Src {\n"
-      "  pub fn Next() Int | Error { 0 }\n"
-      "}\n"
+      "struct Src {}\n"
+      "pub fn (s Src) Next() Int | Error { 0 }\n"
       "fn g(n Int) Void { }\n"
       "fn f(s Src) Void {\n"
       "  for v : s { g(v) }\n"
@@ -1446,9 +1366,8 @@ TEST(TypeCheck, NonIterableStructInForLoop) {
 TEST(TypeCheck, IterableNextReturnsWrongType) {
   // Next() must return T | Error; returning plain T should NOT make it iterable.
   auto r = TC::from(
-      "struct Src {\n"
-      "  pub fn Next() Int { 0 }\n"
-      "}\n"
+      "struct Src {}\n"
+      "pub fn (s Src) Next() Int { 0 }\n"
       "fn f(s Src) Void { for v : s { } }\n");
   EXPECT_TRUE(r.has_err("is not iterable"));
 }
@@ -1458,8 +1377,8 @@ TEST(TypeCheck, IterableStructRecordedInAnalyzer) {
   auto r = TC::from(
       "struct Counter {\n"
       "  n Int\n"
-      "  pub fn Next() Int | Error { n }\n"
       "}\n"
+      "pub fn (c Counter) Next() Int | Error { c.n }\n"
       "fn f(c Counter) Void { for v : c { } }\n");
   ASSERT_TRUE(r.ok());
   EXPECT_EQ(r.analyzer->iterable_next_elem_type.size(), 1u);
