@@ -139,17 +139,19 @@ struct UnionTypeNode {
   std::vector<NodePtr> types;
 };
 
-// ArrayType = "[" Type "]"
+// ArrayType = "array" "{" Type [ ";" Expression ] "}"
 struct ArrayTypeNode {
   Span span;
   NodePtr element_type;
+  NodePtr size; // nullptr = no size hint
 };
 
-// MapType = "{" Type ":" Type "}"
+// MapType = "map" "{" Type ":" Type [ ";" Expression ] "}"
 struct MapTypeNode {
   Span span;
   NodePtr key_type;
   NodePtr value_type;
+  NodePtr size; // nullptr = no size hint
 };
 
 // FuncType = "fn" Signature  (a function type expression)

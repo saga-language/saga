@@ -72,8 +72,12 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
     return "'import'";
   case Token::Kind::Interface:
     return "'interface'";
+  case Token::Kind::Is:
+    return "'is'";
   case Token::Kind::Next:
     return "'next'";
+  case Token::Kind::Null:
+    return "'null'";
   case Token::Kind::Or:
     return "'or'";
   case Token::Kind::Pub:
@@ -86,6 +90,50 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
     return "'struct'";
   case Token::Kind::Switch:
     return "'switch'";
+  case Token::Kind::Type:
+    return "'type'";
+
+  // Type keywords
+  case Token::Kind::Array:
+    return "'array'";
+  case Token::Kind::Bool:
+    return "'bool'";
+  case Token::Kind::Byte:
+    return "'byte'";
+  case Token::Kind::Error:
+    return "'error'";
+  case Token::Kind::Float:
+    return "'float'";
+  case Token::Kind::Float32:
+    return "'float32'";
+  case Token::Kind::Float64:
+    return "'float64'";
+  case Token::Kind::Int:
+    return "'int'";
+  case Token::Kind::Int8:
+    return "'int8'";
+  case Token::Kind::Int16:
+    return "'int16'";
+  case Token::Kind::Int32:
+    return "'int32'";
+  case Token::Kind::Int64:
+    return "'int64'";
+  case Token::Kind::Map:
+    return "'map'";
+  case Token::Kind::String:
+    return "'string'";
+  case Token::Kind::Uint:
+    return "'uint'";
+  case Token::Kind::Uint8:
+    return "'uint8'";
+  case Token::Kind::Uint16:
+    return "'uint16'";
+  case Token::Kind::Uint32:
+    return "'uint32'";
+  case Token::Kind::Uint64:
+    return "'uint64'";
+  case Token::Kind::Void:
+    return "'void'";
 
   // Punctuation
   case Token::Kind::Comma:

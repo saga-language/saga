@@ -36,13 +36,38 @@ struct Token {
     If,        // "if"
     Import,    // "import"
     Interface, // "interface"
+    Is,        // "is"
     Next,      // "next"
+    Null,      // "null"
     Or,        // "or"
     Pub,       // "pub"
     Return,    // "return"
     Spawn,     // "spawn"
     Struct,    // "struct"
     Switch,    // "switch"
+    Type,      // "type"
+
+    // Type keywords
+    Array,   // "array"
+    Bool,    // "bool"
+    Byte,    // "byte"
+    Error,   // "error"
+    Float,   // "float"
+    Float32, // "float32"
+    Float64, // "float64"
+    Int,     // "int"
+    Int8,    // "int8"
+    Int16,   // "int16"
+    Int32,   // "int32"
+    Int64,   // "int64"
+    Map,     // "map"
+    String,  // "string" (the type keyword; distinct from StringLiteral)
+    Uint,    // "uint"
+    Uint8,   // "uint8"
+    Uint16,  // "uint16"
+    Uint32,  // "uint32"
+    Uint64,  // "uint64"
+    Void,    // "void"
 
     // Punctuation
     Comma,        // ','

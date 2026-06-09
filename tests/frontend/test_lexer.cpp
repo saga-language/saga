@@ -1034,6 +1034,41 @@ TEST(Lexer, Scan_TrueKeyword) {
   ASSERT_EQ(t.offset, 0);
 }
 
+// Type keywords plus `is` / `null` / `type`, added in the syntax flip. Covered
+// in one table-driven case since each scans identically.
+TEST(Lexer, Scan_TypeAndNewKeywords) {
+  struct Case {
+    const char *source;
+    Token::Kind kind;
+  };
+  const Case cases[] = {
+      {"is", Token::Kind::Is},         {"null", Token::Kind::Null},
+      {"type", Token::Kind::Type},     {"array", Token::Kind::Array},
+      {"bool", Token::Kind::Bool},     {"byte", Token::Kind::Byte},
+      {"error", Token::Kind::Error},   {"float", Token::Kind::Float},
+      {"float32", Token::Kind::Float32}, {"float64", Token::Kind::Float64},
+      {"int", Token::Kind::Int},       {"int8", Token::Kind::Int8},
+      {"int16", Token::Kind::Int16},   {"int32", Token::Kind::Int32},
+      {"int64", Token::Kind::Int64},   {"map", Token::Kind::Map},
+      {"string", Token::Kind::String}, {"uint", Token::Kind::Uint},
+      {"uint8", Token::Kind::Uint8},   {"uint16", Token::Kind::Uint16},
+      {"uint32", Token::Kind::Uint32}, {"uint64", Token::Kind::Uint64},
+      {"void", Token::Kind::Void},
+  };
+
+  for (const auto &c : cases) {
+    SCOPED_TRACE(c.source);
+    Lexer l;
+    auto f = File::from_source("test.txt", c.source);
+    l.init(f.get());
+    auto t = l.scan();
+
+    ASSERT_EQ(t.kind, c.kind);
+    ASSERT_EQ(t.literal, c.source);
+    ASSERT_EQ(t.offset, 0);
+  }
+}
+
 // Multi-token tests
 TEST(Lexer, Scan_Multiple) {
   Lexer l;
