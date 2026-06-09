@@ -116,10 +116,14 @@ private:
   /// UnionType = SingleType { "|" SingleType }
   NodePtr parse_union_type();
 
-  /// SingleType = BaseType { "[" "]" }
+  /// SingleType = basic_type | ArrayType | MapType | StructType | FuncType
+  ///            | GenericApp | Selector | Identifier
   NodePtr parse_single_type();
 
-  /// MapType = "{" Type ":" Type "}"
+  /// ArrayType = "array" "{" Type [ ";" Expression ] "}"
+  NodePtr parse_array_type();
+
+  /// MapType = "map" "{" Type ":" Type [ ";" Expression ] "}"
   NodePtr parse_map_type();
 
   /// FuncType = "fn" Signature

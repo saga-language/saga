@@ -248,36 +248,36 @@ std::string type_to_string(const TypePtr &t) {
 
   switch (t->kind) {
   case TypeKind::Void:
-    return "Void";
+    return "void";
   case TypeKind::Bool:
-    return "Bool";
+    return "bool";
   case TypeKind::Int: {
     auto &info = std::get<IntType>(t->detail);
     if (info.bits == 0)
-      return "Int";
+      return "int";
     if (!info.is_signed)
-      return "Uint" + std::to_string(info.bits);
-    return "Int" + std::to_string(info.bits);
+      return "uint" + std::to_string(info.bits);
+    return "int" + std::to_string(info.bits);
   }
   case TypeKind::Float: {
     auto &info = std::get<FloatType>(t->detail);
     if (info.bits == 0)
-      return "Float";
-    return "Float" + std::to_string(info.bits);
+      return "float";
+    return "float" + std::to_string(info.bits);
   }
   case TypeKind::String:
-    return "String";
+    return "string";
   case TypeKind::Error:
     return "<error>";
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    return type_to_string(info.element) + "[]";
+    return "array{" + type_to_string(info.element) + "}";
   }
 
   case TypeKind::Map: {
     auto &info = std::get<MapTypeInfo>(t->detail);
-    return "{" + type_to_string(info.key) + ": " +
+    return "map{" + type_to_string(info.key) + ": " +
            type_to_string(info.value) + "}";
   }
 

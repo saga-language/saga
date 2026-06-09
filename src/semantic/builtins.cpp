@@ -136,32 +136,32 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   };
 
   // -- Primitive types -----------------------------------------------------
-  reg_type("Void", types.void_type);
-  reg_type("Bool", types.bool_type);
-  reg_type("String", types.string_type);
+  reg_type("void", types.void_type);
+  reg_type("bool", types.bool_type);
+  reg_type("string", types.string_type);
 
   // -- Numeric aliases (platform word-size) --------------------------------
-  reg_type("Int", types.int_type);
-  reg_type("Float", types.float_type);
-  reg_type("Byte", types.byte_type);
+  reg_type("int", types.int_type);
+  reg_type("float", types.float_type);
+  reg_type("byte", types.byte_type);
   reg_type("Char", types.char_type);
 
   // -- Sized integers ------------------------------------------------------
-  reg_type("Int8", types.int8_type);
-  reg_type("Int16", types.int16_type);
-  reg_type("Int32", types.int32_type);
-  reg_type("Int64", types.int64_type);
-  reg_type("Uint8", types.uint8_type);
-  reg_type("Uint16", types.uint16_type);
-  reg_type("Uint32", types.uint32_type);
-  reg_type("Uint64", types.uint64_type);
+  reg_type("int8", types.int8_type);
+  reg_type("int16", types.int16_type);
+  reg_type("int32", types.int32_type);
+  reg_type("int64", types.int64_type);
+  reg_type("uint8", types.uint8_type);
+  reg_type("uint16", types.uint16_type);
+  reg_type("uint32", types.uint32_type);
+  reg_type("uint64", types.uint64_type);
 
   // -- Sized floats --------------------------------------------------------
-  reg_type("Float32", types.float32_type);
-  reg_type("Float64", types.float64_type);
+  reg_type("float32", types.float32_type);
+  reg_type("float64", types.float64_type);
 
   // -- Internal interfaces -------------------------------------------------
-  reg_type("Error", types.error_iface);
+  reg_type("error", types.error_iface);
   reg_type("Iterable", types.iterable_iface);
 
   // -- Internal structs ----------------------------------------------------

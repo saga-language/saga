@@ -240,12 +240,31 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
 // a token that belongs to the surrounding context (e.g. a closing delimiter).
 constexpr bool is_type_start(Token::Kind kind) {
   switch (kind) {
-  case Token::Kind::Identifier:      // named types: Int, Bool, MyType, …
-  case Token::Kind::LeftBracket:     // ArrayType   "[" Type "]"
-  case Token::Kind::LeftBrace:       // MapType     "{" Type ":" Type "}"
-  case Token::Kind::Fn:              // FuncType    "fn" Signature
-  case Token::Kind::Struct:          // StructType  "struct" "{" … "}"
-  case Token::Kind::BitwiseOr:       // GenericType  "|" TypeList "|" Type
+  case Token::Kind::Identifier: // named / user types, GenericApp base
+  case Token::Kind::Array:      // array{T}
+  case Token::Kind::Map:        // map{K:V}
+  case Token::Kind::Fn:         // fn(...) T
+  case Token::Kind::Struct:     // struct{...}
+  case Token::Kind::BitwiseOr:  // |T| generic app (until 1b-2)
+  // Basic type keywords.
+  case Token::Kind::Bool:
+  case Token::Kind::Byte:
+  case Token::Kind::Error:
+  case Token::Kind::Float:
+  case Token::Kind::Float32:
+  case Token::Kind::Float64:
+  case Token::Kind::Int:
+  case Token::Kind::Int8:
+  case Token::Kind::Int16:
+  case Token::Kind::Int32:
+  case Token::Kind::Int64:
+  case Token::Kind::String:
+  case Token::Kind::Uint:
+  case Token::Kind::Uint8:
+  case Token::Kind::Uint16:
+  case Token::Kind::Uint32:
+  case Token::Kind::Uint64:
+  case Token::Kind::Void:
     return true;
   default:
     return false;
@@ -650,46 +669,59 @@ NodePtr Parser::parse_union_type() {
   return make_node<UnionTypeNode>(span_from(start), std::move(types));
 }
 
-// parse_single_type — SingleType = BaseType { "[" "]" }
+// parse_single_type — one type with no surrounding "|" union.
 //
-// Grammar recap:
-//   BaseType      = Identifier | Selector | IntrinsicType | StructType
-//   IntrinsicType = FuncType | MapType | StructType
-//                 | basic_type | float_type | integer_type | void_type
-//   basic_type    = "Bool" | "Byte" | "Int" | "Float" | "String"
-//   float_type    = "Float32" | "Float64"
-//   integer_type  = "Int8" | "Int16" | "Int32" | "Int64"
-//                 | "Uint8" | "Uint16" | "Uint32" | "Uint64"
-//   void_type     = "Void"
-//   Selector      = Identifier "." Identifier   (e.g. pkg.MyType)
+// Dispatch on the leading token:
+//   "array"          → ArrayType   array{T [; N]}
+//   "map"            → MapType     map{K:V [; N]}
+//   "fn"             → FuncType    fn(...) T
+//   "struct"         → StructType  struct{...}
+//   basic_type kw    → IdentifierNode carrying the keyword text (int, string…)
+//   "|"              → GenericTypeApp  |Int| Task  (pipe form; → <> in 1b-2)
+//   Identifier       → plain IdentifierNode, or SelectorNode if "." follows
 //
-// The array form is a *suffix*: `Int[]`, `Map<K,V>[]`, `[]Int[]` is not
-// legal — the leading `[` must always be a value-expression delimiter or
-// part of an array literal in expression position.  This decision lets
-// `arr[i]` be unambiguously an index expression at every position.
-//
-// Dispatch summary for the base type:
-//   "{"      → MapType
-//   "fn"     → FuncType
-//   "struct" → StructType
-//   "|"      → GenericTypeApp
-//   Identifier → plain IdentifierNode, or SelectorNode if "." follows
+// Containers carry their own keyword now, so a leading "[" or "{" is never a
+// type — it is always a value-expression delimiter (index / map literal /
+// block), which keeps `arr[i]` and `{...}` unambiguous in every position.
 NodePtr Parser::parse_single_type() {
   auto start = mark();
 
-  NodePtr base;
   switch (current.kind) {
-  case Token::Kind::LeftBrace:
-    base = parse_map_type();
-    break;
+  case Token::Kind::Array:
+    return parse_array_type();
+  case Token::Kind::Map:
+    return parse_map_type();
   case Token::Kind::Fn:
-    base = parse_func_type();
-    break;
+    return parse_func_type();
   case Token::Kind::Struct:
-    base = parse_struct_type();
-    break;
+    return parse_struct_type();
 
-  // ── Generic type application: |Int| Task, |K, V| Map ───────────────
+  // ── Basic type keywords ──────────────────────────────────────────────
+  // Lowered to an IdentifierNode carrying the keyword text, resolved against
+  // the lowercase builtins.
+  case Token::Kind::Bool:
+  case Token::Kind::Byte:
+  case Token::Kind::Error:
+  case Token::Kind::Float:
+  case Token::Kind::Float32:
+  case Token::Kind::Float64:
+  case Token::Kind::Int:
+  case Token::Kind::Int8:
+  case Token::Kind::Int16:
+  case Token::Kind::Int32:
+  case Token::Kind::Int64:
+  case Token::Kind::String:
+  case Token::Kind::Uint:
+  case Token::Kind::Uint8:
+  case Token::Kind::Uint16:
+  case Token::Kind::Uint32:
+  case Token::Kind::Uint64:
+  case Token::Kind::Void: {
+    Token tok = advance();
+    return make_node<IdentifierNode>(span_from(start), tok.literal);
+  }
+
+  // ── Generic type application: |Int| Task (pipe form; → <> in 1b-2) ────
   case Token::Kind::BitwiseOr: {
     advance(); // consume opening "|"
     std::vector<NodePtr> type_args;
@@ -700,9 +732,8 @@ NodePtr Parser::parse_single_type() {
     }
     expect(Token::Kind::BitwiseOr); // closing "|"
     NodePtr inner = parse_single_type();
-    base = make_node<GenericTypeAppNode>(
-        span_from(start), std::move(type_args), std::move(inner));
-    break;
+    return make_node<GenericTypeAppNode>(span_from(start),
+                                         std::move(type_args), std::move(inner));
   }
 
   // ── Named types: plain or qualified (Selector) ───────────────────────
@@ -710,33 +741,20 @@ NodePtr Parser::parse_single_type() {
     Token tok = advance(); // consume the type-name identifier
     NodePtr ident = make_node<IdentifierNode>(span_from(start), tok.literal);
 
-    if (!check(Token::Kind::Dot)) {
-      base = std::move(ident);
-      break;
-    }
+    if (!check(Token::Kind::Dot))
+      return ident;
+
     advance(); // consume "."
     auto field_start = mark();
     Token field_tok = expect(Token::Kind::Identifier);
     IdentifierNode field{span_from(field_start), field_tok.literal};
-    base = make_node<SelectorNode>(span_from(start), std::move(ident), field);
-    break;
+    return make_node<SelectorNode>(span_from(start), std::move(ident), field);
   }
 
   default:
     error("expected type, got " + std::string(token_kind_name(current.kind)));
     return nullptr;
   }
-
-  // Suffix array form: BaseType { "[" "]" } — wraps each level into an
-  // ArrayTypeNode.  The non-empty `[N]` form (sized arrays) is reserved
-  // for a follow-up; for now we accept only `[]`.
-  while (check(Token::Kind::LeftBracket)) {
-    advance(); // consume "["
-    expect(Token::Kind::RightBracket); // consume "]"
-    base = make_node<ArrayTypeNode>(span_from(start), std::move(base));
-  }
-
-  return base;
 }
 
 // ============================================================================
@@ -978,16 +996,41 @@ SignatureNode Parser::parse_interface_signature() {
 // Sub-type Parsers
 // ============================================================================
 
-// parse_map_type — MapType = "{" Type ":" Type "}"
+// parse_array_type — ArrayType = "array" "{" Type [ ";" Expression ] "}"
+//
+// The size hint is a perf knob the compiler is free to ignore (proposal
+// §Arrays); it is parsed and stored but not yet honored.
+NodePtr Parser::parse_array_type() {
+  auto start = mark();
+  expect(Token::Kind::Array);     // "array"
+  expect(Token::Kind::LeftBrace); // "{"
+  NodePtr element = parse_type();
+  NodePtr size;
+  if (check(Token::Kind::Semicolon)) {
+    advance(); // consume ";"
+    size = parse_expression();
+  }
+  expect(Token::Kind::RightBrace); // "}"
+  return make_node<ArrayTypeNode>(span_from(start), std::move(element),
+                                  std::move(size));
+}
+
+// parse_map_type — MapType = "map" "{" Type ":" Type [ ";" Expression ] "}"
 NodePtr Parser::parse_map_type() {
   auto start = mark();
+  expect(Token::Kind::Map);       // "map"
   expect(Token::Kind::LeftBrace); // "{"
   NodePtr key = parse_type();
-  expect(Token::Kind::Colon); // ":"
+  expect(Token::Kind::Colon);     // ":"
   NodePtr value = parse_type();
+  NodePtr size;
+  if (check(Token::Kind::Semicolon)) {
+    advance(); // consume ";"
+    size = parse_expression();
+  }
   expect(Token::Kind::RightBrace); // "}"
   return make_node<MapTypeNode>(span_from(start), std::move(key),
-                                std::move(value));
+                                std::move(value), std::move(size));
 }
 
 // parse_struct_type — StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ]
@@ -2348,9 +2391,8 @@ NodePtr Parser::parse_map_or_block() {
   } else if (is_assign_op(current.kind)) {
     stmts.push_back(parse_assignment(std::move(first)));
   } else if (auto *id_ptr = std::get_if<IdentifierNode>(&first->data);
-             id_ptr && (current.kind == Token::Kind::Identifier ||
-                        current.kind == Token::Kind::Fn ||
-                        current.kind == Token::Kind::Struct)) {
+             id_ptr && is_type_start(current.kind) &&
+             current.kind != Token::Kind::BitwiseOr) {
     IdentifierNode name = *id_ptr;
     NodePtr type = parse_type();
     std::optional<NodePtr> init;
@@ -2531,10 +2573,10 @@ NodePtr Parser::parse_assignment(NodePtr target) {
 //      IdentifierNode + type  → VarDecl (assembled inline)
 //      anything else          → expression statement (returned as-is)
 //
-// VarDecl detection: only Identifier / "fn" / "struct" as the following
-// token are treated as unambiguous type-starts.  "[" and "(" are excluded
-// because they also serve as high-precedence infix operators (index, call),
-// making the disambiguation impossible without semantic information.
+// VarDecl detection: any type-start except "|" is treated as unambiguous. "|"
+// is excluded because it is also the bitwise-or operator (`x | y`); every type
+// keyword (int, array, map, …) can never continue an expression, so it
+// unambiguously begins a VarDecl after a leading identifier.
 NodePtr Parser::parse_statement() {
 
   // ── 1. Keyword-led statements ───────────────────────────────────────────
@@ -2631,9 +2673,8 @@ NodePtr Parser::parse_statement() {
 
   // ── 3e. VarDecl: IdentifierNode followed by unambiguous type-start ──────
   if (auto *id_ptr = std::get_if<IdentifierNode>(&expr->data)) {
-    if (current.kind == Token::Kind::Identifier ||
-        current.kind == Token::Kind::Fn ||
-        current.kind == Token::Kind::Struct) {
+    if (is_type_start(current.kind) &&
+        current.kind != Token::Kind::BitwiseOr) {
       IdentifierNode name = *id_ptr;
       NodePtr type = parse_type();
       std::optional<NodePtr> init;
@@ -2864,9 +2905,8 @@ NodePtr Parser::parse_for_expr() {
 
     auto *leading_id = std::get_if<IdentifierNode>(&leading->data);
     bool typed_init_form =
-        leading_id != nullptr &&
-        (check(Token::Kind::Identifier) ||
-         check(Token::Kind::LeftBracket));
+        leading_id != nullptr && is_type_start(current.kind) &&
+        current.kind != Token::Kind::BitwiseOr;
 
     if (typed_init_form || check(Token::Kind::DeclAssignment)) {
       // ── IteratorClause ─────────────────────────────────────────────────
