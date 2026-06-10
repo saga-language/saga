@@ -608,6 +608,7 @@ private:
   TypePtr check_struct_literal(const StructLiteralNode &node);
   TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);
   TypePtr check_unary_expr(const UnaryExprNode &node);
+  TypePtr check_is_expr(const IsExpr &node);
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);

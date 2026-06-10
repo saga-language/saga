@@ -36,6 +36,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const UnaryExprNode &n) -> llvm::Value * {
             return emit_unary_expr(n);
           },
+          [&](const IsExpr &n) -> llvm::Value * { return emit_is_expr(n); },
           [&](const GroupExprNode &n) -> llvm::Value * {
             return emit_group_expr(n);
           },
@@ -706,49 +707,6 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
       return emit_struct_binary_op(node, parent, lhs_sem, *method);
   }
 
-  // ── Type matching on union types ─────────────────────────────────────
-  // Pattern: `union_value == TypeName` → compare the tag byte.
-  using K = Token::Kind;
-  if (lhs_sem && lhs_sem->kind == TypeKind::Union &&
-      (node.op == K::Equal || node.op == K::NotEqual)) {
-    if (auto *rhs_ident = std::get_if<IdentifierNode>(&node.rhs->data)) {
-      // Check if RHS is a type name by looking at the analyzer's symbol.
-      const Symbol *rhs_sym = node_symbol(*node.rhs);
-      bool is_type_sym = false;
-      if (rhs_sym && rhs_sym->kind == SymbolKind::Type) {
-        is_type_sym = true;
-      }
-      // Also check via name lookup for built-in types.
-      if (!is_type_sym) {
-        auto sym = analyzer.lookup(std::string(rhs_ident->name));
-        if (sym && sym->kind == SymbolKind::Type)
-          is_type_sym = true;
-      }
-      if (is_type_sym) {
-        auto rhs_sem = semantic_type(*node.rhs);
-        int tag = union_tag_for_type(rhs_sem, lhs_sem);
-        if (tag >= 0) {
-          auto *lhs_val = emit_expr(*node.lhs);
-          if (!lhs_val) return nullptr;
-
-          // lhs_val is a pointer to the union alloca.
-          auto *union_st = get_union_llvm_type(lhs_sem);
-          auto *tag_gep = builder.CreateStructGEP(union_st, lhs_val, 0,
-                                                   "match.tag.ptr");
-          auto *tag_val = builder.CreateLoad(
-              llvm::Type::getInt8Ty(context), tag_gep, "match.tag");
-          auto *tag_const = llvm::ConstantInt::get(
-              llvm::Type::getInt8Ty(context), tag);
-
-          if (node.op == K::Equal)
-            return builder.CreateICmpEQ(tag_val, tag_const, "type.eq");
-          else
-            return builder.CreateICmpNE(tag_val, tag_const, "type.ne");
-        }
-      }
-    }
-  }
-
   // ── String operations ────────────────────────────────────────────────
   if (is_string) {
     auto *lhs = emit_expr(*node.lhs);
@@ -919,5 +877,33 @@ llvm::Value *CodeGen::emit_unary_expr(const UnaryExprNode &node) {
   }
 }
 
+// emit_is_expr — `value is Type`. For a union operand, load and compare the tag
+// byte (the analyzer guarantees Type is an alternative). For any other operand
+// the result is a compile-time constant: true iff the static type matches.
+llvm::Value *CodeGen::emit_is_expr(const IsExpr &node) {
+  auto value_sem = semantic_type(*node.value);
+  auto test_sem = semantic_type(*node.type);
+  auto *i1 = llvm::Type::getInt1Ty(context);
+
+  if (value_sem && value_sem->kind == TypeKind::Union) {
+    int tag = union_tag_for_type(test_sem, value_sem);
+    auto *union_val = emit_expr(*node.value);
+    if (!union_val)
+      return nullptr;
+    if (tag < 0)
+      return llvm::ConstantInt::get(i1, 0);
+    auto *union_st = get_union_llvm_type(value_sem);
+    auto *tag_gep =
+        builder.CreateStructGEP(union_st, union_val, 0, "is.tag.ptr");
+    auto *tag_val = builder.CreateLoad(llvm::Type::getInt8Ty(context), tag_gep,
+                                       "is.tag");
+    auto *tag_const = llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), tag);
+    return builder.CreateICmpEQ(tag_val, tag_const, "is.eq");
+  }
+
+  emit_expr(*node.value); // evaluate for side effects, then fold
+  bool same = value_sem && test_sem && types_equal(value_sem, test_sem);
+  return llvm::ConstantInt::get(i1, same ? 1 : 0);
+}
 
 } // namespace saga

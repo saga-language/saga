@@ -329,6 +329,11 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             os << pad(indent) << "UnaryExprNode op=" << kind_name(n.op) << "\n";
             dump_ptr(n.operand, os, c);
           },
+          [&](const IsExpr &n) {
+            os << pad(indent) << "IsExpr\n";
+            dump_ptr(n.value, os, c);
+            dump_ptr(n.type, os, c);
+          },
           [&](const GroupExprNode &n) {
             os << pad(indent) << "GroupExprNode\n";
             dump_ptr(n.inner, os, c);

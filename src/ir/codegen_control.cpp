@@ -48,20 +48,21 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
     builder.CreateCondBr(cond, then_bb, merge_bb);
   }
 
-  // ── Detect type-matching pattern for narrowing ─────────────────────
-  // If condition is `value == TypeName`, extract the narrowed value.
+  // ── Detect type-test pattern for narrowing ─────────────────────────
+  // `if value is Type` extracts the narrowed value from the union into the
+  // then-block.
   std::string narrowed_var_name;
+  TypePtr narrow_union_sem;
+  TypePtr narrow_target_sem;
   llvm::AllocaInst *saved_alloca = nullptr;
-  if (auto *binop = std::get_if<BinaryExprNode>(&node.condition->data)) {
-    if (binop->op == Token::Kind::Equal) {
-      if (auto *lhs_id = std::get_if<IdentifierNode>(&binop->lhs->data)) {
-        auto lhs_sem = semantic_type(*binop->lhs);
-        if (lhs_sem && lhs_sem->kind == TypeKind::Union) {
-          auto rhs_sem = semantic_type(*binop->rhs);
-          if (rhs_sem) {
-            narrowed_var_name = std::string(lhs_id->name);
-          }
-        }
+  if (auto *is_expr = std::get_if<IsExpr>(&node.condition->data)) {
+    if (auto *lhs_id = std::get_if<IdentifierNode>(&is_expr->value->data)) {
+      auto lhs_sem = semantic_type(*is_expr->value);
+      auto rhs_sem = semantic_type(*is_expr->type);
+      if (lhs_sem && lhs_sem->kind == TypeKind::Union && rhs_sem) {
+        narrowed_var_name = std::string(lhs_id->name);
+        narrow_union_sem = lhs_sem;
+        narrow_target_sem = rhs_sem;
       }
     }
   }
@@ -69,26 +70,21 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
   // ── Then block ─────────────────────────────────────────────────────
   builder.SetInsertPoint(then_bb);
 
-  // If type-matching, narrow the variable by extracting from the union.
+  // If type-testing, narrow the variable by extracting from the union.
   if (!narrowed_var_name.empty()) {
     auto local_it = locals.find(narrowed_var_name);
     if (local_it != locals.end()) {
-      auto lhs_sem = semantic_type(*std::get<BinaryExprNode>(
-          node.condition->data).lhs);
-      auto rhs_sem = semantic_type(*std::get<BinaryExprNode>(
-          node.condition->data).rhs);
-      if (lhs_sem && rhs_sem) {
-        auto *union_ptr = local_it->second;
-        auto *extracted = emit_union_extract(union_ptr, rhs_sem, lhs_sem);
-        if (extracted) {
-          auto *ll_type = llvm_type(rhs_sem);
-          auto *narrowed_alloca = create_entry_alloca(
-              func, narrowed_var_name + ".narrowed", ll_type);
-          builder.CreateStore(extracted, narrowed_alloca);
-          // Temporarily replace the local.
-          saved_alloca = local_it->second;
-          locals[narrowed_var_name] = narrowed_alloca;
-        }
+      auto *union_ptr = local_it->second;
+      auto *extracted =
+          emit_union_extract(union_ptr, narrow_target_sem, narrow_union_sem);
+      if (extracted) {
+        auto *ll_type = llvm_type(narrow_target_sem);
+        auto *narrowed_alloca = create_entry_alloca(
+            func, narrowed_var_name + ".narrowed", ll_type);
+        builder.CreateStore(extracted, narrowed_alloca);
+        // Temporarily replace the local.
+        saved_alloca = local_it->second;
+        locals[narrowed_var_name] = narrowed_alloca;
       }
     }
   }

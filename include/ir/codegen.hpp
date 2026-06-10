@@ -488,6 +488,7 @@ private:
                                      const TypePtr &lhs_sem,
                                      const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
+  llvm::Value *emit_is_expr(const IsExpr &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);

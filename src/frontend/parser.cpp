@@ -582,7 +582,11 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::DotDot:
     return 25;
 
-  // 9. Or clause (error resolution)
+  // 9. Type test (`is`) — looser than logical, tighter than `or`
+  case Token::Kind::Is:
+    return 23;
+
+  // 10. Or clause (error resolution)
   case Token::Kind::Or:
     return 20;
 
@@ -1340,6 +1344,16 @@ NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
 
   case Token::Kind::Or:
     return parse_or_expr(std::move(lhs));
+
+  // Type test: `value is Type` — RHS is a Type, not an expression.
+  case Token::Kind::Is: {
+    advance(); // consume "is"
+    NodePtr type = parse_type();
+    if (!type)
+      return nullptr;
+    return make_node<IsExpr>(span_from(start_offset), std::move(lhs),
+                             std::move(type));
+  }
 
   case Token::Kind::Pow: {
     Token op = advance();

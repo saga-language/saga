@@ -260,6 +260,14 @@ struct UnaryExprNode {
   NodePtr operand;
 };
 
+// IsExpr = Expression "is" Type   — runtime type test, evaluates to Bool.
+// Narrows the tested expression in an enclosing `if` then/else branch.
+struct IsExpr {
+  Span span;
+  NodePtr value; // the expression under test
+  NodePtr type;  // the type tested against (a Type node)
+};
+
 // "(" Expression ")"
 struct GroupExprNode {
   Span span;
@@ -576,7 +584,7 @@ struct Node {
     CaseArmNode, ParameterNode,
 
     // --- Expressions ---
-    BinaryExprNode,     UnaryExprNode,     GroupExprNode,
+    BinaryExprNode,     UnaryExprNode,     IsExpr,            GroupExprNode,
     CallExprNode,       IndexExprNode,     SliceNode,          SelectorNode,
     IfExprNode,         SwitchExprNode,
     ForExprNode,        ForRangeClauseNode, ForIterClauseNode,

@@ -1993,6 +1993,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const StructLiteralNode &n) { resolve_struct_literal(n); },
           [&](const BinaryExprNode &n) { resolve_binary_expr(n); },
           [&](const UnaryExprNode &n) { resolve_unary_expr(n); },
+          [&](const IsExpr &n) { resolve_expr(*n.value); },
           [&](const GroupExprNode &n) { resolve_group_expr(n); },
           [&](const CallExprNode &n) { resolve_call_expr(n); },
           [&](const IndexExprNode &n) { resolve_index_expr(n); },
@@ -2617,6 +2618,7 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const UnaryExprNode &n) -> TypePtr {
             return check_unary_expr(n);
           },
+          [&](const IsExpr &n) -> TypePtr { return check_is_expr(n); },
           [&](const GroupExprNode &n) -> TypePtr {
             return check_group_expr(n);
           },
@@ -3047,29 +3049,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   // Comparison: == != > < >= <=
   case K::Equal:
   case K::NotEqual: {
-    // Type matching: if LHS is a union and RHS is a type name, this is a
-    // type assertion (e.g. `value == Int`). Returns Bool.
-    if (lhs->kind == TypeKind::Union) {
-      // Check if RHS is a type symbol.
-      if (auto *rhs_ident = std::get_if<IdentifierNode>(&node.rhs->data)) {
-        auto sym = lookup(std::string(rhs_ident->name));
-        if (sym && sym->kind == SymbolKind::Type) {
-          // Verify the type is one of the union alternatives.
-          auto &union_info = std::get<UnionTypeInfo>(lhs->detail);
-          bool found = false;
-          for (auto &alt : union_info.alternatives) {
-            if (types_equal(alt, rhs) || is_assignable_to(rhs, alt))
-              found = true;
-          }
-          if (!found) {
-            error(node.rhs->span,
-                  std::format("type {} is not an alternative of {}",
-                              type_to_string(rhs), type_to_string(lhs)));
-          }
-          return builtins.bool_type;
-        }
-      }
-    }
+    // Type tests are spelled `value is Type` (see check_is_expr), not `==`.
     if (!is_equatable(lhs)) {
       error(node.lhs->span, std::format("type {} does not support equality",
                                         type_to_string(lhs)));
@@ -3156,6 +3136,32 @@ TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
 
   error(node.span, "unsupported unary operator");
   return builtins.error_type;
+}
+
+TypePtr Analyzer::check_is_expr(const IsExpr &node) {
+  auto value_type = check_expr(*node.value);
+  auto test_type = resolve_type(*node.type);
+  record_type(*node.type, test_type);
+
+  if (is_error_type(value_type) || is_error_type(test_type))
+    return builtins.bool_type;
+
+  if (value_type->kind == TypeKind::Union) {
+    auto &info = std::get<UnionTypeInfo>(value_type->detail);
+    bool found = false;
+    for (auto &alt : info.alternatives) {
+      if (types_equal(alt, test_type) || is_assignable_to(test_type, alt)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      error(node.type->span,
+            std::format("type {} is not an alternative of {}",
+                        type_to_string(test_type), type_to_string(value_type)));
+  }
+
+  return builtins.bool_type;
 }
 
 TypePtr Analyzer::check_group_expr(const GroupExprNode &node) {
@@ -3677,37 +3683,32 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
   auto cond_type = check_expr(*node.condition);
   expect_bool(node.condition->span, cond_type);
 
-  // Detect type-matching pattern: `if value == TypeName`
-  // to narrow the variable in the then-block.
+  // Detect type-test pattern: `if value is Type` to narrow the variable in the
+  // then-block (to Type) and the else-block (to the union minus Type).
   std::string narrowed_var;
   TypePtr narrowed_type = nullptr;
   TypePtr else_narrowed_type = nullptr;
 
-  if (auto *binop = std::get_if<BinaryExprNode>(&node.condition->data)) {
-    if (binop->op == Token::Kind::Equal) {
-      if (auto *lhs_id = std::get_if<IdentifierNode>(&binop->lhs->data)) {
-        if (auto *rhs_id = std::get_if<IdentifierNode>(&binop->rhs->data)) {
-          auto sym = lookup(std::string(rhs_id->name));
-          if (sym && sym->kind == SymbolKind::Type) {
-            auto lhs_sym = lookup(std::string(lhs_id->name));
-            if (lhs_sym && lhs_sym->type &&
-                lhs_sym->type->kind == TypeKind::Union) {
-              narrowed_var = std::string(lhs_id->name);
-              narrowed_type = sym->type;
-              // Compute the else narrowed type (union minus matched type).
-              auto &info = std::get<UnionTypeInfo>(lhs_sym->type->detail);
-              std::vector<TypePtr> remaining;
-              for (auto &alt : info.alternatives) {
-                if (!types_equal(alt, sym->type))
-                  remaining.push_back(alt);
-              }
-              if (remaining.size() == 1)
-                else_narrowed_type = remaining[0];
-              else if (remaining.size() > 1)
-                else_narrowed_type = make_union_type(std::move(remaining));
-            }
-          }
+  if (auto *is_expr = std::get_if<IsExpr>(&node.condition->data)) {
+    if (auto *val_id = std::get_if<IdentifierNode>(&is_expr->value->data)) {
+      auto lhs_sym = lookup(std::string(val_id->name));
+      auto matched = resolve_type(*is_expr->type);
+      if (lhs_sym && lhs_sym->type &&
+          lhs_sym->type->kind == TypeKind::Union && matched &&
+          !is_error_type(matched)) {
+        narrowed_var = std::string(val_id->name);
+        narrowed_type = matched;
+        // Compute the else narrowed type (union minus matched type).
+        auto &info = std::get<UnionTypeInfo>(lhs_sym->type->detail);
+        std::vector<TypePtr> remaining;
+        for (auto &alt : info.alternatives) {
+          if (!types_equal(alt, matched))
+            remaining.push_back(alt);
         }
+        if (remaining.size() == 1)
+          else_narrowed_type = remaining[0];
+        else if (remaining.size() > 1)
+          else_narrowed_type = make_union_type(std::move(remaining));
       }
     }
   }
