@@ -414,7 +414,7 @@ std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
         if (constraint == TypeConstraint::None) {
           error(tp->constraint->span,
                 std::format("unknown type constraint '{}' — expected one of "
-                            "Integer, Float, Numeric",
+                            "integer, float, numeric",
                             tp->constraint->name));
         }
       }

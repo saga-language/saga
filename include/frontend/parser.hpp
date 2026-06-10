@@ -132,17 +132,21 @@ private:
   /// StructType = "struct" "{" FieldSpec { "," FieldSpec } "}"
   NodePtr parse_struct_type();
 
-  /// Generic = "|" TypeList "|"  (instantiation position — types only)
+  /// Generic = "<" TypeList ">"  (instantiation position — types only; spawn<T>)
   std::optional<GenericNode> parse_generic();
 
-  /// GenericParams = "|" TypeParam { "," TypeParam } "|"
-  /// TypeParam     = Identifier [ Identifier ]   (name [ constraint ])
+  /// GenericParams = "<" TypeParam { "," TypeParam } ">"
+  /// TypeParam     = Identifier [ Constraint ]
   ///
   /// Used in declaration position (fn / struct / interface / extern / fn-expr).
   /// Produces a GenericNode whose entries are TypeParamNodes.  In contrast,
   /// parse_generic() is used in instantiation position and produces type
   /// expressions.
   std::optional<GenericNode> parse_generic_params();
+
+  /// Consume one ">" closing a generic list, splitting a ">>" or ">=" token so
+  /// nested generics (Box<Bar<int>>) and a trailing "=" parse without a space.
+  void consume_close_angle();
 
   // ── Expression Parsing (Pratt) ───────────────────────────────────────
 
@@ -215,6 +219,14 @@ private:
   SignatureNode parse_signature();
   SignatureNode parse_interface_signature();
   ParameterNode parse_parameter();
+
+  /// In a method receiver, type arguments are type-parameter bindings, not
+  /// concrete instantiations (you cannot define a method on `array{int}`).
+  /// Returns one TypeParamNode per bare identifier appearing as a type
+  /// argument of the receiver (`Box<T>`, `array{T}`, `map{K:V}`), so the
+  /// caller can fold them into the function's generic list.
+  std::vector<NodePtr> lift_receiver_type_params(const Node &recv_type);
+
   FieldSpecNode parse_field_spec();
   EnumFieldNode parse_enum_field();
   CaseArmNode parse_case_arm();

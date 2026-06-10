@@ -167,18 +167,18 @@ bool is_numeric(const TypePtr &t) {
 
 std::string_view constraint_name(TypeConstraint c) {
   switch (c) {
-  case TypeConstraint::Integer: return "Integer";
-  case TypeConstraint::Float:   return "Float";
-  case TypeConstraint::Numeric: return "Numeric";
+  case TypeConstraint::Integer: return "integer";
+  case TypeConstraint::Float:   return "float";
+  case TypeConstraint::Numeric: return "numeric";
   case TypeConstraint::None:    return "";
   }
   return "";
 }
 
 TypeConstraint constraint_from_name(std::string_view name) {
-  if (name == "Integer") return TypeConstraint::Integer;
-  if (name == "Float")   return TypeConstraint::Float;
-  if (name == "Numeric") return TypeConstraint::Numeric;
+  if (name == "integer") return TypeConstraint::Integer;
+  if (name == "float")   return TypeConstraint::Float;
+  if (name == "numeric") return TypeConstraint::Numeric;
   return TypeConstraint::None;
 }
 

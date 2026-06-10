@@ -677,8 +677,7 @@ NodePtr Parser::parse_union_type() {
 //   "fn"             → FuncType    fn(...) T
 //   "struct"         → StructType  struct{...}
 //   basic_type kw    → IdentifierNode carrying the keyword text (int, string…)
-//   "|"              → GenericTypeApp  |Int| Task  (pipe form; → <> in 1b-2)
-//   Identifier       → plain IdentifierNode, or SelectorNode if "." follows
+//   Identifier       → IdentifierNode / SelectorNode, optional <…> application
 //
 // Containers carry their own keyword now, so a leading "[" or "{" is never a
 // type — it is always a value-expression delimiter (index / map literal /
@@ -721,34 +720,34 @@ NodePtr Parser::parse_single_type() {
     return make_node<IdentifierNode>(span_from(start), tok.literal);
   }
 
-  // ── Generic type application: |Int| Task (pipe form; → <> in 1b-2) ────
-  case Token::Kind::BitwiseOr: {
-    advance(); // consume opening "|"
-    std::vector<NodePtr> type_args;
-    type_args.push_back(parse_single_type());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      type_args.push_back(parse_single_type());
-    }
-    expect(Token::Kind::BitwiseOr); // closing "|"
-    NodePtr inner = parse_single_type();
-    return make_node<GenericTypeAppNode>(span_from(start),
-                                         std::move(type_args), std::move(inner));
-  }
-
-  // ── Named types: plain or qualified (Selector) ───────────────────────
+  // ── Named types: plain or qualified (Selector), optional <…> application ─
   case Token::Kind::Identifier: {
     Token tok = advance(); // consume the type-name identifier
-    NodePtr ident = make_node<IdentifierNode>(span_from(start), tok.literal);
+    NodePtr named = make_node<IdentifierNode>(span_from(start), tok.literal);
 
-    if (!check(Token::Kind::Dot))
-      return ident;
+    if (check(Token::Kind::Dot)) {
+      advance(); // consume "."
+      auto field_start = mark();
+      Token field_tok = expect(Token::Kind::Identifier);
+      IdentifierNode field{span_from(field_start), field_tok.literal};
+      named = make_node<SelectorNode>(span_from(start), std::move(named), field);
+    }
 
-    advance(); // consume "."
-    auto field_start = mark();
-    Token field_tok = expect(Token::Kind::Identifier);
-    IdentifierNode field{span_from(field_start), field_tok.literal};
-    return make_node<SelectorNode>(span_from(start), std::move(ident), field);
+    // Postfix generic application: Box<int>, pkg.Box<int, string>.
+    if (check(Token::Kind::LessThan)) {
+      advance(); // consume "<"
+      std::vector<NodePtr> type_args;
+      type_args.push_back(parse_type());
+      while (check(Token::Kind::Comma)) {
+        advance(); // consume ","
+        type_args.push_back(parse_type());
+      }
+      consume_close_angle(); // consume ">"
+      return make_node<GenericTypeAppNode>(
+          span_from(start), std::move(type_args), std::move(named));
+    }
+
+    return named;
   }
 
   default:
@@ -1286,13 +1285,8 @@ NodePtr Parser::parse_prefix() {
   case Token::Kind::Fn:
     return parse_func_expr();
 
-  // spawn without a generic type: "spawn { }" or "spawn workerFn"
+  // spawn (optional typed channel after the keyword: spawn<int> { })
   case Token::Kind::Spawn:
-    return parse_spawn_expr();
-
-  // "|T| spawn …" — generic spawn; BitwiseOr is the only prefix use of "|"
-  // in the grammar (FuncExpr's generic comes after "fn", not before it).
-  case Token::Kind::BitwiseOr:
     return parse_spawn_expr();
 
   // ── Anonymous struct type (prefix for struct literal) ──────────────────────
@@ -1603,13 +1597,24 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   std::optional<ReceiverNode> receiver = parse_receiver();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<GenericNode> generic = parse_generic_params();
+
+  if (receiver) {
+    auto lifted = lift_receiver_type_params(*receiver->type);
+    if (!lifted.empty()) {
+      Span gspan = generic ? generic->span : receiver->span;
+      if (generic)
+        for (auto &p : generic->type_params)
+          lifted.push_back(std::move(p));
+      generic = GenericNode{gspan, std::move(lifted)};
+    }
+  }
 
   SignatureNode sig = parse_signature();
 
@@ -1619,6 +1624,31 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   return make_node<FuncDeclNode>(
       span_from(start), is_public, /*is_extern=*/false, std::move(generic),
       std::move(receiver), std::move(name), std::move(sig), std::move(body));
+}
+
+// lift_receiver_type_params — see header. The receiver's *base* (e.g. `Box`)
+// and any concrete keyword types are left alone; only bare identifiers in type-
+// argument position become parameters. Receiver params carry no constraint.
+std::vector<NodePtr>
+Parser::lift_receiver_type_params(const Node &recv_type) {
+  std::vector<NodePtr> params;
+  auto add_if_ident = [&](const NodePtr &n) {
+    if (auto *id = std::get_if<IdentifierNode>(&n->data))
+      params.push_back(make_node<TypeParamNode>(
+          id->span, IdentifierNode{id->span, id->name},
+          std::optional<IdentifierNode>{}));
+  };
+
+  if (auto *gapp = std::get_if<GenericTypeAppNode>(&recv_type.data)) {
+    for (auto &arg : gapp->type_args)
+      add_if_ident(arg);
+  } else if (auto *arr = std::get_if<ArrayTypeNode>(&recv_type.data)) {
+    add_if_ident(arr->element_type);
+  } else if (auto *m = std::get_if<MapTypeNode>(&recv_type.data)) {
+    add_if_ident(m->key_type);
+    add_if_ident(m->value_type);
+  }
+  return params;
 }
 
 // parse_extern_decl — ExternFuncDecl = "extern" "fn" [ Generic ] Identifier
@@ -1640,11 +1670,11 @@ NodePtr Parser::parse_extern_decl() {
 
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<GenericNode> generic = parse_generic_params();
 
   SignatureNode sig = parse_signature();
 
@@ -1704,11 +1734,11 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Interface);
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<GenericNode> generic = parse_generic_params();
 
   skip_terminators();
   expect(Token::Kind::LeftBrace);
@@ -1772,22 +1802,12 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
+  std::optional<GenericNode> generic = parse_generic_params();
   std::vector<NodePtr> embeds;
-  if (check(Token::Kind::LessThan)) {
-    advance();
-    embeds.push_back(parse_embed_name());
-
-    while (check(Token::Kind::Comma)) {
-      advance();
-      embeds.push_back(parse_embed_name());
-    }
-  }
 
   skip_terminators();
   expect(Token::Kind::LeftBrace);
@@ -2137,61 +2157,50 @@ std::optional<IdentifierNode> Parser::parse_pipe() {
   return IdentifierNode{span_from(id_start), id.literal};
 }
 
-// parse_generic — Generic = "|" TypeList "|"
+// parse_generic — Generic = "<" TypeList ">"
 //
-// TypeList = SingleType { "," SingleType }
-//
-// Parses the optional type-parameter list that can appear on anonymous
-// function expressions and spawn expressions:
-//
-//   fn |T| (x T) T { ... }
-//   |String| spawn { ... }
-//
-// Note: parse_single_type() is used instead of parse_type() /
-// parse_union_type() to avoid the ambiguity where a "|" inside the list would
-// be greedily consumed as a union-type separator rather than the closing
-// delimiter. Generic type parameters are always single (non-union) types in
-// practice.
-//
-// Returns std::nullopt when the current token is not "|".
+// Instantiation position: the typed-channel list on spawn (`spawn<int>`,
+// `spawn<int, string>`). Type args may be unions — the closing ">" is
+// unambiguous so parse_type is safe. Returns std::nullopt when not at "<".
 std::optional<GenericNode> Parser::parse_generic() {
-  if (!check(Token::Kind::BitwiseOr))
+  if (!check(Token::Kind::LessThan))
     return std::nullopt;
 
   auto start = mark();
-  advance(); // consume opening "|"
+  advance(); // consume opening "<"
 
   std::vector<NodePtr> type_params;
-  type_params.push_back(parse_single_type());
+  type_params.push_back(parse_type());
 
   while (check(Token::Kind::Comma)) {
     advance(); // consume ","
-    type_params.push_back(parse_single_type());
+    type_params.push_back(parse_type());
   }
 
-  expect(Token::Kind::BitwiseOr); // consume closing "|"
+  consume_close_angle(); // consume closing ">"
 
   return GenericNode{span_from(start), std::move(type_params)};
 }
 
 // parse_generic_params — declaration-position type-parameter list.
 //
-// GenericParams = "|" TypeParam { "," TypeParam } "|"
-// TypeParam     = Identifier [ Identifier ]
+// GenericParams = "<" TypeParam { "," TypeParam } ">"
+// TypeParam     = Identifier [ Constraint ]
 //
-//   fn |T|              Identity(x T) T          — bare parameter
-//   fn |T Integer|      ShiftLeft(x T, n Int) T  — constrained parameter
-//   fn |T Integer, U|   Mix(t T, u U) U          — multiple, mixed
+//   fn Identity<T>(x T) T            — bare parameter
+//   fn ShiftLeft<T integer>(x T) T   — constrained parameter
+//   fn Mix<T integer, U>(t T, u U) U — multiple, mixed
 //
-// The constraint is a bare identifier (no path, no generic application).
-// Constraint validation — that the name resolves to one of the built-in
-// constraints (Integer | Float | Numeric) — happens in the analyzer.
+// The constraint is captured verbatim from whatever single token follows the
+// param name — an identifier (`integer`/`numeric`/an interface name) or the
+// `float` keyword (which doubles as the float type-set). The analyzer resolves
+// it to a type-set or interface bound and rejects bare concrete types.
 std::optional<GenericNode> Parser::parse_generic_params() {
-  if (!check(Token::Kind::BitwiseOr))
+  if (!check(Token::Kind::LessThan))
     return std::nullopt;
 
   auto start = mark();
-  advance(); // consume opening "|"
+  advance(); // consume opening "<"
 
   auto parse_one = [&]() -> NodePtr {
     auto tp_start = mark();
@@ -2199,7 +2208,8 @@ std::optional<GenericNode> Parser::parse_generic_params() {
     IdentifierNode name{span_from(tp_start), name_tok.literal};
 
     std::optional<IdentifierNode> constraint;
-    if (check(Token::Kind::Identifier)) {
+    if (!check(Token::Kind::Comma) && !check(Token::Kind::GreaterThan) &&
+        !check(Token::Kind::RightShift)) {
       auto c_start = mark();
       Token c_tok = advance();
       constraint = IdentifierNode{span_from(c_start), c_tok.literal};
@@ -2217,9 +2227,32 @@ std::optional<GenericNode> Parser::parse_generic_params() {
     type_params.push_back(parse_one());
   }
 
-  expect(Token::Kind::BitwiseOr); // consume closing "|"
+  consume_close_angle(); // consume closing ">"
 
   return GenericNode{span_from(start), std::move(type_params)};
+}
+
+// consume_close_angle — consume one ">" closing a generic list, splitting a
+// ">>" (right-shift) or ">=" token so nested generics (Box<Bar<int>>) and a
+// trailing "=" (x Box<int>= …) parse without requiring a space.
+void Parser::consume_close_angle() {
+  switch (current.kind) {
+  case Token::Kind::GreaterThan:
+    advance();
+    return;
+  case Token::Kind::RightShift:
+    current.kind = Token::Kind::GreaterThan;
+    current.literal = ">";
+    current.offset += 1;
+    return;
+  case Token::Kind::GreaterThanEqual:
+    current.kind = Token::Kind::Assignment;
+    current.literal = "=";
+    current.offset += 1;
+    return;
+  default:
+    expect(Token::Kind::GreaterThan); // standard "expected '>'" error
+  }
 }
 
 // parse_import_expr — ImportExpr = "import" StringLiteral
@@ -3039,20 +3072,14 @@ NodePtr Parser::parse_for_expr() {
 
 // parse_func_expr — FuncExpr = "fn" [ Generic ] Signature Block
 //
-// The three sub-parsers are already fully implemented:
-//   parse_generic()    — optional "|" TypeList "|"
-//   parse_signature()  — "(" [ ParameterList ] ")" TypeList
-//   parse_block()      — "{" { Statement | Expression } "}"
-//
 // Generic: present only for anonymous generic functions like
-//   fn |T| (x T) T { x }
-// The generic type-parameter list uses the same "|…|" delimiter as the
-// accumulator pipe, but the position (immediately after "fn", before "(")
-// is unambiguous.
+//   fn<T>(x T) T { x }
+// The list comes immediately after "fn" (there is no name to follow), so the
+// "<…>" is unambiguous.
 //
 // skip_terminators() before parse_block() allows the opening brace to be
 // on the next line after the signature:
-//   fn(x Int) Int
+//   fn(x int) int
 //   { x }
 NodePtr Parser::parse_func_expr() {
   auto start = mark();
@@ -3072,36 +3099,26 @@ NodePtr Parser::parse_func_expr() {
 // Spawn Expression Parsing
 // ============================================================================
 
-// parse_spawn_expr — SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block
-// | Identifier )
+// parse_spawn_expr — SpawnExpr = "spawn" [ Generic ] [ IdentifierPipe ]
+//                                ( Block | Identifier )
 //
-// The generic type parameter is optional and, uniquely among all compound
-// expressions, comes BEFORE the keyword:
+//   spawn { work() }           — bare spawn, block body
+//   spawn workerFn             — bare spawn, identifier body (detached call)
+//   spawn<String> { work() }   — typed-channel spawn, block body
+//   spawn |task| { task() }    — spawn with named task pipe
+//   spawn<String> |task| { … } — both generic and pipe
 //
-//   spawn { work() }          — bare spawn, block body
-//   spawn workerFn            — bare spawn, identifier body (detached call)
-//   |String| spawn { work() } — typed channel spawn, block body
-//   spawn |task| { task() }   — spawn with named task pipe, block body
-//   |String| spawn |task| { task() } — both generic and pipe
-//
-// Dispatch:
-//   Token::Kind::Spawn     → called directly (no generic)
-//   Token::Kind::BitwiseOr → called for "|T| spawn …" (generic present)
-//   Both routes call parse_generic() first; it returns nullopt when
-//   current is not "|", so the non-generic path is handled transparently.
-//
-// Body disambiguation: "{" → Block; anything else → Identifier.
-// Only these two forms appear in the grammar; a general expression body
-// is not supported (unlike if/for/switch which accept full expressions).
+// Body disambiguation: "{" → Block; anything else → Identifier. Only these two
+// forms appear in the grammar; a general expression body is not supported.
 NodePtr Parser::parse_spawn_expr() {
   auto start = mark();
 
-  // Optional generic: "|" TypeList "|"  (present only for typed channels)
-  std::optional<GenericNode> generic = parse_generic();
-
   expect(Token::Kind::Spawn);
 
-  // Optional named-task pipe: "|" Identifier "|"
+  // Optional typed-channel generic: spawn<int> { … }
+  std::optional<GenericNode> generic = parse_generic();
+
+  // Optional named-task pipe: spawn |task| { … }
   std::optional<IdentifierNode> pipe = parse_pipe();
 
   skip_terminators();

@@ -36,22 +36,22 @@ ErrorMember = "message" "=" StringLiteral
 
 /* Interface */
 
-InterfaceDecl   = "interface" [ Generic ] Identifier
+InterfaceDecl   = "interface" Identifier [ Generic ]
                   "{" InterfaceMember { terminal InterfaceMember } "}" ;
 InterfaceMember = EmbeddedName | MethodSig ;
 MethodSig       = [ public ] Identifier Signature ;
 
 /* Struct */
-StructDecl   = "struct" [ Generic ] Identifier
+StructDecl   = "struct" Identifier [ Generic ]
                "{" { StructMember terminal } "}" ;
 StructMember = EmbeddedName | [ public ] FieldSpec ;
 FieldSpec    = IdentifierList Type [ "=" Expression ] ;
 EmbeddedName = Identifier | Selector ; // embed by (qualified) type name
 
 /* Functions / methods */
-FuncDecl   = "fn" [ Generic ] ( Receiver Identifier
-                              | Identifier [ "." Identifier ] )
-             Signature [ Block ] ;
+FuncDecl   = "fn" ( Receiver Identifier
+                  | Identifier [ "." Identifier ] )
+             [ Generic ] Signature [ Block ] ;
 Receiver   = "(" ( Identifier | ignored_identifier ) Type ")" ;
 Signature  = "(" [ ParameterList ] ")" [ Type ] ; // single optional return type
 ParameterList = Parameter { "," Parameter } ;
