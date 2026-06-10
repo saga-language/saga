@@ -271,12 +271,43 @@ constexpr bool is_type_start(Token::Kind kind) {
   }
 }
 
+// True for the scalar built-in type keywords (no array/map/struct/fn). A bare
+// one of these in case-pattern position is a type-switch pattern; parse_case_arm
+// lifts it to an IdentifierNode so the analyzer's type-name detection matches.
+constexpr bool is_basic_type_keyword(Token::Kind kind) {
+  switch (kind) {
+  case Token::Kind::Bool:
+  case Token::Kind::Byte:
+  case Token::Kind::Error:
+  case Token::Kind::Float:
+  case Token::Kind::Float32:
+  case Token::Kind::Float64:
+  case Token::Kind::Int:
+  case Token::Kind::Int8:
+  case Token::Kind::Int16:
+  case Token::Kind::Int32:
+  case Token::Kind::Int64:
+  case Token::Kind::String:
+  case Token::Kind::Uint:
+  case Token::Kind::Uint8:
+  case Token::Kind::Uint16:
+  case Token::Kind::Uint32:
+  case Token::Kind::Uint64:
+  case Token::Kind::Void:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Returns true when `kind` can legally begin an expression — i.e. it is a
 // valid token in the prefix / null-denotation position of the Pratt parser.
 // Used by parse_return and parse_break to decide whether a value follows the
 // keyword on the same logical line, and by parse_prefix's error branch to
 // produce a precise message when a non-expression token is encountered.
 constexpr bool is_expression_start(Token::Kind kind) {
+  if (is_basic_type_keyword(kind)) // type-as-value (case patterns, const alias)
+    return true;
   switch (kind) {
   case Token::Kind::Identifier:
   case Token::Kind::IntegerLiteral:
@@ -1220,6 +1251,16 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
 // Compound forms that require parse_block (if / for / switch / fn / spawn /
 // map-or-block) are added in Groups 3 and 4.
 NodePtr Parser::parse_prefix() {
+  // A scalar type keyword in expression position denotes the type as a value —
+  // type-switch patterns (`case int:`) and `const Alias = int`. Lift it to an
+  // IdentifierNode (mirroring parse_single_type) so the analyzer resolves it as
+  // a type symbol, exactly as the pre-flip capitalized type identifiers did.
+  if (is_basic_type_keyword(current.kind)) {
+    auto s = mark();
+    Token t = advance();
+    return make_node<IdentifierNode>(span_from(s), t.literal);
+  }
+
   switch (current.kind) {
 
   // ── Atoms ──────────────────────────────────────────────────────────────

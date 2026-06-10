@@ -30,8 +30,12 @@ struct MR {
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
     r.analyzer->package_resolver->sgi_search_paths.push_back(
         SAGA_STD_SGI_DIR);
-    if (r.ast)
+    if (r.ast && parser.errors.errors.empty())
       r.analyzer->analyze(*r.ast);
+    else
+      r.analyzer->errors.errors.insert(r.analyzer->errors.errors.end(),
+                                       parser.errors.errors.begin(),
+                                       parser.errors.errors.end());
     return r;
   }
 
@@ -63,17 +67,25 @@ struct MCG {
     Parser parser(r.fileset);
     r.ast = parser.parse();
     EXPECT_NE(r.ast, nullptr);
-    EXPECT_TRUE(parser.errors.errors.empty());
+    EXPECT_TRUE(parser.errors.errors.empty())
+        << (parser.errors.errors.empty() ? "" : parser.errors.errors[0].message);
 
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
     r.analyzer->is_stdlib = true;
     r.analyzer->package_resolver->sgi_search_paths.push_back(
         SAGA_STD_SGI_DIR);
-    r.analyzer->analyze(*r.ast);
-    EXPECT_TRUE(r.analyzer->errors.errors.empty());
-
+    // Don't analyze a parse-error AST nor codegen an analyze-error one — either
+    // can segfault, aborting the whole binary and masking later tests.
     r.codegen = std::make_unique<CodeGen>("test", *r.analyzer);
-    r.codegen->emit(*r.ast);
+    if (r.ast && parser.errors.errors.empty()) {
+      r.analyzer->analyze(*r.ast);
+      EXPECT_TRUE(r.analyzer->errors.errors.empty())
+          << (r.analyzer->errors.errors.empty()
+                  ? ""
+                  : r.analyzer->errors.errors[0].message);
+      if (r.analyzer->errors.errors.empty())
+        r.codegen->emit(*r.ast);
+    }
     return r;
   }
 

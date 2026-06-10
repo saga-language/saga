@@ -25,8 +25,12 @@ struct GR {
     Parser parser(r.fileset);
     r.ast = parser.parse();
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
-    if (r.ast)
+    if (r.ast && parser.errors.errors.empty())
       r.analyzer->analyze(*r.ast);
+    else
+      r.analyzer->errors.errors.insert(r.analyzer->errors.errors.end(),
+                                       parser.errors.errors.begin(),
+                                       parser.errors.errors.end());
     return r;
   }
 
@@ -43,23 +47,23 @@ struct GR {
 
 TEST(Generics, SingleTypeParamFunc) {
   auto r = GR::from(
-      "fn |T| Identity(x T) T { x }\n"
-      "fn f() Int { Identity(42) }");
+      "fn Identity<T>(x T) T { x }\n"
+      "fn f() int { Identity(42) }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, TwoTypeParamFunc) {
   auto r = GR::from(
-      "fn |T, U| Pair(a T, b U) T { a }\n"
-      "fn f() Int { Pair(1, \"hello\") }");
+      "fn Pair<T, U>(a T, b U) T { a }\n"
+      "fn f() int { Pair(1, \"hello\") }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, GenericFuncReturnTypeInferred) {
   // Identity(42) should return Int, which is assigned to an Int variable.
   auto r = GR::from(
-      "fn |T| Identity(x T) T { x }\n"
-      "fn f() Int {\n"
+      "fn Identity<T>(x T) T { x }\n"
+      "fn f() int {\n"
       "  result := Identity(42)\n"
       "  result\n"
       "}");
@@ -68,13 +72,13 @@ TEST(Generics, GenericFuncReturnTypeInferred) {
 
 TEST(Generics, GenericFuncTypeMismatchInBody) {
   // The generic body uses T correctly.
-  auto r = GR::from("fn |T| Identity(x T) T { x }");
+  auto r = GR::from("fn Identity<T>(x T) T { x }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, GenericFuncDefinitionOnly) {
   // Just declaring a generic function should not error.
-  auto r = GR::from("fn |T| Wrap(x T) T[] { [x] }");
+  auto r = GR::from("fn Wrap<T>(x T) array{T} { [x] }");
   EXPECT_TRUE(r.ok());
 }
 
@@ -83,13 +87,13 @@ TEST(Generics, GenericFuncDefinitionOnly) {
 // ===========================================================================
 
 TEST(Generics, GenericStructDecl) {
-  auto r = GR::from("struct |T| Box { value T }");
+  auto r = GR::from("struct Box<T> { value T }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, GenericStructInstantiationInferred) {
   auto r = GR::from(
-      "struct |T| Box { value T }\n"
+      "struct Box<T> { value T }\n"
       "fn f() { Box{value: 42} }");
   EXPECT_TRUE(r.ok());
 }
@@ -97,8 +101,8 @@ TEST(Generics, GenericStructInstantiationInferred) {
 TEST(Generics, GenericStructFieldAccess) {
   // After instantiation, the field type should be concrete.
   auto r = GR::from(
-      "struct |T| Box { value T }\n"
-      "fn f() Int {\n"
+      "struct Box<T> { value T }\n"
+      "fn f() int {\n"
       "  b := Box{value: 42}\n"
       "  b.value\n"
       "}");
@@ -107,8 +111,8 @@ TEST(Generics, GenericStructFieldAccess) {
 
 TEST(Generics, GenericStructStringInferred) {
   auto r = GR::from(
-      "struct |T| Box { value T }\n"
-      "fn f() String {\n"
+      "struct Box<T> { value T }\n"
+      "fn f() string {\n"
       "  b := Box{value: \"hello\"}\n"
       "  b.value\n"
       "}");
@@ -117,7 +121,7 @@ TEST(Generics, GenericStructStringInferred) {
 
 TEST(Generics, GenericStructMultipleTypeParams) {
   auto r = GR::from(
-      "struct |K, V| Pair {\n"
+      "struct Pair<K, V> {\n"
       "  key K\n"
       "  value V\n"
       "}\n"
@@ -134,7 +138,7 @@ TEST(Generics, GenericStructMultipleTypeParams) {
 TEST(Generics, GenericFuncExpr) {
   auto r = GR::from(
       "fn f() {\n"
-      "  id := fn |T| (x T) T { x }\n"
+      "  id := fn<T>(x T) T { x }\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -145,9 +149,9 @@ TEST(Generics, GenericFuncExpr) {
 
 TEST(Generics, GenericInterfaceDecl) {
   auto r = GR::from(
-      "interface |T| Container {\n"
+      "interface Container<T> {\n"
       "  Get() T\n"
-      "  Set(val T) Void\n"
+      "  Set(val T) void\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -157,14 +161,14 @@ TEST(Generics, GenericInterfaceDecl) {
 // ===========================================================================
 
 TEST(Generics, TypeParamInArrayReturn) {
-  auto r = GR::from("fn |T| Wrap(x T) T[] { [x] }");
+  auto r = GR::from("fn Wrap<T>(x T) array{T} { [x] }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, TypeParamInMapReturn) {
   // Ensure map types with type params resolve.
   auto r = GR::from(
-      "fn |K, V| MakePair(k K, v V) {K: V} {\n"
+      "fn MakePair<K, V>(k K, v V) map{K: V} {\n"
       "  {k: v}\n"
       "}");
   EXPECT_TRUE(r.ok());
@@ -177,7 +181,7 @@ TEST(Generics, TypeParamInMapReturn) {
 TEST(Generics, InferenceConflict) {
   // T is used for two params that get different types.
   auto r = GR::from(
-      "fn |T| Same(a T, b T) T { a }\n"
+      "fn Same<T>(a T, b T) T { a }\n"
       "fn f() { Same(1, \"two\") }");
   EXPECT_TRUE(r.has_err("cannot infer"));
 }
@@ -214,7 +218,7 @@ TEST(Generics, HasTypeParamsNull) {
 TEST(Generics, SpawnWithGeneric) {
   auto r = GR::from(
       "fn f() {\n"
-      "  |String| spawn |task| { task }\n"
+      "  spawn<string> |task| { task }\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -228,8 +232,8 @@ TEST(Generics, StandaloneReceiverMethodReusingStructParamIsOk) {
   // Standalone receiver methods may reuse the struct's type-param name in
   // their own |...| clause — that's the binding point for the receiver's T.
   auto r = GR::from(
-      "struct |T| Box { value T }\n"
-      "pub fn |T| (b |T| Box) Get() T { b.value }");
+      "struct Box<T> { value T }\n"
+      "pub fn (b Box<T>) Get() T { b.value }");
   EXPECT_TRUE(r.ok());
 }
 
@@ -239,9 +243,9 @@ TEST(Generics, StandaloneReceiverMethodReusingStructParamIsOk) {
 // produce undefined symbols at link time across packages.
 TEST(Generics, InstantiatingGenericStructPreservesMethodOrigin) {
   auto r = GR::from(
-      "struct |T| Box { value T }\n"
-      "pub fn |T| (b |T| Box) Get() T { b.value }\n"
-      "pub fn Main() Void { b := Box{value: 1}; v := b.Get() }");
+      "struct Box<T> { value T }\n"
+      "pub fn (b Box<T>) Get() T { b.value }\n"
+      "pub fn Main() void { b := Box{value: 1}\n  v := b.Get() }");
   ASSERT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
 
   // Find the Box struct type in the package scope and confirm every
@@ -268,71 +272,71 @@ TEST(Generics, InstantiatingGenericStructPreservesMethodOrigin) {
 
 TEST(Generics, BoundedGenericIntegerAcceptsInt) {
   auto r = GR::from(
-      "fn |T Integer| Id(x T) T { x }\n"
-      "fn f() Int { Id(42) }");
+      "fn Id<T integer>(x T) T { x }\n"
+      "fn f() int { Id(42) }");
   EXPECT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
 }
 
 TEST(Generics, BoundedGenericIntegerRejectsString) {
   auto r = GR::from(
-      "fn |T Integer| Id(x T) T { x }\n"
+      "fn Id<T integer>(x T) T { x }\n"
       "fn f() { Id(\"hi\") }");
-  EXPECT_TRUE(r.has_err("Integer"));
+  EXPECT_TRUE(r.has_err("integer"));
 }
 
 TEST(Generics, BoundedGenericFloatRejectsInt) {
   auto r = GR::from(
-      "fn |T Float| Id(x T) T { x }\n"
+      "fn Id<T float>(x T) T { x }\n"
       "fn f() { Id(42) }");
-  EXPECT_TRUE(r.has_err("Float"));
+  EXPECT_TRUE(r.has_err("float"));
 }
 
 TEST(Generics, BoundedGenericFloatAcceptsFloat) {
   auto r = GR::from(
-      "fn |T Float| Id(x T) T { x }\n"
-      "fn f() Float { Id(1.5) }");
+      "fn Id<T float>(x T) T { x }\n"
+      "fn f() float { Id(1.5) }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, BoundedGenericNumericAcceptsBoth) {
   auto r = GR::from(
-      "fn |T Numeric| Add(a T, b T) T { a + b }\n"
-      "fn f() Int { Add(1, 2) }\n"
-      "fn g() Float { Add(1.5, 2.5) }");
+      "fn Add<T numeric>(a T, b T) T { a + b }\n"
+      "fn f() int { Add(1, 2) }\n"
+      "fn g() float { Add(1.5, 2.5) }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(Generics, BoundedGenericNumericRejectsString) {
   auto r = GR::from(
-      "fn |T Numeric| Add(a T, b T) T { a + b }\n"
+      "fn Add<T numeric>(a T, b T) T { a + b }\n"
       "fn f() { Add(\"a\", \"b\") }");
-  EXPECT_TRUE(r.has_err("Numeric"));
+  EXPECT_TRUE(r.has_err("numeric"));
 }
 
 TEST(Generics, BoundedGenericUnknownConstraintRejected) {
-  auto r = GR::from("fn |T Bogus| Id(x T) T { x }");
+  auto r = GR::from("fn Id<T Bogus>(x T) T { x }");
   EXPECT_TRUE(r.has_err("Bogus"));
 }
 
 TEST(Generics, BoundedGenericArithmeticOperatorsInsideBody) {
   // + must work on a T Numeric without further declaration.
   auto r = GR::from(
-      "fn |T Numeric| Triple(x T) T { x + x + x }\n"
-      "fn f() Int { Triple(7) }");
+      "fn Triple<T numeric>(x T) T { x + x + x }\n"
+      "fn f() int { Triple(7) }");
   EXPECT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
 }
 
 TEST(Generics, BoundedGenericBitwiseOnlyOnInteger) {
   // Bitwise & is valid on Integer.
   auto r_ok = GR::from(
-      "fn |T Integer| Mask(x T, m T) T { x & m }\n"
-      "fn f() Int { Mask(7, 3) }");
+      "fn Mask<T integer>(x T, m T) T { x & m }\n"
+      "fn f() int { Mask(7, 3) }");
   EXPECT_TRUE(r_ok.ok());
 
   // Float doesn't support bitwise — the bad body surfaces when the function
   // is instantiated against a concrete Float.
   auto r_bad = GR::from(
-      "fn |T Float| Mask(x T, m T) T { x & m }\n"
+      "fn Mask<T float>(x T, m T) T { x & m }\n"
       "fn f() { Mask(1.5, 2.5) }");
   EXPECT_FALSE(r_bad.ok());
 }

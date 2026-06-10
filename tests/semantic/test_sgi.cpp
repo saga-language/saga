@@ -55,7 +55,7 @@ TEST(Sgi, TypeToSgiFuncVoid) {
 
 TEST(Sgi, TypeToSgiFuncVariadic) {
   auto t = make_func_type({make_string_type()}, {make_void_type()}, true);
-  EXPECT_EQ(type_to_sgi(t), "fn(...String) Void");
+  EXPECT_EQ(type_to_sgi(t), "fn(...string) Void");
 }
 
 TEST(Sgi, TypeToSgiUnion) {

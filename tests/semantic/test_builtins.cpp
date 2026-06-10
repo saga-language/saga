@@ -113,29 +113,29 @@ TEST(Builtins, RegisterPopulatesScope) {
   register_builtins(scope, types);
 
   // Primitive type names.
-  EXPECT_TRUE(scope->lookup("Int").has_value());
-  EXPECT_TRUE(scope->lookup("Float").has_value());
-  EXPECT_TRUE(scope->lookup("Bool").has_value());
-  EXPECT_TRUE(scope->lookup("String").has_value());
-  EXPECT_TRUE(scope->lookup("Void").has_value());
-  EXPECT_TRUE(scope->lookup("Byte").has_value());
+  EXPECT_TRUE(scope->lookup("int").has_value());
+  EXPECT_TRUE(scope->lookup("float").has_value());
+  EXPECT_TRUE(scope->lookup("bool").has_value());
+  EXPECT_TRUE(scope->lookup("string").has_value());
+  EXPECT_TRUE(scope->lookup("void").has_value());
+  EXPECT_TRUE(scope->lookup("byte").has_value());
 
   // Sized integers.
-  EXPECT_TRUE(scope->lookup("Int8").has_value());
-  EXPECT_TRUE(scope->lookup("Int16").has_value());
-  EXPECT_TRUE(scope->lookup("Int32").has_value());
-  EXPECT_TRUE(scope->lookup("Int64").has_value());
-  EXPECT_TRUE(scope->lookup("Uint8").has_value());
-  EXPECT_TRUE(scope->lookup("Uint16").has_value());
-  EXPECT_TRUE(scope->lookup("Uint32").has_value());
-  EXPECT_TRUE(scope->lookup("Uint64").has_value());
+  EXPECT_TRUE(scope->lookup("int8").has_value());
+  EXPECT_TRUE(scope->lookup("int16").has_value());
+  EXPECT_TRUE(scope->lookup("int32").has_value());
+  EXPECT_TRUE(scope->lookup("int64").has_value());
+  EXPECT_TRUE(scope->lookup("uint8").has_value());
+  EXPECT_TRUE(scope->lookup("uint16").has_value());
+  EXPECT_TRUE(scope->lookup("uint32").has_value());
+  EXPECT_TRUE(scope->lookup("uint64").has_value());
 
   // Sized floats.
-  EXPECT_TRUE(scope->lookup("Float32").has_value());
-  EXPECT_TRUE(scope->lookup("Float64").has_value());
+  EXPECT_TRUE(scope->lookup("float32").has_value());
+  EXPECT_TRUE(scope->lookup("float64").has_value());
 
   // Internal interfaces.
-  EXPECT_TRUE(scope->lookup("Error").has_value());
+  EXPECT_TRUE(scope->lookup("error").has_value());
   EXPECT_TRUE(scope->lookup("Iterable").has_value());
 
   // Internal structs.
@@ -160,7 +160,7 @@ TEST(Builtins, TypeSymbolKinds) {
   BuiltinTypes types;
   register_builtins(scope, types);
 
-  auto int_sym = scope->lookup("Int");
+  auto int_sym = scope->lookup("int");
   ASSERT_TRUE(int_sym.has_value());
   EXPECT_EQ(int_sym->kind, SymbolKind::Type);
   EXPECT_TRUE(int_sym->is_builtin);
@@ -170,7 +170,7 @@ TEST(Builtins, TypeSymbolKinds) {
   EXPECT_EQ(true_sym->kind, SymbolKind::Constant);
   EXPECT_TRUE(true_sym->is_builtin);
 
-  auto error_sym = scope->lookup("Error");
+  auto error_sym = scope->lookup("error");
   ASSERT_TRUE(error_sym.has_value());
   EXPECT_EQ(error_sym->kind, SymbolKind::Type);
   EXPECT_EQ(error_sym->type->kind, TypeKind::Interface);

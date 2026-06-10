@@ -31,8 +31,12 @@ struct Diag {
     resolver->sgi_search_paths.push_back(SAGA_STD_SGI_DIR);
     r.analyzer = std::make_unique<Analyzer>(r.fileset, resolver);
     r.analyzer->is_stdlib = true;
-    if (r.ast)
+    if (r.ast && parser.errors.errors.empty())
       r.analyzer->analyze(*r.ast);
+    else
+      r.analyzer->errors.errors.insert(r.analyzer->errors.errors.end(),
+                                       parser.errors.errors.begin(),
+                                       parser.errors.errors.end());
     return r;
   }
 
@@ -68,7 +72,7 @@ TEST(ProtocolDiag, StringKeyOk) {
 
 TEST(ProtocolDiag, StructWithoutHashRejectedAsMapKey) {
   auto r = Diag::from(R"(
-    struct Foo { x Int }
+    struct Foo { x int }
 
     fn f() {
       foo := Foo{x: 1}
@@ -83,9 +87,9 @@ TEST(ProtocolDiag, StructWithoutHashRejectedInMapTypePosition) {
   // Map appears as a parameter type: the use site is the type position,
   // not a literal.
   auto r = Diag::from(R"(
-    struct Foo { x Int }
+    struct Foo { x int }
 
-    fn f(m {Foo: Int}) Int { 0 }
+    fn f(m map{Foo: int}) int { 0 }
   )");
   EXPECT_TRUE(r.has("does not satisfy Hashable"));
 }
@@ -96,15 +100,15 @@ TEST(ProtocolDiag, FloatKeyEmitsNanAwareDiagnostic) {
       m := {3.14: "pi"}
     }
   )");
-  EXPECT_TRUE(r.has("Float is not Hashable"));
+  EXPECT_TRUE(r.has("float is not Hashable"));
   EXPECT_TRUE(r.has("NaN"));
 }
 
 TEST(ProtocolDiag, FloatKeyInTypePositionEmitsNanDiagnostic) {
   auto r = Diag::from(R"(
-    fn f(m {Float: String}) Int { 0 }
+    fn f(m map{float: string}) int { 0 }
   )");
-  EXPECT_TRUE(r.has("Float is not Hashable"));
+  EXPECT_TRUE(r.has("float is not Hashable"));
 }
 
 TEST(ProtocolDiag, StructWithHashAndEqualsAcceptedAsMapKey) {
@@ -114,11 +118,11 @@ TEST(ProtocolDiag, StructWithHashAndEqualsAcceptedAsMapKey) {
   // which see the struct symbol mid-resolution.
   auto r = Diag::from(R"(
     struct UserId {
-      raw Int
+      raw int
     }
 
-    pub fn (u UserId) Hash() Int64 { u.raw.Hash() }
-    pub fn (u UserId) Equals(other UserId) Bool { u.raw == other.raw }
+    pub fn (u UserId) Hash() int64 { u.raw.Hash() }
+    pub fn (u UserId) Equals(other UserId) bool { u.raw == other.raw }
 
     fn f() {
       u := UserId{raw: 1}
@@ -134,7 +138,7 @@ TEST(ProtocolDiag, StructWithHashAndEqualsAcceptedAsMapKey) {
 
 TEST(ProtocolDiag, IntInterpolationOk) {
   auto r = Diag::from(R"(
-    fn f() String {
+    fn f() string {
       x := 42
       "{x}"
     }
@@ -144,9 +148,9 @@ TEST(ProtocolDiag, IntInterpolationOk) {
 
 TEST(ProtocolDiag, StructWithoutStringRejectedInInterpolation) {
   auto r = Diag::from(R"(
-    struct Bar { x Int }
+    struct Bar { x int }
 
-    fn f() String {
+    fn f() string {
       b := Bar{x: 1}
       "{b}"
     }
@@ -158,9 +162,9 @@ TEST(ProtocolDiag, StructWithoutStringRejectedInInterpolation) {
 TEST(ProtocolDiag, ArrayOfNonStringableRejectedInInterpolation) {
   // Recursive descent: [Bar] is "stringable" iff Bar is.
   auto r = Diag::from(R"(
-    struct Bar { x Int }
+    struct Bar { x int }
 
-    fn f() String {
+    fn f() string {
       a := [Bar{x: 1}, Bar{x: 2}]
       "{a}"
     }
@@ -171,9 +175,9 @@ TEST(ProtocolDiag, ArrayOfNonStringableRejectedInInterpolation) {
 TEST(ProtocolDiag, ArrayStringCallOnNonStringableElementRejected) {
   // `.String()` on an Array<Bar> requires Bar : Stringable.
   auto r = Diag::from(R"(
-    struct Bar { x Int }
+    struct Bar { x int }
 
-    fn f() String {
+    fn f() string {
       a := [Bar{x: 1}, Bar{x: 2}]
       a.String()
     }
@@ -186,9 +190,9 @@ TEST(ProtocolDiag, NestedArrayStringRecursiveCheck) {
   // Phase 3 rule recurses through Array/Map so the inner Bar is required to
   // satisfy Stringable.
   auto r = Diag::from(R"(
-    struct Bar { x Int }
+    struct Bar { x int }
 
-    fn f() String {
+    fn f() string {
       a := [[Bar{x: 1}], [Bar{x: 2}]]
       a.String()
     }
@@ -198,9 +202,9 @@ TEST(ProtocolDiag, NestedArrayStringRecursiveCheck) {
 
 TEST(ProtocolDiag, MapStringCallOnNonStringableValueRejected) {
   auto r = Diag::from(R"(
-    struct Bar { x Int }
+    struct Bar { x int }
 
-    fn f() String {
+    fn f() string {
       b := Bar{x: 1}
       m := {1: b}
       m.String()
@@ -212,12 +216,12 @@ TEST(ProtocolDiag, MapStringCallOnNonStringableValueRejected) {
 TEST(ProtocolDiag, StructWithStringAcceptedInInterpolation) {
   auto r = Diag::from(R"(
     struct Pretty {
-      x Int
+      x int
     }
 
-    pub fn (p Pretty) String() String { "P" }
+    pub fn (p Pretty) String() string { "P" }
 
-    fn f() String {
+    fn f() string {
       p := Pretty{x: 1}
       "{p}"
     }
