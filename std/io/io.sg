@@ -1,6 +1,6 @@
 import "os"
 
-pub fn Println(s String) Void {
+pub fn Println(s string) void {
   os.Stdout.Write(s)
   os.Stdout.Write("\n")
 }

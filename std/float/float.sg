@@ -1,22 +1,22 @@
 // Package float provides methods on the Float intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-extern fn saga_float_to_string(f Float) String
-extern fn saga_float_format(f Float, fmt String) String
+extern fn saga_float_to_string(f float) string
+extern fn saga_float_format(f float, fmt string) string
 
-pub fn (f Float) String() String {
+pub fn (f float) String() string {
   saga_float_to_string(f)
 }
 
-pub fn (f Float) Int() Int {
+pub fn (f float) Int() int {
   intrinsic_fptosi(f)
 }
 
-pub fn (f Float) Equals(other Float) Bool {
+pub fn (f float) Equals(other float) bool {
   f == other
 }
 
-pub fn (f Float) Compare(other Float) Comparison {
+pub fn (f float) Compare(other float) Comparison {
   if f < other {
     Comparison.Less
   } else {
@@ -25,15 +25,15 @@ pub fn (f Float) Compare(other Float) Comparison {
   }
 }
 
-pub fn (f Float) Format(fmt String) String {
+pub fn (f float) Format(fmt string) string {
   saga_float_format(f, fmt)
 }
 
-pub fn (f Float) Float32() Float32 {
+pub fn (f float) Float32() float32 {
   intrinsic_fptrunc(f)
 }
 
-pub fn (f Float) Float64() Float64 {
+pub fn (f float) Float64() float64 {
   intrinsic_fpext(f)
 }
 
@@ -43,17 +43,17 @@ pub fn (f Float) Float64() Float64 {
 // only carries a double entry point and Saga's Float is the platform
 // word-size float (f64 on 64-bit targets).
 
-pub fn (f Float32) String() String { f.Float().String() }
+pub fn (f float32) String() string { f.Float().String() }
 
-pub fn (f Float32) Int() Int {
+pub fn (f float32) Int() int {
   intrinsic_fptosi(intrinsic_fpext(f))
 }
 
-pub fn (f Float32) Equals(other Float32) Bool {
+pub fn (f float32) Equals(other float32) bool {
   f == other
 }
 
-pub fn (f Float32) Compare(other Float32) Comparison {
+pub fn (f float32) Compare(other float32) Comparison {
   if f < other {
     Comparison.Less
   } else {
@@ -62,25 +62,25 @@ pub fn (f Float32) Compare(other Float32) Comparison {
   }
 }
 
-pub fn (f Float32) Format(fmt String) String { f.Float().Format(fmt) }
+pub fn (f float32) Format(fmt string) string { f.Float().Format(fmt) }
 
-pub fn (f Float32) Float() Float     { intrinsic_fpext(f) }
-pub fn (f Float32) Float32() Float32 { f }
-pub fn (f Float32) Float64() Float64 { intrinsic_fpext(f) }
+pub fn (f float32) Float() float     { intrinsic_fpext(f) }
+pub fn (f float32) Float32() float32 { f }
+pub fn (f float32) Float64() float64 { intrinsic_fpext(f) }
 
 // --- Float64 ---
 
-pub fn (f Float64) String() String { f.Float().String() }
+pub fn (f float64) String() string { f.Float().String() }
 
-pub fn (f Float64) Int() Int {
+pub fn (f float64) Int() int {
   intrinsic_fptosi(f)
 }
 
-pub fn (f Float64) Equals(other Float64) Bool {
+pub fn (f float64) Equals(other float64) bool {
   f == other
 }
 
-pub fn (f Float64) Compare(other Float64) Comparison {
+pub fn (f float64) Compare(other float64) Comparison {
   if f < other {
     Comparison.Less
   } else {
@@ -89,8 +89,8 @@ pub fn (f Float64) Compare(other Float64) Comparison {
   }
 }
 
-pub fn (f Float64) Format(fmt String) String { f.Float().Format(fmt) }
+pub fn (f float64) Format(fmt string) string { f.Float().Format(fmt) }
 
-pub fn (f Float64) Float() Float     { intrinsic_fpext(f) }
-pub fn (f Float64) Float32() Float32 { intrinsic_fptrunc(f) }
-pub fn (f Float64) Float64() Float64 { f }
+pub fn (f float64) Float() float     { intrinsic_fpext(f) }
+pub fn (f float64) Float32() float32 { intrinsic_fptrunc(f) }
+pub fn (f float64) Float64() float64 { f }

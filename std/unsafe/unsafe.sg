@@ -19,6 +19,6 @@
 // The returned address is only valid for the lifetime of the value. If the
 // value is garbage collected or its backing storage is reallocated (e.g. by
 // appending to a Byte[]), the address becomes invalid.
-pub fn Ptr(value String | Byte[]) Int {
+pub fn Ptr(value string | array{byte}) int {
   intrinsic_ptr(value)
 }

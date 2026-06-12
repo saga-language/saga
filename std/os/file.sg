@@ -2,9 +2,9 @@ import "sys"
 import "unsafe"
 
 pub struct File {
-  fd Int
+  fd int
 }
 
-pub fn (f File) Write(s String) Void {
+pub fn (f File) Write(s string) void {
   sys.Call(sys.Number.Write, f.fd, unsafe.Ptr(s), s.Size())
 }

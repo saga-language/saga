@@ -1,49 +1,49 @@
 // Package array provides methods on the Array intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-extern fn |T| saga_array_size(a T[]) Int
-extern fn |T| saga_array_push(a T[], elem T) Void
-extern fn |T| saga_array_at(a T[], index Int) T
-extern fn |T| saga_array_insert(a T[], elem T, index Int) Void
-extern fn |T| saga_array_pop(a T[]) T
-extern fn |T| saga_array_set(a T[], index Int, elem T) Void
-extern fn |T| saga_array_equals(a T[], other T[]) Bool
-extern fn |T| saga_array_find(a T[], elem T) Int | Error
+extern fn saga_array_size<T>(a array{T}) int
+extern fn saga_array_push<T>(a array{T}, elem T) void
+extern fn saga_array_at<T>(a array{T}, index int) T
+extern fn saga_array_insert<T>(a array{T}, elem T, index int) void
+extern fn saga_array_pop<T>(a array{T}) T
+extern fn saga_array_set<T>(a array{T}, index int, elem T) void
+extern fn saga_array_equals<T>(a array{T}, other array{T}) bool
+extern fn saga_array_find<T>(a array{T}, elem T) int | error
 
-pub fn |T| (a T[]) Size() Int {
+pub fn (a array{T}) Size() int {
   saga_array_size(a)
 }
 
-pub fn |T| (a T[]) Push(elem T) T {
+pub fn (a array{T}) Push(elem T) T {
   saga_array_push(a, elem)
   elem
 }
 
-pub fn |T| (a T[]) At(index Int) T {
+pub fn (a array{T}) At(index int) T {
   saga_array_at(a, index)
 }
 
-pub fn |T| (a T[]) Insert(elem T, index Int) Void {
+pub fn (a array{T}) Insert(elem T, index int) void {
   saga_array_insert(a, elem, index)
 }
 
-pub fn |T| (a T[]) Pop() T {
+pub fn (a array{T}) Pop() T {
   saga_array_pop(a)
 }
 
-pub fn |T| (a T[]) Set(index Int, elem T) Void {
+pub fn (a array{T}) Set(index int, elem T) void {
   saga_array_set(a, index, elem)
 }
 
-pub fn |T| (a T[]) Find(elem T) Int | Error {
+pub fn (a array{T}) Find(elem T) int | error {
   saga_array_find(a, elem)
 }
 
-pub fn |T| (a T[]) Equals(other T[]) Bool {
+pub fn (a array{T}) Equals(other array{T}) bool {
   saga_array_equals(a, other)
 }
 
-pub fn |T| (a T[]) String() String {
+pub fn (a array{T}) String() string {
   if a.Size() == 0 { return "[]" }
   s := "["
   first := true

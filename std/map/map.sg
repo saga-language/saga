@@ -1,43 +1,43 @@
 // Package map provides methods on the Map intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-extern fn |K, V| saga_map_size(m {K:V}) Int
-extern fn |K, V| saga_map_set(m {K:V}, key K, value V) Void
-extern fn |K, V| saga_map_get(m {K:V}, key K) V
-extern fn |K, V| saga_map_has(m {K:V}, key K) Bool
-extern fn |K, V| saga_map_remove(m {K:V}, key K) Void
-extern fn |K, V| saga_map_keys(m {K:V}) K[]
-extern fn |K, V| saga_map_equals(m {K:V}, other {K:V}) Bool
+extern fn saga_map_size<K, V>(m map{K: V}) int
+extern fn saga_map_set<K, V>(m map{K: V}, key K, value V) void
+extern fn saga_map_get<K, V>(m map{K: V}, key K) V
+extern fn saga_map_has<K, V>(m map{K: V}, key K) bool
+extern fn saga_map_remove<K, V>(m map{K: V}, key K) void
+extern fn saga_map_keys<K, V>(m map{K: V}) array{K}
+extern fn saga_map_equals<K, V>(m map{K: V}, other map{K: V}) bool
 
-pub fn |K, V| (m {K:V}) Size() Int {
+pub fn (m map{K: V}) Size() int {
   saga_map_size(m)
 }
 
-pub fn |K, V| (m {K:V}) Set(key K, value V) Void {
+pub fn (m map{K: V}) Set(key K, value V) void {
   saga_map_set(m, key, value)
 }
 
-pub fn |K, V| (m {K:V}) At(key K) V {
+pub fn (m map{K: V}) At(key K) V {
   saga_map_get(m, key)
 }
 
-pub fn |K, V| (m {K:V}) Key?(key K) Bool {
+pub fn (m map{K: V}) Key?(key K) bool {
   saga_map_has(m, key)
 }
 
-pub fn |K, V| (m {K:V}) Remove(key K) Void {
+pub fn (m map{K: V}) Remove(key K) void {
   saga_map_remove(m, key)
 }
 
-pub fn |K, V| (m {K:V}) Keys() K[] {
+pub fn (m map{K: V}) Keys() array{K} {
   saga_map_keys(m)
 }
 
-pub fn |K, V| (m {K:V}) Equals(other {K:V}) Bool {
+pub fn (m map{K: V}) Equals(other map{K: V}) bool {
   saga_map_equals(m, other)
 }
 
-pub fn |K, V| (m {K:V}) String() String {
+pub fn (m map{K: V}) String() string {
   if m.Size() == 0 { return "\{}" }
   s := "\{"
   first := true
