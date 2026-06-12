@@ -2,8 +2,8 @@
 // (docs/language.md:1224)
 import "std/io"
 
-pub fn Main() Void {
-  for i Int; i < 3; i += 1 {
+pub fn Main() void {
+  for i int; i < 3; i += 1 {
     io.Println(i.String())
   }
 }

@@ -4,22 +4,22 @@
 import "std/io"
 
 interface Reader {
-  Read() String
+  Read() string
 }
 interface Writer {
-  Write(s String) Void
+  Write(s string) void
 }
 
 const ReadWriter = Reader | Writer
 
 struct ReadOnly {}
 
-pub fn (r ReadOnly) Read() String { "data" }
+pub fn (r ReadOnly) Read() string { "data" }
 
-fn UseRW(rw ReadWriter) Void {
+fn UseRW(rw ReadWriter) void {
   io.Println(rw.Read())
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   UseRW(ReadOnly{})
 }

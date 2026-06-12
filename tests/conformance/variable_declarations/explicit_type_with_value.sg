@@ -3,7 +3,7 @@
 // (see docs/language.md).
 import "std/io"
 
-pub fn Main() Void {
-  x Int = 5
+pub fn Main() void {
+  x int = 5
   io.Println(x.String())
 }

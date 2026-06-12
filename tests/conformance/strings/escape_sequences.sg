@@ -2,7 +2,7 @@
 // (docs/language.md:684-685)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println("a\tb")
   io.Println("a\nb")
   io.Println("c\\d")

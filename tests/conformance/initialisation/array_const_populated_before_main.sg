@@ -4,6 +4,6 @@ import "std/io"
 
 const Primes = [2, 3, 5, 7]
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Primes.Size().String())
 }

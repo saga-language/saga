@@ -2,11 +2,11 @@
 // (docs/language.md:292-293)
 import "std/io"
 
-pub fn Main() Void {
-  b Bool = true
-  f Float = 3.14
-  i Int = 42
-  s String = "hi"
+pub fn Main() void {
+  b bool = true
+  f float = 3.14
+  i int = 42
+  s string = "hi"
 
   io.Println(b.String())
   io.Println(f.String())

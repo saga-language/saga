@@ -2,7 +2,7 @@
 // (docs/language.md:601, "arr1 := [] // invalid, no inferrable type")
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   arr := []
   io.Println("unreachable")
 }

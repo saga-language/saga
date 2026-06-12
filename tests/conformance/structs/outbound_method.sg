@@ -3,14 +3,14 @@
 import "std/io"
 
 struct Point {
-  x, y Int
+  x, y int
 }
 
 fn (p Point) Add(other Point) Point {
   Point{x: p.x + other.x, y: p.y + other.y}
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   a := Point{x: 1, y: 2}
   b := Point{x: 3, y: 4}
   c := a.Add(b)

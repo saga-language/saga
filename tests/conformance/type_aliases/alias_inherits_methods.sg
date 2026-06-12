@@ -2,9 +2,9 @@
 // (docs/language.md:559)
 import "std/io"
 
-const UserID = Int
+const UserID = int
 
-pub fn Main() Void {
+pub fn Main() void {
   uid UserID = 42
   io.Println(uid.String())
 }

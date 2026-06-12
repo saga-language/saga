@@ -2,7 +2,7 @@
 // or underscore. (docs/language.md:21)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   foo := 1
   io.Println(foo.String())
 }

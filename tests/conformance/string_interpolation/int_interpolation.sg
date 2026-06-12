@@ -2,7 +2,7 @@
 // (docs/language.md:712-716, syntax `"{expr}"` from line 590)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   x := 42
   io.Println("value: {x}")
 }

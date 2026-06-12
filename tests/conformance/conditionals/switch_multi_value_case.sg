@@ -2,7 +2,7 @@
 // (docs/language.md:1110-1111)
 import "std/io"
 
-fn ClassifyDigit(n Int) String {
+fn ClassifyDigit(n int) string {
   switch n {
     case 0, 2, 4, 6, 8: "even"
     case 1, 3, 5, 7, 9: "odd"
@@ -10,7 +10,7 @@ fn ClassifyDigit(n Int) String {
   }
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(ClassifyDigit(3))
   io.Println(ClassifyDigit(8))
 }

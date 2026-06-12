@@ -1,8 +1,8 @@
 // Spec: calling a method with no arguments. (docs/language.md:1007-1009)
 import "std/io"
 
-fn Greeting() String { "hello" }
+fn Greeting() string { "hello" }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Greeting())
 }

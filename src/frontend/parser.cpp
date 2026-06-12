@@ -329,6 +329,8 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::Fn:
   case Token::Kind::Import:
   case Token::Kind::Struct:          // anonymous struct literal
+  case Token::Kind::Array:           // array{T}{...} typed literal
+  case Token::Kind::Map:             // map{K:V}{...} typed literal
     return true;
   default:
     return false;
@@ -1344,6 +1346,16 @@ NodePtr Parser::parse_prefix() {
   // parse_struct_literal(), which consumes the StructInitializer.
   case Token::Kind::Struct:
     return parse_struct_type();
+
+  // ── Container type prefix (typed composite literal) ────────────────────────
+  //
+  // `array{T}{...}` / `map{K:V}{...}` — parse the type; the Pratt loop's infix
+  // "{" then dispatches to parse_struct_literal to consume the literal body.
+  case Token::Kind::Array:
+    return parse_array_type();
+
+  case Token::Kind::Map:
+    return parse_map_type();
 
     // ── Compound expressions (Group 4 remainder) ─────────────────────────────
   case Token::Kind::LeftBrace:

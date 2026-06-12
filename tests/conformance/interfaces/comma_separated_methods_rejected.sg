@@ -2,8 +2,8 @@
 // (docs/grammar.md:22, InterfaceDecl uses `terminal` between members.)
 
 interface Reader {
-  Read() String,
-  Close() Void
+  Read() string,
+  Close() void
 }
 
-pub fn Main() Void {}
+pub fn Main() void {}

@@ -3,12 +3,12 @@
 // the callee must not be visible to the caller.
 import "std/io"
 
-fn Append(a Int[]) Int {
+fn Append(a array{int}) int {
   a.Push(99)
   a.Size()
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   arr := [1, 2, 3]
   inner_size := Append(arr)
   io.Println(inner_size.String())

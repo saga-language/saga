@@ -3,7 +3,7 @@
 // value isn't actually needed, that's the zero value")
 import "std/io"
 
-pub fn Main() Void {
-  arr Int[]
+pub fn Main() void {
+  arr array{int}
   io.Println(arr.Size().String())
 }

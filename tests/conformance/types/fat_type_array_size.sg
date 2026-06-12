@@ -2,7 +2,7 @@
 // reads the metadata. (docs/language.md:322-329)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   arr := [1, 2, 3]
   io.Println(arr.Size().String())
 }

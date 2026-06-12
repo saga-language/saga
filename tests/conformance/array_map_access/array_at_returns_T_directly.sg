@@ -2,7 +2,7 @@
 // (docs/language.md:663-664) — escape hatch for tight loops.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   arr := [10, 20, 30]
   v := arr.At(1)
   io.Println(v.String())

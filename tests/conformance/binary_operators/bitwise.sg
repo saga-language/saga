@@ -1,7 +1,7 @@
 // Spec: & | ^ << >> bitwise operators. (docs/language.md:1379-1380)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println((0b1100 & 0b1010).String())
   io.Println((0b1100 | 0b1010).String())
   io.Println((0b1100 ^ 0b1010).String())

@@ -4,13 +4,13 @@
 // explicitly.
 import "std/io"
 
-const UserID = Int
+const UserID = int
 
-fn TakeUserID(u UserID) Void {
+fn TakeUserID(u UserID) void {
   io.Println(u.String())
 }
 
-pub fn Main() Void {
-  i Int = 7
+pub fn Main() void {
+  i int = 7
   TakeUserID(i)
 }

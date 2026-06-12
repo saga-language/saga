@@ -2,7 +2,7 @@
 // rest of the body. (docs/language.md:1200-1201)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   for v : [1, 2, 3, 4] {
     if v == 2 { next }
     io.Println(v.String())

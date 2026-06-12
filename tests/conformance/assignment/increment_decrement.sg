@@ -2,7 +2,7 @@
 // (docs/language.md:1349-1350)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   x := 5
   x++
   x++

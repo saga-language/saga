@@ -2,7 +2,7 @@
 // (docs/language.md:1024-1026)
 import "std/io"
 
-pub fn Main() Void {
-  anon := fn () Int { 42 }
+pub fn Main() void {
+  anon := fn () int { 42 }
   io.Println(anon().String())
 }

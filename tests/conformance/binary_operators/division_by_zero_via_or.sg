@@ -2,7 +2,7 @@
 // resolved with `or`. (docs/language.md:1384-1399)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   x := 6 / 0 or { 0 }
   io.Println(x.String())
 }

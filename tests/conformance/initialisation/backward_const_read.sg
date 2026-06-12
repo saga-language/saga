@@ -5,6 +5,6 @@ import "std/io"
 const First = 10
 const Second = First * 2
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Second.String())
 }

@@ -2,7 +2,7 @@
 // (docs/language.md:1382)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println((true && false).String())
   io.Println((true || false).String())
   io.Println((false || (3 > 1)).String())

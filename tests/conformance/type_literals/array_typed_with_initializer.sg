@@ -2,7 +2,7 @@
 // (docs/language.md, "arr2 Int[] = [] // valid, type is known")
 import "std/io"
 
-pub fn Main() Void {
-  arr Int[] = [1, 2, 3]
+pub fn Main() void {
+  arr array{int} = [1, 2, 3]
   io.Println(arr.Size().String())
 }

@@ -3,11 +3,11 @@
 // on an alias type and call it.
 import "std/io"
 
-const UserID = Int
+const UserID = int
 
-pub fn (u UserID) Display() String { "user#" + u.String() }
+pub fn (u UserID) Display() string { "user#" + u.String() }
 
-pub fn Main() Void {
+pub fn Main() void {
   uid UserID = 7
   io.Println(uid.Display())
 }

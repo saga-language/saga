@@ -2,7 +2,7 @@
 // (docs/language.md:699-700)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   str := "hello"
   c := str[1]
   io.Println(c)

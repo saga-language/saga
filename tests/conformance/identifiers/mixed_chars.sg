@@ -2,7 +2,7 @@
 // first character. (docs/language.md:22)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   foo_bar1 := 1
   io.Println(foo_bar1.String())
 }

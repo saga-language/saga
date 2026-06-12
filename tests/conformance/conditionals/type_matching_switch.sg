@@ -2,14 +2,14 @@
 // exhaustive. (docs/language.md:1161-1166)
 import "std/io"
 
-fn Describe(v Int | Float | String) String {
+fn Describe(v int | float | string) string {
   switch v {
-    case Int:    "int"
-    case Float:  "float"
-    case String: "string"
+    case int:    "int"
+    case float:  "float"
+    case string: "string"
   }
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Describe("hello"))
 }

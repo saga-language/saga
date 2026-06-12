@@ -4,6 +4,6 @@
 import "std/io"
 const Out = import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println("unreachable")
 }

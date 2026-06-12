@@ -2,6 +2,6 @@
 // (docs/language.md:684, lists `'\{'` as a special character)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println("not interp: \{x}")
 }

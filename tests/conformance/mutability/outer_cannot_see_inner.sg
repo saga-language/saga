@@ -3,7 +3,7 @@
 // variable declared inside an inner block.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   if true {
     y := 5
   }

@@ -4,13 +4,13 @@ import "std/io"
 
 struct Greeter {}
 
-pub fn (g Greeter) Greet() String { "Hello!" }
+pub fn (g Greeter) Greet() string { "Hello!" }
 
 struct User < Greeter {
-  name String
+  name string
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   u := User{name: "Alice"}
   io.Println(u.Greet())
 }

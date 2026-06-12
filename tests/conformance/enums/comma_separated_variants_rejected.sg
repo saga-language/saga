@@ -5,4 +5,4 @@ enum Color {
   Red, Green, Blue
 }
 
-pub fn Main() Void {}
+pub fn Main() void {}

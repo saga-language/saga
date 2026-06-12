@@ -2,14 +2,14 @@
 // must omit a value." (docs/language.md:192-193)
 import "std/io"
 
-fn Logged(s String) Void {
+fn Logged(s string) void {
   if s == "skip" {
     return
   }
   io.Println(s)
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   Logged("hi")
   Logged("skip")
   Logged("bye")

@@ -8,7 +8,7 @@ enum Colors {
   Blue
 }
 
-fn ColorName(c Colors) String {
+fn ColorName(c Colors) string {
   switch c {
     case Colors.Red:   "red"
     case Colors.Green: "green"
@@ -17,6 +17,6 @@ fn ColorName(c Colors) String {
   }
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(ColorName(Colors.Green))
 }
