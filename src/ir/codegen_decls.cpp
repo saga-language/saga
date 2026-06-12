@@ -12,14 +12,26 @@
 
 namespace saga {
 
+/// Map a scalar intrinsic type's source spelling (lowercase keyword) to its
+/// internal mangled name (capitalized), matching mangle_type / sgi. Returns ""
+/// when `name` is not a scalar intrinsic type.
+static std::string_view intrinsic_internal_name(std::string_view name) {
+  static constexpr std::pair<std::string_view, std::string_view> kMap[] = {
+      {"int", "Int"},       {"int8", "Int8"},     {"int16", "Int16"},
+      {"int32", "Int32"},   {"int64", "Int64"},   {"uint8", "Uint8"},
+      {"uint16", "Uint16"}, {"uint32", "Uint32"}, {"uint64", "Uint64"},
+      {"float", "Float"},   {"float32", "Float32"}, {"float64", "Float64"},
+      {"bool", "Bool"},     {"string", "String"},
+  };
+  for (auto &[src, internal] : kMap)
+    if (name == src)
+      return internal;
+  return {};
+}
+
 /// Return true if the name refers to a scalar intrinsic type.
 static bool is_intrinsic_type_name(std::string_view name) {
-  return name == "Int" || name == "Int8" || name == "Int16" ||
-         name == "Int32" || name == "Int64" ||
-         name == "Uint8" || name == "Uint16" ||
-         name == "Uint32" || name == "Uint64" ||
-         name == "Float" || name == "Float32" || name == "Float64" ||
-         name == "Bool" || name == "String";
+  return !intrinsic_internal_name(name).empty();
 }
 
 void CodeGen::declare_functions(const SourceNode &src) {
@@ -742,8 +754,9 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
 /// or empty string if not an intrinsic type receiver.
 static std::string intrinsic_receiver_type_name(const Node &type_node) {
   if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
-    if (is_intrinsic_type_name(ident->name))
-      return std::string(ident->name);
+    auto internal = intrinsic_internal_name(ident->name);
+    if (!internal.empty())
+      return std::string(internal);
   }
   if (std::get_if<ArrayTypeNode>(&type_node.data))
     return "Array";

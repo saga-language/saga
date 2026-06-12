@@ -16,6 +16,31 @@
 
 namespace saga {
 
+// Canonical (capitalized, width-bearing) name for a scalar intrinsic type, used
+// to build receiver-method link names (`pkg__TypeName__Method`). It must match
+// the declaration side (codegen_decls `intrinsic_internal_name`) and `.sgi`.
+// `type_to_string` is now the lowercase *source* spelling, so it can't serve.
+static std::string scalar_intrinsic_mangle_name(const TypePtr &t) {
+  switch (t->kind) {
+  case TypeKind::Bool:
+    return "Bool";
+  case TypeKind::String:
+    return "String";
+  case TypeKind::Float: {
+    auto bits = std::get<FloatType>(t->detail).bits;
+    return bits == 0 ? "Float" : "Float" + std::to_string(bits);
+  }
+  case TypeKind::Int: {
+    auto &i = std::get<IntType>(t->detail);
+    if (i.bits == 0)
+      return i.is_signed ? "Int" : "Byte";
+    return (i.is_signed ? "Int" : "Uint") + std::to_string(i.bits);
+  }
+  default:
+    return type_to_string(t);
+  }
+}
+
 llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
                                                  const Node &parent) {
   auto *sel = std::get_if<SelectorNode>(&node.callee->data);
@@ -548,7 +573,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         // Determine the type name and origin package.
         // Sized int types (Int8..Uint64) live in the "int" package;
         // the type name must match the receiver (e.g. "Int64").
-        std::string tn = type_to_string(obj_sem);
+        std::string tn = scalar_intrinsic_mangle_name(obj_sem);
         const char *stdlib_pkg_name = nullptr;
         switch (obj_sem->kind) {
         case TypeKind::Int:    stdlib_pkg_name = "int"; break;

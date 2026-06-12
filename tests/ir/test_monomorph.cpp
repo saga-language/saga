@@ -116,8 +116,8 @@ struct MCG {
 
 TEST(Monomorph, PositiveSpike_IntStringBool) {
   auto r = MR::from(
-      "pub fn |T| eq(a T, b T) Bool { a.Equals(b) }\n"
-      "pub fn Main() Void {\n"
+      "pub fn eq<T>(a T, b T) bool { a.Equals(b) }\n"
+      "pub fn Main() void {\n"
       "  eq(5, 5)\n"
       "  eq(\"hi\", \"hi\")\n"
       "  eq(true, true)\n"
@@ -131,19 +131,19 @@ TEST(Monomorph, PositiveSpike_IntStringBool) {
 
 TEST(Monomorph, NegativeSpike_MissingMethod) {
   auto r = MR::from(
-      "struct Point { x Int, y Int }\n"
-      "pub fn |T| eq(a T, b T) Bool { a.Equals(b) }\n"
-      "pub fn Main() Void { eq(Point{x: 1, y: 2}, Point{x: 3, y: 4}) }");
+      "struct Point { x int\n y int }\n"
+      "pub fn eq<T>(a T, b T) bool { a.Equals(b) }\n"
+      "pub fn Main() void { eq(Point{x: 1, y: 2}, Point{x: 3, y: 4}) }");
   EXPECT_FALSE(r.ok());
   EXPECT_TRUE(r.has_err("no member 'Equals'")) << r.all_errors();
 }
 
 TEST(Monomorph, NegativeSpike_ErrorBacktrace) {
   auto r = MR::from(
-      "struct Point { x Int, y Int }\n"
-      "pub fn |T| inner(a T, b T) Bool { a.Equals(b) }\n"
-      "pub fn |T| outer(a T, b T) Bool { inner(a, b) }\n"
-      "pub fn Main() Void { outer(Point{x: 1, y: 2}, Point{x: 3, y: 4}) }");
+      "struct Point { x int\n y int }\n"
+      "pub fn inner<T>(a T, b T) bool { a.Equals(b) }\n"
+      "pub fn outer<T>(a T, b T) bool { inner(a, b) }\n"
+      "pub fn Main() void { outer(Point{x: 1, y: 2}, Point{x: 3, y: 4}) }");
   EXPECT_FALSE(r.ok());
   EXPECT_TRUE(r.has_err("no member 'Equals'")) << r.all_errors();
   // The error should contain at least two "instantiated from" frames.
@@ -161,8 +161,8 @@ TEST(Monomorph, NegativeSpike_ErrorBacktrace) {
 
 TEST(Monomorph, UninstantiatedSpike) {
   auto r = MR::from(
-      "pub fn |T| broken(a T) Void { a.NoSuchMethod() }\n"
-      "pub fn Main() Void {}");
+      "pub fn broken<T>(a T) void { a.NoSuchMethod() }\n"
+      "pub fn Main() void {}");
   EXPECT_TRUE(r.ok()) << r.all_errors();
 }
 
@@ -172,8 +172,8 @@ TEST(Monomorph, UninstantiatedSpike) {
 
 TEST(Monomorph, SpecialisedFunctionExists) {
   auto r = MCG::from(
-      "pub fn |T| id(x T) T { x }\n"
-      "pub fn Main() Void { id(42) }");
+      "pub fn id<T>(x T) T { x }\n"
+      "pub fn Main() void { id(42) }");
   auto *fn = r.find_gen("gen__");
   ASSERT_NE(fn, nullptr) << "Expected a gen__ specialisation";
   EXPECT_FALSE(fn->isDeclaration());
@@ -182,8 +182,8 @@ TEST(Monomorph, SpecialisedFunctionExists) {
 
 TEST(Monomorph, SpecialisedName_GenPrefix) {
   auto r = MCG::from(
-      "pub fn |T| id(x T) T { x }\n"
-      "pub fn Main() Void { id(42) }");
+      "pub fn id<T>(x T) T { x }\n"
+      "pub fn Main() void { id(42) }");
   auto *fn = r.find_gen("gen__");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->getName().str().find("gen__") == 0 ||
@@ -198,8 +198,8 @@ TEST(Monomorph, SpecialisedName_GenPrefix) {
 
 TEST(Monomorph, DedupSpike) {
   auto r = MCG::from(
-      "pub fn |T| id(x T) T { x }\n"
-      "pub fn Main() Void {\n"
+      "pub fn id<T>(x T) T { x }\n"
+      "pub fn Main() void {\n"
       "  id(1)\n"
       "  id(2)\n"
       "}");
@@ -213,9 +213,9 @@ TEST(Monomorph, DedupSpike) {
 
 TEST(Monomorph, NestedSpike) {
   auto r = MCG::from(
-      "pub fn |T| inner(x T) T { x }\n"
-      "pub fn |T| outer(x T) T { inner(x) }\n"
-      "pub fn Main() Void { outer(42) }");
+      "pub fn inner<T>(x T) T { x }\n"
+      "pub fn outer<T>(x T) T { inner(x) }\n"
+      "pub fn Main() void { outer(42) }");
   EXPECT_GE(r.count_gen("__inner__Int"), 1)
       << "inner<Int> should be emitted";
   EXPECT_GE(r.count_gen("__outer__Int"), 1)
@@ -228,8 +228,8 @@ TEST(Monomorph, NestedSpike) {
 
 TEST(Monomorph, MultipleInstantiations) {
   auto r = MCG::from(
-      "pub fn |T| id(x T) T { x }\n"
-      "pub fn Main() Void {\n"
+      "pub fn id<T>(x T) T { x }\n"
+      "pub fn Main() void {\n"
       "  id(42)\n"
       "  id(\"hi\")\n"
       "  id(true)\n"
@@ -245,8 +245,8 @@ TEST(Monomorph, MultipleInstantiations) {
 
 TEST(Monomorph, ManglerIsolation) {
   auto r = MCG::from(
-      "pub fn |T| MyToString(v T) T { v }\n"
-      "pub fn Main() Void { MyToString(42) }");
+      "pub fn MyToString<T>(v T) T { v }\n"
+      "pub fn Main() void { MyToString(42) }");
   auto *fn = r.find_gen("gen__");
   ASSERT_NE(fn, nullptr);
   std::string name = fn->getName().str();
@@ -259,34 +259,34 @@ TEST(Monomorph, ManglerIsolation) {
 // ===========================================================================
 
 TEST(Monomorph, MangleType_Int) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   EXPECT_EQ(r.codegen->mangle_type(make_int_type()), "Int");
 }
 
 TEST(Monomorph, MangleType_String) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   EXPECT_EQ(r.codegen->mangle_type(make_string_type()), "String");
 }
 
 TEST(Monomorph, MangleType_Bool) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   EXPECT_EQ(r.codegen->mangle_type(make_bool_type()), "Bool");
 }
 
 TEST(Monomorph, MangleType_Array) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   auto arr = make_array_type(make_int_type());
   EXPECT_EQ(r.codegen->mangle_type(arr), "Arr_Int_End");
 }
 
 TEST(Monomorph, MangleType_Map) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   auto m = make_map_type(make_string_type(), make_int_type());
   EXPECT_EQ(r.codegen->mangle_type(m), "Map_String_Int_End");
 }
 
 TEST(Monomorph, MangleType_Nested) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   auto inner = make_map_type(make_string_type(), make_array_type(make_int_type()));
   auto outer = make_array_type(inner);
   std::string mangled = r.codegen->mangle_type(outer);
@@ -298,14 +298,14 @@ TEST(Monomorph, MangleType_Nested) {
 }
 
 TEST(Monomorph, MangleType_Func) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   auto fn = make_func_type({make_int_type(), make_string_type()},
                            {make_bool_type()});
   EXPECT_EQ(r.codegen->mangle_type(fn), "Fn_Int_String_to_Bool_End");
 }
 
 TEST(Monomorph, MangleType_Union) {
-  auto r = MCG::from("pub fn Main() Void {}");
+  auto r = MCG::from("pub fn Main() void {}");
   auto u = make_union_type({make_int_type(), make_string_type()});
   EXPECT_EQ(r.codegen->mangle_type(u), "Un_Int_String_End");
 }
@@ -316,8 +316,8 @@ TEST(Monomorph, MangleType_Union) {
 
 TEST(Monomorph, ReturnTypePropagation) {
   auto r = MR::from(
-      "pub fn |T| id(x T) T { x }\n"
-      "pub fn Main() Void {\n"
+      "pub fn id<T>(x T) T { x }\n"
+      "pub fn Main() void {\n"
       "  n := id(42)\n"
       "  s := id(\"hi\")\n"
       "}");
@@ -330,9 +330,9 @@ TEST(Monomorph, ReturnTypePropagation) {
 
 TEST(Monomorph, RecursionGuard) {
   auto r = MR::from(
-      "pub fn |T| ping(x T) T { pong(x) }\n"
-      "pub fn |T| pong(x T) T { ping(x) }\n"
-      "pub fn Main() Void { ping(42) }");
+      "pub fn ping<T>(x T) T { pong(x) }\n"
+      "pub fn pong<T>(x T) T { ping(x) }\n"
+      "pub fn Main() void { ping(42) }");
   EXPECT_TRUE(r.ok()) << r.all_errors();
 }
 

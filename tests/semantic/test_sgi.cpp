@@ -55,7 +55,7 @@ TEST(Sgi, TypeToSgiFuncVoid) {
 
 TEST(Sgi, TypeToSgiFuncVariadic) {
   auto t = make_func_type({make_string_type()}, {make_void_type()}, true);
-  EXPECT_EQ(type_to_sgi(t), "fn(...string) Void");
+  EXPECT_EQ(type_to_sgi(t), "fn(...String) Void");
 }
 
 TEST(Sgi, TypeToSgiUnion) {
@@ -469,7 +469,7 @@ TEST(Sgi, AnalyzerResolvesImportViaSgi) {
   auto file = File::from_source("test.sg", R"(
 import "mathlib"
 
-pub fn Main() Int {
+pub fn Main() int {
   mathlib.Add(1, 2)
 }
   )");
@@ -512,7 +512,7 @@ TEST(Sgi, AnalyzerSgiTakesPriorityOverMissingSource) {
   auto file = File::from_source("test.sg", R"(
 import "greeter"
 
-pub fn Main() Void {
+pub fn Main() void {
   greeter.Greet("world")
 }
   )");
