@@ -1676,9 +1676,26 @@ NodePtr Parser::parse_func_decl(bool is_public) {
     auto lifted = lift_receiver_type_params(*receiver->type);
     if (!lifted.empty()) {
       Span gspan = generic ? generic->span : receiver->span;
-      if (generic)
-        for (auto &p : generic->type_params)
-          lifted.push_back(std::move(p));
+      if (generic) {
+        // An explicit type param that re-uses a receiver-lifted name annotates
+        // that param (e.g. supplies its constraint) instead of re-declaring it;
+        // explicit params with new names are method-own generics and append.
+        for (auto &p : generic->type_params) {
+          auto *ep = std::get_if<TypeParamNode>(&p->data);
+          bool merged = false;
+          if (ep)
+            for (auto &l : lifted) {
+              auto *lp = std::get_if<TypeParamNode>(&l->data);
+              if (lp && lp->name.name == ep->name.name) {
+                l = std::move(p);
+                merged = true;
+                break;
+              }
+            }
+          if (!merged)
+            lifted.push_back(std::move(p));
+        }
+      }
       generic = GenericNode{gspan, std::move(lifted)};
     }
   }
