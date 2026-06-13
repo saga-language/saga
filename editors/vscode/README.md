@@ -97,11 +97,20 @@ comment in that file)*
 
 | Element | TextMate scope |
 |---|---|
-| Control keywords (`if`, `for`, `return`, …) | `keyword.control.saga` |
-| Declaration keywords (`fn`, `struct`, `pub`, …) | `keyword.declaration.saga` |
-| Keyword operators (`or`, `spawn`) | `keyword.operator.word.saga` |
-| Built-in types (`Int`, `String`, `Void`, …) | `storage.type.saga` |
-| Boolean literals (`true`, `false`) | `constant.language.saga` |
+| Primitive types (`int`, `string`, `void`, …) | `support.type.primitive.saga` |
+| Composite types (`array`, `map`) | `support.type.builtin.saga` |
+| Type-shapes (`struct`, `enum`, `interface`, `error`) | `storage.type.saga` |
+| Function keyword (`fn`) | `storage.type.function.saga` |
+| `const`, `type` | `storage.type.saga` |
+| Declaration names (`struct Box`, `type Id`, …) | `entity.name.type.saga` |
+| Function definitions & calls | `entity.name.function.saga` |
+| Import (`import`) | `keyword.control.import.saga` |
+| Modifiers (`pub`, `extern`) | `storage.modifier.saga` |
+| Control flow (`if`, `else`, `for`, `switch`, `case`, `break`, `next`, `return`) | `keyword.control.*.saga` |
+| `or`, `spawn` | `keyword.control.or.saga`, `keyword.control.spawn.saga` |
+| Type test (`is`) | `keyword.operator.word.is.saga` |
+| Boolean literals (`true`, `false`) | `constant.language.boolean.saga` |
+| `null` | `constant.language.null.saga` |
 | Integer literals (dec / `0b` / `0x` / `0o`) | `constant.numeric.integer.*.saga` |
 | Float literals | `constant.numeric.float.saga` |
 | Single-line strings | `string.quoted.double.saga` |
@@ -110,4 +119,5 @@ comment in that file)*
 | String interpolation `{expr}` | `meta.interpolation.saga` |
 | Interpolation delimiters `{` `}` | `punctuation.section.interpolation.*.saga` |
 | Comments (`//`) | `comment.line.double-slash.saga` |
-| Operators | `keyword.operator.saga` |
+| Operators (incl. safe-access `?`) | `keyword.operator.saga` |
+| Punctuation (`,` `;` `:` `.` `{}` `[]` `()`) | `punctuation.*.saga` |
