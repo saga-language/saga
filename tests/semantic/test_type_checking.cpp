@@ -677,28 +677,17 @@ TEST(TypeCheck, DivAssignmentOnString) {
 }
 
 // ===========================================================================
-// Char builtin type
+// Integer width assignment strictness
 // ===========================================================================
 
-TEST(TypeCheck, CharTypeExists) {
-  // Char is a recognized builtin type and can be declared.
-  auto r = TC::from("fn f() {\n  c Char\n}");
-  EXPECT_TRUE(r.ok()) << "Char should be a recognized type";
-}
-
-TEST(TypeCheck, CharNotDirectlyAssignableFromInt) {
-  // A *typed* Int variable is not directly assignable to Char — even
-  // though both are integer kinds, narrowing requires a conversion.
-  // (A bare integer literal is "untyped" and may flow into any integer
-  // width; that case is exercised separately.)
-  auto r = TC::from("fn f() {\n  x := 65\n  c Char = x\n}");
-  EXPECT_FALSE(r.ok()) << "typed int should not be directly assignable to Char";
+TEST(TypeCheck, TypedIntNotDirectlyAssignableToNarrowerWidth) {
+  // A *typed* int variable is not directly assignable to a different integer
+  // width — narrowing requires an explicit conversion. (A bare integer
+  // literal is "untyped" and may flow into any integer width; that case is
+  // exercised separately.)
+  auto r = TC::from("fn f() {\n  x := 65\n  c uint32 = x\n}");
+  EXPECT_FALSE(r.ok()) << "typed int should not be directly assignable to uint32";
   EXPECT_TRUE(r.has_err("variable initializer"));
-}
-
-TEST(TypeCheck, IntCharConversion) {
-  auto r = TC::from("fn f() {\n  x := 65\n  x.Char()\n}");
-  EXPECT_TRUE(r.ok()) << "int should have a .Char() method";
 }
 
 // ===========================================================================

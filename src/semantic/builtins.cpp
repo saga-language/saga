@@ -19,7 +19,6 @@ void BuiltinTypes::init() {
   int_type = make_int_type(0, true);
   float_type = make_float_type(0);
   byte_type = make_int_type(8, false); // Byte = Uint8
-  char_type = make_int_type(32, false); // Char = utf-8 codepoint (Uint32)
 
   // -- Sized integers ------------------------------------------------------
   int8_type = make_int_type(8, true);
@@ -144,7 +143,6 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   reg_type("int", types.int_type);
   reg_type("float", types.float_type);
   reg_type("byte", types.byte_type);
-  reg_type("Char", types.char_type);
 
   // -- Sized integers ------------------------------------------------------
   reg_type("int8", types.int8_type);

@@ -2,8 +2,8 @@
 
 Deferred:
 - `T[]` type-erased storage (perf footnote, not correctness). Currently
-  all `T[]` storage uses i64 slots; small element types (Int8/16/32,
-  Float32, Bool, Char) waste space and cache locality.  Fix shape:
+  all `T[]` storage uses i64 slots; small element types (int8/16/32,
+  float32, bool, byte) waste space and cache locality.  Fix shape:
   monomorphize `T[]` for primitive element types, keep the type-erased
   path for arbitrary `T`.  Decision 2026-05-06: defer.
 - Re-test interface composition under the new syntax (per
