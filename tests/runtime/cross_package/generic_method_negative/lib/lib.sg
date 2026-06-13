@@ -1,5 +1,5 @@
-pub struct |T| Box {
+pub struct Box<T> {
   value T
 }
 
-pub fn |T, U| (b |T| Box) Map(f fn(T) U) U { f(b.value) }
+pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }

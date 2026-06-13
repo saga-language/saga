@@ -5,7 +5,7 @@ struct Wrapper {
   inner lib.Counter
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   c := lib.Counter{n: 42}
   io.Println(c.Value().String())
   io.Println(c.Double().String())

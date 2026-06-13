@@ -1,7 +1,7 @@
 import "io"
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   b := lib.Box{value: 42}
   io.Println(b.Get().String())
   s := lib.Box{value: "hello"}

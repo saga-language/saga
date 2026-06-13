@@ -1,6 +1,6 @@
 pub struct Point {
-  x Int
-  y Int
+  x int
+  y int
 }
 
-pub fn NonNeg(p Point) Bool { p.x >= 0 }
+pub fn NonNeg(p Point) bool { p.x >= 0 }

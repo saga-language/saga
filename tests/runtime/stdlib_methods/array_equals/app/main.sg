@@ -1,7 +1,7 @@
 // Verify Array.Equals: byte-equal element comparison.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   a := [1, 2, 3]
   b := [1, 2, 3]
   c := [1, 2, 4]

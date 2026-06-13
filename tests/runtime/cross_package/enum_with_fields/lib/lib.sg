@@ -3,7 +3,7 @@ pub enum State {
   Running {name: "run"}
 }
 
-pub fn StateName(s State) String {
+pub fn StateName(s State) string {
   switch s {
     case State.Stopped: "stopped"
     case State.Running: "running"

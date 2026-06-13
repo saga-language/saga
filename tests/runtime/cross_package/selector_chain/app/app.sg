@@ -1,7 +1,7 @@
 import "io"
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   sz := lib.Default.default.name.Bytes().Size()
   io.Println(sz.String())
   io.Println(lib.Default.default.name.Upper())

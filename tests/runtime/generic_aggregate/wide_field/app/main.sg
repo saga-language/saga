@@ -6,15 +6,15 @@
 import "std/io"
 
 pub struct Point {
-  x Int
-  y Int
+  x int
+  y int
 }
 
-pub struct |T| Box {
+pub struct Box<T> {
   value T
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   b := Box{value: Point{x: 11, y: 22}}
   io.Println(b.value.x.String())
   io.Println(b.value.y.String())

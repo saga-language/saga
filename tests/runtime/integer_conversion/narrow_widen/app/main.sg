@@ -5,21 +5,21 @@
 // through to a zero return.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   // Bare literal -> narrow Int (Phase 6a).
-  a Int8 = 7
-  b Int32 = 12345
+  a int8 = 7
+  b int32 = 12345
   io.Println(a.String())
   io.Println(b.String())
 
   // Cross-sign reinterpret: -1 stored as Int8 -> 255 as Uint8.
-  neg Int8 = -1
+  neg int8 = -1
   io.Println(neg.Int().String())
-  u Uint8 = neg.Uint8()
+  u uint8 = neg.Uint8()
   io.Println(u.Int().String())
 
   // Narrowing: 0x1FF truncates to a single byte.
-  big Int = 511
+  big int = 511
   io.Println(big.Int8().Int().String())   // -1 (sign-extended)
   io.Println(big.Uint8().Int().String())  // 255 (zero-extended)
 

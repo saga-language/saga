@@ -4,14 +4,14 @@
 import "std/io"
 
 struct UserId {
-  raw Int64
+  raw int64
 }
 
-pub fn (u UserId) Hash() Int64 { u.raw.Hash() }
-pub fn (u UserId) Equals(other UserId) Bool { u.raw == other.raw }
-pub fn (u UserId) String() String { "UserId(" + u.raw.String() + ")" }
+pub fn (u UserId) Hash() int64 { u.raw.Hash() }
+pub fn (u UserId) Equals(other UserId) bool { u.raw == other.raw }
+pub fn (u UserId) String() string { "UserId(" + u.raw.String() + ")" }
 
-pub fn Main() Void {
+pub fn Main() void {
   u1 := UserId{raw: 1}
   u2 := UserId{raw: 2}
   m := {u1: "alice", u2: "bob"}

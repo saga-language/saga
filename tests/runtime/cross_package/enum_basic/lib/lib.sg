@@ -4,7 +4,7 @@ pub enum Color {
   Blue
 }
 
-pub fn ColorName(c Color) String {
+pub fn ColorName(c Color) string {
   switch c {
     case Color.Red: "red"
     case Color.Green: "green"
