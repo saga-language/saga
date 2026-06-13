@@ -2,7 +2,7 @@
 // accessed once they are assigned a value." (docs/language.md:25-27)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   _x := 1
   io.Println(_x.String())
 }

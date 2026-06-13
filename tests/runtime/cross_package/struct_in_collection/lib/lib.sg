@@ -1,6 +1,6 @@
 pub struct Point {
-  x Int
-  y Int
+  x int
+  y int
 }
 
-pub fn (p Point) Sum() Int { p.x + p.y }
+pub fn (p Point) Sum() int { p.x + p.y }

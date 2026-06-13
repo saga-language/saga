@@ -166,8 +166,8 @@ void dump_signature(const SignatureNode &n, std::ostream &os, int indent) {
   os << pad(indent) << "SignatureNode\n";
   for (const auto &p : n.params)
     dump_parameter(p, os, indent + 1);
-  for (const auto &r : n.returns)
-    dump_ptr(r, os, indent + 1);
+  if (n.return_type)
+    dump_ptr(n.return_type, os, indent + 1);
 }
 
 void dump_case_arm(const CaseArmNode &n, std::ostream &os, int indent) {
@@ -284,12 +284,8 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             os << pad(indent) << "FuncTypeNode\n";
             for (const auto &p : n.params)
               dump_ptr(p, os, c);
-            for (const auto &r : n.returns)
-              dump_ptr(r, os, c);
-          },
-          [&](const RangeTypeNode &n) {
-            os << pad(indent) << "RangeTypeNode\n";
-            dump_ptr(n.element_type, os, c);
+            if (n.return_type)
+              dump_ptr(n.return_type, os, c);
           },
           [&](const FieldSpecNode &n) { dump_field_spec(n, os, indent); },
           [&](const StructTypeNode &n) {
@@ -332,6 +328,11 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           [&](const UnaryExprNode &n) {
             os << pad(indent) << "UnaryExprNode op=" << kind_name(n.op) << "\n";
             dump_ptr(n.operand, os, c);
+          },
+          [&](const IsExpr &n) {
+            os << pad(indent) << "IsExpr\n";
+            dump_ptr(n.value, os, c);
+            dump_ptr(n.type, os, c);
           },
           [&](const GroupExprNode &n) {
             os << pad(indent) << "GroupExprNode\n";
@@ -391,11 +392,6 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_opt_ptr(n.mode, os, c);
             dump_ptr(n.body, os, c);
           },
-          [&](const RangeExprNode &n) {
-            os << pad(indent) << "RangeExprNode\n";
-            dump_ptr(n.low, os, c);
-            dump_ptr(n.high, os, c);
-          },
           [&](const SpawnExprNode &n) {
             os << pad(indent) << "SpawnExprNode";
             if (n.pipe)
@@ -453,8 +449,8 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           },
           [&](const ReturnNode &n) {
             os << pad(indent) << "ReturnNode\n";
-            for (const auto &v : n.values)
-              dump_ptr(v, os, c);
+            if (n.value)
+              dump_ptr(n.value, os, c);
           },
           [&](const BreakNode &n) {
             os << pad(indent) << "BreakNode\n";

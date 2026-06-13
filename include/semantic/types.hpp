@@ -32,7 +32,6 @@ enum class TypeKind : uint8_t {
   String,
   Array,
   Map,
-  Range,
   Func,
   Struct,
   Enum,
@@ -123,13 +122,9 @@ struct MapTypeInfo {
   TypePtr value;
 };
 
-struct RangeTypeInfo {
-  TypePtr element;
-};
-
 struct FuncTypeInfo {
   std::vector<TypePtr> params;
-  std::vector<TypePtr> returns;
+  TypePtr return_type; // nullptr = Void
   bool is_variadic = false;
 };
 
@@ -221,7 +216,6 @@ struct Type {
     StringType,
     ArrayTypeInfo,
     MapTypeInfo,
-    RangeTypeInfo,
     FuncTypeInfo,
     StructTypeInfo,
     EnumTypeInfo,
@@ -267,9 +261,8 @@ TypePtr make_error_type();
 
 TypePtr make_array_type(TypePtr element);
 TypePtr make_map_type(TypePtr key, TypePtr value);
-TypePtr make_range_type(TypePtr element);
 TypePtr make_func_type(std::vector<TypePtr> params,
-                       std::vector<TypePtr> returns,
+                       TypePtr return_type,
                        bool is_variadic = false);
 TypePtr make_struct_type(const std::string &name,
                          std::vector<FieldInfo> fields = {},
@@ -312,7 +305,7 @@ bool is_equatable(const TypePtr &t);
 /// True if `t` is a callable type (FuncTypeInfo).
 bool is_callable(const TypePtr &t);
 
-/// True if `t` is iterable (Array, Map, Range, String).
+/// True if `t` is iterable (Array, Map, String).
 bool is_iterable(const TypePtr &t);
 
 /// Human-readable type name for error messages.

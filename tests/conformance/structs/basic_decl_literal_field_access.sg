@@ -3,10 +3,10 @@
 import "std/io"
 
 struct Point {
-  x, y Int
+  x, y int
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   p := Point{x: 2, y: 4}
   io.Println(p.x.String())
   io.Println(p.y.String())

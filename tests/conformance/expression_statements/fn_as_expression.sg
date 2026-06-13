@@ -3,7 +3,7 @@
 // line 1015 ff. for closures.)
 import "std/io"
 
-pub fn Main() Void {
-  add1 := fn(x Int) Int { x + 1 }
+pub fn Main() void {
+  add1 := fn(x int) int { x + 1 }
   io.Println(add1(5).String())
 }

@@ -72,8 +72,12 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
     return "'import'";
   case Token::Kind::Interface:
     return "'interface'";
+  case Token::Kind::Is:
+    return "'is'";
   case Token::Kind::Next:
     return "'next'";
+  case Token::Kind::Null:
+    return "'null'";
   case Token::Kind::Or:
     return "'or'";
   case Token::Kind::Pub:
@@ -86,6 +90,50 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
     return "'struct'";
   case Token::Kind::Switch:
     return "'switch'";
+  case Token::Kind::Type:
+    return "'type'";
+
+  // Type keywords
+  case Token::Kind::Array:
+    return "'array'";
+  case Token::Kind::Bool:
+    return "'bool'";
+  case Token::Kind::Byte:
+    return "'byte'";
+  case Token::Kind::Error:
+    return "'error'";
+  case Token::Kind::Float:
+    return "'float'";
+  case Token::Kind::Float32:
+    return "'float32'";
+  case Token::Kind::Float64:
+    return "'float64'";
+  case Token::Kind::Int:
+    return "'int'";
+  case Token::Kind::Int8:
+    return "'int8'";
+  case Token::Kind::Int16:
+    return "'int16'";
+  case Token::Kind::Int32:
+    return "'int32'";
+  case Token::Kind::Int64:
+    return "'int64'";
+  case Token::Kind::Map:
+    return "'map'";
+  case Token::Kind::String:
+    return "'string'";
+  case Token::Kind::Uint:
+    return "'uint'";
+  case Token::Kind::Uint8:
+    return "'uint8'";
+  case Token::Kind::Uint16:
+    return "'uint16'";
+  case Token::Kind::Uint32:
+    return "'uint32'";
+  case Token::Kind::Uint64:
+    return "'uint64'";
+  case Token::Kind::Void:
+    return "'void'";
 
   // Punctuation
   case Token::Kind::Comma:
@@ -192,13 +240,60 @@ constexpr std::string_view token_kind_name(Token::Kind kind) {
 // a token that belongs to the surrounding context (e.g. a closing delimiter).
 constexpr bool is_type_start(Token::Kind kind) {
   switch (kind) {
-  case Token::Kind::Identifier:      // named types: Int, Bool, MyType, …
-  case Token::Kind::LeftBracket:     // ArrayType   "[" Type "]"
-  case Token::Kind::LeftBrace:       // MapType     "{" Type ":" Type "}"
-  case Token::Kind::Fn:              // FuncType    "fn" Signature
-  case Token::Kind::LeftParenthesis: // RangeType   "(" Type ")"
-  case Token::Kind::Struct:          // StructType  "struct" "{" … "}"
-  case Token::Kind::BitwiseOr:       // GenericType  "|" TypeList "|" Type
+  case Token::Kind::Identifier: // named / user types, GenericApp base
+  case Token::Kind::Array:      // array{T}
+  case Token::Kind::Map:        // map{K:V}
+  case Token::Kind::Fn:         // fn(...) T
+  case Token::Kind::Struct:     // struct{...}
+  case Token::Kind::BitwiseOr:  // |T| generic app (until 1b-2)
+  // Basic type keywords.
+  case Token::Kind::Bool:
+  case Token::Kind::Byte:
+  case Token::Kind::Error:
+  case Token::Kind::Float:
+  case Token::Kind::Float32:
+  case Token::Kind::Float64:
+  case Token::Kind::Int:
+  case Token::Kind::Int8:
+  case Token::Kind::Int16:
+  case Token::Kind::Int32:
+  case Token::Kind::Int64:
+  case Token::Kind::String:
+  case Token::Kind::Uint:
+  case Token::Kind::Uint8:
+  case Token::Kind::Uint16:
+  case Token::Kind::Uint32:
+  case Token::Kind::Uint64:
+  case Token::Kind::Void:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// True for the scalar built-in type keywords (no array/map/struct/fn). A bare
+// one of these in case-pattern position is a type-switch pattern; parse_case_arm
+// lifts it to an IdentifierNode so the analyzer's type-name detection matches.
+constexpr bool is_basic_type_keyword(Token::Kind kind) {
+  switch (kind) {
+  case Token::Kind::Bool:
+  case Token::Kind::Byte:
+  case Token::Kind::Error:
+  case Token::Kind::Float:
+  case Token::Kind::Float32:
+  case Token::Kind::Float64:
+  case Token::Kind::Int:
+  case Token::Kind::Int8:
+  case Token::Kind::Int16:
+  case Token::Kind::Int32:
+  case Token::Kind::Int64:
+  case Token::Kind::String:
+  case Token::Kind::Uint:
+  case Token::Kind::Uint8:
+  case Token::Kind::Uint16:
+  case Token::Kind::Uint32:
+  case Token::Kind::Uint64:
+  case Token::Kind::Void:
     return true;
   default:
     return false;
@@ -211,6 +306,8 @@ constexpr bool is_type_start(Token::Kind kind) {
 // keyword on the same logical line, and by parse_prefix's error branch to
 // produce a precise message when a non-expression token is encountered.
 constexpr bool is_expression_start(Token::Kind kind) {
+  if (is_basic_type_keyword(kind)) // type-as-value (case patterns, const alias)
+    return true;
   switch (kind) {
   case Token::Kind::Identifier:
   case Token::Kind::IntegerLiteral:
@@ -232,6 +329,8 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::Fn:
   case Token::Kind::Import:
   case Token::Kind::Struct:          // anonymous struct literal
+  case Token::Kind::Array:           // array{T}{...} typed literal
+  case Token::Kind::Map:             // map{K:V}{...} typed literal
     return true;
   default:
     return false;
@@ -464,7 +563,7 @@ Span Parser::span_from(size_t start) const {
 //    50  Comparison:  ==  !=  >  <  >=  <=
 //    40  Logical AND: &&
 //    30  Logical OR:  ||
-//    25  Range:       ..
+//    25  Slice:       ..
 //    20  Or clause:   or
 int Parser::infix_binding_power(Token::Kind kind) {
   switch (kind) {
@@ -512,11 +611,15 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::LogicalOr:
     return 30;
 
-  // 8. Range / slice
+  // 8. Slice
   case Token::Kind::DotDot:
     return 25;
 
-  // 9. Or clause (error resolution)
+  // 9. Type test (`is`) — looser than logical, tighter than `or`
+  case Token::Kind::Is:
+    return 23;
+
+  // 10. Or clause (error resolution)
   case Token::Kind::Or:
     return 20;
 
@@ -603,97 +706,91 @@ NodePtr Parser::parse_union_type() {
   return make_node<UnionTypeNode>(span_from(start), std::move(types));
 }
 
-// parse_single_type — SingleType = BaseType { "[" "]" }
+// parse_single_type — one type with no surrounding "|" union.
 //
-// Grammar recap:
-//   BaseType      = Identifier | Selector | IntrinsicType | StructType
-//   IntrinsicType = FuncType | MapType | RangeType | StructType
-//                 | basic_type | float_type | integer_type | void_type
-//   basic_type    = "Bool" | "Byte" | "Int" | "Float" | "String"
-//   float_type    = "Float32" | "Float64"
-//   integer_type  = "Int8" | "Int16" | "Int32" | "Int64"
-//                 | "Uint8" | "Uint16" | "Uint32" | "Uint64"
-//   void_type     = "Void"
-//   Selector      = Identifier "." Identifier   (e.g. pkg.MyType)
+// Dispatch on the leading token:
+//   "array"          → ArrayType   array{T [; N]}
+//   "map"            → MapType     map{K:V [; N]}
+//   "fn"             → FuncType    fn(...) T
+//   "struct"         → StructType  struct{...}
+//   basic_type kw    → IdentifierNode carrying the keyword text (int, string…)
+//   Identifier       → IdentifierNode / SelectorNode, optional <…> application
 //
-// The array form is a *suffix*: `Int[]`, `Map<K,V>[]`, `[]Int[]` is not
-// legal — the leading `[` must always be a value-expression delimiter or
-// part of an array literal in expression position.  This decision lets
-// `arr[i]` be unambiguously an index expression at every position.
-//
-// Dispatch summary for the base type:
-//   "{"      → MapType
-//   "fn"     → FuncType
-//   "("      → RangeType
-//   "struct" → StructType
-//   "|"      → GenericTypeApp
-//   Identifier → plain IdentifierNode, or SelectorNode if "." follows
+// Containers carry their own keyword now, so a leading "[" or "{" is never a
+// type — it is always a value-expression delimiter (index / map literal /
+// block), which keeps `arr[i]` and `{...}` unambiguous in every position.
 NodePtr Parser::parse_single_type() {
   auto start = mark();
 
-  NodePtr base;
   switch (current.kind) {
-  case Token::Kind::LeftBrace:
-    base = parse_map_type();
-    break;
+  case Token::Kind::Array:
+    return parse_array_type();
+  case Token::Kind::Map:
+    return parse_map_type();
   case Token::Kind::Fn:
-    base = parse_func_type();
-    break;
-  case Token::Kind::LeftParenthesis:
-    base = parse_range_type();
-    break;
+    return parse_func_type();
   case Token::Kind::Struct:
-    base = parse_struct_type();
-    break;
+    return parse_struct_type();
 
-  // ── Generic type application: |Int| Task, |K, V| Map ───────────────
-  case Token::Kind::BitwiseOr: {
-    advance(); // consume opening "|"
-    std::vector<NodePtr> type_args;
-    type_args.push_back(parse_single_type());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      type_args.push_back(parse_single_type());
-    }
-    expect(Token::Kind::BitwiseOr); // closing "|"
-    NodePtr inner = parse_single_type();
-    base = make_node<GenericTypeAppNode>(
-        span_from(start), std::move(type_args), std::move(inner));
-    break;
+  // ── Basic type keywords ──────────────────────────────────────────────
+  // Lowered to an IdentifierNode carrying the keyword text, resolved against
+  // the lowercase builtins.
+  case Token::Kind::Bool:
+  case Token::Kind::Byte:
+  case Token::Kind::Error:
+  case Token::Kind::Float:
+  case Token::Kind::Float32:
+  case Token::Kind::Float64:
+  case Token::Kind::Int:
+  case Token::Kind::Int8:
+  case Token::Kind::Int16:
+  case Token::Kind::Int32:
+  case Token::Kind::Int64:
+  case Token::Kind::String:
+  case Token::Kind::Uint:
+  case Token::Kind::Uint8:
+  case Token::Kind::Uint16:
+  case Token::Kind::Uint32:
+  case Token::Kind::Uint64:
+  case Token::Kind::Void: {
+    Token tok = advance();
+    return make_node<IdentifierNode>(span_from(start), tok.literal);
   }
 
-  // ── Named types: plain or qualified (Selector) ───────────────────────
+  // ── Named types: plain or qualified (Selector), optional <…> application ─
   case Token::Kind::Identifier: {
     Token tok = advance(); // consume the type-name identifier
-    NodePtr ident = make_node<IdentifierNode>(span_from(start), tok.literal);
+    NodePtr named = make_node<IdentifierNode>(span_from(start), tok.literal);
 
-    if (!check(Token::Kind::Dot)) {
-      base = std::move(ident);
-      break;
+    if (check(Token::Kind::Dot)) {
+      advance(); // consume "."
+      auto field_start = mark();
+      Token field_tok = expect(Token::Kind::Identifier);
+      IdentifierNode field{span_from(field_start), field_tok.literal};
+      named = make_node<SelectorNode>(span_from(start), std::move(named), field);
     }
-    advance(); // consume "."
-    auto field_start = mark();
-    Token field_tok = expect(Token::Kind::Identifier);
-    IdentifierNode field{span_from(field_start), field_tok.literal};
-    base = make_node<SelectorNode>(span_from(start), std::move(ident), field);
-    break;
+
+    // Postfix generic application: Box<int>, pkg.Box<int, string>.
+    if (check(Token::Kind::LessThan)) {
+      advance(); // consume "<"
+      std::vector<NodePtr> type_args;
+      type_args.push_back(parse_type());
+      while (check(Token::Kind::Comma)) {
+        advance(); // consume ","
+        type_args.push_back(parse_type());
+      }
+      consume_close_angle(); // consume ">"
+      return make_node<GenericTypeAppNode>(
+          span_from(start), std::move(type_args), std::move(named));
+    }
+
+    return named;
   }
 
   default:
     error("expected type, got " + std::string(token_kind_name(current.kind)));
     return nullptr;
   }
-
-  // Suffix array form: BaseType { "[" "]" } — wraps each level into an
-  // ArrayTypeNode.  The non-empty `[N]` form (sized arrays) is reserved
-  // for a follow-up; for now we accept only `[]`.
-  while (check(Token::Kind::LeftBracket)) {
-    advance(); // consume "["
-    expect(Token::Kind::RightBracket); // consume "]"
-    base = make_node<ArrayTypeNode>(span_from(start), std::move(base));
-  }
-
-  return base;
 }
 
 // ============================================================================
@@ -823,39 +920,19 @@ SignatureNode Parser::parse_signature() {
 
   expect(Token::Kind::RightParenthesis); // ")"
 
-  // ── Return types (TypeList) ───────────────────────────────────────────
-  // An absent TypeList is valid and means Void (returns stays empty).
+  // ── Return type ───────────────────────────────────────────────────────
+  // An absent type is valid and means Void (return_type stays null).
   //
-  // LeftBrace is explicitly excluded from the type-start check: a "{" after
-  // the closing ")" always begins the function body, never a map-type return
-  // annotation.  Without this exclusion, "fn(x Int) { }" would attempt to
-  // parse the body block as a return type and fail.
-  //
-  // The comma loop advances past "," before re-checking, which is the only
-  // way to inspect the token that follows the comma without a peek function.
-  // Consequence: if a comma is consumed and the next token turns out not to
-  // be a type start, that comma is lost (no backtracking).  In practice this
-  // only arises when a FuncType appears as a parameter type inside another
-  // signature (e.g. fn(f fn(Int) Bool, x Int)); the inner TypeList would
-  // greedily consume the outer comma.  That case is deferred to parse_infix
-  // implementation where the full call-site context is available.
-  std::vector<NodePtr> returns;
+  // LeftBrace is excluded from the type-start check: a "{" after the closing
+  // ")" always begins the function body, never a map-type return annotation.
+  // Without this exclusion, "fn(x Int) { }" would attempt to parse the body
+  // block as a return type and fail.
+  NodePtr return_type;
+  if (current.kind != Token::Kind::LeftBrace && is_type_start(current.kind))
+    return_type = parse_type();
 
-  auto is_return_type_start = [](Token::Kind k) {
-    return k != Token::Kind::LeftBrace && is_type_start(k);
-  };
-
-  if (is_return_type_start(current.kind)) {
-    returns.push_back(parse_type());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      if (!is_return_type_start(current.kind))
-        break;
-      returns.push_back(parse_type());
-    }
-  }
-
-  return SignatureNode{span_from(start), std::move(params), std::move(returns)};
+  return SignatureNode{span_from(start), std::move(params),
+                       std::move(return_type)};
 }
 
 // parse_interface_signature — same as parse_signature but parameter names
@@ -943,46 +1020,53 @@ SignatureNode Parser::parse_interface_signature() {
 
   expect(Token::Kind::RightParenthesis);
 
-  std::vector<NodePtr> returns;
-  auto is_return_type_start = [](Token::Kind k) {
-    return k != Token::Kind::LeftBrace && is_type_start(k);
-  };
-  if (is_return_type_start(current.kind)) {
-    returns.push_back(parse_type());
-    // Peek so a stray "," (member separator) stays for the interface_decl
-    // member-loop diagnostic instead of being silently dropped here.
-    while (check(Token::Kind::Comma) && is_return_type_start(peek().kind)) {
-      advance();
-      returns.push_back(parse_type());
-    }
-  }
+  NodePtr return_type;
+  if (current.kind != Token::Kind::LeftBrace && is_type_start(current.kind))
+    return_type = parse_type();
 
-  return SignatureNode{span_from(start), std::move(params), std::move(returns)};
+  return SignatureNode{span_from(start), std::move(params),
+                       std::move(return_type)};
 }
 
 // ============================================================================
 // Sub-type Parsers
 // ============================================================================
 
-// parse_map_type — MapType = "{" Type ":" Type "}"
-NodePtr Parser::parse_map_type() {
+// parse_array_type — ArrayType = "array" "{" Type [ ";" Expression ] "}"
+//
+// The size hint is a perf knob the compiler is free to ignore (proposal
+// §Arrays); it is parsed and stored but not yet honored.
+NodePtr Parser::parse_array_type() {
   auto start = mark();
+  expect(Token::Kind::Array);     // "array"
   expect(Token::Kind::LeftBrace); // "{"
-  NodePtr key = parse_type();
-  expect(Token::Kind::Colon); // ":"
-  NodePtr value = parse_type();
+  NodePtr element = parse_type();
+  NodePtr size;
+  if (check(Token::Kind::Semicolon)) {
+    advance(); // consume ";"
+    size = parse_expression();
+  }
   expect(Token::Kind::RightBrace); // "}"
-  return make_node<MapTypeNode>(span_from(start), std::move(key),
-                                std::move(value));
+  return make_node<ArrayTypeNode>(span_from(start), std::move(element),
+                                  std::move(size));
 }
 
-// parse_range_type — RangeType = "(" Type ")"
-NodePtr Parser::parse_range_type() {
+// parse_map_type — MapType = "map" "{" Type ":" Type [ ";" Expression ] "}"
+NodePtr Parser::parse_map_type() {
   auto start = mark();
-  expect(Token::Kind::LeftParenthesis); // "("
-  NodePtr element = parse_type();
-  expect(Token::Kind::RightParenthesis); // ")"
-  return make_node<RangeTypeNode>(span_from(start), std::move(element));
+  expect(Token::Kind::Map);       // "map"
+  expect(Token::Kind::LeftBrace); // "{"
+  NodePtr key = parse_type();
+  expect(Token::Kind::Colon);     // ":"
+  NodePtr value = parse_type();
+  NodePtr size;
+  if (check(Token::Kind::Semicolon)) {
+    advance(); // consume ";"
+    size = parse_expression();
+  }
+  expect(Token::Kind::RightBrace); // "}"
+  return make_node<MapTypeNode>(span_from(start), std::move(key),
+                                std::move(value), std::move(size));
 }
 
 // parse_struct_type — StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ]
@@ -1087,21 +1171,12 @@ NodePtr Parser::parse_func_type() {
   expect(Token::Kind::RightParenthesis); // ")"
 
   // ── Return type ───────────────────────────────────────────────────────
-  // Parse a single return type only.  Multi-return in function types would
-  // be ambiguous with commas separating outer parameters (e.g.
-  // `fn(f fn(Int) Int, x Int)` — the `,` after `Int` belongs to the outer
-  // parameter list, not to the inner return type list).
-  auto is_return_type_start = [](Token::Kind k) {
-    return k != Token::Kind::LeftBrace && is_type_start(k);
-  };
-
-  std::vector<NodePtr> returns;
-  if (is_return_type_start(current.kind)) {
-    returns.push_back(parse_type());
-  }
+  NodePtr return_type;
+  if (current.kind != Token::Kind::LeftBrace && is_type_start(current.kind))
+    return_type = parse_type();
 
   return make_node<FuncTypeNode>(span_from(start), std::move(params),
-                                 std::move(returns));
+                                 std::move(return_type));
 }
 
 // ============================================================================
@@ -1171,13 +1246,23 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
 //
 //   Atoms           Identifier | number | bool | string
 //   Unary ops       !  -  ~   →  UnaryExprNode (inline)
-//   Grouped / range "(" … ")" →  parse_group_or_range()
+//   Grouped "(" … ")" →  parse_group_expr()
 //   Array literal   "[" … "]" →  parse_array_literal()
 //   Import expr     "import"  →  parse_import_expr()
 //
 // Compound forms that require parse_block (if / for / switch / fn / spawn /
 // map-or-block) are added in Groups 3 and 4.
 NodePtr Parser::parse_prefix() {
+  // A scalar type keyword in expression position denotes the type as a value —
+  // type-switch patterns (`case int:`) and `const Alias = int`. Lift it to an
+  // IdentifierNode (mirroring parse_single_type) so the analyzer resolves it as
+  // a type symbol, exactly as the pre-flip capitalized type identifiers did.
+  if (is_basic_type_keyword(current.kind)) {
+    auto s = mark();
+    Token t = advance();
+    return make_node<IdentifierNode>(span_from(s), t.literal);
+  }
+
   switch (current.kind) {
 
   // ── Atoms ──────────────────────────────────────────────────────────────
@@ -1216,12 +1301,11 @@ NodePtr Parser::parse_prefix() {
                                     std::move(operand));
   }
 
-  // ── Grouped expression or range literal ────────────────────────────────
+  // ── Grouped expression ──────────────────────────────────────────────────
   //
   // Grammar: GroupExpr = "(" Expression ")"
-  //          RangeExpr = "(" Expression ".." Expression ")"
   case Token::Kind::LeftParenthesis:
-    return parse_group_or_range();
+    return parse_group_expr();
 
   // ── Array literal ───────────────────────────────────────────────────────
   //
@@ -1248,13 +1332,8 @@ NodePtr Parser::parse_prefix() {
   case Token::Kind::Fn:
     return parse_func_expr();
 
-  // spawn without a generic type: "spawn { }" or "spawn workerFn"
+  // spawn (optional typed channel after the keyword: spawn<int> { })
   case Token::Kind::Spawn:
-    return parse_spawn_expr();
-
-  // "|T| spawn …" — generic spawn; BitwiseOr is the only prefix use of "|"
-  // in the grammar (FuncExpr's generic comes after "fn", not before it).
-  case Token::Kind::BitwiseOr:
     return parse_spawn_expr();
 
   // ── Anonymous struct type (prefix for struct literal) ──────────────────────
@@ -1267,6 +1346,16 @@ NodePtr Parser::parse_prefix() {
   // parse_struct_literal(), which consumes the StructInitializer.
   case Token::Kind::Struct:
     return parse_struct_type();
+
+  // ── Container type prefix (typed composite literal) ────────────────────────
+  //
+  // `array{T}{...}` / `map{K:V}{...}` — parse the type; the Pratt loop's infix
+  // "{" then dispatches to parse_struct_literal to consume the literal body.
+  case Token::Kind::Array:
+    return parse_array_type();
+
+  case Token::Kind::Map:
+    return parse_map_type();
 
     // ── Compound expressions (Group 4 remainder) ─────────────────────────────
   case Token::Kind::LeftBrace:
@@ -1308,6 +1397,16 @@ NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
 
   case Token::Kind::Or:
     return parse_or_expr(std::move(lhs));
+
+  // Type test: `value is Type` — RHS is a Type, not an expression.
+  case Token::Kind::Is: {
+    advance(); // consume "is"
+    NodePtr type = parse_type();
+    if (!type)
+      return nullptr;
+    return make_node<IsExpr>(span_from(start_offset), std::move(lhs),
+                             std::move(type));
+  }
 
   case Token::Kind::Pow: {
     Token op = advance();
@@ -1565,13 +1664,41 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   std::optional<ReceiverNode> receiver = parse_receiver();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<GenericNode> generic = parse_generic_params();
+
+  if (receiver) {
+    auto lifted = lift_receiver_type_params(*receiver->type);
+    if (!lifted.empty()) {
+      Span gspan = generic ? generic->span : receiver->span;
+      if (generic) {
+        // An explicit type param that re-uses a receiver-lifted name annotates
+        // that param (e.g. supplies its constraint) instead of re-declaring it;
+        // explicit params with new names are method-own generics and append.
+        for (auto &p : generic->type_params) {
+          auto *ep = std::get_if<TypeParamNode>(&p->data);
+          bool merged = false;
+          if (ep)
+            for (auto &l : lifted) {
+              auto *lp = std::get_if<TypeParamNode>(&l->data);
+              if (lp && lp->name.name == ep->name.name) {
+                l = std::move(p);
+                merged = true;
+                break;
+              }
+            }
+          if (!merged)
+            lifted.push_back(std::move(p));
+        }
+      }
+      generic = GenericNode{gspan, std::move(lifted)};
+    }
+  }
 
   SignatureNode sig = parse_signature();
 
@@ -1581,6 +1708,31 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   return make_node<FuncDeclNode>(
       span_from(start), is_public, /*is_extern=*/false, std::move(generic),
       std::move(receiver), std::move(name), std::move(sig), std::move(body));
+}
+
+// lift_receiver_type_params — see header. The receiver's *base* (e.g. `Box`)
+// and any concrete keyword types are left alone; only bare identifiers in type-
+// argument position become parameters. Receiver params carry no constraint.
+std::vector<NodePtr>
+Parser::lift_receiver_type_params(const Node &recv_type) {
+  std::vector<NodePtr> params;
+  auto add_if_ident = [&](const NodePtr &n) {
+    if (auto *id = std::get_if<IdentifierNode>(&n->data))
+      params.push_back(make_node<TypeParamNode>(
+          id->span, IdentifierNode{id->span, id->name},
+          std::optional<IdentifierNode>{}));
+  };
+
+  if (auto *gapp = std::get_if<GenericTypeAppNode>(&recv_type.data)) {
+    for (auto &arg : gapp->type_args)
+      add_if_ident(arg);
+  } else if (auto *arr = std::get_if<ArrayTypeNode>(&recv_type.data)) {
+    add_if_ident(arr->element_type);
+  } else if (auto *m = std::get_if<MapTypeNode>(&recv_type.data)) {
+    add_if_ident(m->key_type);
+    add_if_ident(m->value_type);
+  }
+  return params;
 }
 
 // parse_extern_decl — ExternFuncDecl = "extern" "fn" [ Generic ] Identifier
@@ -1602,11 +1754,11 @@ NodePtr Parser::parse_extern_decl() {
 
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<GenericNode> generic = parse_generic_params();
 
   SignatureNode sig = parse_signature();
 
@@ -1666,11 +1818,11 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Interface);
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  std::optional<GenericNode> generic = parse_generic_params();
 
   skip_terminators();
   expect(Token::Kind::LeftBrace);
@@ -1728,28 +1880,18 @@ NodePtr Parser::parse_embed_name() {
 //
 // StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
 //
-// Disambiguation: after optional "pub", "fn" starts a FuncDecl; anything
-// else starts a FieldSpec.  Members are separated by terminators (newlines).
+// Struct members are field specs only.  Methods are bound externally
+// (`fn (x T) M()`), so a non-field token in the body is a syntax error.
 NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
-
-  std::optional<GenericNode> generic = parse_generic_params();
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
+  std::optional<GenericNode> generic = parse_generic_params();
   std::vector<NodePtr> embeds;
-  if (check(Token::Kind::LessThan)) {
-    advance();
-    embeds.push_back(parse_embed_name());
-
-    while (check(Token::Kind::Comma)) {
-      advance();
-      embeds.push_back(parse_embed_name());
-    }
-  }
 
   skip_terminators();
   expect(Token::Kind::LeftBrace);
@@ -1760,17 +1902,11 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
     auto member_start = mark();
     bool member_public = match(Token::Kind::Pub);
 
-    if (check(Token::Kind::Fn)) {
-      NodePtr func = parse_func_decl(member_public);
-      members.push_back(StructMemberNode{span_from(member_start), member_public,
-                                         std::move(func)});
-    } else {
-      FieldSpecNode field = parse_field_spec();
-      NodePtr field_node = make_node<FieldSpecNode>(
-          field.span, std::move(field.names), std::move(field.type));
-      members.push_back(StructMemberNode{span_from(member_start), member_public,
-                                         std::move(field_node)});
-    }
+    FieldSpecNode field = parse_field_spec();
+    NodePtr field_node = make_node<FieldSpecNode>(
+        field.span, std::move(field.names), std::move(field.type));
+    members.push_back(StructMemberNode{span_from(member_start), member_public,
+                                       std::move(field_node)});
 
     consume_stray_member_separator("struct");
     skip_terminators();
@@ -2105,61 +2241,50 @@ std::optional<IdentifierNode> Parser::parse_pipe() {
   return IdentifierNode{span_from(id_start), id.literal};
 }
 
-// parse_generic — Generic = "|" TypeList "|"
+// parse_generic — Generic = "<" TypeList ">"
 //
-// TypeList = SingleType { "," SingleType }
-//
-// Parses the optional type-parameter list that can appear on anonymous
-// function expressions and spawn expressions:
-//
-//   fn |T| (x T) T { ... }
-//   |String| spawn { ... }
-//
-// Note: parse_single_type() is used instead of parse_type() /
-// parse_union_type() to avoid the ambiguity where a "|" inside the list would
-// be greedily consumed as a union-type separator rather than the closing
-// delimiter. Generic type parameters are always single (non-union) types in
-// practice.
-//
-// Returns std::nullopt when the current token is not "|".
+// Instantiation position: the typed-channel list on spawn (`spawn<int>`,
+// `spawn<int, string>`). Type args may be unions — the closing ">" is
+// unambiguous so parse_type is safe. Returns std::nullopt when not at "<".
 std::optional<GenericNode> Parser::parse_generic() {
-  if (!check(Token::Kind::BitwiseOr))
+  if (!check(Token::Kind::LessThan))
     return std::nullopt;
 
   auto start = mark();
-  advance(); // consume opening "|"
+  advance(); // consume opening "<"
 
   std::vector<NodePtr> type_params;
-  type_params.push_back(parse_single_type());
+  type_params.push_back(parse_type());
 
   while (check(Token::Kind::Comma)) {
     advance(); // consume ","
-    type_params.push_back(parse_single_type());
+    type_params.push_back(parse_type());
   }
 
-  expect(Token::Kind::BitwiseOr); // consume closing "|"
+  consume_close_angle(); // consume closing ">"
 
   return GenericNode{span_from(start), std::move(type_params)};
 }
 
 // parse_generic_params — declaration-position type-parameter list.
 //
-// GenericParams = "|" TypeParam { "," TypeParam } "|"
-// TypeParam     = Identifier [ Identifier ]
+// GenericParams = "<" TypeParam { "," TypeParam } ">"
+// TypeParam     = Identifier [ Constraint ]
 //
-//   fn |T|              Identity(x T) T          — bare parameter
-//   fn |T Integer|      ShiftLeft(x T, n Int) T  — constrained parameter
-//   fn |T Integer, U|   Mix(t T, u U) U          — multiple, mixed
+//   fn Identity<T>(x T) T            — bare parameter
+//   fn ShiftLeft<T integer>(x T) T   — constrained parameter
+//   fn Mix<T integer, U>(t T, u U) U — multiple, mixed
 //
-// The constraint is a bare identifier (no path, no generic application).
-// Constraint validation — that the name resolves to one of the built-in
-// constraints (Integer | Float | Numeric) — happens in the analyzer.
+// The constraint is captured verbatim from whatever single token follows the
+// param name — an identifier (`integer`/`numeric`/an interface name) or the
+// `float` keyword (which doubles as the float type-set). The analyzer resolves
+// it to a type-set or interface bound and rejects bare concrete types.
 std::optional<GenericNode> Parser::parse_generic_params() {
-  if (!check(Token::Kind::BitwiseOr))
+  if (!check(Token::Kind::LessThan))
     return std::nullopt;
 
   auto start = mark();
-  advance(); // consume opening "|"
+  advance(); // consume opening "<"
 
   auto parse_one = [&]() -> NodePtr {
     auto tp_start = mark();
@@ -2167,7 +2292,8 @@ std::optional<GenericNode> Parser::parse_generic_params() {
     IdentifierNode name{span_from(tp_start), name_tok.literal};
 
     std::optional<IdentifierNode> constraint;
-    if (check(Token::Kind::Identifier)) {
+    if (!check(Token::Kind::Comma) && !check(Token::Kind::GreaterThan) &&
+        !check(Token::Kind::RightShift)) {
       auto c_start = mark();
       Token c_tok = advance();
       constraint = IdentifierNode{span_from(c_start), c_tok.literal};
@@ -2185,9 +2311,32 @@ std::optional<GenericNode> Parser::parse_generic_params() {
     type_params.push_back(parse_one());
   }
 
-  expect(Token::Kind::BitwiseOr); // consume closing "|"
+  consume_close_angle(); // consume closing ">"
 
   return GenericNode{span_from(start), std::move(type_params)};
+}
+
+// consume_close_angle — consume one ">" closing a generic list, splitting a
+// ">>" (right-shift) or ">=" token so nested generics (Box<Bar<int>>) and a
+// trailing "=" (x Box<int>= …) parse without requiring a space.
+void Parser::consume_close_angle() {
+  switch (current.kind) {
+  case Token::Kind::GreaterThan:
+    advance();
+    return;
+  case Token::Kind::RightShift:
+    current.kind = Token::Kind::GreaterThan;
+    current.literal = ">";
+    current.offset += 1;
+    return;
+  case Token::Kind::GreaterThanEqual:
+    current.kind = Token::Kind::Assignment;
+    current.literal = "=";
+    current.offset += 1;
+    return;
+  default:
+    expect(Token::Kind::GreaterThan); // standard "expected '>'" error
+  }
 }
 
 // parse_import_expr — ImportExpr = "import" StringLiteral
@@ -2208,60 +2357,27 @@ NodePtr Parser::parse_import_expr() {
   return make_node<ImportExprNode>(span_from(start), path);
 }
 
-// parse_group_or_range — "(" Expression ")" or "(" Expression ".." Expression
-// ")"
+// parse_group_expr — GroupExpr = "(" Expression ")"
 //
-// Grammar:
-//   GroupExpr = "(" Expression ")"
-//   RangeExpr = "(" Expression ".." Expression ")"
-//
-// Disambiguation: the first sub-expression is parsed with parse_expr_bp(25),
-// a minimum binding power equal to ".."'s own left-bp (25).  This stops the
-// Pratt loop before it would consume ".." as an infix operator, keeping it
-// visible for an explicit check below.
-//
-// Consequence: operators with left-bp ≤ 25 ("or" at 20, ".." at 25) are not
-// parsed as the outermost operator of a grouped expression.  In practice this
-// is not a restriction — "or" requires a block body and is uncommon in grouped
-// position; ".." as a raw binary operator belongs in index/slice context.
-NodePtr Parser::parse_group_or_range() {
+// The inner expression is parsed with parse_expr_bp(25) so the Pratt loop
+// stops before "or" (bp 20), letting it be admitted explicitly as a
+// continuation — the spec uses `(6 / 0 or { 0 }) + 1` (language.md:1399).
+NodePtr Parser::parse_group_expr() {
   auto start = mark();
   expect(Token::Kind::LeftParenthesis);
   skip_terminators();
 
-  // Parse up to (but not including) ".." so we can distinguish the two forms.
   NodePtr first = parse_expr_bp(25);
   if (!first)
     return nullptr;
 
   skip_terminators();
 
-  // `or` has lower BP than `..`, so the Pratt cutoff above also stops
-  // before it.  The spec uses `(6 / 0 or { 0 }) + 1` (language.md:1399),
-  // so admit `or` as a continuation here — but only when there's no
-  // `..` ahead, since range parsing owns that case.
   if (check(Token::Kind::Or)) {
     first = parse_or_expr(std::move(first));
     skip_terminators();
   }
 
-  if (check(Token::Kind::DotDot)) {
-    // ── RangeExpr = "(" Expression ".." Expression ")" ──────────────────
-    advance(); // consume ".."
-    skip_terminators();
-
-    NodePtr second =
-        parse_expr_bp(25); // symmetric: stop before any nested ".."
-    if (!second)
-      return nullptr;
-
-    skip_terminators_before(Token::Kind::RightParenthesis);
-    expect(Token::Kind::RightParenthesis);
-    return make_node<RangeExprNode>(span_from(start), std::move(first),
-                                    std::move(second));
-  }
-
-  // ── GroupExpr = "(" Expression ")" ──────────────────────────────────────
   skip_terminators_before(Token::Kind::RightParenthesis);
   expect(Token::Kind::RightParenthesis);
   return make_node<GroupExprNode>(span_from(start), std::move(first));
@@ -2392,9 +2508,8 @@ NodePtr Parser::parse_map_or_block() {
   } else if (is_assign_op(current.kind)) {
     stmts.push_back(parse_assignment(std::move(first)));
   } else if (auto *id_ptr = std::get_if<IdentifierNode>(&first->data);
-             id_ptr && (current.kind == Token::Kind::Identifier ||
-                        current.kind == Token::Kind::Fn ||
-                        current.kind == Token::Kind::Struct)) {
+             id_ptr && is_type_start(current.kind) &&
+             current.kind != Token::Kind::BitwiseOr) {
     IdentifierNode name = *id_ptr;
     NodePtr type = parse_type();
     std::optional<NodePtr> init;
@@ -2430,27 +2545,21 @@ NodePtr Parser::parse_map_or_block() {
 // Statement Helpers — partial (parse_statement / parse_block in Group 2)
 // ============================================================================
 
-// parse_return — ReturnStatement = "return" [ ExpressionList ]
+// parse_return — ReturnStatement = "return" [ Expression ]
 //
 // A bare "return" with no following expression is valid.  Whether a value is
 // present is determined by is_expression_start(): if the current token cannot
 // begin an expression it must be a terminator, "}", or EOF, all of which
-// signal a value-less return.  Multiple comma-separated values are collected
-// into the values vector (multi-return).
+// signal a value-less return.
 NodePtr Parser::parse_return() {
   auto start = mark();
   expect(Token::Kind::Return);
 
-  std::vector<NodePtr> values;
-  if (is_expression_start(current.kind)) {
-    values.push_back(parse_expression());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      values.push_back(parse_expression());
-    }
-  }
+  NodePtr value;
+  if (is_expression_start(current.kind))
+    value = parse_expression();
 
-  return make_node<ReturnNode>(span_from(start), std::move(values));
+  return make_node<ReturnNode>(span_from(start), std::move(value));
 }
 
 // parse_break — break_statement = "break" [ ExpressionList ]
@@ -2581,10 +2690,10 @@ NodePtr Parser::parse_assignment(NodePtr target) {
 //      IdentifierNode + type  → VarDecl (assembled inline)
 //      anything else          → expression statement (returned as-is)
 //
-// VarDecl detection: only Identifier / "fn" / "struct" as the following
-// token are treated as unambiguous type-starts.  "[" and "(" are excluded
-// because they also serve as high-precedence infix operators (index, call),
-// making the disambiguation impossible without semantic information.
+// VarDecl detection: any type-start except "|" is treated as unambiguous. "|"
+// is excluded because it is also the bitwise-or operator (`x | y`); every type
+// keyword (int, array, map, …) can never continue an expression, so it
+// unambiguously begins a VarDecl after a leading identifier.
 NodePtr Parser::parse_statement() {
 
   // ── 1. Keyword-led statements ───────────────────────────────────────────
@@ -2681,9 +2790,8 @@ NodePtr Parser::parse_statement() {
 
   // ── 3e. VarDecl: IdentifierNode followed by unambiguous type-start ──────
   if (auto *id_ptr = std::get_if<IdentifierNode>(&expr->data)) {
-    if (current.kind == Token::Kind::Identifier ||
-        current.kind == Token::Kind::Fn ||
-        current.kind == Token::Kind::Struct) {
+    if (is_type_start(current.kind) &&
+        current.kind != Token::Kind::BitwiseOr) {
       IdentifierNode name = *id_ptr;
       NodePtr type = parse_type();
       std::optional<NodePtr> init;
@@ -2914,9 +3022,8 @@ NodePtr Parser::parse_for_expr() {
 
     auto *leading_id = std::get_if<IdentifierNode>(&leading->data);
     bool typed_init_form =
-        leading_id != nullptr &&
-        (check(Token::Kind::Identifier) ||
-         check(Token::Kind::LeftBracket));
+        leading_id != nullptr && is_type_start(current.kind) &&
+        current.kind != Token::Kind::BitwiseOr;
 
     if (typed_init_form || check(Token::Kind::DeclAssignment)) {
       // ── IteratorClause ─────────────────────────────────────────────────
@@ -3049,20 +3156,14 @@ NodePtr Parser::parse_for_expr() {
 
 // parse_func_expr — FuncExpr = "fn" [ Generic ] Signature Block
 //
-// The three sub-parsers are already fully implemented:
-//   parse_generic()    — optional "|" TypeList "|"
-//   parse_signature()  — "(" [ ParameterList ] ")" TypeList
-//   parse_block()      — "{" { Statement | Expression } "}"
-//
 // Generic: present only for anonymous generic functions like
-//   fn |T| (x T) T { x }
-// The generic type-parameter list uses the same "|…|" delimiter as the
-// accumulator pipe, but the position (immediately after "fn", before "(")
-// is unambiguous.
+//   fn<T>(x T) T { x }
+// The list comes immediately after "fn" (there is no name to follow), so the
+// "<…>" is unambiguous.
 //
 // skip_terminators() before parse_block() allows the opening brace to be
 // on the next line after the signature:
-//   fn(x Int) Int
+//   fn(x int) int
 //   { x }
 NodePtr Parser::parse_func_expr() {
   auto start = mark();
@@ -3082,36 +3183,26 @@ NodePtr Parser::parse_func_expr() {
 // Spawn Expression Parsing
 // ============================================================================
 
-// parse_spawn_expr — SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block
-// | Identifier )
+// parse_spawn_expr — SpawnExpr = "spawn" [ Generic ] [ IdentifierPipe ]
+//                                ( Block | Identifier )
 //
-// The generic type parameter is optional and, uniquely among all compound
-// expressions, comes BEFORE the keyword:
+//   spawn { work() }           — bare spawn, block body
+//   spawn workerFn             — bare spawn, identifier body (detached call)
+//   spawn<String> { work() }   — typed-channel spawn, block body
+//   spawn |task| { task() }    — spawn with named task pipe
+//   spawn<String> |task| { … } — both generic and pipe
 //
-//   spawn { work() }          — bare spawn, block body
-//   spawn workerFn            — bare spawn, identifier body (detached call)
-//   |String| spawn { work() } — typed channel spawn, block body
-//   spawn |task| { task() }   — spawn with named task pipe, block body
-//   |String| spawn |task| { task() } — both generic and pipe
-//
-// Dispatch:
-//   Token::Kind::Spawn     → called directly (no generic)
-//   Token::Kind::BitwiseOr → called for "|T| spawn …" (generic present)
-//   Both routes call parse_generic() first; it returns nullopt when
-//   current is not "|", so the non-generic path is handled transparently.
-//
-// Body disambiguation: "{" → Block; anything else → Identifier.
-// Only these two forms appear in the grammar; a general expression body
-// is not supported (unlike if/for/switch which accept full expressions).
+// Body disambiguation: "{" → Block; anything else → Identifier. Only these two
+// forms appear in the grammar; a general expression body is not supported.
 NodePtr Parser::parse_spawn_expr() {
   auto start = mark();
 
-  // Optional generic: "|" TypeList "|"  (present only for typed channels)
-  std::optional<GenericNode> generic = parse_generic();
-
   expect(Token::Kind::Spawn);
 
-  // Optional named-task pipe: "|" Identifier "|"
+  // Optional typed-channel generic: spawn<int> { … }
+  std::optional<GenericNode> generic = parse_generic();
+
+  // Optional named-task pipe: spawn |task| { … }
   std::optional<IdentifierNode> pipe = parse_pipe();
 
   skip_terminators();

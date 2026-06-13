@@ -2,6 +2,6 @@
 // bound to 'io'." (docs/language.md:170)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println("io binding works")
 }

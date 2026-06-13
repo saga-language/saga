@@ -3,7 +3,7 @@
 // but the spec does not enforce it at the language level (line 41).
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   done? := true
   io.Println(done?.String())
 }

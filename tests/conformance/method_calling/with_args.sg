@@ -2,8 +2,8 @@
 // (docs/language.md:1011-1012)
 import "std/io"
 
-pub fn Add(a, b Int) Int { a + b }
+pub fn Add(a, b int) int { a + b }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Add(1, 2).String())
 }

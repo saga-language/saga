@@ -2,7 +2,7 @@
 // (docs/language.md:1333, "Variable declarations")
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   y := 1
   io.Println(y.String())
 }

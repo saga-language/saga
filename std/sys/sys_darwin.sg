@@ -123,7 +123,7 @@ pub enum Number {
 }
 
 // Darwin errno messages (sys/errno.h)
-fn errnoMessage(code Int) String {
+fn errnoMessage(code int) string {
   switch code {
     case 1:   "Operation not permitted"
     case 2:   "No such file or directory"

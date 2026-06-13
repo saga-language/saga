@@ -3,7 +3,7 @@
 // on String values, "[]"/"{}" for empty containers.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   // -- Array.String --------------------------------------------------------
   io.Println([1, 2, 3].String())
   io.Println(["a", "b", "c"].String())

@@ -12,14 +12,26 @@
 
 namespace saga {
 
+/// Map a scalar intrinsic type's source spelling (lowercase keyword) to its
+/// internal mangled name (capitalized), matching mangle_type / sgi. Returns ""
+/// when `name` is not a scalar intrinsic type.
+static std::string_view intrinsic_internal_name(std::string_view name) {
+  static constexpr std::pair<std::string_view, std::string_view> kMap[] = {
+      {"int", "Int"},       {"int8", "Int8"},     {"int16", "Int16"},
+      {"int32", "Int32"},   {"int64", "Int64"},   {"uint8", "Uint8"},
+      {"uint16", "Uint16"}, {"uint32", "Uint32"}, {"uint64", "Uint64"},
+      {"float", "Float"},   {"float32", "Float32"}, {"float64", "Float64"},
+      {"bool", "Bool"},     {"string", "String"},
+  };
+  for (auto &[src, internal] : kMap)
+    if (name == src)
+      return internal;
+  return {};
+}
+
 /// Return true if the name refers to a scalar intrinsic type.
 static bool is_intrinsic_type_name(std::string_view name) {
-  return name == "Int" || name == "Int8" || name == "Int16" ||
-         name == "Int32" || name == "Int64" ||
-         name == "Uint8" || name == "Uint16" ||
-         name == "Uint32" || name == "Uint64" ||
-         name == "Float" || name == "Float32" || name == "Float64" ||
-         name == "Bool" || name == "String";
+  return !intrinsic_internal_name(name).empty();
 }
 
 void CodeGen::declare_functions(const SourceNode &src) {
@@ -78,8 +90,8 @@ void CodeGen::declare_functions(const SourceNode &src) {
       // Name the arguments for readability.
       size_t arg_idx = 0;
       // Skip the hidden sret arg if present.
-      if (fn->signature.returns.size() == 1 && !(fn->is_extern && fn->generic)) {
-        auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+      if (fn->signature.return_type && !(fn->is_extern && fn->generic)) {
+        auto *r_ll = resolve_type_node(*fn->signature.return_type);
         if (r_ll && r_ll->isStructTy()) {
           if (arg_idx < func->arg_size())
             func->getArg(arg_idx++)->setName("sret.out");
@@ -449,10 +461,10 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
       for (size_t i = 0; i < p.names.identifiers.size(); ++i)
         params.push_back(pt);
     }
-    std::vector<TypePtr> returns;
-    for (auto &r : m.signature.returns)
-      returns.push_back(analyzer.resolve_type(*r));
-    auto fn_type = make_func_type(std::move(params), std::move(returns));
+    TypePtr ret = m.signature.return_type
+                      ? analyzer.resolve_type(*m.signature.return_type)
+                      : nullptr;
+    auto fn_type = make_func_type(std::move(params), std::move(ret));
     sem_methods.push_back(
         {std::string(m.name.name), fn_type, m.is_public, package_name});
   }
@@ -470,8 +482,8 @@ MethodSig CodeGen::build_method_signature(const FuncDeclNode &fn) {
 
   // Sret lowering for struct returns.
   llvm::Type *ret_type = void_ll_type;
-  if (!fn.signature.returns.empty()) {
-    auto *r = resolve_type_node(*fn.signature.returns[0]);
+  if (fn.signature.return_type) {
+    auto *r = resolve_type_node(*fn.signature.return_type);
     if (r && r->isStructTy()) {
       sig.sret_struct_ty = r;
       ret_type = void_ll_type;
@@ -553,37 +565,7 @@ void name_method_args(llvm::Function *func, const MethodSig &sig,
 }
 
 void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
-  // In-bound methods (defined inside a struct body).
-  for (auto &decl : src.declarations) {
-    auto *s = std::get_if<StructDeclNode>(&decl->data);
-    if (!s)
-      continue;
-
-    std::string struct_name(s->name.name);
-    std::string struct_key = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key))
-      continue;
-
-    for (auto &member : s->members) {
-      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn || fn->generic)
-        continue;
-
-      std::string method_name(fn->name.name);
-      std::string link_name = mangle(struct_name + "__" + method_name);
-      if (module->getFunction(link_name))
-        continue;
-
-      auto sig = build_method_signature(*fn);
-      auto *func = llvm::Function::Create(
-          sig.fn_type, llvm::Function::ExternalLinkage, link_name,
-          module.get());
-      apply_method_abi_attrs(func, sig);
-      name_method_args(func, sig, *fn, "self");
-    }
-  }
-
-  // Out-bound methods (top-level functions with a receiver).
+  // Methods are top-level functions with a receiver.
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver || fn->generic)
@@ -629,24 +611,6 @@ void CodeGen::register_struct_method_links(const SourceNode &src) {
   };
 
   for (auto &decl : src.declarations) {
-    auto *s = std::get_if<StructDeclNode>(&decl->data);
-    if (!s)
-      continue;
-
-    std::string struct_name(s->name.name);
-    std::string struct_key = mangle(package_name, struct_name);
-    if (!struct_types.count(struct_key))
-      continue;
-
-    for (auto &member : s->members) {
-      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn || fn->generic)
-        continue;
-      register_link(struct_key, struct_name, std::string(fn->name.name));
-    }
-  }
-
-  for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver || fn->generic)
       continue;
@@ -665,107 +629,7 @@ void CodeGen::register_struct_method_links(const SourceNode &src) {
 }
 
 void CodeGen::emit_struct_methods(const SourceNode &src) {
-  // Emit in-bound method bodies.
-  for (auto &decl : src.declarations) {
-    auto *s = std::get_if<StructDeclNode>(&decl->data);
-    if (!s)
-      continue;
-
-    std::string struct_name(s->name.name);
-    std::string struct_key = mangle(package_name, struct_name);
-
-    for (auto &member : s->members) {
-      auto *fn = std::get_if<FuncDeclNode>(&member.member->data);
-      if (!fn)
-        continue;
-      if (fn->generic)
-        continue;
-
-      std::string method_name(fn->name.name);
-      std::string link_name = mangle(struct_name + "__" + method_name);
-
-      auto *func = module->getFunction(link_name);
-      if (!func || !func->empty())
-        continue;
-
-      auto *entry = llvm::BasicBlock::Create(context, "entry", func);
-      builder.SetInsertPoint(entry);
-
-      locals.clear();
-      managed_locals.clear();
-      current_func_is_main = false;
-
-      // Self parameter — alloca for the struct pointer.
-      auto *self_alloca = create_entry_alloca(
-          func, "self", llvm::PointerType::getUnqual(context));
-      builder.CreateStore(func->getArg(0), self_alloca);
-      locals["self"] = self_alloca;
-
-      // Inject struct fields as locals so bare names (e.g. `fd`) resolve.
-      // Load each field from self via GEP and copy into a local alloca.
-      {
-        auto st_it = struct_types.find(struct_key);
-        if (st_it != struct_types.end()) {
-          auto *st = st_it->second;
-          auto &fields = struct_fields[struct_key];
-          auto *self_ptr = builder.CreateLoad(
-              llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
-          for (size_t fi = 0; fi < fields.size(); ++fi) {
-            auto *ftype = st->getElementType(fi);
-            auto *gep = builder.CreateStructGEP(st, self_ptr, fi, fields[fi]);
-            auto *val = builder.CreateLoad(ftype, gep, fields[fi] + ".val");
-            auto *field_alloca = create_entry_alloca(func, fields[fi], ftype);
-            builder.CreateStore(val, field_alloca);
-            locals[fields[fi]] = field_alloca;
-          }
-        }
-      }
-
-      // Regular parameters.
-      size_t arg_idx = 1;
-      for (auto &param : fn->signature.params) {
-        auto *ll_type = resolve_type_node(*param.type);
-        for (auto &ident : param.names.identifiers) {
-          std::string pname(ident.name);
-          auto *alloca = create_entry_alloca(func, pname, ll_type);
-          builder.CreateStore(func->getArg(arg_idx++), alloca);
-          locals[pname] = alloca;
-        }
-      }
-
-      // Emit body.
-      auto &block = std::get<BlockNode>(fn->body->data);
-      auto *tail_val = emit_block(block);
-
-      if (!builder.GetInsertBlock()->getTerminator()) {
-        emit_release_locals();
-        auto *ret_type = func->getReturnType();
-        if (ret_type->isVoidTy()) {
-          builder.CreateRetVoid();
-        } else if (tail_val && tail_val->getType() == ret_type) {
-          builder.CreateRet(tail_val);
-        } else if (tail_val && ret_type->isStructTy() &&
-                   tail_val->getType()->isPointerTy()) {
-          if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-            if (ai->getAllocatedType() == ret_type) {
-              auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
-              builder.CreateRet(loaded);
-            } else {
-              builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-            }
-          } else {
-            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-          }
-        } else {
-          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-        }
-      }
-
-      llvm::verifyFunction(*func);
-    }
-  }
-
-  // Emit out-bound method bodies (top-level functions with receivers).
+  // Emit method bodies for top-level functions with receivers.
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
     if (!fn || !fn->receiver)
@@ -806,8 +670,8 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
 
     size_t arg_idx = 0;
     bool has_sret = false;
-    if (fn->signature.returns.size() == 1) {
-      auto *r_ll = resolve_type_node(*fn->signature.returns[0]);
+    if (fn->signature.return_type) {
+      auto *r_ll = resolve_type_node(*fn->signature.return_type);
       if (r_ll && r_ll->isStructTy()) {
         has_sret = true;
         ++arg_idx;
@@ -890,8 +754,9 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
 /// or empty string if not an intrinsic type receiver.
 static std::string intrinsic_receiver_type_name(const Node &type_node) {
   if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
-    if (is_intrinsic_type_name(ident->name))
-      return std::string(ident->name);
+    auto internal = intrinsic_internal_name(ident->name);
+    if (!internal.empty())
+      return std::string(internal);
   }
   if (std::get_if<ArrayTypeNode>(&type_node.data))
     return "Array";
@@ -957,8 +822,8 @@ void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
     }
 
     llvm::Type *ret_type = void_ll_type;
-    if (!fn->signature.returns.empty())
-      ret_type = resolve_or_ptr(*fn->signature.returns[0]);
+    if (fn->signature.return_type)
+      ret_type = resolve_or_ptr(*fn->signature.return_type);
 
     auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
     auto *func = llvm::Function::Create(

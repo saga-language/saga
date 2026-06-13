@@ -112,16 +112,29 @@ lspconfig.saga.setup({})
 
 ## What is highlighted
 
+Keyword *kinds* link to distinct standard groups, so a colorscheme that
+differentiates them shows several colors (a minimal scheme collapses them):
+
 | Element | Vim highlight group |
 |---|---|
-| Keywords (`fn`, `if`, `for`, …) | `Keyword` |
-| Keyword operators (`or`, `spawn`) | `Keyword` |
-| Built-in types (`Int`, `String`, …) | `Type` |
+| Type keywords (`int`, `string`, `array`, `map`, …) | `Type` |
+| Type-shapes (`struct`, `enum`, `interface`, `error`) | `Structure` |
+| Type alias (`type`) | `Typedef` |
+| Keywords (`fn`, `const`, `or`, `spawn`) | `Keyword` |
+| Import (`import`) | `Include` |
+| Modifiers (`pub`, `extern`) | `StorageClass` |
+| Conditionals (`if`, `else`, `switch`, `case`) | `Conditional` |
+| Loops (`for`) | `Repeat` |
+| Control flow (`break`, `next`, `return`) | `Statement` |
+| Type test (`is`) | `Operator` |
+| Declaration names (after `struct`/`enum`/`interface`/`type`) | `Type` |
+| Function definitions & calls | `Function` |
 | Booleans (`true`, `false`) | `Boolean` |
+| `null` | `Constant` |
 | Integer literals (dec / `0b` / `0x` / `0o`) | `Number` |
 | Float literals | `Float` |
 | String literals (single-line & triple-quoted) | `String` |
 | String escape sequences | `SpecialChar` |
 | String interpolation `{expr}` delimiters | `PreProc` |
 | Comments (`//`) | `Comment` |
-| Operators | `Operator` |
+| Operators (incl. safe-access `?`) | `Operator` |

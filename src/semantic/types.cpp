@@ -72,16 +72,11 @@ TypePtr make_map_type(TypePtr key, TypePtr value) {
       TypeKind::Map, MapTypeInfo{std::move(key), std::move(value)});
 }
 
-TypePtr make_range_type(TypePtr element) {
-  return std::make_shared<Type>(TypeKind::Range,
-                                RangeTypeInfo{std::move(element)});
-}
-
 TypePtr make_func_type(std::vector<TypePtr> params,
-                       std::vector<TypePtr> returns, bool is_variadic) {
+                       TypePtr return_type, bool is_variadic) {
   return std::make_shared<Type>(
       TypeKind::Func,
-      FuncTypeInfo{std::move(params), std::move(returns), is_variadic});
+      FuncTypeInfo{std::move(params), std::move(return_type), is_variadic});
 }
 
 TypePtr make_struct_type(const std::string &name,
@@ -172,18 +167,18 @@ bool is_numeric(const TypePtr &t) {
 
 std::string_view constraint_name(TypeConstraint c) {
   switch (c) {
-  case TypeConstraint::Integer: return "Integer";
-  case TypeConstraint::Float:   return "Float";
-  case TypeConstraint::Numeric: return "Numeric";
+  case TypeConstraint::Integer: return "integer";
+  case TypeConstraint::Float:   return "float";
+  case TypeConstraint::Numeric: return "numeric";
   case TypeConstraint::None:    return "";
   }
   return "";
 }
 
 TypeConstraint constraint_from_name(std::string_view name) {
-  if (name == "Integer") return TypeConstraint::Integer;
-  if (name == "Float")   return TypeConstraint::Float;
-  if (name == "Numeric") return TypeConstraint::Numeric;
+  if (name == "integer") return TypeConstraint::Integer;
+  if (name == "float")   return TypeConstraint::Float;
+  if (name == "numeric") return TypeConstraint::Numeric;
   return TypeConstraint::None;
 }
 
@@ -236,7 +231,6 @@ bool is_iterable(const TypePtr &t) {
   switch (u->kind) {
   case TypeKind::Array:
   case TypeKind::Map:
-  case TypeKind::Range:
   case TypeKind::String:
     return true;
   default:
@@ -254,42 +248,37 @@ std::string type_to_string(const TypePtr &t) {
 
   switch (t->kind) {
   case TypeKind::Void:
-    return "Void";
+    return "void";
   case TypeKind::Bool:
-    return "Bool";
+    return "bool";
   case TypeKind::Int: {
     auto &info = std::get<IntType>(t->detail);
     if (info.bits == 0)
-      return "Int";
+      return "int";
     if (!info.is_signed)
-      return "Uint" + std::to_string(info.bits);
-    return "Int" + std::to_string(info.bits);
+      return "uint" + std::to_string(info.bits);
+    return "int" + std::to_string(info.bits);
   }
   case TypeKind::Float: {
     auto &info = std::get<FloatType>(t->detail);
     if (info.bits == 0)
-      return "Float";
-    return "Float" + std::to_string(info.bits);
+      return "float";
+    return "float" + std::to_string(info.bits);
   }
   case TypeKind::String:
-    return "String";
+    return "string";
   case TypeKind::Error:
     return "<error>";
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    return type_to_string(info.element) + "[]";
+    return "array{" + type_to_string(info.element) + "}";
   }
 
   case TypeKind::Map: {
     auto &info = std::get<MapTypeInfo>(t->detail);
-    return "{" + type_to_string(info.key) + ": " +
+    return "map{" + type_to_string(info.key) + ": " +
            type_to_string(info.value) + "}";
-  }
-
-  case TypeKind::Range: {
-    auto &info = std::get<RangeTypeInfo>(t->detail);
-    return "(" + type_to_string(info.element) + ")";
   }
 
   case TypeKind::Func: {
@@ -304,20 +293,8 @@ std::string type_to_string(const TypePtr &t) {
       os << type_to_string(info.params[i]);
     }
     os << ")";
-    if (!info.returns.empty()) {
-      os << " ";
-      if (info.returns.size() == 1) {
-        os << type_to_string(info.returns[0]);
-      } else {
-        os << "(";
-        for (size_t i = 0; i < info.returns.size(); ++i) {
-          if (i > 0)
-            os << ", ";
-          os << type_to_string(info.returns[i]);
-        }
-        os << ")";
-      }
-    }
+    if (info.return_type)
+      os << " " << type_to_string(info.return_type);
     return os.str();
   }
 
@@ -412,18 +389,12 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     return types_equal(ai.key, bi.key) && types_equal(ai.value, bi.value);
   }
 
-  case TypeKind::Range: {
-    auto &ai = std::get<RangeTypeInfo>(a->detail);
-    auto &bi = std::get<RangeTypeInfo>(b->detail);
-    return types_equal(ai.element, bi.element);
-  }
-
   case TypeKind::Func: {
     auto &ai = std::get<FuncTypeInfo>(a->detail);
     auto &bi = std::get<FuncTypeInfo>(b->detail);
     if (ai.params.size() != bi.params.size())
       return false;
-    if (ai.returns.size() != bi.returns.size())
+    if (static_cast<bool>(ai.return_type) != static_cast<bool>(bi.return_type))
       return false;
     if (ai.is_variadic != bi.is_variadic)
       return false;
@@ -431,10 +402,8 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
       if (!types_equal(ai.params[i], bi.params[i]))
         return false;
     }
-    for (size_t i = 0; i < ai.returns.size(); ++i) {
-      if (!types_equal(ai.returns[i], bi.returns[i]))
-        return false;
-    }
+    if (ai.return_type && !types_equal(ai.return_type, bi.return_type))
+      return false;
     return true;
   }
 
@@ -735,14 +704,6 @@ TypePtr substitute(const TypePtr &t,
     return make_map_type(std::move(k), std::move(v));
   }
 
-  case TypeKind::Range: {
-    auto &info = std::get<RangeTypeInfo>(t->detail);
-    auto elem = substitute(info.element, bindings);
-    if (elem == info.element)
-      return t;
-    return make_range_type(std::move(elem));
-  }
-
   case TypeKind::Func: {
     auto &info = std::get<FuncTypeInfo>(t->detail);
     bool changed = false;
@@ -754,17 +715,15 @@ TypePtr substitute(const TypePtr &t,
         changed = true;
       params.push_back(std::move(sp));
     }
-    std::vector<TypePtr> rets;
-    rets.reserve(info.returns.size());
-    for (auto &r : info.returns) {
-      auto sr = substitute(r, bindings);
-      if (sr != r)
+    TypePtr ret;
+    if (info.return_type) {
+      ret = substitute(info.return_type, bindings);
+      if (ret != info.return_type)
         changed = true;
-      rets.push_back(std::move(sr));
     }
     if (!changed)
       return t;
-    return make_func_type(std::move(params), std::move(rets), info.is_variadic);
+    return make_func_type(std::move(params), std::move(ret), info.is_variadic);
   }
 
   case TypeKind::Union: {
@@ -814,16 +773,13 @@ bool has_type_params(const TypePtr &t) {
     auto &m = std::get<MapTypeInfo>(t->detail);
     return has_type_params(m.key) || has_type_params(m.value);
   }
-  case TypeKind::Range:
-    return has_type_params(std::get<RangeTypeInfo>(t->detail).element);
   case TypeKind::Func: {
     auto &f = std::get<FuncTypeInfo>(t->detail);
     for (auto &p : f.params)
       if (has_type_params(p))
         return true;
-    for (auto &r : f.returns)
-      if (has_type_params(r))
-        return true;
+    if (f.return_type && has_type_params(f.return_type))
+      return true;
     return false;
   }
   case TypeKind::Alias:
@@ -873,27 +829,19 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
     return unify(pi.key, ai.key, out) && unify(pi.value, ai.value, out);
   }
 
-  case TypeKind::Range: {
-    auto &pi = std::get<RangeTypeInfo>(param_type->detail);
-    auto &ai = std::get<RangeTypeInfo>(arg_type->detail);
-    return unify(pi.element, ai.element, out);
-  }
-
   case TypeKind::Func: {
     auto &pi = std::get<FuncTypeInfo>(param_type->detail);
     auto &ai = std::get<FuncTypeInfo>(arg_type->detail);
     if (pi.params.size() != ai.params.size())
       return false;
-    if (pi.returns.size() != ai.returns.size())
+    if (static_cast<bool>(pi.return_type) != static_cast<bool>(ai.return_type))
       return false;
     for (size_t i = 0; i < pi.params.size(); ++i) {
       if (!unify(pi.params[i], ai.params[i], out))
         return false;
     }
-    for (size_t i = 0; i < pi.returns.size(); ++i) {
-      if (!unify(pi.returns[i], ai.returns[i], out))
-        return false;
-    }
+    if (pi.return_type && !unify(pi.return_type, ai.return_type, out))
+      return false;
     return true;
   }
 

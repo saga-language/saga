@@ -354,8 +354,8 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
         for (auto &pt : fi.params)
           param_types.push_back(llvm_type(pt));
-        if (!fi.returns.empty())
-          ret_ll = llvm_type(fi.returns[0]);
+        if (fi.return_type)
+          ret_ll = llvm_type(fi.return_type);
 
         auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
         if (ret_ll->isVoidTy()) {

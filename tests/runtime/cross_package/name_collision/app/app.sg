@@ -2,7 +2,7 @@ import "io"
 import "pka"
 import "pkb"
 
-pub fn Main() Void {
+pub fn Main() void {
   ta := pka.Thing{a: 1}
   tb := pkb.Thing{b: 2}
   io.Println(ta.a.String())

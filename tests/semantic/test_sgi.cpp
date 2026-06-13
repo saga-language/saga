@@ -53,11 +53,6 @@ TEST(Sgi, TypeToSgiFuncVoid) {
   EXPECT_EQ(type_to_sgi(t), "fn(String) Void");
 }
 
-TEST(Sgi, TypeToSgiFuncMultiReturn) {
-  auto t = make_func_type({}, {make_int_type(), make_string_type()});
-  EXPECT_EQ(type_to_sgi(t), "fn() (Int, String)");
-}
-
 TEST(Sgi, TypeToSgiFuncVariadic) {
   auto t = make_func_type({make_string_type()}, {make_void_type()}, true);
   EXPECT_EQ(type_to_sgi(t), "fn(...String) Void");
@@ -115,8 +110,8 @@ TEST(Sgi, SgiToTypeFunc) {
   EXPECT_EQ(info.params.size(), 2u);
   EXPECT_EQ(info.params[0]->kind, TypeKind::Int);
   EXPECT_EQ(info.params[1]->kind, TypeKind::String);
-  EXPECT_EQ(info.returns.size(), 1u);
-  EXPECT_EQ(info.returns[0]->kind, TypeKind::Bool);
+  ASSERT_NE(info.return_type, nullptr);
+  EXPECT_EQ(info.return_type->kind, TypeKind::Bool);
 }
 
 // ===========================================================================
@@ -474,7 +469,7 @@ TEST(Sgi, AnalyzerResolvesImportViaSgi) {
   auto file = File::from_source("test.sg", R"(
 import "mathlib"
 
-pub fn Main() Int {
+pub fn Main() int {
   mathlib.Add(1, 2)
 }
   )");
@@ -517,7 +512,7 @@ TEST(Sgi, AnalyzerSgiTakesPriorityOverMissingSource) {
   auto file = File::from_source("test.sg", R"(
 import "greeter"
 
-pub fn Main() Void {
+pub fn Main() void {
   greeter.Greet("world")
 }
   )");

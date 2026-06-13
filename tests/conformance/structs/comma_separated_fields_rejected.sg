@@ -2,7 +2,7 @@
 // (docs/grammar.md:23, StructDecl uses `terminal` between members.)
 
 struct Point {
-  x Int, y Int
+  x int, y int
 }
 
-pub fn Main() Void {}
+pub fn Main() void {}

@@ -31,17 +31,26 @@ struct CG {
     Parser parser(r.fileset);
     r.ast = parser.parse();
     EXPECT_NE(r.ast, nullptr);
-    EXPECT_TRUE(parser.errors.errors.empty());
+    EXPECT_TRUE(parser.errors.errors.empty())
+        << (parser.errors.errors.empty() ? "" : parser.errors.errors[0].message);
 
     r.analyzer = std::make_unique<Analyzer>(r.fileset);
     r.analyzer->is_stdlib = stdlib;
     r.analyzer->package_resolver->sgi_search_paths.push_back(
         SAGA_STD_SGI_DIR);
-    r.analyzer->analyze(*r.ast);
-    EXPECT_TRUE(r.analyzer->errors.errors.empty());
-
+    // Never analyze a parse-error AST nor codegen an analyze-error one: feeding
+    // the next stage a malformed input can segfault, which aborts the whole
+    // test binary and masks every later test.
     r.codegen = std::make_unique<CodeGen>("test", *r.analyzer);
-    r.codegen->emit(*r.ast);
+    if (r.ast && parser.errors.errors.empty()) {
+      r.analyzer->analyze(*r.ast);
+      EXPECT_TRUE(r.analyzer->errors.errors.empty())
+          << (r.analyzer->errors.errors.empty()
+                  ? ""
+                  : r.analyzer->errors.errors[0].message);
+      if (r.analyzer->errors.errors.empty())
+        r.codegen->emit(*r.ast);
+    }
     return r;
   }
 
@@ -78,14 +87,14 @@ struct CG {
 // ===========================================================================
 
 TEST(CodeGen, MainFunctionExists) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
   EXPECT_EQ(main->getLinkage(), llvm::Function::ExternalLinkage);
 }
 
 TEST(CodeGen, MainReturnsI32Zero) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
   EXPECT_EQ(main->size(), 1u);
@@ -98,8 +107,8 @@ TEST(CodeGen, MainReturnsI32Zero) {
 
 TEST(CodeGen, NonMainVoidFunc) {
   auto r = CG::from(
-      "fn helper() Void {}\n"
-      "pub fn Main() Void {}");
+      "fn helper() void {}\n"
+      "pub fn Main() void {}");
   auto *helper = r.func("helper");
   ASSERT_NE(helper, nullptr);
   EXPECT_TRUE(helper->getReturnType()->isVoidTy());
@@ -109,13 +118,13 @@ TEST(CodeGen, NonMainVoidFunc) {
 }
 
 TEST(CodeGen, MainLinkerName) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   EXPECT_EQ(r.func("Main"), nullptr) << "Should not have symbol 'Main'";
   EXPECT_NE(r.func("main"), nullptr) << "Should have symbol 'main'";
 }
 
 TEST(CodeGen, ModuleHasCorrectName) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   EXPECT_EQ(r.mod().getName(), "test");
 }
 
@@ -124,7 +133,7 @@ TEST(CodeGen, ModuleHasCorrectName) {
 // ===========================================================================
 
 TEST(CodeGen, StringTypeExists) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(r.mod().getContext(), "saga_runtime_string");
   ASSERT_NE(st, nullptr);
   // { ptr data, i64 len, i64 refcount }
@@ -132,7 +141,7 @@ TEST(CodeGen, StringTypeExists) {
 }
 
 TEST(CodeGen, RuntimePrintDeclared) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *print_fn = r.func("saga_intrinsic_print");
   ASSERT_NE(print_fn, nullptr);
   EXPECT_TRUE(print_fn->isDeclaration()) << "Should be extern (no body)";
@@ -142,7 +151,7 @@ TEST(CodeGen, RuntimePrintDeclared) {
 
 TEST(CodeGen, StringConstantEmitted) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"hello\")\n"
       "}");
   // There should be a global named .saga_runtime_str.
@@ -153,7 +162,7 @@ TEST(CodeGen, StringConstantEmitted) {
 
 TEST(CodeGen, PrintCallEmitted) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"hello\")\n"
       "}");
   auto *main = r.func("main");
@@ -176,7 +185,7 @@ TEST(CodeGen, PrintCallEmitted) {
 
 TEST(CodeGen, EscapeSequencesInString) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"a\\nb\\tc\")\n"
       "}");
   // The raw data global should contain actual newline/tab bytes.
@@ -193,7 +202,7 @@ TEST(CodeGen, EscapeSequencesInString) {
 
 TEST(CodeGen, EmptyStringConstant) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"\")\n"
       "}");
   // Should still emit a valid call without crashing.
@@ -204,7 +213,7 @@ TEST(CodeGen, EmptyStringConstant) {
 
 TEST(CodeGen, MultiplePrintCalls) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"one\")\n"
       "  intrinsic_print(\"two\")\n"
       "}");
@@ -225,7 +234,7 @@ TEST(CodeGen, MultiplePrintCalls) {
 
 TEST(CodeGen, DuplicateStringsDeduplicated) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"same\")\n"
       "  intrinsic_print(\"same\")\n"
       "}");
@@ -275,7 +284,7 @@ static bool has_alloca_named(llvm::Function *fn, const std::string &name) {
 
 TEST(CodeGen, IntLiteralConstant) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 42\n"
       "}");
   auto *main = r.func("main");
@@ -285,7 +294,7 @@ TEST(CodeGen, IntLiteralConstant) {
 
 TEST(CodeGen, IntAddition) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 + 32\n"
       "}");
   auto *main = r.func("main");
@@ -297,7 +306,7 @@ TEST(CodeGen, IntAddition) {
 
 TEST(CodeGen, IntSubtraction) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 50 - 8\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
@@ -305,7 +314,7 @@ TEST(CodeGen, IntSubtraction) {
 
 TEST(CodeGen, IntMultiplication) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 6 * 7\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
@@ -313,7 +322,7 @@ TEST(CodeGen, IntMultiplication) {
 
 TEST(CodeGen, IntDivision) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 100 / 7\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
@@ -321,7 +330,7 @@ TEST(CodeGen, IntDivision) {
 
 TEST(CodeGen, IntModulo) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 100 % 7\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
@@ -329,7 +338,7 @@ TEST(CodeGen, IntModulo) {
 
 TEST(CodeGen, VariableLoadAndArithmetic) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 10\n"
       "  b := 20\n"
       "  c := a + b\n"
@@ -345,7 +354,7 @@ TEST(CodeGen, VariableLoadAndArithmetic) {
 
 TEST(CodeGen, CompoundAddAssignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  x += 5\n"
       "}");
@@ -358,7 +367,7 @@ TEST(CodeGen, CompoundAddAssignment) {
 
 TEST(CodeGen, CompoundSubAssignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  x -= 3\n"
       "}");
@@ -368,7 +377,7 @@ TEST(CodeGen, CompoundSubAssignment) {
 
 TEST(CodeGen, CompoundMulAssignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  x *= 2\n"
       "}");
@@ -378,7 +387,7 @@ TEST(CodeGen, CompoundMulAssignment) {
 
 TEST(CodeGen, CompoundDivAssignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  x /= 2\n"
       "}");
@@ -388,7 +397,7 @@ TEST(CodeGen, CompoundDivAssignment) {
 
 TEST(CodeGen, Increment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 0\n"
       "  x++\n"
       "}");
@@ -398,7 +407,7 @@ TEST(CodeGen, Increment) {
 
 TEST(CodeGen, Decrement) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  x--\n"
       "}");
@@ -408,7 +417,7 @@ TEST(CodeGen, Decrement) {
 
 TEST(CodeGen, UnaryNegation) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 5\n"
       "  y := -x\n"
       "}");
@@ -419,7 +428,7 @@ TEST(CodeGen, UnaryNegation) {
 
 TEST(CodeGen, UnaryLogicalNot) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := true\n"
       "  y := !x\n"
       "}");
@@ -430,7 +439,7 @@ TEST(CodeGen, UnaryLogicalNot) {
 
 TEST(CodeGen, BoolLiterals) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := true\n"
       "  f := false\n"
       "}");
@@ -441,7 +450,7 @@ TEST(CodeGen, BoolLiterals) {
 
 TEST(CodeGen, ComparisonEq) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 1\n"
       "  b := 2\n"
       "  x := a == b\n"
@@ -453,7 +462,7 @@ TEST(CodeGen, ComparisonEq) {
 
 TEST(CodeGen, ComparisonLt) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 1\n"
       "  b := 2\n"
       "  x := a < b\n"
@@ -464,7 +473,7 @@ TEST(CodeGen, ComparisonLt) {
 
 TEST(CodeGen, BitwiseOps) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 0xFF & 0x0F\n"
       "  b := 0xFF | 0x0F\n"
       "  c := 0xFF ^ 0x0F\n"
@@ -479,7 +488,7 @@ TEST(CodeGen, BitwiseOps) {
 
 TEST(CodeGen, GroupedExpression) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := (1 + 2) * 3\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
@@ -487,16 +496,16 @@ TEST(CodeGen, GroupedExpression) {
 
 TEST(CodeGen, VarDeclExplicitType) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int = 42\n"
+      "pub fn Main() void {\n"
+      "  x int = 42\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
 }
 
 TEST(CodeGen, VarDeclZeroInit) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int\n"
+      "pub fn Main() void {\n"
+      "  x int\n"
       "}");
   auto *main = r.func("main");
   EXPECT_TRUE(has_alloca_named(main, "x"));
@@ -506,7 +515,7 @@ TEST(CodeGen, VarDeclZeroInit) {
 
 TEST(CodeGen, SimpleAssignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1\n"
       "  x = 2\n"
       "}");
@@ -517,7 +526,7 @@ TEST(CodeGen, SimpleAssignment) {
 
 TEST(CodeGen, FloatLiteral) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 3.14\n"
       "}");
   auto *main = r.func("main");
@@ -526,7 +535,7 @@ TEST(CodeGen, FloatLiteral) {
 
 TEST(CodeGen, FloatArithmetic) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1.5 + 2.5\n"
       "  y := 3.0 * 2.0\n"
       "}");
@@ -537,8 +546,8 @@ TEST(CodeGen, FloatArithmetic) {
 
 TEST(CodeGen, NonMainFuncReturnType) {
   auto r = CG::from(
-      "fn answer() Int { 42 }\n"
-      "pub fn Main() Void {}");
+      "fn answer() int { 42 }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("answer");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
@@ -546,7 +555,7 @@ TEST(CodeGen, NonMainFuncReturnType) {
 
 TEST(CodeGen, HexAndBinaryLiterals) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 0xFF\n"
       "  b := 0b1010\n"
       "  c := 0o777\n"
@@ -559,7 +568,7 @@ TEST(CodeGen, HexAndBinaryLiterals) {
 
 TEST(CodeGen, UnderscoresInLiterals) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1_000_000\n"
       "}");
   EXPECT_TRUE(has_alloca_named(r.func("main"), "x"));
@@ -571,7 +580,7 @@ TEST(CodeGen, UnderscoresInLiterals) {
 
 TEST(CodeGen, StringVariable) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"hello\"\n"
       "  intrinsic_print(s)\n"
       "}");
@@ -591,7 +600,7 @@ TEST(CodeGen, StringVariable) {
 
 TEST(CodeGen, StringConcatEmitsCall) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := \"hello\"\n"
       "  b := \" world\"\n"
       "  c := a + b\n"
@@ -610,7 +619,7 @@ TEST(CodeGen, StringConcatEmitsCall) {
 
 TEST(CodeGen, StringConcatAssignEmitsCall) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"hello\"\n"
       "  s += \" world\"\n"
       "}");
@@ -628,7 +637,7 @@ TEST(CodeGen, StringConcatAssignEmitsCall) {
 
 TEST(CodeGen, StringEqualityEmitsCompare) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := \"hello\"\n"
       "  b := \"world\"\n"
       "  x := a == b\n"
@@ -647,7 +656,7 @@ TEST(CodeGen, StringEqualityEmitsCompare) {
 
 TEST(CodeGen, StringLessThanEmitsCompare) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := \"abc\"\n"
       "  b := \"def\"\n"
       "  x := a < b\n"
@@ -665,7 +674,7 @@ TEST(CodeGen, StringLessThanEmitsCompare) {
 }
 
 TEST(CodeGen, RuntimeConversionsDeclared) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   EXPECT_NE(r.func("saga_string_concat"), nullptr);
   EXPECT_NE(r.func("saga_string_compare"), nullptr);
   EXPECT_NE(r.func("saga_int_to_string"), nullptr);
@@ -676,7 +685,7 @@ TEST(CodeGen, RuntimeConversionsDeclared) {
 TEST(CodeGen, StringNotAddedAsInteger) {
   // Verify that string + string does NOT emit an integer add instruction.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := \"x\"\n"
       "  b := \"y\"\n"
       "  c := a + b\n"
@@ -687,12 +696,12 @@ TEST(CodeGen, StringNotAddedAsInteger) {
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (inst.getOpcode() == llvm::Instruction::Add)
-        FAIL() << "String concatenation should not use integer add";
+        FAIL() << "string concatenation should not use integer add";
 }
 
 TEST(CodeGen, MultipleConcatenations) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := \"a\" + \"b\" + \"c\"\n"
       "}");
   auto *main = r.func("main");
@@ -714,8 +723,8 @@ TEST(CodeGen, MultipleConcatenations) {
 
 TEST(CodeGen, FuncWithIntParams) {
   auto r = CG::from(
-      "fn Add(a, b Int) Int { a + b }\n"
-      "pub fn Main() Void {}");
+      "fn Add(a, b int) int { a + b }\n"
+      "pub fn Main() void {}");
   auto *add = r.func("Add");
   ASSERT_NE(add, nullptr);
   EXPECT_EQ(add->arg_size(), 2u);
@@ -727,8 +736,8 @@ TEST(CodeGen, FuncWithIntParams) {
 
 TEST(CodeGen, FuncParamNames) {
   auto r = CG::from(
-      "fn Add(a, b Int) Int { a + b }\n"
-      "pub fn Main() Void {}");
+      "fn Add(a, b int) int { a + b }\n"
+      "pub fn Main() void {}");
   auto *add = r.func("Add");
   ASSERT_NE(add, nullptr);
   EXPECT_EQ(add->getArg(0)->getName(), "a");
@@ -737,8 +746,8 @@ TEST(CodeGen, FuncParamNames) {
 
 TEST(CodeGen, FuncWithStringParam) {
   auto r = CG::from(
-      "fn Greet(name String) Void { intrinsic_print(name) }\n"
-      "pub fn Main() Void {}");
+      "fn Greet(name string) void { intrinsic_print(name) }\n"
+      "pub fn Main() void {}");
   auto *greet = r.func("Greet");
   ASSERT_NE(greet, nullptr);
   EXPECT_EQ(greet->arg_size(), 1u);
@@ -749,8 +758,8 @@ TEST(CodeGen, FuncWithStringParam) {
 
 TEST(CodeGen, TailExpressionReturn) {
   auto r = CG::from(
-      "fn Double(n Int) Int { n + n }\n"
-      "pub fn Main() Void {}");
+      "fn Double(n int) int { n + n }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Double");
   ASSERT_NE(fn, nullptr);
   // The function should end with a ret i64 (the tail expression).
@@ -764,8 +773,8 @@ TEST(CodeGen, TailExpressionReturn) {
 
 TEST(CodeGen, CallUserFunction) {
   auto r = CG::from(
-      "fn Add(a, b Int) Int { a + b }\n"
-      "pub fn Main() Void {\n"
+      "fn Add(a, b int) int { a + b }\n"
+      "pub fn Main() void {\n"
       "  x := Add(10, 32)\n"
       "}");
   auto *main = r.func("main");
@@ -784,9 +793,9 @@ TEST(CodeGen, CallUserFunction) {
 
 TEST(CodeGen, NestedCalls) {
   auto r = CG::from(
-      "fn Mul(x, y Int) Int { x * y }\n"
-      "fn Square(n Int) Int { Mul(n, n) }\n"
-      "pub fn Main() Void {\n"
+      "fn Mul(x, y int) int { x * y }\n"
+      "fn Square(n int) int { Mul(n, n) }\n"
+      "pub fn Main() void {\n"
       "  x := Square(5)\n"
       "}");
   auto *sq = r.func("Square");
@@ -804,10 +813,10 @@ TEST(CodeGen, NestedCalls) {
 TEST(CodeGen, ForwardReference) {
   // Main is defined before Double.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := Double(21)\n"
       "}\n"
-      "fn Double(n Int) Int { n + n }");
+      "fn Double(n int) int { n + n }");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
   bool found = false;
@@ -826,8 +835,8 @@ TEST(CodeGen, ForwardReference) {
 
 TEST(CodeGen, MultipleParamTypes) {
   auto r = CG::from(
-      "fn Mixed(n Int, x Float) Float { x }\n"
-      "pub fn Main() Void {}");
+      "fn Mixed(n int, x float) float { x }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Mixed");
   ASSERT_NE(fn, nullptr);
   EXPECT_EQ(fn->arg_size(), 2u);
@@ -838,8 +847,8 @@ TEST(CodeGen, MultipleParamTypes) {
 
 TEST(CodeGen, VoidFuncNoReturnValue) {
   auto r = CG::from(
-      "fn DoNothing() Void {}\n"
-      "pub fn Main() Void { DoNothing() }");
+      "fn DoNothing() void {}\n"
+      "pub fn Main() void { DoNothing() }");
   auto *fn = r.func("DoNothing");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->getReturnType()->isVoidTy());
@@ -848,8 +857,8 @@ TEST(CodeGen, VoidFuncNoReturnValue) {
 
 TEST(CodeGen, ParamsCreateAllocas) {
   auto r = CG::from(
-      "fn Add(a, b Int) Int { a + b }\n"
-      "pub fn Main() Void {}");
+      "fn Add(a, b int) int { a + b }\n"
+      "pub fn Main() void {}");
   auto *add = r.func("Add");
   ASSERT_NE(add, nullptr);
   // Allocas may be named "a1", "b2" etc. because the LLVM arg already
@@ -864,8 +873,8 @@ TEST(CodeGen, ParamsCreateAllocas) {
 
 TEST(CodeGen, BoolReturnType) {
   auto r = CG::from(
-      "fn IsPositive(n Int) Bool { n > 0 }\n"
-      "pub fn Main() Void {}");
+      "fn IsPositive(n int) bool { n > 0 }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("IsPositive");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->getReturnType()->isIntegerTy(1));
@@ -874,9 +883,9 @@ TEST(CodeGen, BoolReturnType) {
 TEST(CodeGen, CallChainResult) {
   // Add(10, Square(5)) — nested call as argument.
   auto r = CG::from(
-      "fn Add(a, b Int) Int { a + b }\n"
-      "fn Square(n Int) Int { n * n }\n"
-      "pub fn Main() Void {\n"
+      "fn Add(a, b int) int { a + b }\n"
+      "fn Square(n int) int { n * n }\n"
+      "pub fn Main() void {\n"
       "  x := Add(10, Square(5))\n"
       "}");
   auto *main = r.func("main");
@@ -899,7 +908,7 @@ TEST(CodeGen, CallChainResult) {
 
 TEST(CodeGen, IfWithoutElse) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  if x > 5 {\n"
       "    intrinsic_print(\"big\\n\")\n"
@@ -913,7 +922,7 @@ TEST(CodeGen, IfWithoutElse) {
 
 TEST(CodeGen, IfElseBranching) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  if x > 5 {\n"
       "    intrinsic_print(\"big\\n\")\n"
@@ -929,10 +938,10 @@ TEST(CodeGen, IfElseBranching) {
 
 TEST(CodeGen, IfExpressionWithPhi) {
   auto r = CG::from(
-      "fn Max(a, b Int) Int {\n"
+      "fn Max(a, b int) int {\n"
       "  if a > b { a } else { b }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Max");
   ASSERT_NE(fn, nullptr);
   // Should have a PHI node in the merge block.
@@ -946,10 +955,10 @@ TEST(CodeGen, IfExpressionWithPhi) {
 
 TEST(CodeGen, IfExprReturnedAsTail) {
   auto r = CG::from(
-      "fn Max(a, b Int) Int {\n"
+      "fn Max(a, b int) int {\n"
       "  if a > b { a } else { b }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Max");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
@@ -966,10 +975,10 @@ TEST(CodeGen, IfExprReturnedAsTail) {
 
 TEST(CodeGen, IfStringExpression) {
   auto r = CG::from(
-      "fn Label(n Int) String {\n"
+      "fn Label(n int) string {\n"
       "  if n > 0 { \"pos\" } else { \"neg\" }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Label");
   ASSERT_NE(fn, nullptr);
   bool found_phi = false;
@@ -983,13 +992,13 @@ TEST(CodeGen, IfStringExpression) {
 TEST(CodeGen, IfWithEarlyReturn) {
   // if-without-else where the then block returns, code continues after.
   auto r = CG::from(
-      "fn Guard(n Int) Int {\n"
+      "fn Guard(n int) int {\n"
       "  if n < 0 {\n"
       "    return 0\n"
       "  }\n"
       "  n\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Guard");
   ASSERT_NE(fn, nullptr);
   // Should have at least 3 blocks: entry, then (with ret), merge (with ret n).
@@ -1005,10 +1014,10 @@ TEST(CodeGen, IfWithEarlyReturn) {
 
 TEST(CodeGen, IfBothBranchesReturn) {
   auto r = CG::from(
-      "fn Choose(n Int) Int {\n"
+      "fn Choose(n int) int {\n"
       "  if n > 0 { n } else { -n }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Choose");
   ASSERT_NE(fn, nullptr);
   // The PHI result should be returned.
@@ -1023,7 +1032,7 @@ TEST(CodeGen, IfBothBranchesReturn) {
 TEST(CodeGen, IfCondBranch) {
   // Verify the conditional branch instruction exists.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1\n"
       "  if x > 0 {\n"
       "    intrinsic_print(\"yes\\n\")\n"
@@ -1042,7 +1051,7 @@ TEST(CodeGen, IfCondBranch) {
 
 TEST(CodeGen, IfElseAssignVariable) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
       "  y := if x > 5 { 1 } else { 0 }\n"
       "}");
@@ -1057,7 +1066,7 @@ TEST(CodeGen, IfElseAssignVariable) {
 
 TEST(CodeGen, ConditionLoop) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 0\n"
       "  for x < 5 {\n"
       "    x += 1\n"
@@ -1079,7 +1088,7 @@ TEST(CodeGen, ConditionLoop) {
 
 TEST(CodeGen, CStyleLoop) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  for i := 0; i < 10; i++ {\n"
       "    intrinsic_print(\"x\\n\")\n"
       "  }\n"
@@ -1099,7 +1108,7 @@ TEST(CodeGen, CStyleLoop) {
 
 TEST(CodeGen, InfiniteLoopWithBreak) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 0\n"
       "  for {\n"
       "    if x >= 3 { break }\n"
@@ -1118,7 +1127,7 @@ TEST(CodeGen, InfiniteLoopWithBreak) {
 
 TEST(CodeGen, NextSkipsIteration) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  for i := 0; i < 5; i++ {\n"
       "    if i == 2 { next }\n"
       "    intrinsic_print(\".\\n\")\n"
@@ -1137,7 +1146,7 @@ TEST(CodeGen, NextSkipsIteration) {
 TEST(CodeGen, LoopBackEdge) {
   // Verify the loop body branches back to the condition.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 0\n"
       "  for x < 3 {\n"
       "    x += 1\n"
@@ -1158,7 +1167,7 @@ TEST(CodeGen, LoopBackEdge) {
 
 TEST(CodeGen, NestedLoops) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  for i := 0; i < 3; i++ {\n"
       "    for j := 0; j < 3; j++ {\n"
       "      intrinsic_print(\".\")\n"
@@ -1177,8 +1186,8 @@ TEST(CodeGen, NestedLoops) {
 
 TEST(CodeGen, LoopWithFunctionCall) {
   auto r = CG::from(
-      "fn Inc(n Int) Int { n + 1 }\n"
-      "pub fn Main() Void {\n"
+      "fn Inc(n int) int { n + 1 }\n"
+      "pub fn Main() void {\n"
       "  x := 0\n"
       "  for x < 3 {\n"
       "    x = Inc(x)\n"
@@ -1204,8 +1213,8 @@ TEST(CodeGen, LoopWithFunctionCall) {
 
 TEST(CodeGen, StructTypeCreated) {
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "pub fn Main() Void {}");
+      "struct Point { x, y int }\n"
+      "pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga." + CG::mangled("Point"));
   ASSERT_NE(st, nullptr);
@@ -1216,8 +1225,8 @@ TEST(CodeGen, StructTypeCreated) {
 
 TEST(CodeGen, StructLiteralAlloca) {
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Point { x, y int }\n"
+      "pub fn Main() void {\n"
       "  p := Point{x: 1, y: 2}\n"
       "}");
   auto *main = r.func("main");
@@ -1234,8 +1243,8 @@ TEST(CodeGen, StructLiteralAlloca) {
 
 TEST(CodeGen, StructFieldGEP) {
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Point { x, y int }\n"
+      "pub fn Main() void {\n"
       "  p := Point{x: 10, y: 20}\n"
       "  a := p.x\n"
       "}");
@@ -1252,8 +1261,8 @@ TEST(CodeGen, StructFieldGEP) {
 
 TEST(CodeGen, StructFieldWrite) {
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Point { x, y int }\n"
+      "pub fn Main() void {\n"
       "  p := Point{x: 1, y: 2}\n"
       "  p.x = 42\n"
       "}");
@@ -1265,9 +1274,9 @@ TEST(CodeGen, StructFieldWrite) {
 
 TEST(CodeGen, StructReturnType) {
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
+      "struct Point { x, y int }\n"
       "fn Make() Point { Point{x: 0, y: 0} }\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Make");
   ASSERT_NE(fn, nullptr);
   // D1 ABI: struct returns lower to void + hidden sret pointer arg.
@@ -1279,10 +1288,10 @@ TEST(CodeGen, StructReturnType) {
 TEST(CodeGen, StructMixedFieldTypes) {
   auto r = CG::from(
       "struct User {\n"
-      "  name String\n"
-      "  age Int\n"
+      "  name string\n"
+      "  age int\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  u := User{name: \"Alice\", age: 30}\n"
       "}");
   auto *st = llvm::StructType::getTypeByName(
@@ -1297,8 +1306,8 @@ TEST(CodeGen, StructMixedFieldTypes) {
 TEST(CodeGen, StructFieldReadWrite) {
   // Full round-trip: write a field then read it back.
   auto r = CG::from(
-      "struct Counter { n Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Counter { n int }\n"
+      "pub fn Main() void {\n"
       "  c := Counter{n: 0}\n"
       "  c.n = 42\n"
       "  x := c.n\n"
@@ -1310,9 +1319,9 @@ TEST(CodeGen, StructFieldReadWrite) {
 
 TEST(CodeGen, MultipleStructTypes) {
   auto r = CG::from(
-      "struct A { x Int }\n"
-      "struct B { y Float }\n"
-      "pub fn Main() Void {}");
+      "struct A { x int }\n"
+      "struct B { y float }\n"
+      "pub fn Main() void {}");
   EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "saga." + CG::mangled("A")),
             nullptr);
   EXPECT_NE(llvm::StructType::getTypeByName(r.mod().getContext(), "saga." + CG::mangled("B")),
@@ -1325,7 +1334,7 @@ TEST(CodeGen, MultipleStructTypes) {
 
 TEST(CodeGen, ArrayLiteralCreated) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [1, 2, 3]\n"
       "}");
   auto *main = r.func("main");
@@ -1343,7 +1352,7 @@ TEST(CodeGen, ArrayLiteralCreated) {
 
 TEST(CodeGen, ArrayPushCalled) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [10, 20]\n"
       "}");
   auto *main = r.func("main");
@@ -1360,7 +1369,7 @@ TEST(CodeGen, ArrayPushCalled) {
 
 TEST(CodeGen, ArrayIndexAccess) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [10, 20, 30]\n"
       "  x := arr[1]\n"
       "}");
@@ -1378,7 +1387,7 @@ TEST(CodeGen, ArrayIndexAccess) {
 
 TEST(CodeGen, ArraySizeMethod) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [1, 2, 3]\n"
       "  n := arr.Size()\n"
       "}", false);
@@ -1396,7 +1405,7 @@ TEST(CodeGen, ArraySizeMethod) {
 
 TEST(CodeGen, ArrayPushMethod) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [1, 2]\n"
       "  arr.Push(3)\n"
       "}", false);
@@ -1420,7 +1429,7 @@ TEST(CodeGen, ArrayPushMethod) {
 
 TEST(CodeGen, ForRangeArray) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [10, 20, 30]\n"
       "  for v : arr {\n"
       "    intrinsic_print(\".\")\n"
@@ -1438,7 +1447,7 @@ TEST(CodeGen, ForRangeArray) {
 
 TEST(CodeGen, ForRangeKeyValue) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [10, 20]\n"
       "  for k, v : arr {\n"
       "    intrinsic_print(\"*\")\n"
@@ -1450,7 +1459,7 @@ TEST(CodeGen, ForRangeKeyValue) {
 }
 
 TEST(CodeGen, ArrayRuntimeDeclared) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   EXPECT_NE(r.func("saga_array_new"), nullptr);
   EXPECT_NE(r.func("saga_array_push"), nullptr);
   EXPECT_NE(r.func("saga_array_at"), nullptr);
@@ -1462,8 +1471,8 @@ TEST(CodeGen, ArrayRuntimeDeclared) {
 // per-slot pointer.
 TEST(CodeGen, ForRangeStructArrayIterIsStruct) {
   auto r = CG::from(
-      "struct Reg { name String }\n"
-      "pub fn Main() Void {\n"
+      "struct Reg { name string }\n"
+      "pub fn Main() void {\n"
       "  regs := [Reg{ name: \"one\" }]\n"
       "  for reg : regs {\n"
       "    intrinsic_print(\".\")\n"
@@ -1489,7 +1498,7 @@ TEST(CodeGen, ForRangeStructArrayIterIsStruct) {
 TEST(CodeGen, PlainStringNoInterp) {
   // A plain string should NOT call saga_string_concat.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"hello\")\n"
       "}");
   auto *main = r.func("main");
@@ -1506,7 +1515,7 @@ TEST(CodeGen, PlainStringNoInterp) {
 
 TEST(CodeGen, InterpStringConcat) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  name := \"world\"\n"
       "  intrinsic_print(\"hello {name}\")\n"
       "}");
@@ -1525,7 +1534,7 @@ TEST(CodeGen, InterpStringConcat) {
 
 TEST(CodeGen, InterpIntConversion) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 42\n"
       "  intrinsic_print(\"val={x}\")\n"
       "}");
@@ -1544,7 +1553,7 @@ TEST(CodeGen, InterpIntConversion) {
 
 TEST(CodeGen, InterpFloatConversion) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 3.14\n"
       "  intrinsic_print(\"pi={x}\")\n"
       "}");
@@ -1562,7 +1571,7 @@ TEST(CodeGen, InterpFloatConversion) {
 
 TEST(CodeGen, InterpBoolConversion) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := true\n"
       "  intrinsic_print(\"flag={x}\")\n"
       "}");
@@ -1580,7 +1589,7 @@ TEST(CodeGen, InterpBoolConversion) {
 
 TEST(CodeGen, InterpExpressionInBraces) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 5\n"
       "  intrinsic_print(\"{x + x}\")\n"
       "}");
@@ -1602,7 +1611,7 @@ TEST(CodeGen, InterpExpressionInBraces) {
 
 TEST(CodeGen, InterpMultipleParts) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 1\n"
       "  b := 2\n"
       "  intrinsic_print(\"{a} and {b}\")\n"
@@ -1623,7 +1632,7 @@ TEST(CodeGen, InterpMultipleParts) {
 TEST(CodeGen, InterpStringVariable) {
   // Interpolating a string variable should NOT call a conversion function.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"world\"\n"
       "  intrinsic_print(\"hello {s}\")\n"
       "}");
@@ -1638,7 +1647,7 @@ TEST(CodeGen, InterpStringVariable) {
              call->getCalledFunction()->getName() == "saga_float_to_string" ||
              call->getCalledFunction()->getName() == "saga_bool_to_string"))
           found_conv = true;
-  EXPECT_FALSE(found_conv) << "String interp should not convert strings";
+  EXPECT_FALSE(found_conv) << "string interp should not convert strings";
 }
 
 // ===========================================================================
@@ -1646,7 +1655,7 @@ TEST(CodeGen, InterpStringVariable) {
 // ===========================================================================
 
 TEST(CodeGen, StringRefcountField) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga_runtime_string");
   ASSERT_NE(st, nullptr);
@@ -1657,7 +1666,7 @@ TEST(CodeGen, StringRefcountField) {
 
 TEST(CodeGen, StaticStringRefcountMinusOne) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_print(\"hello\")\n"
       "}");
   auto *g = r.mod().getNamedGlobal(".saga_runtime_str");
@@ -1674,7 +1683,7 @@ TEST(CodeGen, StaticStringRefcountMinusOne) {
 
 TEST(CodeGen, ReleaseStringAtFuncExit) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"hello\"\n"
       "}");
   auto *main = r.func("main");
@@ -1686,12 +1695,12 @@ TEST(CodeGen, ReleaseStringAtFuncExit) {
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_release_string")
           found = true;
-  EXPECT_TRUE(found) << "String locals should be released at function exit";
+  EXPECT_TRUE(found) << "string locals should be released at function exit";
 }
 
 TEST(CodeGen, ReleaseArrayAtFuncExit) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  arr := [1, 2, 3]\n"
       "}");
   auto *main = r.func("main");
@@ -1708,7 +1717,7 @@ TEST(CodeGen, ReleaseArrayAtFuncExit) {
 
 TEST(CodeGen, ReleaseOnReassignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"first\"\n"
       "  s = \"second\"\n"
       "}");
@@ -1727,7 +1736,7 @@ TEST(CodeGen, ReleaseOnReassignment) {
 
 TEST(CodeGen, ReleaseOnStringConcat) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"a\"\n"
       "  s += \"b\"\n"
       "}");
@@ -1745,7 +1754,7 @@ TEST(CodeGen, ReleaseOnStringConcat) {
 }
 
 TEST(CodeGen, RetainReleaseDeclared) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   EXPECT_NE(r.func("saga_retain_string"), nullptr);
   EXPECT_NE(r.func("saga_release_string"), nullptr);
   EXPECT_NE(r.func("saga_retain_array"), nullptr);
@@ -1754,11 +1763,11 @@ TEST(CodeGen, RetainReleaseDeclared) {
 
 TEST(CodeGen, ReleaseBeforeReturn) {
   auto r = CG::from(
-      "fn Greet() Void {\n"
+      "fn Greet() void {\n"
       "  s := \"hello\"\n"
       "  intrinsic_print(s)\n"
       "}\n"
-      "pub fn Main() Void { Greet() }");
+      "pub fn Main() void { Greet() }");
   auto *fn = r.func("Greet");
   ASSERT_NE(fn, nullptr);
   bool found = false;
@@ -1774,7 +1783,7 @@ TEST(CodeGen, ReleaseBeforeReturn) {
 TEST(CodeGen, IntLocalNotReleased) {
   // Int locals should NOT get release calls.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 42\n"
       "}");
   auto *main = r.func("main");
@@ -1785,7 +1794,7 @@ TEST(CodeGen, IntLocalNotReleased) {
         if (call->getCalledFunction() &&
             (call->getCalledFunction()->getName() == "saga_release_string" ||
              call->getCalledFunction()->getName() == "saga_release_array"))
-          FAIL() << "Int locals should not be released";
+          FAIL() << "int locals should not be released";
 }
 
 // ===========================================================================
@@ -1795,7 +1804,7 @@ TEST(CodeGen, IntLocalNotReleased) {
 TEST(CodeGen, EnumVariantValues) {
   auto r = CG::from(
       "enum Colors { Red\n Green\n Blue }\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  r := Colors.Red\n"
       "  g := Colors.Green\n"
       "  b := Colors.Blue\n"
@@ -1810,7 +1819,7 @@ TEST(CodeGen, EnumVariantValues) {
 TEST(CodeGen, EnumComparison) {
   auto r = CG::from(
       "enum Colors { Red\n Green\n Blue }\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  c := Colors.Red\n"
       "  x := c == Colors.Red\n"
       "}");
@@ -1827,7 +1836,7 @@ TEST(CodeGen, EnumCustomIndex) {
       "  Hearts {index: 5}\n"
       "  Spades\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  c := Suits.Clubs\n"
       "  s := Suits.Spades\n"
       "}");
@@ -1842,8 +1851,8 @@ TEST(CodeGen, EnumCustomIndex) {
 TEST(CodeGen, EnumAsParam) {
   auto r = CG::from(
       "enum Dir { North\n South }\n"
-      "fn Check(d Dir) Bool { d == Dir.North }\n"
-      "pub fn Main() Void {}");
+      "fn Check(d Dir) bool { d == Dir.North }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Check");
   ASSERT_NE(fn, nullptr);
   EXPECT_EQ(fn->arg_size(), 1u);
@@ -1855,7 +1864,7 @@ TEST(CodeGen, EnumReturnType) {
   auto r = CG::from(
       "enum Dir { North\n South\n East\n West }\n"
       "fn Default() Dir { Dir.North }\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Default");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->getReturnType()->isIntegerTy(64));
@@ -1864,7 +1873,7 @@ TEST(CodeGen, EnumReturnType) {
 TEST(CodeGen, EnumInIf) {
   auto r = CG::from(
       "enum Colors { Red\n Green\n Blue }\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  c := Colors.Green\n"
       "  if c == Colors.Green {\n"
       "    intrinsic_print(\"green\\n\")\n"
@@ -1877,7 +1886,7 @@ TEST(CodeGen, EnumInIf) {
 
 TEST(CodeGen, BuiltinComparisonEnum) {
   // The built-in Comparison enum should be registered.
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   // Check that the codegen knows about Comparison variants.
   EXPECT_TRUE(r.codegen->enum_variants.count(CG::mangled("Comparison") + ".Less"));
   EXPECT_TRUE(r.codegen->enum_variants.count(CG::mangled("Comparison") + ".Equal"));
@@ -1893,7 +1902,7 @@ TEST(CodeGen, BuiltinComparisonEnum) {
 
 TEST(CodeGen, SwitchIntBasicBlocks) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1\n"
       "  switch x {\n"
       "    case 0: intrinsic_print(\"zero\\n\")\n"
@@ -1914,7 +1923,7 @@ TEST(CodeGen, SwitchIntBasicBlocks) {
 
 TEST(CodeGen, SwitchIntUsesSwInst) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1\n"
       "  switch x {\n"
       "    case 0: intrinsic_print(\"zero\\n\")\n"
@@ -1933,7 +1942,7 @@ TEST(CodeGen, SwitchIntUsesSwInst) {
 
 TEST(CodeGen, SwitchIntWithElse) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 5\n"
       "  switch x {\n"
       "    case 0: intrinsic_print(\"zero\\n\")\n"
@@ -1952,14 +1961,14 @@ TEST(CodeGen, SwitchIntWithElse) {
 TEST(CodeGen, SwitchIntExpression) {
   // Switch used as an expression should produce a PHI.
   auto r = CG::from(
-      "fn Describe(n Int) Int {\n"
+      "fn Describe(n int) int {\n"
       "  switch n {\n"
       "    case 0: 10\n"
       "    case 1: 20\n"
       "    else: 30\n"
       "  }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Describe");
   ASSERT_NE(fn, nullptr);
   bool found_phi = false;
@@ -1972,13 +1981,13 @@ TEST(CodeGen, SwitchIntExpression) {
 
 TEST(CodeGen, SwitchIntExprReturnedAsTail) {
   auto r = CG::from(
-      "fn Classify(n Int) Int {\n"
+      "fn Classify(n int) int {\n"
       "  switch n {\n"
       "    case 0: 100\n"
       "    else: 200\n"
       "  }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Classify");
   ASSERT_NE(fn, nullptr);
   // The merge block should have a ret with the PHI value.
@@ -1995,7 +2004,7 @@ TEST(CodeGen, SwitchIntExprReturnedAsTail) {
 TEST(CodeGen, SwitchEnumValue) {
   auto r = CG::from(
       "enum Colors { Red\n Green\n Blue }\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  c := Colors.Green\n"
       "  switch c {\n"
       "    case Colors.Red: intrinsic_print(\"red\\n\")\n"
@@ -2017,7 +2026,7 @@ TEST(CodeGen, SwitchEnumValue) {
 TEST(CodeGen, SwitchEnumExpression) {
   auto r = CG::from(
       "enum Dir { North\n South\n East\n West }\n"
-      "fn ToInt(d Dir) Int {\n"
+      "fn ToInt(d Dir) int {\n"
       "  switch d {\n"
       "    case Dir.North: 0\n"
       "    case Dir.South: 1\n"
@@ -2025,7 +2034,7 @@ TEST(CodeGen, SwitchEnumExpression) {
       "    else: 3\n"
       "  }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("ToInt");
   ASSERT_NE(fn, nullptr);
   bool found_switch = false;
@@ -2040,7 +2049,7 @@ TEST(CodeGen, SwitchEnumExpression) {
 
 TEST(CodeGen, SwitchWithBlockBody) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 2\n"
       "  switch x {\n"
       "    case 1: {\n"
@@ -2066,7 +2075,7 @@ TEST(CodeGen, SwitchWithBlockBody) {
 
 TEST(CodeGen, SwitchStringUsesChainedCompare) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  s := \"hi\"\n"
       "  switch s {\n"
       "    case \"hello\": intrinsic_print(\"found hello\\n\")\n"
@@ -2082,7 +2091,7 @@ TEST(CodeGen, SwitchStringUsesChainedCompare) {
       if (llvm::isa<llvm::SwitchInst>(term))
         found_switch = true;
   EXPECT_FALSE(found_switch)
-      << "String switch should use chained compare, not switch inst";
+      << "string switch should use chained compare, not switch inst";
   // Should have calls to saga_string_compare.
   int cmp_count = 0;
   for (auto &bb : *main)
@@ -2096,13 +2105,13 @@ TEST(CodeGen, SwitchStringUsesChainedCompare) {
 
 TEST(CodeGen, SwitchStringWithElse) {
   auto r = CG::from(
-      "fn Greet(name String) String {\n"
+      "fn Greet(name string) string {\n"
       "  switch name {\n"
       "    case \"Alice\": \"Hi Alice!\"\n"
       "    else: \"Hello stranger\"\n"
       "  }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Greet");
   ASSERT_NE(fn, nullptr);
   // Should have a PHI for the expression result.
@@ -2117,7 +2126,7 @@ TEST(CodeGen, SwitchStringWithElse) {
 TEST(CodeGen, SwitchCasesNoFallThrough) {
   // Each case should branch directly to merge, not fall through.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 1\n"
       "  switch x {\n"
       "    case 0: intrinsic_print(\"zero\\n\")\n"
@@ -2143,7 +2152,7 @@ TEST(CodeGen, SwitchCasesNoFallThrough) {
 TEST(CodeGen, SwitchMultipleCases) {
   // Three cases + else, each with side effects.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 2\n"
       "  switch x {\n"
       "    case 0: intrinsic_print(\"zero\\n\")\n"
@@ -2163,7 +2172,7 @@ TEST(CodeGen, SwitchMultipleCases) {
 
 TEST(CodeGen, SwitchSingleCase) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 42\n"
       "  switch x {\n"
       "    case 42: intrinsic_print(\"found\\n\")\n"
@@ -2183,14 +2192,14 @@ TEST(CodeGen, SwitchSingleCase) {
 
 TEST(CodeGen, SwitchCallsInCases) {
   auto r = CG::from(
-      "fn Handle(code Int) Void {\n"
+      "fn Handle(code int) void {\n"
       "  switch code {\n"
       "    case 0: intrinsic_print(\"ok\\n\")\n"
       "    case 1: intrinsic_print(\"warn\\n\")\n"
       "    else: intrinsic_print(\"err\\n\")\n"
       "  }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Handle");
   ASSERT_NE(fn, nullptr);
   // Should have 3 print calls (one per case/else).
@@ -2205,231 +2214,13 @@ TEST(CodeGen, SwitchCallsInCases) {
 }
 
 // ===========================================================================
-// Multiple return values
-// ===========================================================================
-
-TEST(CodeGen, MultiReturnFuncType) {
-  auto r = CG::from(
-      "fn Pair() Int, Int {\n"
-      "  return 1, 2\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  auto *fn = r.func("Pair");
-  ASSERT_NE(fn, nullptr);
-  // Return type should be a struct { i64, i64 }.
-  auto *ret = fn->getReturnType();
-  ASSERT_TRUE(ret->isStructTy()) << "Multi-return should use struct type";
-  auto *st = llvm::cast<llvm::StructType>(ret);
-  EXPECT_EQ(st->getNumElements(), 2u);
-  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
-  EXPECT_TRUE(st->getElementType(1)->isIntegerTy(64));
-}
-
-TEST(CodeGen, MultiReturnStructName) {
-  auto r = CG::from(
-      "fn Pair() Int, Int {\n"
-      "  return 1, 2\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  // Should have a named struct type for multi-return.
-  auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "saga.ret." + CG::mangled("Pair"));
-  ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u);
-}
-
-TEST(CodeGen, MultiReturnPacksValues) {
-  // Use non-constant values so LLVM can't constant-fold.
-  auto r = CG::from(
-      "fn Pair(a, b Int) Int, Int {\n"
-      "  return a, b\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  auto *fn = r.func("Pair");
-  ASSERT_NE(fn, nullptr);
-  // Should have insertvalue instructions to pack the struct.
-  int insert_count = 0;
-  for (auto &bb : *fn)
-    for (auto &inst : bb)
-      if (llvm::isa<llvm::InsertValueInst>(&inst))
-        insert_count++;
-  EXPECT_GE(insert_count, 2) << "Should pack 2 values with insertvalue";
-}
-
-TEST(CodeGen, MultiReturnMixedTypes) {
-  auto r = CG::from(
-      "fn IntAndString() Int, String {\n"
-      "  return 42, \"hello\"\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  auto *fn = r.func("IntAndString");
-  ASSERT_NE(fn, nullptr);
-  auto *ret = fn->getReturnType();
-  ASSERT_TRUE(ret->isStructTy());
-  auto *st = llvm::cast<llvm::StructType>(ret);
-  EXPECT_EQ(st->getNumElements(), 2u);
-  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
-  EXPECT_TRUE(st->getElementType(1)->isPointerTy()); // String is ptr
-}
-
-TEST(CodeGen, MultiReturnThreeValues) {
-  auto r = CG::from(
-      "fn Triple() Int, Int, Int {\n"
-      "  return 1, 2, 3\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  auto *fn = r.func("Triple");
-  ASSERT_NE(fn, nullptr);
-  auto *ret = fn->getReturnType();
-  ASSERT_TRUE(ret->isStructTy());
-  EXPECT_EQ(llvm::cast<llvm::StructType>(ret)->getNumElements(), 3u);
-}
-
-TEST(CodeGen, MultiReturnUnpack) {
-  auto r = CG::from(
-      "fn Pair() Int, Int {\n"
-      "  return 10, 20\n"
-      "}\n"
-      "pub fn Main() Void {\n"
-      "  x, y := Pair()\n"
-      "}");
-  auto *main = r.func("main");
-  ASSERT_NE(main, nullptr);
-  EXPECT_TRUE(has_alloca_named(main, "x"));
-  EXPECT_TRUE(has_alloca_named(main, "y"));
-  // Should have extractvalue instructions to unpack.
-  int extract_count = 0;
-  for (auto &bb : *main)
-    for (auto &inst : bb)
-      if (llvm::isa<llvm::ExtractValueInst>(&inst))
-        extract_count++;
-  EXPECT_GE(extract_count, 2) << "Should unpack 2 values with extractvalue";
-}
-
-TEST(CodeGen, MultiReturnUnpackMixedTypes) {
-  auto r = CG::from(
-      "fn GetData() Int, String {\n"
-      "  return 42, \"hello\"\n"
-      "}\n"
-      "pub fn Main() Void {\n"
-      "  n, s := GetData()\n"
-      "}");
-  auto *main = r.func("main");
-  ASSERT_NE(main, nullptr);
-  EXPECT_TRUE(has_alloca_named(main, "n"));
-  EXPECT_TRUE(has_alloca_named(main, "s"));
-}
-
-TEST(CodeGen, MultiReturnCallAndUse) {
-  // Verify extracted values can be used after unpacking.
-  auto r = CG::from(
-      "fn Pair() Int, Int {\n"
-      "  return 10, 20\n"
-      "}\n"
-      "pub fn Main() Void {\n"
-      "  x, y := Pair()\n"
-      "  z := x + y\n"
-      "}");
-  auto *main = r.func("main");
-  ASSERT_NE(main, nullptr);
-  EXPECT_TRUE(has_alloca_named(main, "z"));
-  // Should have a call to Pair.
-  bool found_pair = false;
-  for (auto &bb : *main)
-    for (auto &inst : bb)
-      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
-        if (call->getCalledFunction() &&
-            CG::calls_func(call, "Pair"))
-          found_pair = true;
-  EXPECT_TRUE(found_pair);
-  // Should have an add for z := x + y.
-  EXPECT_GE(count_opcodes(main, llvm::Instruction::Add), 1);
-}
-
-TEST(CodeGen, MultiReturnRegistered) {
-  auto r = CG::from(
-      "fn Pair() Int, Int {\n"
-      "  return 1, 2\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  EXPECT_TRUE(r.codegen->multi_return_types.count(CG::mangled("Pair")));
-  EXPECT_EQ(r.codegen->multi_return_counts[CG::mangled("Pair")], 2u);
-}
-
-TEST(CodeGen, MultiReturnDoesNotAffectSingleReturn) {
-  // Single-return functions should remain unchanged.
-  auto r = CG::from(
-      "fn Single() Int { 42 }\n"
-      "fn Pair() Int, Int {\n"
-      "  return 1, 2\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  auto *single = r.func("Single");
-  ASSERT_NE(single, nullptr);
-  EXPECT_TRUE(single->getReturnType()->isIntegerTy(64))
-      << "Single-return should still return i64";
-  EXPECT_FALSE(r.codegen->multi_return_types.count(CG::mangled("Single")));
-}
-
-TEST(CodeGen, MultiReturnRetInstEmitted) {
-  auto r = CG::from(
-      "fn Pair() Int, Int {\n"
-      "  return 10, 20\n"
-      "}\n"
-      "pub fn Main() Void {}");
-  auto *fn = r.func("Pair");
-  ASSERT_NE(fn, nullptr);
-  // Should have exactly one ret instruction returning the struct.
-  int ret_count = 0;
-  for (auto &bb : *fn)
-    if (auto *term = bb.getTerminator())
-      if (auto *ret = llvm::dyn_cast<llvm::ReturnInst>(term)) {
-        ret_count++;
-        ASSERT_NE(ret->getReturnValue(), nullptr);
-        EXPECT_TRUE(ret->getReturnValue()->getType()->isStructTy());
-      }
-  EXPECT_EQ(ret_count, 1);
-}
-
-TEST(CodeGen, MultiReturnIntAndBool) {
-  auto r = CG::from(
-      "fn Check() Int, Bool {\n"
-      "  return 42, true\n"
-      "}\n"
-      "pub fn Main() Void {\n"
-      "  n, ok := Check()\n"
-      "}");
-  auto *main = r.func("main");
-  ASSERT_NE(main, nullptr);
-  EXPECT_TRUE(has_alloca_named(main, "n"));
-  EXPECT_TRUE(has_alloca_named(main, "ok"));
-}
-
-TEST(CodeGen, MultiReturnIntAndFloat) {
-  auto r = CG::from(
-      "fn Compute() Int, Float {\n"
-      "  return 1, 3.14\n"
-      "}\n"
-      "pub fn Main() Void {\n"
-      "  i, f := Compute()\n"
-      "}");
-  auto *fn = r.func("Compute");
-  ASSERT_NE(fn, nullptr);
-  auto *ret = fn->getReturnType();
-  ASSERT_TRUE(ret->isStructTy());
-  auto *st = llvm::cast<llvm::StructType>(ret);
-  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
-  EXPECT_TRUE(st->getElementType(1)->isDoubleTy());
-}
-
-// ===========================================================================
 // Interface conformance — vtables and dynamic dispatch
 // ===========================================================================
 
 TEST(CodeGen, InterfaceVtableTypeCreated) {
   auto r = CG::from(
-      "interface Greeter { Greet() String }\n"
-      "pub fn Main() Void {}");
+      "interface Greeter { Greet() string }\n"
+      "pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga.vtable." + CG::mangled("Greeter"));
   ASSERT_NE(st, nullptr);
@@ -2440,10 +2231,10 @@ TEST(CodeGen, InterfaceVtableTypeCreated) {
 TEST(CodeGen, InterfaceVtableMultipleMethods) {
   auto r = CG::from(
       "interface ReadWriter {\n"
-      "  Read() String\n"
-      "  Write(s String) Void\n"
+      "  Read() string\n"
+      "  Write(s string) void\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga.vtable." + CG::mangled("ReadWriter"));
   ASSERT_NE(st, nullptr);
@@ -2451,7 +2242,7 @@ TEST(CodeGen, InterfaceVtableMultipleMethods) {
 }
 
 TEST(CodeGen, InterfaceFatPtrTypeExists) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga_runtime_iface");
   ASSERT_NE(st, nullptr);
@@ -2463,9 +2254,9 @@ TEST(CodeGen, InterfaceFatPtrTypeExists) {
 TEST(CodeGen, StructMethodDeclared) {
   // Use out-bound method style (receiver syntax) which the analyzer handles.
   auto r = CG::from(
-      "struct Dog { name String }\n"
-      "fn (d Dog) Speak() String { d.name }\n"
-      "pub fn Main() Void {}");
+      "struct Dog { name string }\n"
+      "fn (d Dog) Speak() string { d.name }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Dog.Speak");
   ASSERT_NE(fn, nullptr) << "Struct method should be declared with mangled name";
   EXPECT_EQ(fn->arg_size(), 1u) << "Should have self param only";
@@ -2474,9 +2265,9 @@ TEST(CodeGen, StructMethodDeclared) {
 
 TEST(CodeGen, StructMethodWithParams) {
   auto r = CG::from(
-      "struct Counter { n Int }\n"
-      "fn (c Counter) Add(x Int) Int { c.n + x }\n"
-      "pub fn Main() Void {}");
+      "struct Counter { n int }\n"
+      "fn (c Counter) Add(x int) int { c.n + x }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Counter.Add");
   ASSERT_NE(fn, nullptr);
   EXPECT_EQ(fn->arg_size(), 2u) << "self + x";
@@ -2485,9 +2276,9 @@ TEST(CodeGen, StructMethodWithParams) {
 
 TEST(CodeGen, OutBoundMethodDeclared) {
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "fn (p Point) Magnitude() Int { p.x + p.y }\n"
-      "pub fn Main() Void {}");
+      "struct Point { x, y int }\n"
+      "fn (p Point) Magnitude() int { p.x + p.y }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Point.Magnitude");
   ASSERT_NE(fn, nullptr);
   EXPECT_EQ(fn->arg_size(), 1u);
@@ -2495,9 +2286,9 @@ TEST(CodeGen, OutBoundMethodDeclared) {
 
 TEST(CodeGen, StructMethodCall) {
   auto r = CG::from(
-      "struct Counter { n Int }\n"
-      "fn (c Counter) Value() Int { c.n }\n"
-      "pub fn Main() Void {\n"
+      "struct Counter { n int }\n"
+      "fn (c Counter) Value() int { c.n }\n"
+      "pub fn Main() void {\n"
       "  c := Counter{n: 42}\n"
       "  x := c.Value()\n"
       "}");
@@ -2517,10 +2308,10 @@ TEST(CodeGen, StructMethodCall) {
 
 TEST(CodeGen, VtableGlobalCreated) {
   auto r = CG::from(
-      "interface Speaker { Speak() String }\n"
-      "struct Dog { name String }\n"
-      "fn (d Dog) Speak() String { d.name }\n"
-      "pub fn Main() Void {\n"
+      "interface Speaker { Speak() string }\n"
+      "struct Dog { name string }\n"
+      "fn (d Dog) Speak() string { d.name }\n"
+      "pub fn Main() void {\n"
       "  d := Dog{name: \"Rex\"}\n"
       "  s Speaker = d\n"
       "}");
@@ -2532,10 +2323,10 @@ TEST(CodeGen, VtableGlobalCreated) {
 
 TEST(CodeGen, InterfaceBoxCreatesAllocas) {
   auto r = CG::from(
-      "interface Speaker { Speak() String }\n"
-      "struct Dog { name String }\n"
-      "fn (d Dog) Speak() String { d.name }\n"
-      "pub fn Main() Void {\n"
+      "interface Speaker { Speak() string }\n"
+      "struct Dog { name string }\n"
+      "fn (d Dog) Speak() string { d.name }\n"
+      "pub fn Main() void {\n"
       "  d := Dog{name: \"Rex\"}\n"
       "  s Speaker = d\n"
       "}");
@@ -2552,10 +2343,10 @@ TEST(CodeGen, InterfaceBoxCreatesAllocas) {
 
 TEST(CodeGen, InterfaceDynamicDispatch) {
   auto r = CG::from(
-      "interface Speaker { Speak() String }\n"
-      "struct Dog { name String }\n"
-      "fn (d Dog) Speak() String { d.name }\n"
-      "pub fn Main() Void {\n"
+      "interface Speaker { Speak() string }\n"
+      "struct Dog { name string }\n"
+      "fn (d Dog) Speak() string { d.name }\n"
+      "pub fn Main() void {\n"
       "  d := Dog{name: \"Rex\"}\n"
       "  s Speaker = d\n"
       "  msg := s.Speak()\n"
@@ -2574,11 +2365,11 @@ TEST(CodeGen, InterfaceDynamicDispatch) {
 
 TEST(CodeGen, InterfaceParamType) {
   auto r = CG::from(
-      "interface Speaker { Speak() String }\n"
-      "struct Dog { name String }\n"
-      "fn (d Dog) Speak() String { d.name }\n"
-      "fn UseSpeaker(s Speaker) String { s.Speak() }\n"
-      "pub fn Main() Void {}");
+      "interface Speaker { Speak() string }\n"
+      "struct Dog { name string }\n"
+      "fn (d Dog) Speak() string { d.name }\n"
+      "fn UseSpeaker(s Speaker) string { s.Speak() }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("UseSpeaker");
   ASSERT_NE(fn, nullptr);
   EXPECT_EQ(fn->arg_size(), 1u);
@@ -2588,8 +2379,8 @@ TEST(CodeGen, InterfaceParamType) {
 
 TEST(CodeGen, InterfaceMethodNamesRegistered) {
   auto r = CG::from(
-      "interface Stringer { String() String }\n"
-      "pub fn Main() Void {}");
+      "interface Stringer { String() string }\n"
+      "pub fn Main() void {}");
   auto it = r.codegen->iface_method_names.find(CG::mangled("Stringer"));
   ASSERT_NE(it, r.codegen->iface_method_names.end());
   ASSERT_EQ(it->second.size(), 1u);
@@ -2598,18 +2389,18 @@ TEST(CodeGen, InterfaceMethodNamesRegistered) {
 
 TEST(CodeGen, MultipleInterfacesDeclared) {
   auto r = CG::from(
-      "interface Reader { Read() String }\n"
-      "interface Writer { Write(s String) Void }\n"
-      "pub fn Main() Void {}");
+      "interface Reader { Read() string }\n"
+      "interface Writer { Write(s string) void }\n"
+      "pub fn Main() void {}");
   EXPECT_TRUE(r.codegen->iface_vtable_types.count(CG::mangled("Reader")));
   EXPECT_TRUE(r.codegen->iface_vtable_types.count(CG::mangled("Writer")));
 }
 
 TEST(CodeGen, StructMethodRegisteredInLinks) {
   auto r = CG::from(
-      "struct Cat { name String }\n"
-      "fn (c Cat) Meow() String { \"meow\" }\n"
-      "pub fn Main() Void {}");
+      "struct Cat { name string }\n"
+      "fn (c Cat) Meow() string { \"meow\" }\n"
+      "pub fn Main() void {}");
   auto it = r.codegen->struct_method_links.find(CG::mangled("Cat"));
   ASSERT_NE(it, r.codegen->struct_method_links.end());
   ASSERT_EQ(it->second.size(), 1u);
@@ -2624,8 +2415,8 @@ TEST(CodeGen, StructMethodRegisteredInLinks) {
 TEST(CodeGen, UnionTypeStructExists) {
   // Declaring a variable with a union type should produce a tagged union.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | Error = 0\n"
+      "pub fn Main() void {\n"
+      "  x int | error = 0\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -2636,7 +2427,7 @@ TEST(CodeGen, UnionTypeStructExists) {
 TEST(CodeGen, DivisionProducesUnion) {
   // Division returns Int | Error, so it should produce a tagged union.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2\n"
       "}");
   auto *main = r.func("main");
@@ -2648,7 +2439,7 @@ TEST(CodeGen, DivisionProducesUnion) {
 TEST(CodeGen, OrExprStripsErrorSimple) {
   // `x or { 0 }` should produce the non-error value.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2 or { 0 }\n"
       "}");
   auto *main = r.func("main");
@@ -2666,7 +2457,7 @@ TEST(CodeGen, OrExprStripsErrorSimple) {
 TEST(CodeGen, OrExprWithPipe) {
   // `x or |err| { 0 }` should create the pipe variable.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2 or |err| { 0 }\n"
       "}");
   auto *main = r.func("main");
@@ -2686,7 +2477,7 @@ TEST(CodeGen, OrExprWithPipe) {
 TEST(CodeGen, OrExprMergeBlock) {
   // The or expression should merge into a single block after ok/err.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2 or { 0 }\n"
       "}");
   auto *main = r.func("main");
@@ -2701,8 +2492,8 @@ TEST(CodeGen, OrExprMergeBlock) {
 TEST(CodeGen, UnionPayloadSize) {
   // A union of Int | Error should have a payload size of at least 8 bytes.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | Error = 0\n"
+      "pub fn Main() void {\n"
+      "  x int | error = 0\n"
       "}");
   // Check that the union type exists and has proper layout.
   EXPECT_FALSE(r.codegen->union_llvm_types.empty());
@@ -2716,7 +2507,7 @@ TEST(CodeGen, UnionPayloadSize) {
 TEST(CodeGen, OrExprDefaultValue) {
   // Empty or block should produce zero value.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2 or {}\n"
       "}");
   auto *main = r.func("main");
@@ -2726,8 +2517,8 @@ TEST(CodeGen, OrExprDefaultValue) {
 TEST(CodeGen, UnionVarDeclExplicitType) {
   // Explicit union type annotation with a concrete initializer.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | Error = 42\n"
+      "pub fn Main() void {\n"
+      "  x int | error = 42\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -2736,10 +2527,10 @@ TEST(CodeGen, UnionVarDeclExplicitType) {
 TEST(CodeGen, FuncReturnsUnion) {
   // A function with a union return type should produce the union struct.
   auto r = CG::from(
-      "fn SafeDiv(a, b Int) Int | Error {\n"
+      "fn SafeDiv(a, b int) int | error {\n"
       "  a / b\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := SafeDiv(10, 2)\n"
       "}");
   auto *safe_div = r.func("SafeDiv");
@@ -2760,10 +2551,10 @@ TEST(CodeGen, FuncReturnsUnion) {
 TEST(CodeGen, FuncReturnsUnionWithOrAtCallSite) {
   // Calling a function that returns a union and using or to unwrap.
   auto r = CG::from(
-      "fn SafeDiv(a, b Int) Int | Error {\n"
+      "fn SafeDiv(a, b int) int | error {\n"
       "  a / b\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := SafeDiv(10, 2) or { 0 }\n"
       "}");
   auto *main = r.func("main");
@@ -2781,7 +2572,7 @@ TEST(CodeGen, FuncReturnsUnionWithOrAtCallSite) {
 TEST(CodeGen, OrExprPhiNode) {
   // The or expression should produce a PHI node merging ok/fallback values.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2 or { 99 }\n"
       "}");
   auto *main = r.func("main");
@@ -2802,8 +2593,8 @@ TEST(CodeGen, OrExprPhiNode) {
 TEST(CodeGen, UnionTagIsZeroForFirstAlt) {
   // When wrapping a value of the first alternative, tag should be 0.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | Error = 42\n"
+      "pub fn Main() void {\n"
+      "  x int | error = 42\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -2819,13 +2610,13 @@ TEST(CodeGen, UnionTagIsZeroForFirstAlt) {
       }
     }
   }
-  EXPECT_TRUE(found_tag_store) << "Should store tag 0 for Int in Int|Error";
+  EXPECT_TRUE(found_tag_store) << "Should store tag 0 for int in int|error";
 }
 
 TEST(CodeGen, DivisionOrThenUse) {
   // Division, or-unwrap, then use the result.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10 / 2 or { 0 }\n"
       "  y := x + 1\n"
       "}");
@@ -2849,9 +2640,9 @@ TEST(CodeGen, DivisionOrThenUse) {
 TEST(CodeGen, IfTypeMatchOnUnion) {
   // Type matching: `if x == Int` should compare the tag byte.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | Error = 42\n"
-      "  if x == Int {\n"
+      "pub fn Main() void {\n"
+      "  x int | error = 42\n"
+      "  if x is int {\n"
       "    intrinsic_print(\"yes\\n\")\n"
       "  }\n"
       "}");
@@ -2877,11 +2668,11 @@ TEST(CodeGen, IfTypeMatchOnUnion) {
 TEST(CodeGen, SwitchTypeMatchOnUnion) {
   // Switch on union with type patterns should switch on tag.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | String = 42\n"
+      "pub fn Main() void {\n"
+      "  x int | string = 42\n"
       "  switch x {\n"
-      "    case Int: { intrinsic_print(\"int\\n\") }\n"
-      "    case String: { intrinsic_print(\"str\\n\") }\n"
+      "    case int: { intrinsic_print(\"int\\n\") }\n"
+      "    case string: { intrinsic_print(\"str\\n\") }\n"
       "  }\n"
       "}");
   auto *main = r.func("main");
@@ -2900,9 +2691,9 @@ TEST(CodeGen, SwitchTypeMatchOnUnion) {
 TEST(CodeGen, IfTypeMatchNarrowsExtract) {
   // After type match, the narrowed variable should have the concrete type.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | Error = 42\n"
-      "  if x == Int {\n"
+      "pub fn Main() void {\n"
+      "  x int | error = 42\n"
+      "  if x is int {\n"
       "    y := x + 1\n"
       "  }\n"
       "}");
@@ -2918,16 +2709,16 @@ TEST(CodeGen, IfTypeMatchNarrowsExtract) {
       }
     }
   }
-  EXPECT_TRUE(found_add) << "Then block should have add (narrowed Int)";
+  EXPECT_TRUE(found_add) << "Then block should have add (narrowed int)";
 }
 
 TEST(CodeGen, CallUnionFuncThenOr) {
   // Full pipeline: function returns union, caller uses or to unwrap.
   auto r = CG::from(
-      "fn SafeDiv(a, b Int) Int | Error {\n"
+      "fn SafeDiv(a, b int) int | error {\n"
       "  a / b\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  result := SafeDiv(10, 2) or { 0 }\n"
       "  y := result + 1\n"
       "}");
@@ -2950,9 +2741,9 @@ TEST(CodeGen, CallUnionFuncThenOr) {
 TEST(CodeGen, UnionAssignThenTypeMatch) {
   // Assign a concrete value to a union, then type-match it.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int | String = 42\n"
-      "  if x == Int {\n"
+      "pub fn Main() void {\n"
+      "  x int | string = 42\n"
+      "  if x is int {\n"
       "    intrinsic_print(\"is int\\n\")\n"
       "  } else {\n"
       "    intrinsic_print(\"is string\\n\")\n"
@@ -2975,7 +2766,7 @@ TEST(CodeGen, UnionAssignThenTypeMatch) {
 // ===========================================================================
 
 TEST(CodeGen, MapRuntimeDeclared) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   EXPECT_NE(r.func("saga_map_new"), nullptr);
   EXPECT_NE(r.func("saga_map_set"), nullptr);
   EXPECT_NE(r.func("saga_map_get"), nullptr);
@@ -2990,7 +2781,7 @@ TEST(CodeGen, MapRuntimeDeclared) {
 
 TEST(CodeGen, MapLiteralCreated) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2}\n"
       "}");
   auto *main = r.func("main");
@@ -3008,7 +2799,7 @@ TEST(CodeGen, MapLiteralCreated) {
 
 TEST(CodeGen, MapLiteralSetCalled) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2}\n"
       "}");
   auto *main = r.func("main");
@@ -3025,7 +2816,7 @@ TEST(CodeGen, MapLiteralSetCalled) {
 
 TEST(CodeGen, MapIntKeys) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {1: \"one\", 2: \"two\"}\n"
       "}");
   auto *main = r.func("main");
@@ -3042,7 +2833,7 @@ TEST(CodeGen, MapIntKeys) {
 
 TEST(CodeGen, MapIndexAccess) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"x\": 42}\n"
       "  v := m[\"x\"]\n"
       "}");
@@ -3060,7 +2851,7 @@ TEST(CodeGen, MapIndexAccess) {
 
 TEST(CodeGen, MapIndexAssignment) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1}\n"
       "  m[\"b\"] = 2\n"
       "}");
@@ -3079,7 +2870,7 @@ TEST(CodeGen, MapIndexAssignment) {
 
 TEST(CodeGen, MapSizeMethod) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2}\n"
       "  n := m.Size()\n"
       "}", false);
@@ -3097,7 +2888,7 @@ TEST(CodeGen, MapSizeMethod) {
 
 TEST(CodeGen, MapRemoveMethod) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2}\n"
       "  m.Remove(\"a\")\n"
       "}", false);
@@ -3115,7 +2906,7 @@ TEST(CodeGen, MapRemoveMethod) {
 
 TEST(CodeGen, MapKeyCheckMethod) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1}\n"
       "  exists? := m.Key?(\"a\")\n"
       "}", false);
@@ -3133,7 +2924,7 @@ TEST(CodeGen, MapKeyCheckMethod) {
 
 TEST(CodeGen, MapSetMethod) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1}\n"
       "  m.Set(\"b\", 2)\n"
       "}", false);
@@ -3157,7 +2948,7 @@ TEST(CodeGen, MapSetMethod) {
 
 TEST(CodeGen, MapReleaseAtFuncExit) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1}\n"
       "}");
   auto *main = r.func("main");
@@ -3174,7 +2965,7 @@ TEST(CodeGen, MapReleaseAtFuncExit) {
 
 TEST(CodeGen, MapForRangeValue) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2}\n"
       "  for v : m {\n"
       "    intrinsic_print(\".\")\n"
@@ -3201,7 +2992,7 @@ TEST(CodeGen, MapForRangeValue) {
 
 TEST(CodeGen, MapForRangeKeyValue) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2}\n"
       "  for k, v : m {\n"
       "    intrinsic_print(\".\")\n"
@@ -3228,7 +3019,7 @@ TEST(CodeGen, MapForRangeKeyValue) {
 TEST(CodeGen, MapMultipleEntries) {
   // A map with multiple entries should call saga_runtime_map_set for each.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"a\": 1, \"b\": 2, \"c\": 3}\n"
       "}");
   auto *main = r.func("main");
@@ -3247,7 +3038,7 @@ TEST(CodeGen, MapStringKeyKind) {
   // String-keyed maps should pass key_kind=STRING (=10) and a null ops
   // pointer to saga_map_new.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {\"key\": 42}\n"
       "}");
   auto *main = r.func("main");
@@ -3262,7 +3053,7 @@ TEST(CodeGen, MapStringKeyKind) {
           ASSERT_EQ(call->arg_size(), 4u);
           auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
           ASSERT_NE(kind, nullptr);
-          EXPECT_EQ(kind->getSExtValue(), 10) << "String key map should pass key_kind=STRING";
+          EXPECT_EQ(kind->getSExtValue(), 10) << "string key map should pass key_kind=STRING";
           EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)))
               << "Primitive-keyed maps should pass a null ops pointer";
         }
@@ -3272,7 +3063,7 @@ TEST(CodeGen, MapStringKeyKind) {
 TEST(CodeGen, MapIntKeyKind) {
   // Int-keyed maps should pass key_kind=INT64 (=1) and a null ops pointer.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {1: \"one\"}\n"
       "}");
   auto *main = r.func("main");
@@ -3287,7 +3078,7 @@ TEST(CodeGen, MapIntKeyKind) {
           ASSERT_EQ(call->arg_size(), 4u);
           auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
           ASSERT_NE(kind, nullptr);
-          EXPECT_EQ(kind->getSExtValue(), 1) << "Int key map should pass key_kind=INT64";
+          EXPECT_EQ(kind->getSExtValue(), 1) << "int key map should pass key_kind=INT64";
           EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)));
         }
   EXPECT_TRUE(saw_call);
@@ -3296,7 +3087,7 @@ TEST(CodeGen, MapIntKeyKind) {
 TEST(CodeGen, MapIntKeySizeEight) {
   // Int-keyed maps should pass 8 as key_size.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  m := {1: \"one\"}\n"
       "}");
   auto *main = r.func("main");
@@ -3308,7 +3099,7 @@ TEST(CodeGen, MapIntKeySizeEight) {
             call->getCalledFunction()->getName() == "saga_map_new") {
           auto *arg0 = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
           ASSERT_NE(arg0, nullptr);
-          EXPECT_EQ(arg0->getSExtValue(), 8) << "Int key map should pass 8";
+          EXPECT_EQ(arg0->getSExtValue(), 8) << "int key map should pass 8";
         }
 }
 
@@ -3321,7 +3112,7 @@ TEST(CodeGen, IntHashLowersToStdlibHashSymbol) {
   // wrapper int__Int__Hash, which itself bottoms out in saga_int_hash.
   // Both must be present in the emitted module.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  i := 42\n"
       "  h := i.Hash()\n"
       "}");
@@ -3335,7 +3126,7 @@ TEST(CodeGen, IntHashLowersToStdlibHashSymbol) {
             call->getCalledFunction()->getName() == "int__Int__Hash")
           calls_int_hash = true;
   EXPECT_TRUE(calls_int_hash)
-      << "Int.Hash() should call the stdlib int__Int__Hash wrapper";
+      << "int.Hash() should call the stdlib int__Int__Hash wrapper";
   EXPECT_NE(r.codegen->module->getFunction("saga_int_hash"), nullptr)
       << "saga_int_hash runtime export must be declared";
 }
@@ -3347,10 +3138,10 @@ TEST(CodeGen, HashableInTypePositionTypeChecks) {
   FileSet fs;
   fs.add_file(File::from_source("test.sg",
       "import \"proto\"\n"
-      "pub fn TakeHashable(h proto.Hashable) Bool {\n"
+      "pub fn TakeHashable(h proto.Hashable) bool {\n"
       "  h.Hash() == 0\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  i := 42\n"
       "  _ := TakeHashable(i)\n"
       "}"));
@@ -3373,8 +3164,8 @@ TEST(CodeGen, HashableInTypePositionTypeChecks) {
 
 TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  f := fn () Int { 42 }\n"
+      "pub fn Main() void {\n"
+      "  f := fn () int { 42 }\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3391,8 +3182,8 @@ TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
 
 TEST(CodeGen, FuncExprGeneratesTrampolineFunction) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  f := fn () Int { 42 }\n"
+      "pub fn Main() void {\n"
+      "  f := fn () int { 42 }\n"
       "}");
   // Should have a trampoline function (internal linkage).
   bool found = false;
@@ -3405,8 +3196,8 @@ TEST(CodeGen, FuncExprGeneratesTrampolineFunction) {
 
 TEST(CodeGen, FuncExprCallProducesIndirectCall) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  f := fn () Int { 42 }\n"
+      "pub fn Main() void {\n"
+      "  f := fn () int { 42 }\n"
       "  x := f()\n"
       "}");
   auto *main = r.func("main");
@@ -3424,8 +3215,8 @@ TEST(CodeGen, FuncExprCallProducesIndirectCall) {
 
 TEST(CodeGen, FuncExprWithParams) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  add := fn (a, b Int) Int { a + b }\n"
+      "pub fn Main() void {\n"
+      "  add := fn (a, b int) int { a + b }\n"
       "  x := add(10, 32)\n"
       "}");
   auto *main = r.func("main");
@@ -3442,9 +3233,9 @@ TEST(CodeGen, FuncExprWithParams) {
 
 TEST(CodeGen, ClosureCapturesVariable) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 10\n"
-      "  f := fn () Int { x }\n"
+      "  f := fn () int { x }\n"
       "  y := f()\n"
       "}");
   auto *main = r.func("main");
@@ -3461,10 +3252,10 @@ TEST(CodeGen, ClosureCapturesVariable) {
 
 TEST(CodeGen, ClosureCapturesMultipleVars) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  a := 10\n"
       "  b := 20\n"
-      "  f := fn () Int { a + b }\n"
+      "  f := fn () int { a + b }\n"
       "  x := f()\n"
       "}");
   // The env struct should have 2 fields.
@@ -3488,9 +3279,9 @@ TEST(CodeGen, ClosureCapturesMultipleVars) {
 
 TEST(CodeGen, ClosureWithParamsAndCaptures) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  offset := 100\n"
-      "  f := fn (x Int) Int { x + offset }\n"
+      "  f := fn (x int) int { x + offset }\n"
       "  y := f(42)\n"
       "}");
   auto *main = r.func("main");
@@ -3506,8 +3297,8 @@ TEST(CodeGen, ClosureWithParamsAndCaptures) {
 
 TEST(CodeGen, NoCaptureNoEnvStruct) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  f := fn (x Int) Int { x + 1 }\n"
+      "pub fn Main() void {\n"
+      "  f := fn (x int) int { x + 1 }\n"
       "  y := f(5)\n"
       "}");
   // No env struct should be created when there are no captures.
@@ -3521,8 +3312,8 @@ TEST(CodeGen, NoCaptureNoEnvStruct) {
 
 TEST(CodeGen, ClosureReturnVoid) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  f := fn () Void {}\n"
+      "pub fn Main() void {\n"
+      "  f := fn () void {}\n"
       "  f()\n"
       "}");
   auto *main = r.func("main");
@@ -3536,7 +3327,7 @@ TEST(CodeGen, ClosureReturnVoid) {
 }
 
 TEST(CodeGen, ClosureFatPtrTypeExists) {
-  auto r = CG::from("pub fn Main() Void {}");
+  auto r = CG::from("pub fn Main() void {}");
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga_runtime_closure");
   ASSERT_NE(st, nullptr);
@@ -3547,8 +3338,8 @@ TEST(CodeGen, ClosureFatPtrTypeExists) {
 
 TEST(CodeGen, ClosureTrampolineHasInternalLinkage) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  f := fn () Int { 1 }\n"
+      "pub fn Main() void {\n"
+      "  f := fn () int { 1 }\n"
       "}");
   for (auto &fn : r.mod()) {
     if (fn.getName().starts_with("saga.closure.")) {
@@ -3560,9 +3351,9 @@ TEST(CodeGen, ClosureTrampolineHasInternalLinkage) {
 
 TEST(CodeGen, ClosureStringCapture) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  msg := \"hello\"\n"
-      "  f := fn () Void { intrinsic_print(msg) }\n"
+      "  f := fn () void { intrinsic_print(msg) }\n"
       "  f()\n"
       "}");
   auto *main = r.func("main");
@@ -3586,9 +3377,9 @@ TEST(CodeGen, ClosureStringCapture) {
 
 TEST(CodeGen, PassClosureToFunction) {
   auto r = CG::from(
-      "fn Apply(f fn(Int) Int, x Int) Int { f(x) }\n"
-      "pub fn Main() Void {\n"
-      "  double := fn (n Int) Int { n + n }\n"
+      "fn Apply(f fn(int) int, x int) int { f(x) }\n"
+      "pub fn Main() void {\n"
+      "  double := fn (n int) int { n + n }\n"
       "  y := Apply(double, 21)\n"
       "}");
   auto *apply = r.func("Apply");
@@ -3610,8 +3401,8 @@ TEST(CodeGen, PassClosureToFunction) {
 
 TEST(CodeGen, VarDeclZeroInitInt) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int\n"
+      "pub fn Main() void {\n"
+      "  x int\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3622,8 +3413,8 @@ TEST(CodeGen, VarDeclZeroInitInt) {
 
 TEST(CodeGen, VarDeclZeroInitFloat) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Float\n"
+      "pub fn Main() void {\n"
+      "  x float\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3633,8 +3424,8 @@ TEST(CodeGen, VarDeclZeroInitFloat) {
 
 TEST(CodeGen, VarDeclZeroInitBool) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Bool\n"
+      "pub fn Main() void {\n"
+      "  x bool\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3645,8 +3436,8 @@ TEST(CodeGen, VarDeclZeroInitBool) {
 TEST(CodeGen, VarDeclZeroInitString) {
   // String zero value should be an empty string "", not a null pointer.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  s String\n"
+      "pub fn Main() void {\n"
+      "  s string\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3667,14 +3458,14 @@ TEST(CodeGen, VarDeclZeroInitString) {
         }
       }
   EXPECT_TRUE(found_store) << "Should store a value into s";
-  EXPECT_FALSE(found_null_store) << "String zero value must not be null";
+  EXPECT_FALSE(found_null_store) << "string zero value must not be null";
 }
 
 TEST(CodeGen, VarDeclZeroInitStringUsable) {
   // A zero-initialized string should be usable (e.g. passed to print).
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  s String\n"
+      "pub fn Main() void {\n"
+      "  s string\n"
       "  intrinsic_print(s)\n"
       "}");
   auto *main = r.func("main");
@@ -3692,8 +3483,8 @@ TEST(CodeGen, VarDeclZeroInitStringUsable) {
 TEST(CodeGen, VarDeclZeroInitStringReleased) {
   // A zero-initialized string should be released at function exit.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  s String\n"
+      "pub fn Main() void {\n"
+      "  s string\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3711,8 +3502,8 @@ TEST(CodeGen, VarDeclZeroInitStringReleased) {
 TEST(CodeGen, VarDeclZeroInitStruct) {
   // Struct zero value: all fields should be zeroed.
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Point { x, y int }\n"
+      "pub fn Main() void {\n"
       "  p Point\n"
       "}");
   auto *main = r.func("main");
@@ -3731,8 +3522,8 @@ TEST(CodeGen, VarDeclZeroInitStruct) {
 TEST(CodeGen, VarDeclZeroInitStructFieldAccess) {
   // After zero init, struct fields should be accessible and have zero values.
   auto r = CG::from(
-      "struct Point { x, y Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Point { x, y int }\n"
+      "pub fn Main() void {\n"
       "  p Point\n"
       "  a := p.x\n"
       "}");
@@ -3751,8 +3542,8 @@ TEST(CodeGen, VarDeclZeroInitStructFieldAccess) {
 TEST(CodeGen, VarDeclZeroInitIntWithExplicit) {
   // VarDecl with explicit type AND initializer should still work.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  x Int = 42\n"
+      "pub fn Main() void {\n"
+      "  x int = 42\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3762,8 +3553,8 @@ TEST(CodeGen, VarDeclZeroInitIntWithExplicit) {
 TEST(CodeGen, VarDeclZeroInitStringWithExplicit) {
   // VarDecl with explicit String type and initializer.
   auto r = CG::from(
-      "pub fn Main() Void {\n"
-      "  s String = \"hello\"\n"
+      "pub fn Main() void {\n"
+      "  s string = \"hello\"\n"
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3798,7 +3589,7 @@ static bool module_has_atomicrmw(llvm::Module &mod) {
 
 TEST(CodeGen, IntrinsicYieldInsideSpawn) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn |ctx| {\n"
       "    intrinsic_yield()\n"
       "    42\n"
@@ -3810,7 +3601,7 @@ TEST(CodeGen, IntrinsicYieldInsideSpawn) {
 
 TEST(CodeGen, IntrinsicYieldOutsideSpawnEmitsCall) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_yield()\n"
       "}");
   // The call is emitted unconditionally; the runtime reads the current
@@ -3820,7 +3611,7 @@ TEST(CodeGen, IntrinsicYieldOutsideSpawnEmitsCall) {
 
 TEST(CodeGen, IntrinsicTrapInsideSpawn) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn |ctx| {\n"
       "    intrinsic_trap(\"fatal\")\n"
       "    42\n"
@@ -3831,7 +3622,7 @@ TEST(CodeGen, IntrinsicTrapInsideSpawn) {
 
 TEST(CodeGen, IntrinsicTrapOutsideSpawnEmitsCall) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  intrinsic_trap(\"oops\")\n"
       "}");
   // The call is emitted unconditionally; the runtime reads the current
@@ -3841,7 +3632,7 @@ TEST(CodeGen, IntrinsicTrapOutsideSpawnEmitsCall) {
 
 TEST(CodeGen, IntrinsicAtomicAdd) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := 0\n"
       "  old := intrinsic_atomic_add(x, 1)\n"
       "}");
@@ -3855,7 +3646,7 @@ TEST(CodeGen, IntrinsicAtomicAdd) {
 
 TEST(CodeGen, SpawnBasicEmitsExecutorInit) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn { 42 }\n"
       "}");
   auto *main = r.func("main");
@@ -3867,7 +3658,7 @@ TEST(CodeGen, SpawnBasicEmitsExecutorInit) {
 
 TEST(CodeGen, SpawnEmitsOutlinedFunction) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn { 42 }\n"
       "}");
   // An outlined function should exist (named spawn_entry or similar).
@@ -3881,7 +3672,7 @@ TEST(CodeGen, SpawnEmitsOutlinedFunction) {
 
 TEST(CodeGen, SpawnEmitsExecutorSpawnCall) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn { 42 }\n"
       "}");
   EXPECT_TRUE(module_has_call_to(r.mod(), "saga_executor_spawn"));
@@ -3889,7 +3680,7 @@ TEST(CodeGen, SpawnEmitsExecutorSpawnCall) {
 
 TEST(CodeGen, SpawnWithPipeVariable) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn |ctx| {\n"
       "    ctx.Cancelled?()\n"
       "    42\n"
@@ -3901,7 +3692,7 @@ TEST(CodeGen, SpawnWithPipeVariable) {
 
 TEST(CodeGen, SpawnReductionTickInLoop) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  t := spawn {\n"
       "    i := 0\n"
       "    for i < 10 {\n"
@@ -3916,7 +3707,7 @@ TEST(CodeGen, SpawnReductionTickInLoop) {
 
 TEST(CodeGen, NoReductionTickOutsideSpawn) {
   auto r = CG::from(
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  i := 0\n"
       "  for i < 10 {\n"
       "    i = i + 1\n"
@@ -3936,7 +3727,7 @@ TEST(CodeGen, ModuleFuncCallDeclared) {
   FileSet fs;
   fs.add_file(File::from_source("test.sg",
       "import \"mathlib\"\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  x := mathlib.Add(1, 2)\n"
       "}"));
 
@@ -3985,7 +3776,7 @@ TEST(CodeGen, ModuleFuncCallVoid) {
   FileSet fs;
   fs.add_file(File::from_source("test.sg",
       "import \"printer\"\n"
-      "pub fn Main() Void {\n"
+      "pub fn Main() void {\n"
       "  printer.Print(\"hello\")\n"
       "}"));
 
@@ -4019,8 +3810,8 @@ TEST(CodeGen, MangleNames) {
 TEST(CodeGen, LocalFuncsMangledWithPackage) {
   // Local functions should use the package name in their mangled link name.
   auto r = CG::from(
-      "fn Helper() Int { 42 }\n"
-      "pub fn Main() Void {\n"
+      "fn Helper() int { 42 }\n"
+      "pub fn Main() void {\n"
       "  x := Helper()\n"
       "}");
   // "test" is the package name in CG::from.
@@ -4038,10 +3829,10 @@ TEST(CodeGen, LocalFuncsMangledWithPackage) {
 TEST(CodeGen, AutoCloseCalledAtFuncExit) {
   auto r = CG::from(
       "struct Res {\n"
-      "  n Int\n"
-      "  pub fn Close() Void { }\n"
+      "  n int\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn (r Res) Close() void { }\n"
+      "pub fn Main() void {\n"
       "  r := Res{n: 1}\n"
       "}\n");
   auto *main = r.func("main");
@@ -4060,10 +3851,10 @@ TEST(CodeGen, AutoCloseCalledAtFuncExit) {
 TEST(CodeGen, AutoCloseCalledBeforeReturn) {
   auto r = CG::from(
       "struct Handle {\n"
-      "  x Int\n"
-      "  pub fn Close() Void { }\n"
+      "  x int\n"
       "}\n"
-      "fn f() Int {\n"
+      "pub fn (h Handle) Close() void { }\n"
+      "fn f() int {\n"
       "  h := Handle{x: 42}\n"
       "  return 1\n"
       "}\n");
@@ -4082,8 +3873,8 @@ TEST(CodeGen, AutoCloseCalledBeforeReturn) {
 
 TEST(CodeGen, NonCloseableStructNotClosed) {
   auto r = CG::from(
-      "struct Plain { n Int }\n"
-      "pub fn Main() Void {\n"
+      "struct Plain { n int }\n"
+      "pub fn Main() void {\n"
       "  p := Plain{n: 1}\n"
       "}\n");
   auto *main = r.func("main");
@@ -4102,10 +3893,10 @@ TEST(CodeGen, NonCloseableStructNotClosed) {
 TEST(CodeGen, AutoCloseMethodDeclared) {
   auto r = CG::from(
       "struct Res {\n"
-      "  n Int\n"
-      "  pub fn Close() Void { }\n"
+      "  n int\n"
       "}\n"
-      "pub fn Main() Void {\n"
+      "pub fn (r Res) Close() void { }\n"
+      "pub fn Main() void {\n"
       "  r := Res{n: 1}\n"
       "}\n");
   // The Close function should exist (either declared or defined) in the module.
@@ -4125,8 +3916,8 @@ TEST(CodeGen, AutoCloseMethodDeclared) {
 
 TEST(CodeGen, IntrinsicMethodDeclared) {
   auto r = CG::from(
-      "fn (self Int) Double() Int { self * 2 }\n"
-      "pub fn Main() Void {}", true);
+      "fn (self int) Double() int { self * 2 }\n"
+      "pub fn Main() void {}", true);
   // The method should be declared with mangled name test__Int__Double.
   auto *func = r.mod().getFunction("test__Int__Double");
   ASSERT_NE(func, nullptr);
@@ -4138,8 +3929,8 @@ TEST(CodeGen, IntrinsicMethodDeclared) {
 
 TEST(CodeGen, IntrinsicMethodHasBody) {
   auto r = CG::from(
-      "fn (self Int) Double() Int { self * 2 }\n"
-      "pub fn Main() Void {}", true);
+      "fn (self int) Double() int { self * 2 }\n"
+      "pub fn Main() void {}", true);
   auto *func = r.mod().getFunction("test__Int__Double");
   ASSERT_NE(func, nullptr);
   EXPECT_FALSE(func->empty()) << "Method should have a body";
@@ -4147,8 +3938,8 @@ TEST(CodeGen, IntrinsicMethodHasBody) {
 
 TEST(CodeGen, IntrinsicMethodCalledCorrectly) {
   auto r = CG::from(
-      "fn (self Int) Double() Int { self * 2 }\n"
-      "pub fn Main() Void {\n"
+      "fn (self int) Double() int { self * 2 }\n"
+      "pub fn Main() void {\n"
       "  x := 5\n"
       "  y := x.Double()\n"
       "}", true);
@@ -4176,8 +3967,8 @@ TEST(CodeGen, IntrinsicMethodCalledCorrectly) {
 
 TEST(CodeGen, StringIntrinsicMethodDeclared) {
   auto r = CG::from(
-      "fn (self String) TestSize() Int { 0 }\n"
-      "pub fn Main() Void {}", true);
+      "fn (self string) TestSize() int { 0 }\n"
+      "pub fn Main() void {}", true);
   auto *func = r.mod().getFunction("test__String__TestSize");
   ASSERT_NE(func, nullptr);
   // First param is ptr (String = saga_runtime_string*), return type is i64.
@@ -4188,8 +3979,8 @@ TEST(CodeGen, StringIntrinsicMethodDeclared) {
 
 TEST(CodeGen, IntrinsicMethodNotDeclaredAsRegularFunc) {
   auto r = CG::from(
-      "fn (self Int) Double() Int { self * 2 }\n"
-      "pub fn Main() Void {}", true);
+      "fn (self int) Double() int { self * 2 }\n"
+      "pub fn Main() void {}", true);
   // Should NOT be declared as a regular function (test__Double).
   auto *regular = r.mod().getFunction("test__Double");
   EXPECT_EQ(regular, nullptr)
@@ -4231,8 +4022,8 @@ static InstTy *find_inst(llvm::Function *fn) {
 
 TEST(CodeGen, IntrinsicSitofpProducesSIToFP) {
   auto r = CG::from(
-      "fn f(x Int) Float { intrinsic_sitofp(x) }\n"
-      "pub fn Main() Void {}");
+      "fn f(x int) float { intrinsic_sitofp(x) }\n"
+      "pub fn Main() void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   // Should contain an sitofp instruction.
@@ -4245,8 +4036,8 @@ TEST(CodeGen, IntrinsicSitofpProducesSIToFP) {
 
 TEST(CodeGen, IntrinsicFptosiProducesFPToSI) {
   auto r = CG::from(
-      "fn f(x Float) Int { intrinsic_fptosi(x) }\n"
-      "pub fn Main() Void {}");
+      "fn f(x float) int { intrinsic_fptosi(x) }\n"
+      "pub fn Main() void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   auto *conv = find_inst<llvm::FPToSIInst>(func);
@@ -4258,8 +4049,8 @@ TEST(CodeGen, IntrinsicFptosiProducesFPToSI) {
 
 TEST(CodeGen, IntrinsicZextWidens) {
   auto r = CG::from(
-      "fn f(x Int) Uint32 { intrinsic_zext_u32(x) }\n"
-      "pub fn Main() Void {}");
+      "fn f(x int) uint32 { intrinsic_zext_u32(x) }\n"
+      "pub fn Main() void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   // Should contain a trunc (64→32) instruction since we're narrowing.
@@ -4269,8 +4060,8 @@ TEST(CodeGen, IntrinsicZextWidens) {
 
 TEST(CodeGen, IntrinsicSextWidens) {
   auto r = CG::from(
-      "fn f(x Int) Int32 { intrinsic_sext_i32(x) }\n"
-      "pub fn Main() Void {}");
+      "fn f(x int) int32 { intrinsic_sext_i32(x) }\n"
+      "pub fn Main() void {}");
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
   auto *trunc = find_inst<llvm::TruncInst>(func);
@@ -4281,9 +4072,9 @@ TEST(CodeGen, ExternFunc_AutoPromotesScalarToPointer) {
   // saga_array_push expects (ptr, ptr) — the second ptr needs auto-promotion
   // when called through the typed extern declaration (T → opaque ptr).
   auto r = CG::from(
-      "extern fn |T| saga_array_push(a T[], elem T) Void\n"
-      "fn f(arr Int[], val Int) Void { saga_array_push(arr, val) }\n"
-      "pub fn Main() Void {}",
+      "extern fn saga_array_push<T>(a array{T}, elem T) void\n"
+      "fn f(arr array{int}, val int) void { saga_array_push(arr, val) }\n"
+      "pub fn Main() void {}",
       /*stdlib=*/false);
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
@@ -4297,8 +4088,8 @@ TEST(CodeGen, IntrinsicCallGateRejectsNonStdlib) {
   // When is_stdlib = false, intrinsic_* calls should be rejected by the analyzer.
   CG r;
   r.fileset.add_file(File::from_source("test.sg",
-      "fn f(x Int) Float { intrinsic_sitofp(x) }\n"
-      "pub fn Main() Void {}"));
+      "fn f(x int) float { intrinsic_sitofp(x) }\n"
+      "pub fn Main() void {}"));
   Parser parser(r.fileset);
   r.ast = parser.parse();
   ASSERT_NE(r.ast, nullptr);
@@ -4323,9 +4114,9 @@ TEST(CodeGen, FuncParamCalledIndirectly) {
   // indirect call (not a direct call to a named function) on the loaded
   // parameter value.
   auto r = CG::from(
-      "fn greet(n String) Void {}\n"
-      "fn call_it(f fn(String) Void, arg String) Void { f(arg) }\n"
-      "pub fn Main() Void { call_it(greet, \"hi\") }");
+      "fn greet(n string) void {}\n"
+      "fn call_it(f fn(string) void, arg string) void { f(arg) }\n"
+      "pub fn Main() void { call_it(greet, \"hi\") }");
 
   auto *call_it = r.func("call_it");
   ASSERT_NE(call_it, nullptr);
@@ -4370,9 +4161,9 @@ TEST(CodeGen, StructFieldFuncCalledIndirectly) {
   // Calling a function-typed struct field (r.h(arg)) must lower to a
   // field GEP + indirect call, not a silent no-op.
   auto r = CG::from(
-      "fn greet(n String) Void {}\n"
-      "struct Reg { h fn(String) Void }\n"
-      "pub fn Main() Void { r := Reg{ h: greet }\n r.h(\"x\") }");
+      "fn greet(n string) void {}\n"
+      "struct Reg { h fn(string) void }\n"
+      "pub fn Main() void { r := Reg{ h: greet }\n r.h(\"x\") }");
 
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -4401,13 +4192,13 @@ TEST(CodeGen, StructFieldFuncCalledIndirectly) {
 // function would silently return null instead of the matched body.
 TEST(CodeGen, TypeMatchSwitch_NoElse_DefaultIsUnreachable) {
   auto r = CG::from(
-      "fn Describe(v Int | Float) String {\n"
+      "fn Describe(v int | float) string {\n"
       "  switch v {\n"
-      "    case Int: \"int\"\n"
-      "    case Float: \"float\"\n"
+      "    case int: \"int\"\n"
+      "    case float: \"float\"\n"
       "  }\n"
       "}\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *fn = r.func("Describe");
   ASSERT_NE(fn, nullptr);
 
@@ -4431,15 +4222,15 @@ TEST(CodeGen, TypeMatchSwitch_NoElse_DefaultIsUnreachable) {
 // and the callee's memcpy reads through that scalar as an address.
 TEST(CodeGen, UnionParam_ScalarArg_IsWrappedAtCallSite) {
   auto r = CG::from(
-      "fn Take(v Int | Float) String { \"\" }\n"
-      "pub fn Main() Void {}");
+      "fn Take(v int | float) string { \"\" }\n"
+      "pub fn Main() void {}");
   auto *take = r.func("Take");
   ASSERT_NE(take, nullptr);
   // Force a call via another function so the call-site IR is emitted.
   auto r2 = CG::from(
-      "fn Take(v Int | Float) String { \"\" }\n"
-      "fn Use() String { Take(7) }\n"
-      "pub fn Main() Void {}");
+      "fn Take(v int | float) string { \"\" }\n"
+      "fn Use() string { Take(7) }\n"
+      "pub fn Main() void {}");
   auto *use = r2.func("Use");
   ASSERT_NE(use, nullptr);
 
@@ -4471,8 +4262,8 @@ TEST(CodeGen, UnionParam_ScalarArg_IsWrappedAtCallSite) {
 // actually executes.
 TEST(CodeGen, IntPow_LowersToLoop) {
   auto r = CG::from(
-      "pub fn Pow(a, b Int) Int { a ** b }\n"
-      "pub fn Main() Void {}");
+      "pub fn Pow(a, b int) int { a ** b }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("Pow");
   ASSERT_NE(fn, nullptr);
 
@@ -4496,8 +4287,8 @@ TEST(CodeGen, IntPow_LowersToLoop) {
 
 TEST(CodeGen, FloatPow_LowersToPowIntrinsic) {
   auto r = CG::from(
-      "pub fn FPow(a, b Float) Float { a ** b }\n"
-      "pub fn Main() Void {}");
+      "pub fn FPow(a, b float) float { a ** b }\n"
+      "pub fn Main() void {}");
   auto *fn = r.func("FPow");
   ASSERT_NE(fn, nullptr);
 
@@ -4512,12 +4303,12 @@ TEST(CodeGen, FloatPow_LowersToPowIntrinsic) {
 }
 
 TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
-  // Regression: `|UserStruct| spawn` previously segfaulted the compiler
+  // Regression: `spawn<UserStruct>` previously segfaulted the compiler
   // because the channel element type couldn't be resolved at codegen time.
   auto r = CG::from(
-      "struct Msg { id Int\n desc String }\n"
-      "pub fn Main() Void {\n"
-      "  task := |Msg| spawn |ctx| {\n"
+      "struct Msg { id int\n desc string }\n"
+      "pub fn Main() void {\n"
+      "  task := spawn<Msg> |ctx| {\n"
       "    ctx.Send(Msg{ id: 1, desc: \"x\" })\n"
       "  }\n"
       "}");
@@ -4542,7 +4333,7 @@ TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
     }
   }
   EXPECT_TRUE(saw_channel_new_with_struct_size)
-      << "Expected saga_channel_new called with elem_size=16 for Msg{Int,String}";
+      << "Expected saga_channel_new called with elem_size=16 for Msg{int,string}";
 }
 
 // ===========================================================================
@@ -4551,8 +4342,8 @@ TEST(CodeGen, StructChannelSpawnDoesNotCrash) {
 
 TEST(CodeGen, ExternFunc_DeclaredUnderBareName) {
   auto r = CG::from(
-      "extern fn saga_int_hash(i Int) Int\n"
-      "pub fn Main() Void {}");
+      "extern fn saga_int_hash(i int) int\n"
+      "pub fn Main() void {}");
   auto *fn = r.mod().getFunction("saga_int_hash");
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->isDeclaration()) << "extern fn must have no body";
@@ -4562,9 +4353,9 @@ TEST(CodeGen, ExternFunc_DeclaredUnderBareName) {
 
 TEST(CodeGen, ExternFunc_CallTargetsBareName) {
   auto r = CG::from(
-      "extern fn saga_int_hash(i Int) Int\n"
-      "fn Use() Int { saga_int_hash(7) }\n"
-      "pub fn Main() Void {}");
+      "extern fn saga_int_hash(i int) int\n"
+      "fn Use() int { saga_int_hash(7) }\n"
+      "pub fn Main() void {}");
   auto *use = r.func("Use");
   ASSERT_NE(use, nullptr);
   bool saw_call = false;
@@ -4586,7 +4377,7 @@ TEST(CodeGen, ExternFunc_CallTargetsBareName) {
 TEST(CodeGen, ConstDecl_ArithExprFoldedToLiteralGlobal) {
   auto r = CG::from(
       "pub const MaxSize = 2 * 1024 * 1024\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *gv = r.mod().getNamedGlobal("test__MaxSize");
   ASSERT_NE(gv, nullptr);
   ASSERT_TRUE(gv->isConstant())
@@ -4602,7 +4393,7 @@ TEST(CodeGen, ConstDecl_ChainedRefFolded) {
   auto r = CG::from(
       "pub const A = 7\n"
       "pub const B = A * 3\n"
-      "pub fn Main() Void {}");
+      "pub fn Main() void {}");
   auto *gv = r.mod().getNamedGlobal("test__B");
   ASSERT_NE(gv, nullptr);
   EXPECT_TRUE(gv->isConstant());

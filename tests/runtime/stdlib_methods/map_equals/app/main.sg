@@ -1,7 +1,7 @@
 // Verify Map.Equals: order-independent key/value comparison.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   a := {"x": 1, "y": 2}
   b := {"y": 2, "x": 1}    // same content, different insertion order
   c := {"x": 1, "y": 3}    // different value

@@ -291,7 +291,7 @@ TEST(ParserDeclaration, Import_PubReportsErrorButProducesNode) {
 // ---------------------------------------------------------------------------
 
 TEST(ParserDeclaration, Dispatch_Fn) {
-  auto r = ParseResult::from("fn Foo() Void {}\n");
+  auto r = ParseResult::from("fn Foo() void {}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *fn = std::get_if<saga::FuncDeclNode>(
@@ -305,7 +305,7 @@ TEST(ParserDeclaration, Dispatch_Fn) {
 }
 
 TEST(ParserDeclaration, Dispatch_PubFn) {
-  auto r = ParseResult::from("pub fn Bar() Void {}\n");
+  auto r = ParseResult::from("pub fn Bar() void {}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *fn = std::get_if<saga::FuncDeclNode>(
@@ -331,7 +331,7 @@ TEST(ParserDeclaration, Dispatch_Const) {
 }
 
 TEST(ParserDeclaration, Const_WithType) {
-  auto r = ParseResult::from("pub const MaxSize Int = 1024\n");
+  auto r = ParseResult::from("pub const MaxSize int = 1024\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *c =
@@ -342,14 +342,14 @@ TEST(ParserDeclaration, Const_WithType) {
   ASSERT_TRUE(c->type.has_value());
   auto *ty = std::get_if<saga::IdentifierNode>(&(*c->type)->data);
   ASSERT_NE(ty, nullptr);
-  EXPECT_EQ(ty->name, "Int");
+  EXPECT_EQ(ty->name, "int");
   auto *val = std::get_if<saga::IntegerLiteralNode>(&c->value->data);
   ASSERT_NE(val, nullptr);
   EXPECT_EQ(val->literal, "1024");
 }
 
 TEST(ParserDeclaration, Const_TypeAlias) {
-  auto r = ParseResult::from("const MyType = Int\n");
+  auto r = ParseResult::from("const MyType = int\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *c =
@@ -359,11 +359,11 @@ TEST(ParserDeclaration, Const_TypeAlias) {
   EXPECT_FALSE(c->type.has_value());
   auto *val = std::get_if<saga::IdentifierNode>(&c->value->data);
   ASSERT_NE(val, nullptr);
-  EXPECT_EQ(val->name, "Int");
+  EXPECT_EQ(val->name, "int");
 }
 
 TEST(ParserDeclaration, Dispatch_Struct) {
-  auto r = ParseResult::from("struct Point {\n  x, y Int\n}\n");
+  auto r = ParseResult::from("struct Point {\n  x, y int\n}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *s =
@@ -382,11 +382,10 @@ TEST(ParserDeclaration, Dispatch_Struct) {
   EXPECT_EQ(field->names.identifiers[1].name, "y");
 }
 
-TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
+TEST(ParserDeclaration, DISABLED_Struct_GenericWithEmbeds) {
   auto r = ParseResult::from(
       "pub struct |T| Node < Base, Mixin {\n"
       "  pub value T\n"
-      "  fn Get() T { value }\n"
       "}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
@@ -404,14 +403,10 @@ TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   auto *e1 = std::get_if<saga::IdentifierNode>(&s->embeds[1]->data);
   ASSERT_NE(e1, nullptr);
   EXPECT_EQ(e1->name, "Mixin");
-  ASSERT_EQ(s->members.size(), 2);
+  ASSERT_EQ(s->members.size(), 1);
   EXPECT_TRUE(s->members[0].is_public);
   auto *field = std::get_if<saga::FieldSpecNode>(&s->members[0].member->data);
   ASSERT_NE(field, nullptr);
-  EXPECT_FALSE(s->members[1].is_public);
-  auto *method = std::get_if<saga::FuncDeclNode>(&s->members[1].member->data);
-  ASSERT_NE(method, nullptr);
-  EXPECT_EQ(method->name.name, "Get");
 }
 
 TEST(ParserDeclaration, Dispatch_Enum) {
@@ -469,9 +464,9 @@ TEST(ParserDeclaration, Dispatch_Interface) {
 
 TEST(ParserDeclaration, Interface_WithMethods) {
   auto r = ParseResult::from(
-      "pub interface |T| Stringer {\n"
-      "  pub String() String\n"
-      "  Hash() Int\n"
+      "pub interface Stringer<T> {\n"
+      "  pub String() string\n"
+      "  Hash() int\n"
       "}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
@@ -726,35 +721,6 @@ TEST_F(ParserPrefixTest, Group_OrClause_Inside) {
   EXPECT_NE(std::get_if<OrExprNode>(&n->inner->data), nullptr);
 }
 
-// ── Range expressions
-// ─────────────────────────────────────────────────────────
-
-TEST_F(ParserPrefixTest, Range_IntegerLiterals) {
-  auto r = ExprResult::from("(1..10)");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<RangeExprNode>();
-  ASSERT_NE(n, nullptr);
-  auto *lo = std::get_if<IntegerLiteralNode>(&n->low->data);
-  auto *hi = std::get_if<IntegerLiteralNode>(&n->high->data);
-  ASSERT_NE(lo, nullptr);
-  ASSERT_NE(hi, nullptr);
-  EXPECT_EQ(lo->literal, "1");
-  EXPECT_EQ(hi->literal, "10");
-}
-
-TEST_F(ParserPrefixTest, Range_Identifiers) {
-  auto r = ExprResult::from("(start..end)");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<RangeExprNode>();
-  ASSERT_NE(n, nullptr);
-  auto *lo = std::get_if<IdentifierNode>(&n->low->data);
-  auto *hi = std::get_if<IdentifierNode>(&n->high->data);
-  ASSERT_NE(lo, nullptr);
-  ASSERT_NE(hi, nullptr);
-  EXPECT_EQ(lo->name, "start");
-  EXPECT_EQ(hi->name, "end");
-}
-
 // ── Array literals
 // ────────────────────────────────────────────────────────────
 
@@ -944,7 +910,7 @@ TEST_F(ParserBlockTest, Statement_Return_NoValue) {
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<ReturnNode>(0);
   ASSERT_NE(n, nullptr);
-  EXPECT_TRUE(n->values.empty());
+  EXPECT_EQ(n->value, nullptr);
 }
 
 TEST_F(ParserBlockTest, Statement_Return_WithValue) {
@@ -952,18 +918,10 @@ TEST_F(ParserBlockTest, Statement_Return_WithValue) {
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<ReturnNode>(0);
   ASSERT_NE(n, nullptr);
-  ASSERT_EQ(n->values.size(), 1u);
-  auto *val = std::get_if<IntegerLiteralNode>(&n->values[0]->data);
+  ASSERT_NE(n->value, nullptr);
+  auto *val = std::get_if<IntegerLiteralNode>(&n->value->data);
   ASSERT_NE(val, nullptr);
   EXPECT_EQ(val->literal, "42");
-}
-
-TEST_F(ParserBlockTest, Statement_Return_MultipleValues) {
-  auto r = BlockResult::from("{ return 1, 2 }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.stmt_as<ReturnNode>(0);
-  ASSERT_NE(n, nullptr);
-  EXPECT_EQ(n->values.size(), 2u);
 }
 
 TEST_F(ParserBlockTest, Statement_Break_NoValue) {
@@ -992,7 +950,7 @@ TEST_F(ParserBlockTest, Statement_Next) {
 // ───────────────────────────────────────────────────────────────────
 
 TEST_F(ParserBlockTest, Statement_VarDecl_NoInit) {
-  auto r = BlockResult::from("{ x Int }");
+  auto r = BlockResult::from("{ x int }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -1000,12 +958,12 @@ TEST_F(ParserBlockTest, Statement_VarDecl_NoInit) {
   ASSERT_TRUE(n->type.has_value());
   auto *type_id = std::get_if<IdentifierNode>(&(*n->type)->data);
   ASSERT_NE(type_id, nullptr);
-  EXPECT_EQ(type_id->name, "Int");
+  EXPECT_EQ(type_id->name, "int");
   EXPECT_FALSE(n->init.has_value());
 }
 
 TEST_F(ParserBlockTest, Statement_VarDecl_WithInit) {
-  auto r = BlockResult::from("{ x Int = 42 }");
+  auto r = BlockResult::from("{ x int = 42 }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -1020,7 +978,7 @@ TEST_F(ParserBlockTest, Statement_VarDecl_FnType) {
   // "fn" after an identifier is an unambiguous type-start → VarDecl.
   // The Signature grammar requires named parameters, so "fn(x Int) Bool"
   // is the correct form — "fn(Int) Bool" (no name) is a syntax error.
-  auto r = BlockResult::from("{ callback fn(x Int) Bool }");
+  auto r = BlockResult::from("{ callback fn(x int) bool }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -1030,7 +988,7 @@ TEST_F(ParserBlockTest, Statement_VarDecl_FnType) {
 }
 
 TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_NoInit) {
-  auto r = BlockResult::from("{ arr Int[] }");
+  auto r = BlockResult::from("{ arr array{int} }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -1041,7 +999,7 @@ TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_NoInit) {
 }
 
 TEST_F(ParserBlockTest, Statement_VarDecl_ArrayType_WithInit) {
-  auto r = BlockResult::from("{ arr Int[] = [1, 2, 3] }");
+  auto r = BlockResult::from("{ arr array{int} = [1, 2, 3] }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.stmt_as<VarDeclNode>(0);
   ASSERT_NE(n, nullptr);
@@ -1165,7 +1123,7 @@ TEST_F(ParserBlockTest, Statement_Decrement) {
 
 TEST_F(ParserBlockTest, Block_Mixed_Statements) {
   auto r = BlockResult::from("{\n"
-                             "  x Int = 0\n"
+                             "  x int = 0\n"
                              "  x += 1\n"
                              "  x++\n"
                              "  return x\n"
@@ -1423,7 +1381,7 @@ TEST_F(ParserForTest, For_Range_SingleVar) {
 }
 
 TEST_F(ParserForTest, For_Range_TwoVars) {
-  auto r = ExprResult::from("for k, v : map { }");
+  auto r = ExprResult::from("for k, v : m { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = for_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1489,7 +1447,7 @@ TEST_F(ParserForTest, For_Iterator_WithAddAssign) {
 // Spec form: `for i Int; i < N; i += 1 {}` — typed VarDecl init (no "=")
 // uses the type's zero value.
 TEST_F(ParserForTest, For_Iterator_TypedInit) {
-  auto r = ExprResult::from("for i Int ; i ; i++ { }");
+  auto r = ExprResult::from("for i int ; i ; i++ { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = for_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1503,7 +1461,7 @@ TEST_F(ParserForTest, For_Iterator_TypedInit) {
 }
 
 TEST_F(ParserForTest, For_Iterator_TypedInit_WithValue) {
-  auto r = ExprResult::from("for i Int = 5 ; i ; i++ { }");
+  auto r = ExprResult::from("for i int = 5 ; i ; i++ { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = for_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1548,12 +1506,12 @@ TEST_F(ParserFuncExprTest, FuncExpr_NoParamsNoReturn) {
   ASSERT_NE(n, nullptr);
   EXPECT_FALSE(n->generic.has_value());
   EXPECT_TRUE(n->signature.params.empty());
-  EXPECT_TRUE(n->signature.returns.empty());
+  EXPECT_EQ(n->signature.return_type, nullptr);
   EXPECT_NE(std::get_if<BlockNode>(&n->body->data), nullptr);
 }
 
 TEST_F(ParserFuncExprTest, FuncExpr_SingleParam_SingleReturn) {
-  auto r = ExprResult::from("fn(x Int) Bool { return false }");
+  auto r = ExprResult::from("fn(x int) bool { return false }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1564,18 +1522,18 @@ TEST_F(ParserFuncExprTest, FuncExpr_SingleParam_SingleReturn) {
   EXPECT_EQ(p.names.identifiers[0].name, "x");
   auto *pt = std::get_if<IdentifierNode>(&p.type->data);
   ASSERT_NE(pt, nullptr);
-  EXPECT_EQ(pt->name, "Int");
+  EXPECT_EQ(pt->name, "int");
   EXPECT_FALSE(p.is_variadic);
 
-  ASSERT_EQ(n->signature.returns.size(), 1u);
-  auto *rt = std::get_if<IdentifierNode>(&n->signature.returns[0]->data);
+  ASSERT_NE(n->signature.return_type, nullptr);
+  auto *rt = std::get_if<IdentifierNode>(&n->signature.return_type->data);
   ASSERT_NE(rt, nullptr);
-  EXPECT_EQ(rt->name, "Bool");
+  EXPECT_EQ(rt->name, "bool");
 }
 
 // Multiple names in one parameter group: "x, y Int" → one ParameterNode
 TEST_F(ParserFuncExprTest, FuncExpr_MultiName_Param) {
-  auto r = ExprResult::from("fn(x, y Int) { }");
+  auto r = ExprResult::from("fn(x, y int) { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1585,36 +1543,21 @@ TEST_F(ParserFuncExprTest, FuncExpr_MultiName_Param) {
   ASSERT_EQ(p.names.identifiers.size(), 2u);
   EXPECT_EQ(p.names.identifiers[0].name, "x");
   EXPECT_EQ(p.names.identifiers[1].name, "y");
-  EXPECT_TRUE(n->signature.returns.empty());
+  EXPECT_EQ(n->signature.return_type, nullptr);
 }
 
 // Multiple parameter groups
 TEST_F(ParserFuncExprTest, FuncExpr_MultiParam_Groups) {
-  auto r = ExprResult::from("fn(x Int, b Bool) { }");
+  auto r = ExprResult::from("fn(x int, b bool) { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
   EXPECT_EQ(n->signature.params.size(), 2u);
 }
 
-// Multiple return types
-TEST_F(ParserFuncExprTest, FuncExpr_MultiReturn) {
-  auto r = ExprResult::from("fn(x Int) Int, Bool { }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = func_expr(r);
-  ASSERT_NE(n, nullptr);
-  ASSERT_EQ(n->signature.returns.size(), 2u);
-  auto *r0 = std::get_if<IdentifierNode>(&n->signature.returns[0]->data);
-  auto *r1 = std::get_if<IdentifierNode>(&n->signature.returns[1]->data);
-  ASSERT_NE(r0, nullptr);
-  EXPECT_EQ(r0->name, "Int");
-  ASSERT_NE(r1, nullptr);
-  EXPECT_EQ(r1->name, "Bool");
-}
-
 // Variadic parameter
 TEST_F(ParserFuncExprTest, FuncExpr_Variadic) {
-  auto r = ExprResult::from("fn(args ...Int) { }");
+  auto r = ExprResult::from("fn(args ...int) { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1626,7 +1569,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_Variadic) {
 // ───────────────────────────────────────────────────────────────────
 
 TEST_F(ParserFuncExprTest, FuncExpr_Generic_Single) {
-  auto r = ExprResult::from("fn |T| (x T) T { }");
+  auto r = ExprResult::from("fn<T>(x T) T { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1645,7 +1588,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Single) {
 }
 
 TEST_F(ParserFuncExprTest, FuncExpr_Generic_Multi) {
-  auto r = ExprResult::from("fn |K, V| (k K, v V) { }");
+  auto r = ExprResult::from("fn<K, V>(k K, v V) { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1654,7 +1597,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Multi) {
 }
 
 TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained) {
-  auto r = ExprResult::from("fn |T Integer| (x T) T { x }");
+  auto r = ExprResult::from("fn<T integer>(x T) T { x }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1664,11 +1607,11 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained) {
   ASSERT_NE(tp, nullptr);
   EXPECT_EQ(tp->name.name, "T");
   ASSERT_TRUE(tp->constraint.has_value());
-  EXPECT_EQ(tp->constraint->name, "Integer");
+  EXPECT_EQ(tp->constraint->name, "integer");
 }
 
 TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained_Mixed) {
-  auto r = ExprResult::from("fn |T Integer, U| (x T, y U) U { y }");
+  auto r = ExprResult::from("fn<T integer, U>(x T, y U) U { y }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1677,7 +1620,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained_Mixed) {
   auto *tp0 = std::get_if<TypeParamNode>(&n->generic->type_params[0]->data);
   ASSERT_NE(tp0, nullptr);
   ASSERT_TRUE(tp0->constraint.has_value());
-  EXPECT_EQ(tp0->constraint->name, "Integer");
+  EXPECT_EQ(tp0->constraint->name, "integer");
   auto *tp1 = std::get_if<TypeParamNode>(&n->generic->type_params[1]->data);
   ASSERT_NE(tp1, nullptr);
   EXPECT_FALSE(tp1->constraint.has_value());
@@ -1686,7 +1629,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_Generic_Constrained_Mixed) {
 // ── body content ─────────────────────────────────────────────────────────────
 
 TEST_F(ParserFuncExprTest, FuncExpr_Body_MultiStatement) {
-  auto r = ExprResult::from("fn(x Int) Int {\n  y := x\n  return y\n}");
+  auto r = ExprResult::from("fn(x int) int {\n  y := x\n  return y\n}");
   EXPECT_TRUE(r.errors.empty());
   auto *n = func_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1698,7 +1641,7 @@ TEST_F(ParserFuncExprTest, FuncExpr_Body_MultiStatement) {
 // ── as a value ───────────────────────────────────────────────────────────────
 
 TEST_F(ParserFuncExprTest, FuncExpr_AsValueInDeclAssign) {
-  auto r = BlockResult::from("{ add := fn(a, b Int) Int { } }");
+  auto r = BlockResult::from("{ add := fn(a, b int) int { } }");
   EXPECT_TRUE(r.errors.empty());
   auto *decl = r.stmt_as<DeclAssignNode>(0);
   ASSERT_NE(decl, nullptr);
@@ -1771,7 +1714,7 @@ TEST_F(ParserSpawnTest, Spawn_WithPipe_Block) {
 // ───────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_Generic_BlockBody) {
-  auto r = ExprResult::from("|String| spawn { }");
+  auto r = ExprResult::from("spawn<string> { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = spawn_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1779,13 +1722,13 @@ TEST_F(ParserSpawnTest, Spawn_Generic_BlockBody) {
   ASSERT_EQ(n->generic->type_params.size(), 1u);
   auto *tp = std::get_if<IdentifierNode>(&n->generic->type_params[0]->data);
   ASSERT_NE(tp, nullptr);
-  EXPECT_EQ(tp->name, "String");
+  EXPECT_EQ(tp->name, "string");
   EXPECT_FALSE(n->pipe.has_value());
   EXPECT_NE(std::get_if<BlockNode>(&n->body->data), nullptr);
 }
 
 TEST_F(ParserSpawnTest, Spawn_Generic_IdentifierBody) {
-  auto r = ExprResult::from("|String| spawn workerFn");
+  auto r = ExprResult::from("spawn<string> workerFn");
   EXPECT_TRUE(r.errors.empty());
   auto *n = spawn_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1799,7 +1742,7 @@ TEST_F(ParserSpawnTest, Spawn_Generic_IdentifierBody) {
 // ────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_Generic_Pipe_Block) {
-  auto r = ExprResult::from("|String| spawn |task| { }");
+  auto r = ExprResult::from("spawn<string> |task| { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = spawn_expr(r);
   ASSERT_NE(n, nullptr);
@@ -1814,7 +1757,7 @@ TEST_F(ParserSpawnTest, Spawn_Generic_Pipe_Block) {
 // ────────────────────────────────────────────────────────────────
 
 TEST_F(ParserSpawnTest, Spawn_AsValueInDeclAssign) {
-  auto r = BlockResult::from("{ ch := |String| spawn { } }");
+  auto r = BlockResult::from("{ ch := spawn<string> { } }");
   EXPECT_TRUE(r.errors.empty());
   auto *decl = r.stmt_as<DeclAssignNode>(0);
   ASSERT_NE(decl, nullptr);
@@ -1937,8 +1880,8 @@ TEST_F(ParserStructLiteralTest, StructLit_InReturn) {
   EXPECT_TRUE(r.errors.empty());
   auto *ret = r.stmt_as<ReturnNode>(0);
   ASSERT_NE(ret, nullptr);
-  ASSERT_EQ(ret->values.size(), 1u);
-  EXPECT_NE(std::get_if<StructLiteralNode>(&ret->values[0]->data), nullptr);
+  ASSERT_NE(ret->value, nullptr);
+  EXPECT_NE(std::get_if<StructLiteralNode>(&ret->value->data), nullptr);
 }
 
 // ── if/switch bodies are not confused with struct initialisers
@@ -2312,7 +2255,7 @@ TEST_F(ParserMapLiteralTest, BlockFallback) {
 class ParserAnonStructLiteralTest : public ::testing::Test {};
 
 TEST_F(ParserAnonStructLiteralTest, Simple) {
-  auto r = ExprResult::from("struct{x Int}{x: 1}");
+  auto r = ExprResult::from("struct{x int}{x: 1}");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<StructLiteralNode>();
   ASSERT_NE(n, nullptr);
@@ -2326,7 +2269,7 @@ TEST_F(ParserAnonStructLiteralTest, Simple) {
 
 TEST_F(ParserAnonStructLiteralTest, MultipleFields) {
   auto r =
-      ExprResult::from("struct{name String, age Int}{name: \"Jane\", age: 30}");
+      ExprResult::from("struct{name string, age int}{name: \"Jane\", age: 30}");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<StructLiteralNode>();
   ASSERT_NE(n, nullptr);
@@ -2356,7 +2299,7 @@ TEST_F(ParserAnonStructLiteralTest, Empty) {
 class ParserDeclCoverageTest : public ::testing::Test {};
 
 TEST_F(ParserDeclCoverageTest, FuncDecl_WithGeneric) {
-  auto r = ParseResult::from("fn |T| Identity(x T) T { x }\n");
+  auto r = ParseResult::from("fn Identity<T>(x T) T { x }\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *fn = r.decl_as<FuncDeclNode>(0);
@@ -2368,7 +2311,7 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithGeneric) {
 }
 
 TEST_F(ParserDeclCoverageTest, FuncDecl_WithConstrainedGeneric) {
-  auto r = ParseResult::from("fn |T Numeric| Double(x T) T { x + x }\n");
+  auto r = ParseResult::from("fn Double<T numeric>(x T) T { x + x }\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
@@ -2378,11 +2321,11 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithConstrainedGeneric) {
   ASSERT_NE(tp, nullptr);
   EXPECT_EQ(tp->name.name, "T");
   ASSERT_TRUE(tp->constraint.has_value());
-  EXPECT_EQ(tp->constraint->name, "Numeric");
+  EXPECT_EQ(tp->constraint->name, "numeric");
 }
 
 TEST_F(ParserDeclCoverageTest, FuncDecl_WithReceiver) {
-  auto r = ParseResult::from("fn (u User) Name() String { u.name }\n");
+  auto r = ParseResult::from("fn (u User) Name() string { u.name }\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
   auto *fn = r.decl_as<FuncDeclNode>(0);
@@ -2395,22 +2338,8 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithReceiver) {
   EXPECT_EQ(rty->name, "User");
 }
 
-TEST_F(ParserDeclCoverageTest, FuncDecl_MultipleReturnTypes) {
-  auto r = ParseResult::from("fn Pair() Int, String { return 1, \"a\" }\n");
-  EXPECT_TRUE(r.errors.empty());
-  auto *fn = r.decl_as<FuncDeclNode>(0);
-  ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 2);
-  auto *r0 = std::get_if<IdentifierNode>(&fn->signature.returns[0]->data);
-  auto *r1 = std::get_if<IdentifierNode>(&fn->signature.returns[1]->data);
-  ASSERT_NE(r0, nullptr);
-  ASSERT_NE(r1, nullptr);
-  EXPECT_EQ(r0->name, "Int");
-  EXPECT_EQ(r1->name, "String");
-}
-
 TEST_F(ParserDeclCoverageTest, FuncDecl_Variadic) {
-  auto r = ParseResult::from("fn Sum(args ...Int) Int { 0 }\n");
+  auto r = ParseResult::from("fn Sum(args ...int) int { 0 }\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
@@ -2419,7 +2348,7 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_Variadic) {
 }
 
 TEST_F(ParserDeclCoverageTest, ExternFuncDecl_Basic) {
-  auto r = ParseResult::from("extern fn saga_int_hash(i Int) Int\n");
+  auto r = ParseResult::from("extern fn saga_int_hash(i int) int\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
@@ -2427,22 +2356,22 @@ TEST_F(ParserDeclCoverageTest, ExternFuncDecl_Basic) {
   EXPECT_FALSE(fn->is_public);
   EXPECT_EQ(fn->name.name, "saga_int_hash");
   ASSERT_EQ(fn->signature.params.size(), 1);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
+  ASSERT_NE(fn->signature.return_type, nullptr);
   EXPECT_EQ(fn->body, nullptr);
 }
 
 TEST_F(ParserDeclCoverageTest, ExternFuncDecl_NoReturn) {
-  auto r = ParseResult::from("extern fn saga_noop(x Int)\n");
+  auto r = ParseResult::from("extern fn saga_noop(x int)\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
   EXPECT_TRUE(fn->is_extern);
-  EXPECT_TRUE(fn->signature.returns.empty());
+  EXPECT_EQ(fn->signature.return_type, nullptr);
   EXPECT_EQ(fn->body, nullptr);
 }
 
 TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsBody) {
-  auto r = ParseResult::from("extern fn saga_x() Void { 1 }\n");
+  auto r = ParseResult::from("extern fn saga_x() void { 1 }\n");
   ASSERT_FALSE(r.errors.empty());
   bool found = false;
   for (auto &e : r.errors)
@@ -2452,7 +2381,7 @@ TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsBody) {
 }
 
 TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsPubBefore) {
-  auto r = ParseResult::from("pub extern fn saga_x() Int\n");
+  auto r = ParseResult::from("pub extern fn saga_x() int\n");
   ASSERT_FALSE(r.errors.empty());
   bool found = false;
   for (auto &e : r.errors)
@@ -2463,7 +2392,7 @@ TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsPubBefore) {
 }
 
 TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsPubAfter) {
-  auto r = ParseResult::from("extern pub fn saga_x() Int\n");
+  auto r = ParseResult::from("extern pub fn saga_x() int\n");
   ASSERT_FALSE(r.errors.empty());
   bool found = false;
   for (auto &e : r.errors)
@@ -2474,7 +2403,7 @@ TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsPubAfter) {
 }
 
 TEST_F(ParserDeclCoverageTest, ExternFuncDecl_RejectsVariadic) {
-  auto r = ParseResult::from("extern fn saga_print(args ...Int) Void\n");
+  auto r = ParseResult::from("extern fn saga_print(args ...int) void\n");
   ASSERT_FALSE(r.errors.empty());
   bool found = false;
   for (auto &e : r.errors)
@@ -2514,7 +2443,7 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmptyBody) {
   EXPECT_TRUE(s->embeds.empty());
 }
 
-TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
+TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_EmbedsOnly) {
   auto r = ParseResult::from("struct Child < Parent {}\n");
   EXPECT_TRUE(r.errors.empty());
   auto *s = r.decl_as<StructDeclNode>(0);
@@ -2527,8 +2456,8 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
   EXPECT_TRUE(s->members.empty());
 }
 
-TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
-  auto r = ParseResult::from("struct User < lib.Timestamps { name String }\n");
+TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_QualifiedEmbed) {
+  auto r = ParseResult::from("struct User < lib.Timestamps { name string }\n");
   EXPECT_TRUE(r.errors.empty());
   auto *s = r.decl_as<StructDeclNode>(0);
   ASSERT_NE(s, nullptr);
@@ -2652,7 +2581,7 @@ TEST_F(ParserExprCoverageTest, ForExpr_Iterator_Decrement) {
 }
 
 TEST_F(ParserExprCoverageTest, SpawnExpr_MultiGeneric) {
-  auto r = ExprResult::from("|T, U| spawn { }");
+  auto r = ExprResult::from("spawn<T, U> { }");
   EXPECT_TRUE(r.errors.empty());
   auto *n = r.as<SpawnExprNode>();
   ASSERT_NE(n, nullptr);
@@ -2697,7 +2626,7 @@ TEST_F(ParserStmtCoverageTest, Assignment_IndexTarget) {
 
 
 TEST_F(ParserStmtCoverageTest, VarDecl_StructType) {
-  auto r = ExprResult::from("{ x struct{a Int} }");
+  auto r = ExprResult::from("{ x struct{a int} }");
   EXPECT_TRUE(r.errors.empty());
   auto *blk = r.as<BlockNode>();
   ASSERT_NE(blk, nullptr);
@@ -2719,7 +2648,7 @@ class ParserTypeCoverageTest : public ::testing::Test {};
 
 TEST_F(ParserTypeCoverageTest, UnionType) {
   // Use a VarDecl to exercise the type parser: x Int | String
-  auto r = ExprResult::from("{ x Int | String }");
+  auto r = ExprResult::from("{ x int | string }");
   EXPECT_TRUE(r.errors.empty());
   auto *blk = r.as<BlockNode>();
   ASSERT_NE(blk, nullptr);
@@ -2734,27 +2663,27 @@ TEST_F(ParserTypeCoverageTest, UnionType) {
   auto *t1 = std::get_if<IdentifierNode>(&ut->types[1]->data);
   ASSERT_NE(t0, nullptr);
   ASSERT_NE(t1, nullptr);
-  EXPECT_EQ(t0->name, "Int");
-  EXPECT_EQ(t1->name, "String");
+  EXPECT_EQ(t0->name, "int");
+  EXPECT_EQ(t1->name, "string");
 }
 
 TEST_F(ParserTypeCoverageTest, ArrayType) {
   // fn signature return type: fn Foo() Int[] { [] }
-  auto r = ParseResult::from("fn Foo() Int[] { [] }\n");
+  auto r = ParseResult::from("fn Foo() array{int} { [] }\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
-  auto *at = std::get_if<ArrayTypeNode>(&fn->signature.returns[0]->data);
+  ASSERT_NE(fn->signature.return_type, nullptr);
+  auto *at = std::get_if<ArrayTypeNode>(&fn->signature.return_type->data);
   ASSERT_NE(at, nullptr);
   auto *elem = std::get_if<IdentifierNode>(&at->element_type->data);
   ASSERT_NE(elem, nullptr);
-  EXPECT_EQ(elem->name, "Int");
+  EXPECT_EQ(elem->name, "int");
 }
 
 TEST_F(ParserTypeCoverageTest, MapType) {
-  // Test MapType via a function parameter, where "{" is unambiguous.
-  auto r = ParseResult::from("fn Foo(m {String: Int}) Void {}\n");
+  // Test MapType via a function parameter type.
+  auto r = ParseResult::from("fn Foo(m map{string: int}) void {}\n");
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
@@ -2765,26 +2694,13 @@ TEST_F(ParserTypeCoverageTest, MapType) {
   auto *v = std::get_if<IdentifierNode>(&mt->value_type->data);
   ASSERT_NE(k, nullptr);
   ASSERT_NE(v, nullptr);
-  EXPECT_EQ(k->name, "String");
-  EXPECT_EQ(v->name, "Int");
-}
-
-TEST_F(ParserTypeCoverageTest, RangeType) {
-  auto r = ParseResult::from("fn Foo() (Int) { (0..1) }\n");
-  EXPECT_TRUE(r.errors.empty());
-  auto *fn = r.decl_as<FuncDeclNode>(0);
-  ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
-  auto *rt = std::get_if<RangeTypeNode>(&fn->signature.returns[0]->data);
-  ASSERT_NE(rt, nullptr);
-  auto *elem = std::get_if<IdentifierNode>(&rt->element_type->data);
-  ASSERT_NE(elem, nullptr);
-  EXPECT_EQ(elem->name, "Int");
+  EXPECT_EQ(k->name, "string");
+  EXPECT_EQ(v->name, "int");
 }
 
 TEST_F(ParserTypeCoverageTest, FuncType) {
   // VarDecl with function type: { cb fn(Int) String }
-  auto r = ExprResult::from("{ cb fn(x Int) String }");
+  auto r = ExprResult::from("{ cb fn(x int) string }");
   EXPECT_TRUE(r.errors.empty());
   auto *blk = r.as<BlockNode>();
   ASSERT_NE(blk, nullptr);
@@ -2795,11 +2711,11 @@ TEST_F(ParserTypeCoverageTest, FuncType) {
   auto *ft = std::get_if<FuncTypeNode>(&(*vd->type)->data);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->params.size(), 1);
-  ASSERT_EQ(ft->returns.size(), 1);
+  ASSERT_NE(ft->return_type, nullptr);
 }
 
 TEST_F(ParserTypeCoverageTest, StructType_AsAnnotation) {
-  auto r = ExprResult::from("{ x struct{a Int, b String} }");
+  auto r = ExprResult::from("{ x struct{a int, b string} }");
   EXPECT_TRUE(r.errors.empty());
   auto *blk = r.as<BlockNode>();
   ASSERT_NE(blk, nullptr);
@@ -2819,8 +2735,8 @@ TEST_F(ParserTypeCoverageTest, SelectorType) {
   EXPECT_TRUE(r.errors.empty());
   auto *fn = r.decl_as<FuncDeclNode>(0);
   ASSERT_NE(fn, nullptr);
-  ASSERT_EQ(fn->signature.returns.size(), 1);
-  auto *sel = std::get_if<SelectorNode>(&fn->signature.returns[0]->data);
+  ASSERT_NE(fn->signature.return_type, nullptr);
+  auto *sel = std::get_if<SelectorNode>(&fn->signature.return_type->data);
   ASSERT_NE(sel, nullptr);
   EXPECT_EQ(sel->field.name, "Type");
   auto *obj = std::get_if<IdentifierNode>(&sel->object->data);

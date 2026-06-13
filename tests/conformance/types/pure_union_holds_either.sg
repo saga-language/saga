@@ -4,14 +4,14 @@
 // narrowed first via type matching before methods can be called.
 import "std/io"
 
-fn Show(x Bool | Int) Void {
+fn Show(x bool | int) void {
   switch x {
-    case Int:  io.Println(x.String())
-    case Bool: io.Println(x.String())
+    case int:  io.Println(x.String())
+    case bool: io.Println(x.String())
   }
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   Show(5)
   Show(true)
 }

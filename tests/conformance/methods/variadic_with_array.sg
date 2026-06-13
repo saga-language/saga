@@ -2,10 +2,10 @@
 // variadic." (docs/language.md:276-277, line 284 example)
 import "std/io"
 
-fn Sum(args ...Int) Int {
+fn Sum(args ...int) int {
   for i : args |acc| { acc += i }
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Sum([1, 2, 3, 4, 5]).String())
 }

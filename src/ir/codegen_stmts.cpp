@@ -66,24 +66,14 @@ llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
   llvm::Type *sret_struct_ty = nullptr;
   if (is_main) {
     ret_type = llvm::Type::getInt32Ty(context);
-  } else if (fn.signature.returns.size() == 1) {
-    auto *r_ll = resolve_type_node(*fn.signature.returns[0]);
+  } else if (fn.signature.return_type) {
+    auto *r_ll = resolve_type_node(*fn.signature.return_type);
     if (r_ll && r_ll->isStructTy()) {
       sret_struct_ty = r_ll;
       ret_type = void_ll_type;
     } else {
       ret_type = r_ll;
     }
-  } else if (fn.signature.returns.size() > 1) {
-    // Multiple return values → pack into an LLVM struct.
-    std::vector<llvm::Type *> ret_fields;
-    for (auto &r : fn.signature.returns)
-      ret_fields.push_back(resolve_type_node(*r));
-    auto *st = llvm::StructType::create(context, ret_fields,
-                                        "saga.ret." + link_name);
-    multi_return_types[link_name] = st;
-    multi_return_counts[link_name] = fn.signature.returns.size();
-    ret_type = st;
   }
 
   // Parameter types.  Structs are lowered to `ptr` for byval.
@@ -127,15 +117,8 @@ CodeGen::build_extern_generic_func_type(const FuncDeclNode &fn) {
   };
 
   llvm::Type *ret_type = void_ll_type;
-  if (fn.signature.returns.size() == 1) {
-    ret_type = lower(*fn.signature.returns[0]);
-  } else if (fn.signature.returns.size() > 1) {
-    std::vector<llvm::Type *> rfs;
-    for (auto &r : fn.signature.returns)
-      rfs.push_back(lower(*r));
-    ret_type = llvm::StructType::create(
-        context, rfs, "saga.ret." + std::string(fn.name.name));
-  }
+  if (fn.signature.return_type)
+    ret_type = lower(*fn.signature.return_type);
 
   std::vector<llvm::Type *> param_types;
   for (auto &param : fn.signature.params) {
@@ -154,8 +137,8 @@ void CodeGen::apply_func_abi_attrs(llvm::Function *func,
     return;
   unsigned idx = 0;
   // Sret return
-  if (fn.signature.returns.size() == 1) {
-    auto *r_ll = resolve_type_node(*fn.signature.returns[0]);
+  if (fn.signature.return_type) {
+    auto *r_ll = resolve_type_node(*fn.signature.return_type);
     if (r_ll && r_ll->isStructTy()) {
       llvm::AttrBuilder ab(context);
       ab.addStructRetAttr(r_ll);
@@ -256,8 +239,8 @@ void CodeGen::emit_function_body_inner(
   // Skip the hidden sret arg if present.
   size_t arg_idx = 0;
   bool has_sret = false;
-  if (!is_main && fn.signature.returns.size() == 1) {
-    auto *r_ll = resolve_type_node(*fn.signature.returns[0]);
+  if (!is_main && fn.signature.return_type) {
+    auto *r_ll = resolve_type_node(*fn.signature.return_type);
     if (r_ll && r_ll->isStructTy()) {
       has_sret = true;
       ++arg_idx; // arg 0 is the sret pointer
@@ -318,7 +301,7 @@ void CodeGen::emit_function_body_inner(
       // value (loaded from an alloca).  Copy into the sret slot.
       auto *sret_arg = func->getArg(0);
       llvm::Type *struct_ty =
-          resolve_type_node(*fn.signature.returns[0]);
+          resolve_type_node(*fn.signature.return_type);
       if (tail_val && struct_ty && struct_ty->isStructTy()) {
         if (tail_val->getType()->isPointerTy()) {
           auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
@@ -643,50 +626,6 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   auto *func = builder.GetInsertBlock()->getParent();
   auto val_sem = semantic_type(*node.value);
 
-  // ── Multi-return unpacking ───────────────────────────────────────────
-  // If there are multiple targets and the RHS is a multi-return struct,
-  // extract each field into its own local variable.
-  if (node.targets.identifiers.size() > 1 && val &&
-      val->getType()->isStructTy()) {
-    // Check if this is a known multi-return struct.
-    std::string callee_name;
-    if (auto *call = std::get_if<CallExprNode>(&node.value->data)) {
-      if (auto *ident = std::get_if<IdentifierNode>(&call->callee->data))
-        callee_name = std::string(ident->name);
-    }
-    std::string link_name = (callee_name == "Main") ? "main" : mangle(callee_name);
-    auto mr_it = multi_return_types.find(link_name);
-
-    if (!callee_name.empty() && mr_it != multi_return_types.end()) {
-      auto *ret_st = mr_it->second;
-      size_t count = std::min(node.targets.identifiers.size(),
-                              (size_t)ret_st->getNumElements());
-
-      // Resolve per-element semantic types from the callee's signature.
-      // Look up the FuncDeclNode via the analyzer to get return types.
-      std::vector<TypePtr> elem_sem_types;
-      auto fn_sem = val_sem;
-      if (fn_sem && fn_sem->kind == TypeKind::Func) {
-        auto &fi = std::get<FuncTypeInfo>(fn_sem->detail);
-        elem_sem_types = fi.returns;
-      }
-
-      for (size_t i = 0; i < count; ++i) {
-        std::string name(node.targets.identifiers[i].name);
-        auto *elem_val = builder.CreateExtractValue(val, i,
-            name + ".unpack");
-        auto *alloca = create_entry_alloca(func, name, elem_val->getType());
-        locals[name] = alloca;
-        builder.CreateStore(elem_val, alloca);
-
-        // Track managed types.
-        if (i < elem_sem_types.size())
-          track_managed(name, elem_sem_types[i]);
-      }
-      return;
-    }
-  }
-
   // ── Single value assignment ──────────────────────────────────────────
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
@@ -888,11 +827,11 @@ void CodeGen::emit_return(const ReturnNode &node) {
     emit_release_locals();
     if (has_spawn)
       builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
-    if (node.values.empty()) {
+    if (!node.value) {
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
     } else {
-      auto *val = emit_expr(*node.values[0]);
+      auto *val = emit_expr(*node.value);
       auto *i32_val = builder.CreateTrunc(val, llvm::Type::getInt32Ty(context),
                                           "main_ret");
       builder.CreateRet(i32_val);
@@ -900,11 +839,11 @@ void CodeGen::emit_return(const ReturnNode &node) {
     return;
   }
 
-  if (node.values.empty()) {
+  if (!node.value) {
     emit_release_locals();
     builder.CreateRetVoid();
-  } else if (node.values.size() == 1) {
-    auto *val = emit_expr(*node.values[0]);
+  } else {
+    auto *val = emit_expr(*node.value);
     auto *func = builder.GetInsertBlock()->getParent();
     auto *ret_type = func->getReturnType();
 
@@ -949,7 +888,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
           st->getElementType(0)->isIntegerTy(8) &&
           st->getElementType(1)->isArrayTy()) {
         // Need to find the semantic return type and value type.
-        auto val_sem = semantic_type(*node.values[0]);
+        auto val_sem = semantic_type(*node.value);
         // Look up the function's semantic return type from the scope.
         TypePtr ret_sem = nullptr;
         for (auto &[key, union_st] : union_llvm_types) {
@@ -976,25 +915,6 @@ void CodeGen::emit_return(const ReturnNode &node) {
       builder.CreateRet(val);
     else
       builder.CreateRetVoid();
-  } else {
-    // Multiple return values — pack into a struct.
-    auto *func = builder.GetInsertBlock()->getParent();
-    std::string link_name(func->getName());
-    auto it = multi_return_types.find(link_name);
-    if (it != multi_return_types.end()) {
-      auto *ret_st = it->second;
-      llvm::Value *agg = llvm::UndefValue::get(ret_st);
-      for (size_t i = 0; i < node.values.size(); ++i) {
-        auto *val = emit_expr(*node.values[i]);
-        if (val)
-          agg = builder.CreateInsertValue(agg, val, i, "pack." + std::to_string(i));
-      }
-      emit_release_locals();
-      builder.CreateRet(agg);
-    } else {
-      emit_release_locals();
-      builder.CreateRetVoid();
-    }
   }
 }
 

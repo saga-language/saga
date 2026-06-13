@@ -116,9 +116,9 @@ TEST(SgiRoundtrip, GenericInterfaceParamIdsSurvive) {
   EXPECT_EQ(info.type_params[0].id, 7u);
   ASSERT_EQ(info.methods.size(), 1u);
   auto &sig = std::get<FuncTypeInfo>(info.methods[0].signature->detail);
-  ASSERT_EQ(sig.returns.size(), 1u);
-  ASSERT_EQ(sig.returns[0]->kind, TypeKind::TypeParam);
-  EXPECT_EQ(std::get<TypeParamInfo>(sig.returns[0]->detail).param.id, 7u);
+  ASSERT_NE(sig.return_type, nullptr);
+  ASSERT_EQ(sig.return_type->kind, TypeKind::TypeParam);
+  EXPECT_EQ(std::get<TypeParamInfo>(sig.return_type->detail).param.id, 7u);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +170,9 @@ TEST(SgiRoundtrip, GenericStructNonGenericMethodOnlyDeclaresOuterParam) {
   EXPECT_EQ(st.type_params[0].id, 3u);
   ASSERT_EQ(st.methods.size(), 1u);
   auto &msig = std::get<FuncTypeInfo>(st.methods[0].signature->detail);
-  ASSERT_EQ(msig.returns.size(), 1u);
-  ASSERT_EQ(msig.returns[0]->kind, TypeKind::TypeParam);
-  EXPECT_EQ(std::get<TypeParamInfo>(msig.returns[0]->detail).param.id, 3u);
+  ASSERT_NE(msig.return_type, nullptr);
+  ASSERT_EQ(msig.return_type->kind, TypeKind::TypeParam);
+  EXPECT_EQ(std::get<TypeParamInfo>(msig.return_type->detail).param.id, 3u);
 }
 
 // ---------------------------------------------------------------------------
@@ -333,8 +333,8 @@ TEST(SgiRoundtrip, ArrayReceiverMethodsUseSentinelT) {
   auto &sig = std::get<FuncTypeInfo>(methods[0].signature->detail);
   ASSERT_EQ(sig.params[0]->kind, TypeKind::TypeParam);
   EXPECT_EQ(std::get<TypeParamInfo>(sig.params[0]->detail).param.id, 9990u);
-  ASSERT_EQ(sig.returns[0]->kind, TypeKind::TypeParam);
-  EXPECT_EQ(std::get<TypeParamInfo>(sig.returns[0]->detail).param.id, 9990u);
+  ASSERT_EQ(sig.return_type->kind, TypeKind::TypeParam);
+  EXPECT_EQ(std::get<TypeParamInfo>(sig.return_type->detail).param.id, 9990u);
 }
 
 // ---------------------------------------------------------------------------

@@ -8,12 +8,7 @@
     { "include": "#comment" },
     { "include": "#string-multiline" },
     { "include": "#string" },
-    { "include": "#keyword-declaration" },
-    { "include": "#keyword-control" },
-    { "include": "#keyword-operator" },
-    { "include": "#storage-modifier" },
-    { "include": "#storage-type" },
-    { "include": "#constant-language" },
+    { "include": "#keywords" },
     { "include": "#constant-numeric" },
     { "include": "#operator" },
     { "include": "#punctuation" }
@@ -30,34 +25,129 @@
       }
     },
 
-    "keyword-control": {
-      "name": "keyword.control.saga",
-      "match": "\\b(break|case|else|fn|for|if|next|return|switch)\\b"
+    "keywords": {
+      "comment": "Function-call pattern must come last so keyword/type/constant patterns win at the same offset (e.g. if(, for(, spawn(, int( stay keywords).",
+      "patterns": [
+        { "include": "#keyword-import" },
+        { "include": "#keyword-modifier" },
+        { "include": "#storage-fn" },
+        { "include": "#declaration-name" },
+        { "include": "#storage-type-shape" },
+        { "include": "#storage-const-type" },
+        { "include": "#type-primitive" },
+        { "include": "#type-composite" },
+        { "include": "#keyword-conditional" },
+        { "include": "#keyword-loop" },
+        { "include": "#keyword-switch" },
+        { "include": "#keyword-case" },
+        { "include": "#keyword-flow" },
+        { "include": "#keyword-or" },
+        { "include": "#keyword-spawn" },
+        { "include": "#keyword-is" },
+        { "include": "#constant-boolean" },
+        { "include": "#constant-null" },
+        { "include": "#function-call" }
+      ]
     },
 
-    "keyword-declaration": {
-      "name": "keyword.declaration.saga",
-      "match": "\\b(const|enum|import|interface|struct)\\b"
+    "keyword-import": {
+      "name": "keyword.control.import.saga",
+      "match": "\\bimport\\b"
     },
 
-    "storage-modifier": {
+    "keyword-modifier": {
       "name": "storage.modifier.saga",
-      "match": "\\bpub\\b"
+      "match": "\\b(pub|extern)\\b"
     },
 
-    "keyword-operator": {
-      "name": "keyword.operator.word.saga",
-      "match": "\\b(or|spawn)\\b"
+    "storage-fn": {
+      "name": "storage.type.function.saga",
+      "match": "\\bfn\\b"
     },
 
-    "storage-type": {
+    "declaration-name": {
+      "comment": "`error` is intentionally excluded — it is only ever a bare type (T | error).",
+      "match": "\\b(struct|enum|interface|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.saga" },
+        "2": { "name": "entity.name.type.saga" }
+      }
+    },
+
+    "storage-type-shape": {
       "name": "storage.type.saga",
-      "match": "\\b(Bool|Byte|Float|Float32|Float64|Int|Int8|Int16|Int32|Int64|String|Uint8|Uint16|Uint32|Uint64|Void)\\b"
+      "match": "\\b(struct|enum|interface|error)\\b"
     },
 
-    "constant-language": {
-      "name": "constant.language.saga",
+    "storage-const-type": {
+      "name": "storage.type.saga",
+      "match": "\\b(const|type)\\b"
+    },
+
+    "type-primitive": {
+      "name": "support.type.primitive.saga",
+      "match": "\\b(bool|byte|string|void|int8|int16|int32|int64|int|uint8|uint16|uint32|uint64|uint|float32|float64|float)\\b"
+    },
+
+    "type-composite": {
+      "name": "support.type.builtin.saga",
+      "match": "\\b(array|map)\\b"
+    },
+
+    "keyword-conditional": {
+      "name": "keyword.control.conditional.saga",
+      "match": "\\b(if|else)\\b"
+    },
+
+    "keyword-loop": {
+      "name": "keyword.control.loop.saga",
+      "match": "\\bfor\\b"
+    },
+
+    "keyword-switch": {
+      "name": "keyword.control.switch.saga",
+      "match": "\\bswitch\\b"
+    },
+
+    "keyword-case": {
+      "name": "keyword.control.case.saga",
+      "match": "\\bcase\\b"
+    },
+
+    "keyword-flow": {
+      "name": "keyword.control.flow.saga",
+      "match": "\\b(break|next|return)\\b"
+    },
+
+    "keyword-or": {
+      "name": "keyword.control.or.saga",
+      "match": "\\bor\\b"
+    },
+
+    "keyword-spawn": {
+      "name": "keyword.control.spawn.saga",
+      "match": "\\bspawn\\b"
+    },
+
+    "keyword-is": {
+      "name": "keyword.operator.word.is.saga",
+      "match": "\\bis\\b"
+    },
+
+    "constant-boolean": {
+      "name": "constant.language.boolean.saga",
       "match": "\\b(true|false)\\b"
+    },
+
+    "constant-null": {
+      "name": "constant.language.null.saga",
+      "match": "\\bnull\\b"
+    },
+
+    "function-call": {
+      "comment": "Identifier (opt trailing ?, opt generic cluster) immediately before '('. Covers defs, methods, and call sites. Must follow all keyword/type patterns.",
+      "name": "entity.name.function.saga",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\??(?=\\s*(?:<[^<>]*>)?\\s*\\()"
     },
 
     "constant-numeric": {
@@ -109,14 +199,10 @@
         { "include": "#comment" },
         { "include": "#string-multiline" },
         { "include": "#string" },
-        { "include": "#keyword-control" },
-        { "include": "#keyword-declaration" },
-        { "include": "#keyword-operator" },
-        { "include": "#storage-modifier" },
-        { "include": "#storage-type" },
-        { "include": "#constant-language" },
+        { "include": "#keywords" },
         { "include": "#constant-numeric" },
         { "include": "#operator" },
+        { "include": "#punctuation" },
         { "include": "#string-interpolation" }
       ]
     },
@@ -157,9 +243,14 @@
     "operator": {
       "patterns": [
         {
+          "comment": "Safe-access / error-promotion ?: before .[( (x?.f, x?[i], x?()) or postfix after ]/) (data[i]?). A trailing identifier ? is left as part of the identifier.",
+          "name": "keyword.operator.saga",
+          "match": "\\?(?=[.\\[(])|(?<=[\\]\\)])\\?"
+        },
+        {
           "comment": "Multi-character operators — matched before single-char to avoid splitting",
           "name": "keyword.operator.saga",
-          "match": ":=|\\+=|-=|\\*=|/=|==|!=|<=|>=|&&|\\|\\||\\*\\*|\\.\\.\\.|\\.\\."
+          "match": ":=|\\+=|-=|\\*=|/=|==|!=|<=|>=|&&|\\|\\||\\*\\*|<<|>>|\\+\\+|--|\\.\\.\\.|\\.\\."
         },
         {
           "name": "keyword.operator.saga",
@@ -171,6 +262,7 @@
     "punctuation": {
       "patterns": [
         { "name": "punctuation.separator.comma.saga",     "match": "," },
+        { "name": "punctuation.separator.saga",           "match": ";" },
         { "name": "punctuation.separator.colon.saga",     "match": ":" },
         { "name": "punctuation.accessor.dot.saga",        "match": "\\." },
         { "name": "punctuation.definition.block.saga",    "match": "[{}]" },

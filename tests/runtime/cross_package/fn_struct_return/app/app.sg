@@ -1,7 +1,7 @@
 import "io"
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   o := lib.Origin()
   io.Println(o.x.String())
   io.Println(o.y.String())

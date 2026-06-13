@@ -3,7 +3,7 @@
 // though the name cannot be read back.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   _x := 1
   io.Println("ok")
 }

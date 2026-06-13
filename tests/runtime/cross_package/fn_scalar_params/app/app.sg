@@ -1,7 +1,7 @@
 import "io"
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(lib.Double(21).String())
   io.Println(lib.Greet("world"))
   io.Println(lib.Positive(1.5).String())

@@ -530,7 +530,6 @@ private:
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
   TypePtr resolve_func_type(const FuncTypeNode &node);
-  TypePtr resolve_range_type(const RangeTypeNode &node);
   TypePtr resolve_struct_type(const StructTypeNode &node);
   TypePtr resolve_union_type(const UnionTypeNode &node);
   TypePtr resolve_generic_type_app(const GenericTypeAppNode &node);
@@ -550,17 +549,10 @@ private:
   void declare_parameters(const SignatureNode &sig);
 
   // Phase 3: Resolve names inside function/method bodies.
-  // If `enclosing_struct` is non-null, the struct's fields are injected
-  // into the function scope (for in-bound methods).
-  void resolve_func_decl_body(const FuncDeclNode &fn,
-                               const TypePtr &enclosing_struct = nullptr);
+  void resolve_func_decl_body(const FuncDeclNode &fn);
 
   // Phase 4: Type-check function/method bodies.
-  void check_func_decl_body(const FuncDeclNode &fn,
-                             const TypePtr &enclosing_struct = nullptr);
-
-  /// Inject a struct's fields into the current scope as local variables.
-  void inject_struct_fields(const TypePtr &struct_type);
+  void check_func_decl_body(const FuncDeclNode &fn);
 
   /// Returns true if a node always terminates via `return` on every
   /// control-flow path (e.g. if/else where both branches return, or
@@ -580,7 +572,6 @@ private:
   void resolve_if_expr(const IfExprNode &node);
   void resolve_switch_expr(const SwitchExprNode &node);
   void resolve_for_expr(const ForExprNode &node);
-  void resolve_range_expr(const RangeExprNode &node);
   void resolve_spawn_expr(const SpawnExprNode &node, const Node &parent);
   void resolve_or_expr(const OrExprNode &node);
   void resolve_func_expr(const FuncExprNode &node, const Node &parent);
@@ -617,6 +608,7 @@ private:
   TypePtr check_struct_literal(const StructLiteralNode &node);
   TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);
   TypePtr check_unary_expr(const UnaryExprNode &node);
+  TypePtr check_is_expr(const IsExpr &node);
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
@@ -634,7 +626,6 @@ private:
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,
                          TypePtr accumulator_hint = nullptr);
-  TypePtr check_range_expr(const RangeExprNode &node);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);

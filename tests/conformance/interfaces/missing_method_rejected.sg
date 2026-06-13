@@ -3,15 +3,15 @@
 import "std/io"
 
 interface Greeter {
-  Greet() String
+  Greet() string
 }
 
 struct Silent {}
 
-fn UseGreeter(g Greeter) Void {
+fn UseGreeter(g Greeter) void {
   io.Println(g.Greet())
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   UseGreeter(Silent{})
 }

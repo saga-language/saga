@@ -3,7 +3,7 @@
 // matching element), and an empty-array miss.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   ints := [10, 20, 30, 40]
 
   // Success: first hit returns its index.

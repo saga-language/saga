@@ -1,70 +1,70 @@
 // Package string provides methods on the String intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-extern fn saga_string_size(s String) Int
-extern fn saga_string_lower(s String) String
-extern fn saga_string_upper(s String) String
-extern fn saga_string_trim(s String) String
-extern fn saga_string_capitalize(s String) String
-extern fn saga_string_title(s String) String
-extern fn saga_string_has_prefix(s String, prefix String) Bool
-extern fn saga_string_has_suffix(s String, suffix String) Bool
-extern fn saga_string_contains(s String, needle String) Bool
-extern fn saga_string_split(s String, sep String) String[]
-extern fn saga_string_compare(s String, other String) Int
-extern fn saga_string_hash(s String) Int64
-extern fn saga_string_bytes(s String) Byte[]
-extern fn saga_string_count(s String) Int
-extern fn saga_string_runes(s String) Int32[]
-extern fn saga_string_format(s String, fmt String) String
-extern fn saga_string_to_int(s String) Int | Error
-extern fn saga_string_to_float(s String) Float | Error
+extern fn saga_string_size(s string) int
+extern fn saga_string_lower(s string) string
+extern fn saga_string_upper(s string) string
+extern fn saga_string_trim(s string) string
+extern fn saga_string_capitalize(s string) string
+extern fn saga_string_title(s string) string
+extern fn saga_string_has_prefix(s string, prefix string) bool
+extern fn saga_string_has_suffix(s string, suffix string) bool
+extern fn saga_string_contains(s string, needle string) bool
+extern fn saga_string_split(s string, sep string) array{string}
+extern fn saga_string_compare(s string, other string) int
+extern fn saga_string_hash(s string) int64
+extern fn saga_string_bytes(s string) array{byte}
+extern fn saga_string_count(s string) int
+extern fn saga_string_runes(s string) array{int32}
+extern fn saga_string_format(s string, fmt string) string
+extern fn saga_string_to_int(s string) int | error
+extern fn saga_string_to_float(s string) float | error
 
-pub fn (s String) String() String {
+pub fn (s string) String() string {
   s
 }
 
-pub fn (s String) Size() Int {
+pub fn (s string) Size() int {
   saga_string_size(s)
 }
 
-pub fn (s String) Lower() String {
+pub fn (s string) Lower() string {
   saga_string_lower(s)
 }
 
-pub fn (s String) Upper() String {
+pub fn (s string) Upper() string {
   saga_string_upper(s)
 }
 
-pub fn (s String) Trim() String {
+pub fn (s string) Trim() string {
   saga_string_trim(s)
 }
 
-pub fn (s String) Capitalize() String {
+pub fn (s string) Capitalize() string {
   saga_string_capitalize(s)
 }
 
-pub fn (s String) Title() String {
+pub fn (s string) Title() string {
   saga_string_title(s)
 }
 
-pub fn (s String) HasPrefix(prefix String) Bool {
+pub fn (s string) HasPrefix(prefix string) bool {
   saga_string_has_prefix(s, prefix)
 }
 
-pub fn (s String) HasSuffix(suffix String) Bool {
+pub fn (s string) HasSuffix(suffix string) bool {
   saga_string_has_suffix(s, suffix)
 }
 
-pub fn (s String) Contains(needle String) Bool {
+pub fn (s string) Contains(needle string) bool {
   saga_string_contains(s, needle)
 }
 
-pub fn (s String) Split(sep String) String[] {
+pub fn (s string) Split(sep string) array{string} {
   saga_string_split(s, sep)
 }
 
-pub fn (s String) Compare(other String) Comparison {
+pub fn (s string) Compare(other string) Comparison {
   v := saga_string_compare(s, other)
   if v < 0 {
     Comparison.Less
@@ -74,34 +74,34 @@ pub fn (s String) Compare(other String) Comparison {
   }
 }
 
-pub fn (s String) Equals(other String) Bool {
+pub fn (s string) Equals(other string) bool {
   saga_string_compare(s, other) == 0
 }
 
-pub fn (s String) Hash() Int64 {
+pub fn (s string) Hash() int64 {
   saga_string_hash(s)
 }
 
-pub fn (s String) Bytes() Byte[] {
+pub fn (s string) Bytes() array{byte} {
   saga_string_bytes(s)
 }
 
-pub fn (s String) Count() Int {
+pub fn (s string) Count() int {
   saga_string_count(s)
 }
 
-pub fn (s String) Runes() Int32[] {
+pub fn (s string) Runes() array{int32} {
   saga_string_runes(s)
 }
 
-pub fn (s String) Format(fmt String) String {
+pub fn (s string) Format(fmt string) string {
   saga_string_format(s, fmt)
 }
 
-pub fn (s String) Int() Int | Error {
+pub fn (s string) Int() int | error {
   saga_string_to_int(s)
 }
 
-pub fn (s String) Float() Float | Error {
+pub fn (s string) Float() float | error {
   saga_string_to_float(s)
 }

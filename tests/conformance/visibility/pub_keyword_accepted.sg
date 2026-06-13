@@ -8,6 +8,6 @@ import "std/io"
 
 pub const Visible = 7
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Visible.String())
 }

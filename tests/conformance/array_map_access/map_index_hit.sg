@@ -2,7 +2,7 @@
 // unwraps on hit. (docs/language.md:642-644)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   m := {"name": "jane", "city": "ottawa"}
   v := m["name"] or { "unknown" }
   io.Println(v)

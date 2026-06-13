@@ -13,10 +13,10 @@
 // Float is intentionally not Hashable: NaN is not equal to itself,
 // which breaks the consistency invariant.
 pub interface Hashable {
-  Hash() Int64
-  Equals(Hashable) Bool
+  Hash() int64
+  Equals(Hashable) bool
 }
 
 pub interface Stringable {
-  String() String
+  String() string
 }

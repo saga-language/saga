@@ -2,15 +2,15 @@
 // inherits parent's fields and methods. (docs/language.md:849-879)
 import "std/io"
 
-struct Greeter {
-  pub fn Greet() String { "Hello!" }
-}
+struct Greeter {}
+
+pub fn (g Greeter) Greet() string { "Hello!" }
 
 struct User < Greeter {
-  name String
+  name string
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   u := User{name: "Alice"}
   io.Println(u.Greet())
 }

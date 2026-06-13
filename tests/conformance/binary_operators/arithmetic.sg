@@ -1,7 +1,7 @@
 // Spec: + - * / ** % arithmetic operators. (docs/language.md:1377-1378)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println((3 + 4).String())
   io.Println((10 - 3).String())
   io.Println((6 * 7).String())

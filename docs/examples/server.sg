@@ -1,11 +1,11 @@
 import "std/http"
 
-fn indexHandler(req http.Request, resp http.Response) Void {
+fn indexHandler(req http.Request, resp http.Response) void {
   resp.SetHeader("Content-Type", "text/plain")
   resp.SetStatus(200) // 200 OK would probably be the default
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   router := http.Router{}
   router.Get("/", indexHandler)
 

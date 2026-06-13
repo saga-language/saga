@@ -1,31 +1,31 @@
 // Package int provides methods on the Int intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-extern fn saga_int_to_string(i Int) String
-extern fn saga_int_hash(i Int) Int64
-extern fn saga_int_format(i Int, fmt String) String
+extern fn saga_int_to_string(i int) string
+extern fn saga_int_hash(i int) int64
+extern fn saga_int_format(i int, fmt string) string
 
-pub fn (i Int) String() String {
+pub fn (i int) String() string {
   saga_int_to_string(i)
 }
 
-pub fn (i Int) Float() Float {
+pub fn (i int) Float() float {
   intrinsic_sitofp(i)
 }
 
-pub fn (i Int) Float64() Float64 {
+pub fn (i int) Float64() float64 {
   intrinsic_sitofp(i)
 }
 
-pub fn (i Int) Equals(other Int) Bool {
+pub fn (i int) Equals(other int) bool {
   i == other
 }
 
-pub fn (i Int) Hash() Int64 {
+pub fn (i int) Hash() int64 {
   saga_int_hash(i)
 }
 
-pub fn (i Int) Compare(other Int) Comparison {
+pub fn (i int) Compare(other int) Comparison {
   if i < other {
     Comparison.Less
   } else {
@@ -34,28 +34,28 @@ pub fn (i Int) Compare(other Int) Comparison {
   }
 }
 
-pub fn (i Int) Int() Int {
+pub fn (i int) Int() int {
   i
 }
 
-pub fn (i Int) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Int) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Int) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Int) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Int) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Int) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Int) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Int) Uint64() Uint64 { intrinsic_zext_u64(i) }
+pub fn (i int) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i int) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i int) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i int) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i int) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i int) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i int) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i int) Uint64() uint64 { intrinsic_zext_u64(i) }
 
-pub fn (i Int) Char() Char {
+pub fn (i int) Char() Char {
   intrinsic_zext_u32(i)
 }
 
-pub fn (i Int) Float32() Float32 {
+pub fn (i int) Float32() float32 {
   intrinsic_sitofp32(i)
 }
 
-pub fn (i Int) Format(fmt String) String {
+pub fn (i int) Format(fmt string) string {
   saga_int_format(i, fmt)
 }
 
@@ -67,208 +67,208 @@ pub fn (i Int) Format(fmt String) String {
 // unsigned.  String/Hash delegate to the Int variant since the C
 // runtime only has an Int64 entry point.
 
-pub fn (i Int8) String() String { i.Int().String() }
+pub fn (i int8) String() string { i.Int().String() }
 
-pub fn (i Int8) Equals(other Int8) Bool { i == other }
+pub fn (i int8) Equals(other int8) bool { i == other }
 
-pub fn (i Int8) Hash() Int64 { i.Int().Hash() }
+pub fn (i int8) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Int8) Compare(other Int8) Comparison {
+pub fn (i int8) Compare(other int8) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Int8) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Int8) Int8() Int8     { i }
-pub fn (i Int8) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Int8) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Int8) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Int8) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Int8) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Int8) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Int8) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Int8) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Int8) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Int8) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i int8) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i int8) Int8() int8     { i }
+pub fn (i int8) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i int8) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i int8) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i int8) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i int8) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i int8) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i int8) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i int8) Float() float   { intrinsic_sitofp(i) }
+pub fn (i int8) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i int8) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Int16 ---
 
-pub fn (i Int16) String() String { i.Int().String() }
+pub fn (i int16) String() string { i.Int().String() }
 
-pub fn (i Int16) Equals(other Int16) Bool { i == other }
+pub fn (i int16) Equals(other int16) bool { i == other }
 
-pub fn (i Int16) Hash() Int64 { i.Int().Hash() }
+pub fn (i int16) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Int16) Compare(other Int16) Comparison {
+pub fn (i int16) Compare(other int16) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Int16) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Int16) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Int16) Int16() Int16   { i }
-pub fn (i Int16) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Int16) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Int16) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Int16) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Int16) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Int16) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Int16) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Int16) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Int16) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i int16) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i int16) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i int16) Int16() int16   { i }
+pub fn (i int16) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i int16) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i int16) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i int16) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i int16) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i int16) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i int16) Float() float   { intrinsic_sitofp(i) }
+pub fn (i int16) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i int16) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Int32 ---
 
-pub fn (i Int32) String() String { i.Int().String() }
+pub fn (i int32) String() string { i.Int().String() }
 
-pub fn (i Int32) Equals(other Int32) Bool { i == other }
+pub fn (i int32) Equals(other int32) bool { i == other }
 
-pub fn (i Int32) Hash() Int64 { i.Int().Hash() }
+pub fn (i int32) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Int32) Compare(other Int32) Comparison {
+pub fn (i int32) Compare(other int32) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Int32) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Int32) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Int32) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Int32) Int32() Int32   { i }
-pub fn (i Int32) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Int32) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Int32) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Int32) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Int32) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Int32) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Int32) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Int32) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i int32) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i int32) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i int32) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i int32) Int32() int32   { i }
+pub fn (i int32) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i int32) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i int32) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i int32) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i int32) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i int32) Float() float   { intrinsic_sitofp(i) }
+pub fn (i int32) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i int32) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Int64 ---
 
-pub fn (i Int64) String() String { i.Int().String() }
+pub fn (i int64) String() string { i.Int().String() }
 
-pub fn (i Int64) Equals(other Int64) Bool { i == other }
+pub fn (i int64) Equals(other int64) bool { i == other }
 
-pub fn (i Int64) Hash() Int64 { i.Int().Hash() }
+pub fn (i int64) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Int64) Compare(other Int64) Comparison {
+pub fn (i int64) Compare(other int64) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Int64) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Int64) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Int64) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Int64) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Int64) Int64() Int64   { i }
-pub fn (i Int64) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Int64) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Int64) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Int64) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Int64) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Int64) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Int64) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i int64) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i int64) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i int64) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i int64) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i int64) Int64() int64   { i }
+pub fn (i int64) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i int64) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i int64) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i int64) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i int64) Float() float   { intrinsic_sitofp(i) }
+pub fn (i int64) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i int64) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Uint8 ---
 
-pub fn (i Uint8) String() String { i.Int().String() }
+pub fn (i uint8) String() string { i.Int().String() }
 
-pub fn (i Uint8) Equals(other Uint8) Bool { i == other }
+pub fn (i uint8) Equals(other uint8) bool { i == other }
 
-pub fn (i Uint8) Hash() Int64 { i.Int().Hash() }
+pub fn (i uint8) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Uint8) Compare(other Uint8) Comparison {
+pub fn (i uint8) Compare(other uint8) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Uint8) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Uint8) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Uint8) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Uint8) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Uint8) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Uint8) Uint8() Uint8   { i }
-pub fn (i Uint8) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Uint8) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Uint8) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Uint8) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Uint8) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Uint8) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i uint8) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i uint8) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i uint8) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i uint8) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i uint8) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i uint8) Uint8() uint8   { i }
+pub fn (i uint8) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i uint8) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i uint8) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i uint8) Float() float   { intrinsic_sitofp(i) }
+pub fn (i uint8) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i uint8) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Uint16 ---
 
-pub fn (i Uint16) String() String { i.Int().String() }
+pub fn (i uint16) String() string { i.Int().String() }
 
-pub fn (i Uint16) Equals(other Uint16) Bool { i == other }
+pub fn (i uint16) Equals(other uint16) bool { i == other }
 
-pub fn (i Uint16) Hash() Int64 { i.Int().Hash() }
+pub fn (i uint16) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Uint16) Compare(other Uint16) Comparison {
+pub fn (i uint16) Compare(other uint16) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Uint16) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Uint16) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Uint16) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Uint16) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Uint16) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Uint16) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Uint16) Uint16() Uint16 { i }
-pub fn (i Uint16) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Uint16) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Uint16) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Uint16) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Uint16) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i uint16) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i uint16) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i uint16) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i uint16) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i uint16) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i uint16) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i uint16) Uint16() uint16 { i }
+pub fn (i uint16) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i uint16) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i uint16) Float() float   { intrinsic_sitofp(i) }
+pub fn (i uint16) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i uint16) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Uint32 ---
 
-pub fn (i Uint32) String() String { i.Int().String() }
+pub fn (i uint32) String() string { i.Int().String() }
 
-pub fn (i Uint32) Equals(other Uint32) Bool { i == other }
+pub fn (i uint32) Equals(other uint32) bool { i == other }
 
-pub fn (i Uint32) Hash() Int64 { i.Int().Hash() }
+pub fn (i uint32) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Uint32) Compare(other Uint32) Comparison {
+pub fn (i uint32) Compare(other uint32) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Uint32) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Uint32) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Uint32) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Uint32) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Uint32) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Uint32) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Uint32) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Uint32) Uint32() Uint32 { i }
-pub fn (i Uint32) Uint64() Uint64 { intrinsic_zext_u64(i) }
-pub fn (i Uint32) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Uint32) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Uint32) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i uint32) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i uint32) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i uint32) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i uint32) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i uint32) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i uint32) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i uint32) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i uint32) Uint32() uint32 { i }
+pub fn (i uint32) Uint64() uint64 { intrinsic_zext_u64(i) }
+pub fn (i uint32) Float() float   { intrinsic_sitofp(i) }
+pub fn (i uint32) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i uint32) Float64() float64 { intrinsic_sitofp(i) }
 
 // --- Uint64 ---
 
-pub fn (i Uint64) String() String { i.Int().String() }
+pub fn (i uint64) String() string { i.Int().String() }
 
-pub fn (i Uint64) Equals(other Uint64) Bool { i == other }
+pub fn (i uint64) Equals(other uint64) bool { i == other }
 
-pub fn (i Uint64) Hash() Int64 { i.Int().Hash() }
+pub fn (i uint64) Hash() int64 { i.Int().Hash() }
 
-pub fn (i Uint64) Compare(other Uint64) Comparison {
+pub fn (i uint64) Compare(other uint64) Comparison {
   if i < other { Comparison.Less }
   else { if i == other { Comparison.Equal } else { Comparison.Greater } }
 }
 
-pub fn (i Uint64) Int() Int       { intrinsic_sext_i64(i) }
-pub fn (i Uint64) Int8() Int8     { intrinsic_sext_i8(i) }
-pub fn (i Uint64) Int16() Int16   { intrinsic_sext_i16(i) }
-pub fn (i Uint64) Int32() Int32   { intrinsic_sext_i32(i) }
-pub fn (i Uint64) Int64() Int64   { intrinsic_sext_i64(i) }
-pub fn (i Uint64) Uint8() Uint8   { intrinsic_zext_u8(i) }
-pub fn (i Uint64) Uint16() Uint16 { intrinsic_zext_u16(i) }
-pub fn (i Uint64) Uint32() Uint32 { intrinsic_zext_u32(i) }
-pub fn (i Uint64) Uint64() Uint64 { i }
-pub fn (i Uint64) Float() Float   { intrinsic_sitofp(i) }
-pub fn (i Uint64) Float32() Float32 { intrinsic_sitofp32(i) }
-pub fn (i Uint64) Float64() Float64 { intrinsic_sitofp(i) }
+pub fn (i uint64) Int() int       { intrinsic_sext_i64(i) }
+pub fn (i uint64) Int8() int8     { intrinsic_sext_i8(i) }
+pub fn (i uint64) Int16() int16   { intrinsic_sext_i16(i) }
+pub fn (i uint64) Int32() int32   { intrinsic_sext_i32(i) }
+pub fn (i uint64) Int64() int64   { intrinsic_sext_i64(i) }
+pub fn (i uint64) Uint8() uint8   { intrinsic_zext_u8(i) }
+pub fn (i uint64) Uint16() uint16 { intrinsic_zext_u16(i) }
+pub fn (i uint64) Uint32() uint32 { intrinsic_zext_u32(i) }
+pub fn (i uint64) Uint64() uint64 { i }
+pub fn (i uint64) Float() float   { intrinsic_sitofp(i) }
+pub fn (i uint64) Float32() float32 { intrinsic_sitofp32(i) }
+pub fn (i uint64) Float64() float64 { intrinsic_sitofp(i) }

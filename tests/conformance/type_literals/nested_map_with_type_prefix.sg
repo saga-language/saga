@@ -2,8 +2,8 @@
 // (docs/language.md:609-614)
 import "std/io"
 
-pub fn Main() Void {
-  registry := {String: {String: Int}}{
+pub fn Main() void {
+  registry := map{string: map{string: int}}{
     "production": {"port": 80, "timeout": 30},
     "staging":    {"port": 8080, "timeout": 60}
   }

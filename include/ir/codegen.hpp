@@ -72,14 +72,6 @@ struct CodeGen {
   /// Maps enum name → true (tracks which enums have been declared).
   std::unordered_map<std::string, bool> enum_types;
 
-  // ── Multi-return registry ────────────────────────────────────────────
-
-  /// Maps function link-name → LLVM struct type used for multi-return.
-  std::unordered_map<std::string, llvm::StructType *> multi_return_types;
-
-  /// Maps function link-name → number of return values (only for multi).
-  std::unordered_map<std::string, size_t> multi_return_counts;
-
   // ── Interface registry ──────────────────────────────────────────────
 
   /// The fat pointer type for interface values: { ptr data, ptr vtable }.
@@ -134,12 +126,6 @@ struct CodeGen {
 
   /// The fat pointer type for closures: { ptr fn, ptr env }.
   llvm::StructType *closure_fat_ptr_type = nullptr;
-
-  /// Backing struct for `(low..high)` literals: { i64 low, i64 high }.  The
-  /// range element type is type-erased to i64; integer/Char/Byte ranges all
-  /// share this layout, with materialising methods (Array/iteration) reading
-  /// the receiver's semantic element type for the produced T[].
-  llvm::StructType *range_struct_type = nullptr;
 
   /// Counter for generating unique closure names.
   int next_closure_id = 0;
@@ -502,6 +488,7 @@ private:
                                      const TypePtr &lhs_sem,
                                      const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
+  llvm::Value *emit_is_expr(const IsExpr &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
@@ -530,10 +517,6 @@ private:
                           const ForRangeClauseNode &range,
                           llvm::Value *iterable, const TypePtr &iter_sem,
                           const ForLoopBlocks &bbs);
-  void emit_for_range_range(const ForExprNode &node,
-                            const ForRangeClauseNode &range,
-                            llvm::Value *iterable, const TypePtr &iter_sem,
-                            const ForLoopBlocks &bbs);
   void emit_for_range_task(const ForExprNode &node,
                            const ForRangeClauseNode &range,
                            const StructTypeInfo &task_info,
@@ -549,7 +532,6 @@ private:
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_map_literal(const MapLiteralNode &node);
-  llvm::Value *emit_range_expr(const RangeExprNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                                   llvm::Type *elem_ll,

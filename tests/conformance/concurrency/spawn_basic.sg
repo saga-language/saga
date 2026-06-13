@@ -2,7 +2,7 @@
 // task finishes. (docs/language.md:1416-1446)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   t := spawn {
     io.Println("from task")
   }

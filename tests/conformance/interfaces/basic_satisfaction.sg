@@ -3,17 +3,17 @@
 import "std/io"
 
 interface Greeter {
-  Greet() String
+  Greet() string
 }
 
-struct EnglishGreeter {
-  pub fn Greet() String { "Hello!" }
-}
+struct EnglishGreeter {}
 
-fn UseGreeter(g Greeter) Void {
+pub fn (g EnglishGreeter) Greet() string { "Hello!" }
+
+fn UseGreeter(g Greeter) void {
   io.Println(g.Greet())
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   UseGreeter(EnglishGreeter{})
 }

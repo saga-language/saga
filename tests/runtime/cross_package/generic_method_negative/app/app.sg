@@ -1,6 +1,6 @@
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   b := lib.Box{value: 42}
-  b.Map(fn(x Int) String { x.String() })
+  b.Map(fn(x int) string { x.String() })
 }

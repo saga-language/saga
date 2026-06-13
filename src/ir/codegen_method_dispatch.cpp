@@ -16,6 +16,31 @@
 
 namespace saga {
 
+// Canonical (capitalized, width-bearing) name for a scalar intrinsic type, used
+// to build receiver-method link names (`pkg__TypeName__Method`). It must match
+// the declaration side (codegen_decls `intrinsic_internal_name`) and `.sgi`.
+// `type_to_string` is now the lowercase *source* spelling, so it can't serve.
+static std::string scalar_intrinsic_mangle_name(const TypePtr &t) {
+  switch (t->kind) {
+  case TypeKind::Bool:
+    return "Bool";
+  case TypeKind::String:
+    return "String";
+  case TypeKind::Float: {
+    auto bits = std::get<FloatType>(t->detail).bits;
+    return bits == 0 ? "Float" : "Float" + std::to_string(bits);
+  }
+  case TypeKind::Int: {
+    auto &i = std::get<IntType>(t->detail);
+    if (i.bits == 0)
+      return i.is_signed ? "Int" : "Byte";
+    return (i.is_signed ? "Int" : "Uint") + std::to_string(i.bits);
+  }
+  default:
+    return type_to_string(t);
+  }
+}
+
 llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
                                                  const Node &parent) {
   auto *sel = std::get_if<SelectorNode>(&node.callee->data);
@@ -98,8 +123,8 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         auto *val = emit_expr(*arg_node);
         if (val) args.push_back(val);
       }
-      llvm::Type *ret_ll = fi.returns.empty()
-                               ? void_ll_type : llvm_type(fi.returns[0]);
+      llvm::Type *ret_ll = !fi.return_type
+                               ? void_ll_type : llvm_type(fi.return_type);
       auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
       if (ret_ll->isVoidTy()) {
         builder.CreateCall(fn_type, fn_ptr, args);
@@ -213,9 +238,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
             param_ll.push_back(self_ll); // self
             for (auto &p : fi.params)
               param_ll.push_back(llvm_type(p));
-            llvm::Type *ret_ll = fi.returns.empty()
+            llvm::Type *ret_ll = !fi.return_type
                                      ? void_ll_type
-                                     : llvm_type(fi.returns[0]);
+                                     : llvm_type(fi.return_type);
             auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
             callee = llvm::Function::Create(
                 ft, llvm::Function::ExternalLinkage, cross_link,
@@ -289,15 +314,15 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
           // load — the slot stores the pointer itself.
           if (result->getType()->isPointerTy() && m.signature) {
             auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-            if (!fi.returns.empty() &&
-                fi.returns[0]->kind == TypeKind::TypeParam) {
+            if (fi.return_type &&
+                fi.return_type->kind == TypeKind::TypeParam) {
               TypePtr concrete_ret;
               if (obj_sem->kind == TypeKind::Array) {
                 auto &arr_info = std::get<ArrayTypeInfo>(obj_sem->detail);
                 concrete_ret = arr_info.element;
               } else if (obj_sem->kind == TypeKind::Map) {
                 auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
-                auto &tp = std::get<TypeParamInfo>(fi.returns[0]->detail);
+                auto &tp = std::get<TypeParamInfo>(fi.return_type->detail);
                 if (tp.param.id == 9991)
                   concrete_ret = map_info.key;
                 else
@@ -329,20 +354,6 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
     return builder.CreateCall(
         module->getFunction("saga_int_to_string"), {obj}, "str");
-  }
-
-  // Range methods — emit_range_expr produced obj as a ptr to {i64 lo, i64 hi}.
-  if (obj_sem && obj_sem->kind == TypeKind::Range) {
-    auto *lo_gep = builder.CreateStructGEP(
-        range_struct_type, obj, 0, "rng.lo.gep");
-    auto *hi_gep = builder.CreateStructGEP(
-        range_struct_type, obj, 1, "rng.hi.gep");
-    auto *lo = builder.CreateLoad(i64_type, lo_gep, "rng.lo");
-    auto *hi = builder.CreateLoad(i64_type, hi_gep, "rng.hi");
-    if (method == "Array") {
-      return builder.CreateCall(
-          module->getFunction("saga_range_to_array"), {lo, hi}, "rng.arr");
-    }
   }
 
   // ── Task method calls ─────────────────────────────────────────────
@@ -562,7 +573,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         // Determine the type name and origin package.
         // Sized int types (Int8..Uint64) live in the "int" package;
         // the type name must match the receiver (e.g. "Int64").
-        std::string tn = type_to_string(obj_sem);
+        std::string tn = scalar_intrinsic_mangle_name(obj_sem);
         const char *stdlib_pkg_name = nullptr;
         switch (obj_sem->kind) {
         case TypeKind::Int:    stdlib_pkg_name = "int"; break;
@@ -597,9 +608,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
             param_ll.push_back(self_ll); // self
             for (auto &p : fi.params)
               param_ll.push_back(llvm_type(p));
-            llvm::Type *ret_ll = fi.returns.empty()
+            llvm::Type *ret_ll = !fi.return_type
                                      ? void_ll_type
-                                     : llvm_type(fi.returns[0]);
+                                     : llvm_type(fi.return_type);
             auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
             callee = llvm::Function::Create(
                 ft, llvm::Function::ExternalLinkage, cross_link,
@@ -783,9 +794,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
           param_ll.push_back(ptr_type); // self
           for (auto &p : finfo.params)
             param_ll.push_back(llvm_type(p));
-          llvm::Type *ret_ll = finfo.returns.empty()
+          llvm::Type *ret_ll = !finfo.return_type
                                    ? void_ll_type
-                                   : llvm_type(finfo.returns[0]);
+                                   : llvm_type(finfo.return_type);
           auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
           callee = llvm::Function::Create(
               ft, llvm::Function::ExternalLinkage, link_name, module.get());
@@ -1135,8 +1146,8 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
   for (auto &im : iface_info.methods) {
     if (im.name == method && im.signature) {
       auto &fi = std::get<FuncTypeInfo>(im.signature->detail);
-      if (!fi.returns.empty())
-        ret_ll = llvm_type(fi.returns[0]);
+      if (fi.return_type)
+        ret_ll = llvm_type(fi.return_type);
       break;
     }
   }

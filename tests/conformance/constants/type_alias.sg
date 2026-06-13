@@ -2,9 +2,9 @@
 // (docs/language.md:85, line 90: `const MyType = Int`)
 import "std/io"
 
-const MyInt = Int
+const MyInt = int
 
-pub fn Main() Void {
+pub fn Main() void {
   x MyInt = 5
   io.Println(x.String())
 }

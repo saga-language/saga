@@ -1,7 +1,7 @@
 import "io"
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(lib.ColorName(lib.Color.Red))
   io.Println(lib.ColorName(lib.Color.Green))
   io.Println(lib.ColorName(lib.Color.Blue))

@@ -2,7 +2,7 @@
 // (docs/language.md:1336)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(x.String())
   x := 1
 }

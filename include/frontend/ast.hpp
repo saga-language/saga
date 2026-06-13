@@ -139,30 +139,26 @@ struct UnionTypeNode {
   std::vector<NodePtr> types;
 };
 
-// ArrayType = "[" Type "]"
+// ArrayType = "array" "{" Type [ ";" Expression ] "}"
 struct ArrayTypeNode {
   Span span;
   NodePtr element_type;
+  NodePtr size; // nullptr = no size hint
 };
 
-// MapType = "{" Type ":" Type "}"
+// MapType = "map" "{" Type ":" Type [ ";" Expression ] "}"
 struct MapTypeNode {
   Span span;
   NodePtr key_type;
   NodePtr value_type;
+  NodePtr size; // nullptr = no size hint
 };
 
 // FuncType = "fn" Signature  (a function type expression)
 struct FuncTypeNode {
   Span span;
   std::vector<NodePtr> params; // type nodes only (no names at type level)
-  std::vector<NodePtr> returns;
-};
-
-// RangeType = "(" Type ")"
-struct RangeTypeNode {
-  Span span;
-  NodePtr element_type;
+  NodePtr return_type;         // nullptr = Void
 };
 
 // FieldSpec = IdentifierList Type  (one field declaration in a struct)
@@ -237,12 +233,12 @@ struct ParameterNode {
   bool is_variadic; // true for "...Type"
 };
 
-// Signature = "(" [ ParameterList ] ")" TypeList
+// Signature = "(" [ ParameterList ] ")" [ Type ]
 // Stored by value inside FuncExprNode, FuncDeclNode, InterfaceFieldNode.
 struct SignatureNode {
   Span span;
   std::vector<ParameterNode> params;
-  std::vector<NodePtr> returns; // type nodes; empty means Void
+  NodePtr return_type; // type node; nullptr = Void
 };
 
 // ===========================================================================
@@ -262,6 +258,14 @@ struct UnaryExprNode {
   Span span;
   Token::Kind op; // Token::Kind::Not or Token::Kind::Sub
   NodePtr operand;
+};
+
+// IsExpr = Expression "is" Type   — runtime type test, evaluates to Bool.
+// Narrows the tested expression in an enclosing `if` then/else branch.
+struct IsExpr {
+  Span span;
+  NodePtr value; // the expression under test
+  NodePtr type;  // the type tested against (a Type node)
 };
 
 // "(" Expression ")"
@@ -340,13 +344,6 @@ struct ForExprNode {
   NodePtr body;                              // BlockNode
 };
 
-// RangeExpr = "(" Expression ".." Expression ")"
-struct RangeExprNode {
-  Span span;
-  NodePtr low;  // inclusive start
-  NodePtr high; // exclusive end
-};
-
 // SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block | Identifier )
 struct SpawnExprNode {
   Span span;
@@ -416,10 +413,10 @@ struct DecrementNode {
   NodePtr operand;
 };
 
-// "return" [ ExpressionList ]
+// "return" [ Expression ]
 struct ReturnNode {
   Span span;
-  std::vector<NodePtr> values; // empty = bare `return`
+  NodePtr value; // nullptr = bare `return`
 };
 
 // "break" [ ExpressionList ]
@@ -515,12 +512,11 @@ struct InterfaceDeclNode {
   std::vector<InterfaceFieldNode> methods;
 };
 
-// StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
-// The member field holds either a FieldSpecNode or a FuncDeclNode.
+// StructMember = [ "pub" ] FieldSpec
 struct StructMemberNode {
   Span span;
   bool is_public;
-  NodePtr member; // FieldSpecNode or FuncDeclNode
+  NodePtr member; // FieldSpecNode
 };
 
 // StructDecl = [ "pub" ] "struct" [ Generic ] Identifier [ "<" IdentifierList ]
@@ -581,18 +577,18 @@ struct Node {
 
     // --- Types ---
     UnionTypeNode,  ArrayTypeNode,  MapTypeNode,   FuncTypeNode,
-    RangeTypeNode,  StructTypeNode, GenericTypeAppNode, GenericNode,
+    StructTypeNode, GenericTypeAppNode, GenericNode,
     TypeParamNode,
 
     // --- Shared sub-nodes ---
     CaseArmNode, ParameterNode,
 
     // --- Expressions ---
-    BinaryExprNode,     UnaryExprNode,     GroupExprNode,
+    BinaryExprNode,     UnaryExprNode,     IsExpr,            GroupExprNode,
     CallExprNode,       IndexExprNode,     SliceNode,          SelectorNode,
     IfExprNode,         SwitchExprNode,
     ForExprNode,        ForRangeClauseNode, ForIterClauseNode,
-    RangeExprNode,      SpawnExprNode,     OrExprNode,
+    SpawnExprNode,     OrExprNode,
     FuncExprNode,       ImportExprNode,
 
     // --- Statements ---

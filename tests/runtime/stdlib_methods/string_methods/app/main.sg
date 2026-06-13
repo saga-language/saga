@@ -2,7 +2,7 @@
 // HasSuffix, Contains, Split.
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   // Trim
   io.Println("[" + "  hello  ".Trim() + "]")
   io.Println("[" + "\t\nworld\n\t".Trim() + "]")

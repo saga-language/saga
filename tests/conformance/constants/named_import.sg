@@ -2,6 +2,6 @@
 // (docs/language.md:85, line 93: `const Math = import "std/math"`)
 const Out = import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   Out.Println("named import")
 }

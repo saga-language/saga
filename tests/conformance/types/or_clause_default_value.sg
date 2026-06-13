@@ -2,7 +2,7 @@
 // (docs/language.md:418-420)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   arr := [10, 20, 30]
   i := arr[99] or { -1 }
   io.Println(i.String())

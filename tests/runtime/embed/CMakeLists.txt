@@ -10,5 +10,8 @@ function(embed_test name)
   )
 endfunction()
 
-embed_test(field_access)
-embed_test(method_dispatch)
+# Deferred to Phase 2: struct embedding is unimplemented in Phase 1 (the cpp
+# embed tests are likewise DISABLED_). Cases kept for re-authoring once the
+# embedding syntax (no longer `<`, which is now generics) lands.
+# embed_test(field_access)
+# embed_test(method_dispatch)

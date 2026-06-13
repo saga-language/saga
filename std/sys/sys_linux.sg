@@ -131,7 +131,7 @@ pub enum Number {
 }
 
 // Linux errno messages (errno-base.h, errno.h)
-fn errnoMessage(code Int) String {
+fn errnoMessage(code int) string {
   switch code {
     case 1:   "Operation not permitted"
     case 2:   "No such file or directory"

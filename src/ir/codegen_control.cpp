@@ -48,20 +48,21 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
     builder.CreateCondBr(cond, then_bb, merge_bb);
   }
 
-  // ── Detect type-matching pattern for narrowing ─────────────────────
-  // If condition is `value == TypeName`, extract the narrowed value.
+  // ── Detect type-test pattern for narrowing ─────────────────────────
+  // `if value is Type` extracts the narrowed value from the union into the
+  // then-block.
   std::string narrowed_var_name;
+  TypePtr narrow_union_sem;
+  TypePtr narrow_target_sem;
   llvm::AllocaInst *saved_alloca = nullptr;
-  if (auto *binop = std::get_if<BinaryExprNode>(&node.condition->data)) {
-    if (binop->op == Token::Kind::Equal) {
-      if (auto *lhs_id = std::get_if<IdentifierNode>(&binop->lhs->data)) {
-        auto lhs_sem = semantic_type(*binop->lhs);
-        if (lhs_sem && lhs_sem->kind == TypeKind::Union) {
-          auto rhs_sem = semantic_type(*binop->rhs);
-          if (rhs_sem) {
-            narrowed_var_name = std::string(lhs_id->name);
-          }
-        }
+  if (auto *is_expr = std::get_if<IsExpr>(&node.condition->data)) {
+    if (auto *lhs_id = std::get_if<IdentifierNode>(&is_expr->value->data)) {
+      auto lhs_sem = semantic_type(*is_expr->value);
+      auto rhs_sem = semantic_type(*is_expr->type);
+      if (lhs_sem && lhs_sem->kind == TypeKind::Union && rhs_sem) {
+        narrowed_var_name = std::string(lhs_id->name);
+        narrow_union_sem = lhs_sem;
+        narrow_target_sem = rhs_sem;
       }
     }
   }
@@ -69,26 +70,21 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
   // ── Then block ─────────────────────────────────────────────────────
   builder.SetInsertPoint(then_bb);
 
-  // If type-matching, narrow the variable by extracting from the union.
+  // If type-testing, narrow the variable by extracting from the union.
   if (!narrowed_var_name.empty()) {
     auto local_it = locals.find(narrowed_var_name);
     if (local_it != locals.end()) {
-      auto lhs_sem = semantic_type(*std::get<BinaryExprNode>(
-          node.condition->data).lhs);
-      auto rhs_sem = semantic_type(*std::get<BinaryExprNode>(
-          node.condition->data).rhs);
-      if (lhs_sem && rhs_sem) {
-        auto *union_ptr = local_it->second;
-        auto *extracted = emit_union_extract(union_ptr, rhs_sem, lhs_sem);
-        if (extracted) {
-          auto *ll_type = llvm_type(rhs_sem);
-          auto *narrowed_alloca = create_entry_alloca(
-              func, narrowed_var_name + ".narrowed", ll_type);
-          builder.CreateStore(extracted, narrowed_alloca);
-          // Temporarily replace the local.
-          saved_alloca = local_it->second;
-          locals[narrowed_var_name] = narrowed_alloca;
-        }
+      auto *union_ptr = local_it->second;
+      auto *extracted =
+          emit_union_extract(union_ptr, narrow_target_sem, narrow_union_sem);
+      if (extracted) {
+        auto *ll_type = llvm_type(narrow_target_sem);
+        auto *narrowed_alloca = create_entry_alloca(
+            func, narrowed_var_name + ".narrowed", ll_type);
+        builder.CreateStore(extracted, narrowed_alloca);
+        // Temporarily replace the local.
+        saved_alloca = local_it->second;
+        locals[narrowed_var_name] = narrowed_alloca;
       }
     }
   }
@@ -493,29 +489,6 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 // ===========================================================================
 // Array literals
 // ===========================================================================
-
-llvm::Value *CodeGen::emit_range_expr(const RangeExprNode &node) {
-  auto *low = emit_expr(*node.low);
-  auto *high = emit_expr(*node.high);
-  if (!low || !high) return nullptr;
-
-  // Range carries i64 endpoints regardless of element width — the runtime
-  // ABI stores narrow integers as i64 (see CodeGen::llvm_type's Int case).
-  if (low->getType() != i64_type)
-    low = builder.CreateIntCast(low, i64_type, /*isSigned=*/true, "rng.lo");
-  if (high->getType() != i64_type)
-    high = builder.CreateIntCast(high, i64_type, /*isSigned=*/true, "rng.hi");
-
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto *slot = create_entry_alloca(func, "range.lit", range_struct_type);
-  auto *lo_gep =
-      builder.CreateStructGEP(range_struct_type, slot, 0, "range.lo.gep");
-  builder.CreateStore(low, lo_gep);
-  auto *hi_gep =
-      builder.CreateStructGEP(range_struct_type, slot, 1, "range.hi.gep");
-  builder.CreateStore(high, hi_gep);
-  return slot;
-}
 
 llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
   // Determine element size from the semantic type.

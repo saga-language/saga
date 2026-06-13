@@ -1,5 +1,5 @@
 pub interface Drawable {
-  Draw() String
+  Draw() string
 }
 
-pub fn Render(d Drawable) String { d.Draw() }
+pub fn Render(d Drawable) string { d.Draw() }

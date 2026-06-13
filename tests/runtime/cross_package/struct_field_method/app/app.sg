@@ -1,7 +1,7 @@
 import "io"
 import "lib"
 
-pub fn Main() Void {
+pub fn Main() void {
   n := lib.Named{name: "hello"}
   io.Println(n.name.Size().String())
   io.Println(n.name.Upper())

@@ -3,10 +3,10 @@
 // (docs/language.md:212-216, "fn MultiParam(a, b Int, c String) Void")
 import "std/io"
 
-fn Combine(a, b Int, c String) String {
+fn Combine(a, b int, c string) string {
   c + " " + (a + b).String()
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   io.Println(Combine(2, 3, "sum:"))
 }

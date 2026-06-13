@@ -2,7 +2,7 @@
 // as a statement or an expression." (docs/language.md:154-156)
 import "std/io"
 
-pub fn Main() Void {
+pub fn Main() void {
   y := 20
   x := if y > 10 { 0 } else { y }
   io.Println(x.String())

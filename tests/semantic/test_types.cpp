@@ -44,11 +44,11 @@ TEST(Types, MapFactory) {
 
 TEST(Types, FuncFactory) {
   auto fn = make_func_type({make_int_type(), make_string_type()},
-                           {make_bool_type()});
+                           make_bool_type());
   EXPECT_EQ(fn->kind, TypeKind::Func);
   auto &info = std::get<FuncTypeInfo>(fn->detail);
   EXPECT_EQ(info.params.size(), 2u);
-  EXPECT_EQ(info.returns.size(), 1u);
+  EXPECT_NE(info.return_type, nullptr);
   EXPECT_FALSE(info.is_variadic);
 }
 
@@ -98,7 +98,6 @@ TEST(Types, IsCallable) {
 TEST(Types, IsIterable) {
   EXPECT_TRUE(is_iterable(make_array_type(make_int_type())));
   EXPECT_TRUE(is_iterable(make_map_type(make_string_type(), make_int_type())));
-  EXPECT_TRUE(is_iterable(make_range_type(make_int_type())));
   EXPECT_TRUE(is_iterable(make_string_type()));
   EXPECT_FALSE(is_iterable(make_bool_type()));
 }
@@ -108,26 +107,26 @@ TEST(Types, IsIterable) {
 // ===========================================================================
 
 TEST(Types, TypeToString) {
-  EXPECT_EQ(type_to_string(make_void_type()), "Void");
-  EXPECT_EQ(type_to_string(make_int_type()), "Int");
-  EXPECT_EQ(type_to_string(make_array_type(make_string_type())), "String[]");
+  EXPECT_EQ(type_to_string(make_void_type()), "void");
+  EXPECT_EQ(type_to_string(make_int_type()), "int");
+  EXPECT_EQ(type_to_string(make_array_type(make_string_type())), "array{string}");
   EXPECT_EQ(type_to_string(make_type_param(0, "T")), "T");
 }
 
 TEST(Types, SizedIntTypeToString) {
-  EXPECT_EQ(type_to_string(make_int_type(8, true)), "Int8");
-  EXPECT_EQ(type_to_string(make_int_type(16, true)), "Int16");
-  EXPECT_EQ(type_to_string(make_int_type(32, true)), "Int32");
-  EXPECT_EQ(type_to_string(make_int_type(64, true)), "Int64");
-  EXPECT_EQ(type_to_string(make_int_type(8, false)), "Uint8");
-  EXPECT_EQ(type_to_string(make_int_type(16, false)), "Uint16");
-  EXPECT_EQ(type_to_string(make_int_type(32, false)), "Uint32");
-  EXPECT_EQ(type_to_string(make_int_type(64, false)), "Uint64");
+  EXPECT_EQ(type_to_string(make_int_type(8, true)), "int8");
+  EXPECT_EQ(type_to_string(make_int_type(16, true)), "int16");
+  EXPECT_EQ(type_to_string(make_int_type(32, true)), "int32");
+  EXPECT_EQ(type_to_string(make_int_type(64, true)), "int64");
+  EXPECT_EQ(type_to_string(make_int_type(8, false)), "uint8");
+  EXPECT_EQ(type_to_string(make_int_type(16, false)), "uint16");
+  EXPECT_EQ(type_to_string(make_int_type(32, false)), "uint32");
+  EXPECT_EQ(type_to_string(make_int_type(64, false)), "uint64");
 }
 
 TEST(Types, SizedFloatTypeToString) {
-  EXPECT_EQ(type_to_string(make_float_type(32)), "Float32");
-  EXPECT_EQ(type_to_string(make_float_type(64)), "Float64");
+  EXPECT_EQ(type_to_string(make_float_type(32)), "float32");
+  EXPECT_EQ(type_to_string(make_float_type(64)), "float64");
 }
 
 TEST(Types, SizedIntEquality) {

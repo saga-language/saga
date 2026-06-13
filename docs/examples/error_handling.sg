@@ -1,36 +1,35 @@
-const NetworkError = struct{
+error NetworkError {
   code int
-
-  pub fn Message() String { "error code {code}" }
+  message = "error code {code}"
 }
 
-fn ReturnError() Int | Error {
+fn ReturnError() int | error {
   NetworkError{code: 400}
 }
 
 // While option one is provided as a valid way to handle errors, the or expression syntax is
 // the recommended and preferred way to handle errors and provide default values to the LHS
 // of an expression.
-pub fn Main() Void {
+pub fn Main() void {
   val_or_err := ReturnError()
 
   // option one: Go-like explicit error handling; type-narrowing allows struct field access
   //   type narrowing is exhaustive, it is an error to have an unused variable and it is
   //   also an error not to exhaustively check the type
-  if val_or_error == NetworkError {
+  if val_or_err is NetworkError {
     // handle error
-    log.Info("network error with code {val_or_error.code}")
+    log.Info("network error with code {val_or_err.code}")
   }
 
   // option one B: you can extract the underlying typed value if you know it's not an error
   //   the empty else block is required for exhaustive checking and will return the zero
-  //   value of an Int since the block resolves to Void (no expression)
-  val0 := if val_or_error != Error { val_or_error } else {}
+  //   value of an int since the block resolves to void (no expression)
+  val0 := if val_or_err is error {} else { val_or_err }
 
   // option 2: capture the error and return zero value
   val1 := ReturnError() or |err| {
     // log or otherwise handle error
-    // return value is the zero value for Int if, and only if, the tail expression is Void
+    // return value is the zero value for int if, and only if, the tail expression is void
     log.Error(err)
   }
 
