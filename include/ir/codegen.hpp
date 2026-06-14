@@ -431,6 +431,14 @@ private:
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
 
+  /// Look up a top-level symbol by name using the codegen-stable package
+  /// scope, falling back to the analyzer's current scope.
+  std::optional<Symbol> package_symbol(std::string_view name);
+  /// LLVM type for a bare named type (`Foo`), or null if `name` is not one.
+  llvm::Type *named_type_llvm(std::string_view name);
+  /// LLVM type for a qualified type (`pkg.Foo`), or null if not resolvable.
+  llvm::Type *qualified_type_llvm(const SelectorNode &sel);
+
   /// Emit a full function definition (entry block + body).
   void emit_func_decl(const FuncDeclNode &node);
 

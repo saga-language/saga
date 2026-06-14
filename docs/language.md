@@ -82,12 +82,10 @@ Constants are defined with top-level statements. With the exception of `Main`,
 constants are not required to use CamelCase but that is the preferred 
 convension.
 
-Constants are immutable. They can be used to create: type-aliases, value
-constants, and named imports. A value constant can be any simple expression
-that can be resolve at compile time.
+Constants are immutable. They carry values and named imports. A value constant
+can be any simple expression that can be resolved at compile time.
 
 ```
-const MyType = Int
 const Pi = 3.14159
 const MaxSize = 2 * 1024 * 1024 // 2MB
 const Math = import "std/math"
@@ -406,13 +404,13 @@ may do so using privileged `intrinsic_*` operations.
 
 ### Function types
 
-Function types are just signatures.
+Function types are just signatures. Name one with a structural `type` alias.
 
 ```
-const CallbackFunc = fn(Int) Int
+type CallbackFunc = fn(int) int
 
 struct MyStruct {
-  action fn(Int) Int
+  action CallbackFunc
 }
 ```
 
@@ -625,28 +623,32 @@ the offending type.
 
 ## Type Aliases
 
-A type may be aliased to a new identifier. Aliases are constants and therefore
-are defined with the `const` keyword.
+The `type` keyword is used to define a new type. Adjacency creates a 
+**nominal** type; assignment (`=`) creates a **structural** alias.
 
-Aliases are not shadows of the original type, they are unique types, but they 
-inherit all the methods from the aliased type. This can make for a powerful
-tool where all types are open for extension but closed for modification. Like 
-structs, methods can be bound to any type provided it is within the same file
-scope. You can't, for instance, bind methods to types declared in other files
-(called monkey-patching).
+A **nominal** type (`type ID T`) is a new, distinct type. It is not
+interchangeable with its underlying type but it inherits the underlying's
+methods and operators, and you can add or shadow methods of your own. Like
+structs, methods can only be bound within the same file scope (no 
+monkey-patching across files). Conversion methods can be used to extract
+the original, underlying type.
 
 ```
-const UserID = Int  // UserID is a unique type
-i := UserID.Int() // to convert and extract the underlying integer
+type UserID int            // a new, distinct type
+i := id.Int()              // convert/extract the underlying integer
+io.Println(id.String())    // inherits int's String()
 
-const MyArray = MyArray[] // MyArray is an array of itself, infinitely
-size := MyArray.Size()  // Inherits Size() from the Array type.
+pub fn (u UserID) Validate() bool { ... }  // add behaviour
+```
 
-const MyPoint = math.Point
-// The new type inherits the methods from the original type
-p := MyPoint{x: 1, y: 2}.Add(math.Point{x: 3, y: 4})
-// ...but can also be extended with new methods
-pub fn (p MyPoint) Draw() Void { ... }
+A **structural** alias (`type ID = T`) is a transparent second name for the
+same type. It is fully interchangeable with its underlying type in both
+directions, and it cannot carry methods of its own. Function types are named
+this way.
+
+```
+type Identifier = int | string   // mirror: same type, another name
+type Callback   = fn(int) int    // define function types
 ```
 
 ## Type Literals

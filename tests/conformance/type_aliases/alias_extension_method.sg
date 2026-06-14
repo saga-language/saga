@@ -3,7 +3,7 @@
 // on an alias type and call it.
 import "std/io"
 
-const UserID = int
+type UserID int
 
 pub fn (u UserID) Display() string { "user#" + u.String() }
 

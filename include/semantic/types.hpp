@@ -185,6 +185,7 @@ struct AliasTypeInfo {
   std::string origin_package;
   TypePtr underlying;                      // the aliased type
   std::vector<MethodInfo> methods;         // user-bound methods on this alias
+  bool structural = false;                 // `type X = T` (transparent) vs `type X T` (nominal)
 };
 
 struct ModuleExport {
@@ -281,7 +282,8 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound = std::nullopt);
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
                         std::vector<MethodInfo> methods = {},
-                        std::string origin_package = "");
+                        std::string origin_package = "",
+                        bool structural = false);
 TypePtr make_module_type(const std::string &name,
                          const std::string &import_path,
                          std::vector<ModuleExport> exports = {});

@@ -15,45 +15,56 @@ namespace saga {
 // Function type building
 // ===========================================================================
 
+// analyzer.resolve_type() can't resolve a bare identifier or selector at
+// codegen time — current_scope is no longer the package scope. Resolve named
+// and qualified types here against the stable package scope; everything else
+// (builtins, composite type nodes) falls through to the analyzer.
 llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
-  if (auto *ident = std::get_if<IdentifierNode>(&type_node.data)) {
-    std::string tname(ident->name);
-    // Keys are qualified (pkg__Name), so fall back via key_for when origin is unknown.
-    auto sit = struct_types.find(key_for("", tname));
-    if (sit != struct_types.end())
-      return sit->second; // struct value type
-    if (enum_types.count(key_for("", tname)))
-      return i64_type; // enum as i64 tag
-    if (iface_vtable_types.count(key_for("", tname)))
-      return llvm::PointerType::getUnqual(context); // interface as ptr to fat ptr
+  auto *ident = std::get_if<IdentifierNode>(&type_node.data);
+  if (ident) {
+    auto *ll = named_type_llvm(ident->name);
+    if (ll)
+      return ll;
   }
-  // Cross-package types appear as SelectorNode (`pkg.Type`).  Look the
-  // selector up via the package scope so we don't depend on current_scope
-  // state at codegen time.
-  if (auto *sel = std::get_if<SelectorNode>(&type_node.data)) {
-    if (auto *pkg_ident = std::get_if<IdentifierNode>(&sel->object->data)) {
-      std::optional<Symbol> sym;
-      if (analyzer.package_scope_) {
-        auto it = analyzer.package_scope_->symbols.find(
-            std::string(pkg_ident->name));
-        if (it != analyzer.package_scope_->symbols.end())
-          sym = it->second;
-      }
-      if (!sym)
-        sym = analyzer.lookup(std::string(pkg_ident->name));
-      if (sym && sym->type && sym->type->kind == TypeKind::Module) {
-        auto &mod = std::get<ModuleTypeInfo>(sym->type->detail);
-        std::string field_name(sel->field.name);
-        for (auto &exp : mod.exports) {
-          if (exp.name == field_name && exp.type)
-            return llvm_type(exp.type);
-        }
-      }
-    }
+  auto *sel = std::get_if<SelectorNode>(&type_node.data);
+  if (sel) {
+    auto *ll = qualified_type_llvm(*sel);
+    if (ll)
+      return ll;
   }
-  // Fall back to analyzer resolve (works for builtins).
-  auto sem_type = analyzer.resolve_type(type_node);
-  return llvm_type(sem_type);
+  return llvm_type(analyzer.resolve_type(type_node));
+}
+
+std::optional<Symbol> CodeGen::package_symbol(std::string_view name) {
+  std::string key(name);
+  if (analyzer.package_scope_) {
+    auto it = analyzer.package_scope_->symbols.find(key);
+    if (it != analyzer.package_scope_->symbols.end())
+      return it->second;
+  }
+  return analyzer.lookup(key);
+}
+
+llvm::Type *CodeGen::named_type_llvm(std::string_view name) {
+  auto sym = package_symbol(name);
+  if (sym && sym->kind == SymbolKind::Type && sym->type)
+    return llvm_type(sym->type);
+  return nullptr;
+}
+
+llvm::Type *CodeGen::qualified_type_llvm(const SelectorNode &sel) {
+  auto *pkg = std::get_if<IdentifierNode>(&sel.object->data);
+  if (!pkg)
+    return nullptr;
+  auto sym = package_symbol(pkg->name);
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Module)
+    return nullptr;
+  auto &mod = std::get<ModuleTypeInfo>(sym->type->detail);
+  for (auto &exp : mod.exports) {
+    if (exp.name == sel.field.name && exp.type)
+      return llvm_type(exp.type);
+  }
+  return nullptr;
 }
 
 llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {

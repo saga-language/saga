@@ -348,18 +348,29 @@ TEST(ParserDeclaration, Const_WithType) {
   EXPECT_EQ(val->literal, "1024");
 }
 
-TEST(ParserDeclaration, Const_TypeAlias) {
-  auto r = ParseResult::from("const MyType = int\n");
+TEST(ParserDeclaration, TypeDecl_Nominal) {
+  auto r = ParseResult::from("type MyType int\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
-  auto *c =
-      std::get_if<saga::ConstDeclNode>(&r.source_node().declarations[0]->data);
-  ASSERT_NE(c, nullptr);
-  EXPECT_EQ(c->name.name, "MyType");
-  EXPECT_FALSE(c->type.has_value());
-  auto *val = std::get_if<saga::IdentifierNode>(&c->value->data);
-  ASSERT_NE(val, nullptr);
-  EXPECT_EQ(val->name, "int");
+  auto *t =
+      std::get_if<saga::TypeDeclNode>(&r.source_node().declarations[0]->data);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(t->name.name, "MyType");
+  EXPECT_FALSE(t->is_structural);
+  auto *u = std::get_if<saga::IdentifierNode>(&t->underlying->data);
+  ASSERT_NE(u, nullptr);
+  EXPECT_EQ(u->name, "int");
+}
+
+TEST(ParserDeclaration, TypeDecl_Structural) {
+  auto r = ParseResult::from("type MyType = int\n");
+  EXPECT_TRUE(r.errors.empty());
+  ASSERT_EQ(r.source_node().declarations.size(), 1);
+  auto *t =
+      std::get_if<saga::TypeDeclNode>(&r.source_node().declarations[0]->data);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(t->name.name, "MyType");
+  EXPECT_TRUE(t->is_structural);
 }
 
 TEST(ParserDeclaration, Dispatch_Struct) {

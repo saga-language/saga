@@ -123,11 +123,11 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
 
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
                         std::vector<MethodInfo> methods,
-                        std::string origin_package) {
+                        std::string origin_package, bool structural) {
   return std::make_shared<Type>(
       TypeKind::Alias,
       AliasTypeInfo{name, std::move(origin_package), std::move(underlying),
-                    std::move(methods)});
+                    std::move(methods), structural});
 }
 
 TypePtr make_module_type(const std::string &name,
@@ -484,35 +484,32 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (is_error_type(source) || is_error_type(target))
     return true;
 
-  // Alias assignability: spec says aliases are unique types
-  // (docs/language.md:558).  A typed value of the underlying type is
-  // NOT implicitly assignable to the alias and vice versa — the user
-  // must convert at the boundary.  Two carve-outs:
-  //   1. Untyped literals (e.g. `5`) flow into an alias slot because
-  //      they haven't committed to a type yet.
-  //   2. Aliases whose underlying is Interface or Union stay
-  //      transparent — those are themselves coercion targets, and a
-  //      value satisfying the interface/union doesn't change identity
-  //      when named via an alias.
-  auto alias_underlying_is_iface_or_union = [](const TypePtr &alias) {
-    auto u = unwrap_alias(alias);
-    return u && (u->kind == TypeKind::Interface || u->kind == TypeKind::Union);
+  // Alias assignability.  A structural alias (`type X = T`) is transparent:
+  // it is the same type as its underlying, assignable in both directions.
+  // A nominal alias (`type X T`) is a distinct type — a typed value of the
+  // underlying is NOT implicitly assignable to it or vice versa; the user
+  // converts at the boundary.  One carve-out: an untyped literal (e.g. `5`)
+  // flows into a nominal slot because it hasn't committed to a type yet.
+  auto is_structural_alias = [](const TypePtr &t) {
+    return t && t->kind == TypeKind::Alias &&
+           std::get<AliasTypeInfo>(t->detail).structural;
   };
+  if (is_structural_alias(target))
+    return is_assignable_to(source, unwrap_alias(target));
+  if (is_structural_alias(source))
+    return is_assignable_to(unwrap_alias(source), target);
   bool source_is_untyped =
       source && source->kind == TypeKind::Int &&
       std::get<IntType>(source->detail).is_untyped;
   if (target && target->kind == TypeKind::Alias) {
-    if (source_is_untyped || alias_underlying_is_iface_or_union(target))
+    if (source_is_untyped)
       return is_assignable_to(source, unwrap_alias(target));
     if (source && source->kind == TypeKind::Alias)
       return types_equal(source, target);
     return false;
   }
-  if (source && source->kind == TypeKind::Alias) {
-    if (alias_underlying_is_iface_or_union(source))
-      return is_assignable_to(unwrap_alias(source), target);
+  if (source && source->kind == TypeKind::Alias)
     return false;
-  }
 
   // Exact match.
   if (types_equal(source, target))
@@ -748,7 +745,7 @@ TypePtr substitute(const TypePtr &t,
     if (u == info.underlying)
       return t;
     return make_alias_type(info.name, std::move(u), info.methods,
-                           info.origin_package);
+                           info.origin_package, info.structural);
   }
 
   default:

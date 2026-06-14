@@ -4,7 +4,7 @@
 // explicitly.
 import "std/io"
 
-const UserID = int
+type UserID int
 
 fn TakeUserID(u UserID) void {
   io.Println(u.String())

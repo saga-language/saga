@@ -602,6 +602,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
                      [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                      [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
                      [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
+                     [&](const TypeDeclNode &t) { resolve_type_decl(t); },
                      [&](const auto &) { /* handled in phase 2b */ },
                  },
                  decl->data);
@@ -733,6 +734,10 @@ void Analyzer::collect_declaration(const Node &node) {
                  [&](const ConstDeclNode &c) {
                    declare(Symbol::constant(std::string(c.name.name), nullptr,
                                             c.name.span, c.is_public));
+                 },
+                 [&](const TypeDeclNode &t) {
+                   declare(Symbol::type_sym(std::string(t.name.name), nullptr,
+                                            t.name.span, t.is_public));
                  },
                  [&](const ImportDeclNode &imp) {
                    // Derive the local name from the last path segment.
@@ -1458,6 +1463,7 @@ void Analyzer::resolve_declaration(const Node &node) {
                  [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
                  [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
                  [&](const ConstDeclNode &c) { resolve_const_decl(c); },
+                 [&](const TypeDeclNode &t) { resolve_type_decl(t); },
                  [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
                  [&](const auto &) { /* already reported in collect */ },
              },
@@ -1570,9 +1576,17 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                  current_package_name()});
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
-          alias_info.methods.push_back(
-              {std::string(fn.name.name), fn_type, fn.is_public,
-               current_package_name()});
+          if (alias_info.structural) {
+            error(recv_type_node->span,
+                  std::format("cannot attach methods to structural alias '{}'; "
+                              "declare it nominal (`type {} {}`) to add methods",
+                              alias_info.name, alias_info.name,
+                              type_to_string(alias_info.underlying)));
+          } else {
+            alias_info.methods.push_back(
+                {std::string(fn.name.name), fn_type, fn.is_public,
+                 current_package_name()});
+          }
         } else if (recv_sym->type->kind == TypeKind::Enum) {
           // Enums can also have methods bound to them.
           // Store in the type_methods side table.
@@ -1834,82 +1848,10 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
   }
 }
 
-// Treat a const-decl RHS as a type expression for alias detection:
-// bare type identifier, module selector to a type, or `A | B | …` union
-// of those.  Returns the resolved TypePtr or null when the RHS doesn't
-// match — at which point the caller treats the const as a value, not
-// a type alias.
-TypePtr Analyzer::try_interpret_as_type_expr(const Node &node) {
-  if (auto *ident = std::get_if<IdentifierNode>(&node.data)) {
-    auto sym = lookup(std::string(ident->name));
-    if (sym && sym->kind == SymbolKind::Type && sym->type)
-      return sym->type;
-    return nullptr;
-  }
-  if (auto *sel = std::get_if<SelectorNode>(&node.data)) {
-    auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data);
-    if (!obj_ident) return nullptr;
-    auto obj_sym = lookup(std::string(obj_ident->name));
-    if (!obj_sym || obj_sym->kind != SymbolKind::Module || !obj_sym->type ||
-        obj_sym->type->kind != TypeKind::Module)
-      return nullptr;
-    auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
-    std::string field_name(sel->field.name);
-    for (auto &exp : mod.exports) {
-      if (exp.name != field_name || !exp.type) continue;
-      if (exp.type->kind == TypeKind::Struct ||
-          exp.type->kind == TypeKind::Enum ||
-          exp.type->kind == TypeKind::Interface ||
-          exp.type->kind == TypeKind::Alias)
-        return exp.type;
-    }
-    return nullptr;
-  }
-  if (auto *bin = std::get_if<BinaryExprNode>(&node.data)) {
-    if (bin->op != Token::Kind::BitwiseOr) return nullptr;
-    auto lhs = try_interpret_as_type_expr(*bin->lhs);
-    auto rhs = try_interpret_as_type_expr(*bin->rhs);
-    if (!lhs || !rhs) return nullptr;
-    std::vector<TypePtr> alts;
-    auto add_alt = [&](const TypePtr &t) {
-      if (t->kind == TypeKind::Union) {
-        for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
-          alts.push_back(a);
-      } else {
-        alts.push_back(t);
-      }
-    };
-    add_alt(lhs);
-    add_alt(rhs);
-    return make_union_type(std::move(alts));
-  }
-  return nullptr;
-}
-
 void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   TypePtr const_type = nullptr;
   if (c.type) {
     const_type = resolve_type(**c.type);
-  }
-
-  // Detect type alias pattern: const Name = TypeIdentifier
-  // If the value is an identifier (or selector) that refers to a type,
-  // create an alias type so methods can be bound to it.
-  if (!const_type && c.value) {
-    TypePtr alias_underlying = try_interpret_as_type_expr(*c.value);
-
-    if (alias_underlying) {
-      // Create a unique alias type that inherits the underlying type's methods.
-      auto alias_type = make_alias_type(
-          std::string(c.name.name), alias_underlying, {},
-          current_package_name());
-      auto sym_it = current_scope->symbols.find(std::string(c.name.name));
-      if (sym_it != current_scope->symbols.end()) {
-        sym_it->second.type = alias_type;
-        sym_it->second.kind = SymbolKind::Type;
-      }
-      return;
-    }
   }
 
   // The initializer expression will be type-checked later; for now we just
@@ -1918,6 +1860,19 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
   if (sym_it != current_scope->symbols.end() && const_type) {
     sym_it->second.type = const_type;
   }
+}
+
+// type ID T      — nominal: distinct identity, inherits + shadows methods.
+// type ID = T    — structural: transparent to the underlying, no own methods.
+void Analyzer::resolve_type_decl(const TypeDeclNode &t) {
+  auto underlying = resolve_type(*t.underlying);
+  auto sym_it = current_scope->symbols.find(std::string(t.name.name));
+  if (sym_it == current_scope->symbols.end())
+    return;
+  sym_it->second.kind = SymbolKind::Type;
+  sym_it->second.type =
+      make_alias_type(std::string(t.name.name), underlying, {},
+                      current_package_name(), t.is_structural);
 }
 
 // ===========================================================================
@@ -3189,6 +3144,10 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
           std::format("'{}' is not callable", type_to_string(callee_type)));
     return builtins.error_type;
   }
+
+  // A function-typed alias (`type Op = fn(...) ...`) is callable through its
+  // underlying signature.
+  callee_type = unwrap_alias(callee_type);
 
   // Check arguments first to collect their types.
   std::vector<TypePtr> arg_types;
@@ -4614,14 +4573,7 @@ bool Analyzer::always_returns(const Node &node) const {
 // ===========================================================================
 
 void Analyzer::check_const_decl(const ConstDeclNode &c) {
-  // If this const was already resolved as a type alias in Phase 2,
-  // don't overwrite the alias type.
   auto sym_it = current_scope->symbols.find(std::string(c.name.name));
-  if (sym_it != current_scope->symbols.end() &&
-      sym_it->second.kind == SymbolKind::Type &&
-      sym_it->second.type && sym_it->second.type->kind == TypeKind::Alias) {
-    return;
-  }
 
   TypePtr declared_type = nullptr;
   if (c.type)

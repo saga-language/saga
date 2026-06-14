@@ -451,6 +451,15 @@ struct ConstDeclNode {
   NodePtr value;               // initialiser (required)
 };
 
+// TypeDecl = [ "pub" ] "type" Identifier ( Type | "=" Type )
+struct TypeDeclNode {
+  Span span;
+  bool is_public;
+  IdentifierNode name;
+  bool is_structural; // `= Type` (transparent) vs adjacency (nominal)
+  NodePtr underlying; // the aliased/underlying type
+};
+
 // EnumField = Identifier [ "{" Identifier ":" Expression { "," ... } "}" ]
 struct EnumFieldNode {
   Span span;
@@ -597,7 +606,7 @@ struct Node {
     ReturnNode,     BreakNode,       NextNode,
 
     // --- Declarations ---
-    ConstDeclNode,
+    ConstDeclNode,       TypeDeclNode,
     EnumDeclNode,        EnumFieldNode,
     FuncDeclNode,        ReceiverNode,        SignatureNode,
     ImportDeclNode,

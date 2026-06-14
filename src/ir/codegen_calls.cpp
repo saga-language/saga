@@ -242,7 +242,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   // If the callee is a generic free function, emit (or reuse) a
   // monomorphised specialisation and call it directly.
   {
-    auto callee_sem = semantic_type(*node.callee);
+    auto callee_sem = unwrap_alias(semantic_type(*node.callee));
     if (callee_sem && callee_sem->kind == TypeKind::Func) {
       auto fd_it = analyzer.func_decl_by_type_.find(callee_sem.get());
       if (fd_it != analyzer.func_decl_by_type_.end()) {
@@ -316,7 +316,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto local_it = locals.find(name);
     if (local_it != locals.end()) {
       auto *alloca = local_it->second;
-      auto callee_sem = semantic_type(*node.callee);
+      auto callee_sem = unwrap_alias(semantic_type(*node.callee));
       bool is_func_typed = callee_sem && callee_sem->kind == TypeKind::Func;
       if (is_func_typed) {
         auto *ptr_type = llvm::PointerType::getUnqual(context);
@@ -382,7 +382,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
 
   // Resolve the semantic param types so we can recognise struct args
   // that need spilling for byval.
-  auto callee_sem = semantic_type(*node.callee);
+  auto callee_sem = unwrap_alias(semantic_type(*node.callee));
   const FuncTypeInfo *fi = nullptr;
   if (callee_sem && callee_sem->kind == TypeKind::Func)
     fi = &std::get<FuncTypeInfo>(callee_sem->detail);

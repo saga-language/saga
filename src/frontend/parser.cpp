@@ -1568,6 +1568,26 @@ NodePtr Parser::parse_const_decl(bool is_public) {
                                   std::move(type), std::move(value));
 }
 
+// parse_type_decl — TypeDecl = "type" Identifier ( Type | "=" Type )
+//
+// Adjacency (`type ID int`) declares a nominal type with a new identity.
+// An `=` (`type ID = int`) declares a structural alias, transparent to its
+// underlying.
+NodePtr Parser::parse_type_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Type);
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  bool is_structural = match(Token::Kind::Assignment);
+  NodePtr underlying = parse_type();
+
+  return make_node<TypeDeclNode>(span_from(start), is_public, std::move(name),
+                                 is_structural, std::move(underlying));
+}
+
 // parse_enum_decl — EnumDecl = "enum" Identifier "{" EnumField
 //                              { terminal EnumField } "}"
 //
@@ -1954,6 +1974,8 @@ NodePtr Parser::parse_declaration() {
   switch (current.kind) {
   case Token::Kind::Const:
     return parse_const_decl(is_public);
+  case Token::Kind::Type:
+    return parse_type_decl(is_public);
   case Token::Kind::Enum:
     return parse_enum_decl(is_public);
   case Token::Kind::Extern:

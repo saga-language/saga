@@ -469,6 +469,12 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_opt_ptr(n.type, os, c);
             dump_ptr(n.value, os, c);
           },
+          [&](const TypeDeclNode &n) {
+            os << pad(indent) << "TypeDeclNode" << (n.is_public ? " pub" : "")
+               << (n.is_structural ? " structural" : " nominal") << " \""
+               << n.name.name << "\"\n";
+            dump_ptr(n.underlying, os, c);
+          },
           [&](const EnumFieldNode &n) { dump_enum_field(n, os, indent); },
           [&](const EnumDeclNode &n) {
             os << pad(indent) << "EnumDeclNode" << (n.is_public ? " pub" : "")

@@ -1022,13 +1022,13 @@ TEST(TypeCheck, SwitchTypeMatch) {
   EXPECT_TRUE(r.ok());
 }
 
-// Spec: `const X = A | B` is a type-union alias when A and B resolve
-// to types.  (docs/language.md:945-948)
-TEST(TypeCheck, ConstDecl_UnionOfInterfaces_IsTypeAlias) {
+// A structural alias (`type X = A | B`) is transparent to the union, so a
+// value satisfying any member is assignable through it.
+TEST(TypeCheck, TypeDecl_StructuralUnionOfInterfaces) {
   auto r = TC::from(
       "interface Reader { Read() string }\n"
       "interface Writer { Write(s string) void }\n"
-      "const ReadWriter = Reader | Writer\n"
+      "type ReadWriter = Reader | Writer\n"
       "struct Buffer {}\n"
       "pub fn (b Buffer) Read() string { \"\" }\n"
       "pub fn (b Buffer) Write(s string) void {}\n"
@@ -1381,7 +1381,7 @@ TEST(TypeCheck, IterableStructRecordedInAnalyzer) {
 
 TEST(TypeCheck, TypeAliasMethodOnInt) {
   auto r = TC::from(
-      "const UserID = int\n"
+      "type UserID int\n"
       "pub fn (u UserID) Validate() bool { true }\n"
       "fn f() bool {\n"
       "  id UserID\n"
@@ -1392,7 +1392,7 @@ TEST(TypeCheck, TypeAliasMethodOnInt) {
 
 TEST(TypeCheck, TypeAliasInheritsBuiltinMethods) {
   auto r = TC::from(
-      "const Name = string\n"
+      "type Name string\n"
       "fn f() string {\n"
       "  n Name\n"
       "  n.Upper()\n"
@@ -1403,7 +1403,7 @@ TEST(TypeCheck, TypeAliasInheritsBuiltinMethods) {
 TEST(TypeCheck, TypeAliasOnStructInheritsFields) {
   auto r = TC::from(
       "struct Point { pub x, y int }\n"
-      "const MyPoint = Point\n"
+      "type MyPoint Point\n"
       "pub fn (p MyPoint) Sum() int { p.x }\n"
       "fn f() int {\n"
       "  p := MyPoint{x: 1, y: 2}\n"
@@ -1414,7 +1414,7 @@ TEST(TypeCheck, TypeAliasOnStructInheritsFields) {
 
 TEST(TypeCheck, TypeAliasMethodAndBuiltinCoexist) {
   auto r = TC::from(
-      "const UserID = int\n"
+      "type UserID int\n"
       "pub fn (u UserID) Label() string { \"user\" }\n"
       "fn f() {\n"
       "  id UserID\n"
@@ -1428,7 +1428,7 @@ TEST(TypeCheck, TypeAliasIsResolvedAsType) {
   // A type alias should be resolved as a Type symbol, so it can be used
   // in variable declarations.
   auto r = TC::from(
-      "const UserID = int\n"
+      "type UserID int\n"
       "fn f() {\n"
       "  id UserID\n"
       "}");
@@ -1437,7 +1437,7 @@ TEST(TypeCheck, TypeAliasIsResolvedAsType) {
 
 TEST(TypeCheck, TypeAliasMethodOnFloat) {
   auto r = TC::from(
-      "const Temperature = float\n"
+      "type Temperature float\n"
       "pub fn (t Temperature) Celsius() Temperature { t }\n"
       "fn f() Temperature {\n"
       "  temp Temperature\n"
@@ -1448,7 +1448,7 @@ TEST(TypeCheck, TypeAliasMethodOnFloat) {
 
 TEST(TypeCheck, TypeAliasMethodOnBool) {
   auto r = TC::from(
-      "const Flag = bool\n"
+      "type Flag bool\n"
       "pub fn (fl Flag) IsSet() bool { true }\n"
       "fn test() bool {\n"
       "  active Flag\n"
@@ -1459,7 +1459,7 @@ TEST(TypeCheck, TypeAliasMethodOnBool) {
 
 TEST(TypeCheck, TypeAliasMultipleMethods) {
   auto r = TC::from(
-      "const ID = int\n"
+      "type ID int\n"
       "pub fn (i ID) IsValid() bool { true }\n"
       "pub fn (i ID) Label() string { \"id\" }\n"
       "fn f() {\n"

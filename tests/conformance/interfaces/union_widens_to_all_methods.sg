@@ -10,7 +10,7 @@ interface Writer {
   Write(s string) void
 }
 
-const ReadWriter = Reader | Writer
+type ReadWriter = Reader | Writer
 
 struct ReadOnly {}
 

@@ -1,0 +1,8 @@
+// A structural alias is transparent, so methods cannot be attached to it —
+// a method would land on the underlying type. Use a nominal type to add
+// behaviour.
+type MyInt = int
+
+pub fn (m MyInt) Doubled() int { m * 2 }
+
+pub fn Main() void {}

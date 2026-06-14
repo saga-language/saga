@@ -542,7 +542,7 @@ private:
   void resolve_enum_decl(const EnumDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);
   void resolve_const_decl(const ConstDeclNode &node);
-  TypePtr try_interpret_as_type_expr(const Node &node);
+  void resolve_type_decl(const TypeDeclNode &node);
 
   // Signature / parameter helpers.
   TypePtr resolve_signature(const SignatureNode &sig);
