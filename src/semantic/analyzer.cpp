@@ -4575,30 +4575,183 @@ bool Analyzer::always_returns(const Node &node) const {
 void Analyzer::check_const_decl(const ConstDeclNode &c) {
   auto sym_it = current_scope->symbols.find(std::string(c.name.name));
 
+  // `const Name = import "..."` is a named-import binding (bound in
+  // process_imports), not a value constant.
+  if (std::get_if<ImportExprNode>(&c.value->data))
+    return;
+
   TypePtr declared_type = nullptr;
   if (c.type)
     declared_type = resolve_type(**c.type);
 
   auto init_type = check_expr(*c.value);
 
-  if (declared_type && !is_error_type(init_type)) {
+  if (!require_const_expr(*c.value)) {
+    if (sym_it != current_scope->symbols.end())
+      sym_it->second.type = builtins.error_type;
+    return;
+  }
+
+  if (declared_type && !is_error_type(init_type))
     expect_assignable(c.value->span, declared_type, init_type,
                       "constant initializer");
-  }
 
   // Forward-ref initializers (e.g. `const A = B * 2` with B declared
   // later) leave init_type as Error.  Spec: zero value with no
   // diagnostic.  Fall back to Int so downstream method dispatch
   // (`A.String()`) and codegen find the right ABI.
-  if (!declared_type && is_error_type(init_type))
-    init_type = builtins.int_type;
+  TypePtr const_type = declared_type             ? declared_type
+                       : is_error_type(init_type) ? builtins.int_type
+                                                  : init_type;
 
-  if (sym_it != current_scope->symbols.end()) {
-    sym_it->second.type = declared_type ? declared_type : init_type;
-  }
+  if (sym_it != current_scope->symbols.end())
+    sym_it->second.type = const_type;
 
   if (auto cv = evaluate_constant(*c.value))
     const_decl_values_[std::string(c.name.name)] = *cv;
+}
+
+bool Analyzer::reject_const(Span span, const std::string &message) {
+  error(span, message);
+  return false;
+}
+
+static bool string_has_interpolation(const StringLiteralNode &s) {
+  for (auto &frag : s.fragments)
+    if (!std::get_if<StringFragmentNode>(&frag->data))
+      return true;
+  return false;
+}
+
+bool Analyzer::const_ident_is_value(const IdentifierNode &id, Span span) {
+  auto sym = lookup(std::string(id.name));
+  if (!sym)
+    return reject_const(span, std::format("undefined name '{}'", id.name));
+  switch (sym->kind) {
+  case SymbolKind::Constant:
+  case SymbolKind::EnumVariant:
+    return true;
+  case SymbolKind::Type:
+  case SymbolKind::TypeParam:
+    return reject_const(
+        span, "a constant must be a value, not a type; use `type` to "
+              "declare an alias");
+  default:
+    return reject_const(
+        span, std::format("'{}' is not a compile-time constant", id.name));
+  }
+}
+
+bool Analyzer::const_selector_is_enum_variant(const SelectorNode &sel,
+                                              Span span) {
+  if (auto *base = std::get_if<IdentifierNode>(&sel.object->data)) {
+    if (auto sym = lookup(std::string(base->name)); sym && sym->type) {
+      auto t = unwrap_alias(sym->type);
+      if (t->kind == TypeKind::Enum) {
+        auto &info = std::get<EnumTypeInfo>(t->detail);
+        for (auto &v : info.variants)
+          if (v.name == sel.field.name)
+            return true;
+      }
+    }
+  }
+  return reject_const(
+      span, "a selector is not a compile-time constant unless it names an "
+            "enum variant");
+}
+
+bool Analyzer::require_const_expr(const Node &expr) {
+  return std::visit(
+      overloaded{
+          [](const BoolLiteralNode &) { return true; },
+          [](const IntegerLiteralNode &) { return true; },
+          [](const FloatLiteralNode &) { return true; },
+          [&](const StringLiteralNode &s) {
+            return string_has_interpolation(s)
+                       ? reject_const(expr.span,
+                                      "an interpolated string is not a "
+                                      "compile-time constant")
+                       : true;
+          },
+          [&](const GroupExprNode &g) { return require_const_expr(*g.inner); },
+          [&](const UnaryExprNode &u) { return require_const_expr(*u.operand); },
+          [&](const BinaryExprNode &b) {
+            return require_const_expr(*b.lhs) && require_const_expr(*b.rhs);
+          },
+          [&](const ArrayLiteralNode &a) {
+            for (auto &el : a.elements)
+              if (!require_const_expr(*el))
+                return false;
+            return true;
+          },
+          [&](const StructLiteralNode &s) {
+            for (auto &f : s.fields)
+              if (!require_const_expr(*f.value))
+                return false;
+            return true;
+          },
+          [&](const IdentifierNode &id) {
+            return const_ident_is_value(id, expr.span);
+          },
+          [&](const SelectorNode &sel) {
+            return const_selector_is_enum_variant(sel, expr.span);
+          },
+          [&](const MapLiteralNode &) {
+            return reject_const(expr.span,
+                                "maps cannot be constants — they need runtime "
+                                "construction; use a package-level variable");
+          },
+          [&](const CallExprNode &) {
+            return reject_const(
+                expr.span, "a function call is not a compile-time constant");
+          },
+          [&](const FuncExprNode &) {
+            return reject_const(
+                expr.span, "a function value is not a compile-time constant");
+          },
+          [&](const IndexExprNode &) {
+            return reject_const(
+                expr.span,
+                "an indexing expression is not a compile-time constant");
+          },
+          [&](const SliceNode &) {
+            return reject_const(expr.span,
+                                "a slice is not a compile-time constant");
+          },
+          [&](const IfExprNode &) {
+            return reject_const(
+                expr.span, "an `if` expression is not a compile-time constant");
+          },
+          [&](const SwitchExprNode &) {
+            return reject_const(
+                expr.span,
+                "a `switch` expression is not a compile-time constant");
+          },
+          [&](const ForExprNode &) {
+            return reject_const(
+                expr.span,
+                "a `for` expression is not a compile-time constant");
+          },
+          [&](const SpawnExprNode &) {
+            return reject_const(
+                expr.span,
+                "a `spawn` expression is not a compile-time constant");
+          },
+          [&](const OrExprNode &) {
+            return reject_const(
+                expr.span, "an `or` expression is not a compile-time constant");
+          },
+          [&](const IsExpr &) {
+            return reject_const(
+                expr.span, "an `is` expression is not a compile-time constant");
+          },
+          [&](const auto &) {
+            return reject_const(expr.span,
+                                "this expression is not a compile-time "
+                                "constant");
+          },
+      },
+      expr.data);
 }
 
 void Analyzer::check_enum_decl(const EnumDeclNode &e) {

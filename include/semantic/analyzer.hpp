@@ -647,6 +647,15 @@ private:
   // Phase 7: Top-level declaration checking.
   void check_const_decl(const ConstDeclNode &node);
 
+  /// Validate that a `const` initializer is a compile-time-resolvable value
+  /// (spec: "a value constant can be any simple expression that can be
+  /// resolved at compile time").  Reports a construct-specific error at the
+  /// first offending sub-expression and returns false; true if all-const.
+  bool require_const_expr(const Node &expr);
+  bool const_ident_is_value(const IdentifierNode &id, Span span);
+  bool const_selector_is_enum_variant(const SelectorNode &sel, Span span);
+  bool reject_const(Span span, const std::string &message);
+
   /// Evaluate `expr` as a constant expression, returning nullopt when
   /// it is not reducible at compile time.  Recognised forms: scalar
   /// literals, unary `-`/`!`/`~`, binary arithmetic and bitwise on

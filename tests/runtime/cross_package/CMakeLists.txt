@@ -20,7 +20,6 @@ endfunction()
 
 cross_pkg_test(const_scalar)
 cross_pkg_test(const_array)
-cross_pkg_test(const_map)
 cross_pkg_test(fn_scalar_params)
 cross_pkg_test(fn_struct_param)
 cross_pkg_test(fn_struct_return)

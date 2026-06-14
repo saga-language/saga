@@ -1,8 +1,0 @@
-import "io"
-import "lib"
-
-pub fn Main() void {
-  io.Println(lib.Ports.Size().String())
-  io.Println(lib.Ports.At("http").String())
-  io.Println(lib.Ports.At("https").String())
-}
