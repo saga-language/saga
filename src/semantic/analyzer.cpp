@@ -19,7 +19,7 @@ namespace {
 // to enforce "mutation of global objects is prohibited" (docs/language.md:96)
 // at the call site for stdlib Array/Map methods.
 const std::unordered_set<std::string> kMutatingIntrinsics{
-    "saga_array_push", "saga_array_pop", "saga_array_set",
+    "saga_array_append", "saga_array_pop", "saga_array_set",
     "saga_array_insert", "saga_map_set", "saga_map_remove"};
 
 bool is_kind_method_mutating(const FuncDeclNode &fn) {

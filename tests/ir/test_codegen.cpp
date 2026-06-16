@@ -1362,7 +1362,7 @@ TEST(CodeGen, ArrayPushCalled) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "saga_array_push")
+            call->getCalledFunction()->getName() == "saga_array_builder_push")
           push_count++;
   EXPECT_EQ(push_count, 2);
 }
@@ -1403,28 +1403,28 @@ TEST(CodeGen, ArraySizeMethod) {
   EXPECT_TRUE(found);
 }
 
-TEST(CodeGen, ArrayPushMethod) {
+TEST(CodeGen, ArrayAppendMethod) {
   auto r = CG::from(
       "pub fn Main() void {\n"
       "  arr := [1, 2]\n"
-      "  arr.Push(3)\n"
+      "  arr = arr.Append(3)\n"
       "}", false);
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // 2 saga_array_push from literal construction + 1 array__Array__Push from method call.
+  // 2 saga_array_builder_push from literal construction + 1 array__Array__Append method call.
   int literal_push = 0;
-  int method_push = 0;
+  int method_append = 0;
   for (auto &bb : *main)
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction()) {
-          if (call->getCalledFunction()->getName() == "saga_array_push")
+          if (call->getCalledFunction()->getName() == "saga_array_builder_push")
             literal_push++;
-          if (call->getCalledFunction()->getName() == "array__Array__Push")
-            method_push++;
+          if (call->getCalledFunction()->getName() == "array__Array__Append")
+            method_append++;
         }
   EXPECT_EQ(literal_push, 2);
-  EXPECT_EQ(method_push, 1);
+  EXPECT_EQ(method_append, 1);
 }
 
 TEST(CodeGen, ForRangeArray) {
@@ -1461,7 +1461,7 @@ TEST(CodeGen, ForRangeKeyValue) {
 TEST(CodeGen, ArrayRuntimeDeclared) {
   auto r = CG::from("pub fn Main() void {}");
   EXPECT_NE(r.func("saga_array_new"), nullptr);
-  EXPECT_NE(r.func("saga_array_push"), nullptr);
+  EXPECT_NE(r.func("saga_array_builder_push"), nullptr);
   EXPECT_NE(r.func("saga_array_at"), nullptr);
   EXPECT_NE(r.func("saga_array_size"), nullptr);
 }
@@ -4069,17 +4069,17 @@ TEST(CodeGen, IntrinsicSextWidens) {
 }
 
 TEST(CodeGen, ExternFunc_AutoPromotesScalarToPointer) {
-  // saga_array_push expects (ptr, ptr) — the second ptr needs auto-promotion
+  // saga_array_builder_push expects (ptr, ptr) — the second ptr needs auto-promotion
   // when called through the typed extern declaration (T → opaque ptr).
   auto r = CG::from(
-      "extern fn saga_array_push<T>(a array{T}, elem T) void\n"
-      "fn f(arr array{int}, val int) void { saga_array_push(arr, val) }\n"
+      "extern fn saga_array_builder_push<T>(a array{T}, elem T) void\n"
+      "fn f(arr array{int}, val int) void { saga_array_builder_push(arr, val) }\n"
       "pub fn Main() void {}",
       /*stdlib=*/false);
   auto *func = r.func("f");
   ASSERT_NE(func, nullptr);
-  auto *call = find_call(func, "saga_array_push");
-  ASSERT_NE(call, nullptr) << "Expected call to saga_array_push";
+  auto *call = find_call(func, "saga_array_builder_push");
+  ASSERT_NE(call, nullptr) << "Expected call to saga_array_builder_push";
   EXPECT_TRUE(call->getArgOperand(1)->getType()->isPointerTy())
       << "Second arg should be auto-promoted to pointer";
 }

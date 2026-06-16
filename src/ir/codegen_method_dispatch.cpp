@@ -981,7 +981,7 @@ llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
       if (!val) continue;
       auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
       builder.CreateStore(val, tmp);
-      builder.CreateCall(module->getFunction("saga_array_push"),
+      builder.CreateCall(module->getFunction("saga_array_builder_push"),
                          {arr, tmp});
     }
     args.push_back(arr);

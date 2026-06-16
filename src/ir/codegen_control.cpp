@@ -521,7 +521,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
       "arr");
 
   // Push each element.
-  auto *push_fn = module->getFunction("saga_array_push");
+  auto *push_fn = module->getFunction("saga_array_builder_push");
   auto *func = builder.GetInsertBlock()->getParent();
 
   for (auto &elem_node : node.elements) {
@@ -529,7 +529,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (!val)
       continue;
 
-    // saga_array_push takes a void* to the element and memcpy's
+    // saga_array_builder_push takes a void* to the element and memcpy's
     // elem_size bytes from it.  For struct elements we pass the alloca
     // pointer directly; for SSA values we spill to a temp first.
     if (elem_ll_type->isStructTy()) {

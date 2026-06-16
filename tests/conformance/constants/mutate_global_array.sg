@@ -5,6 +5,6 @@ import "std/io"
 const Primes = [2, 3, 5]
 
 pub fn Main() void {
-  Primes.Push(7)
+  Primes.Append(7)
   io.Println(Primes.Size().String())
 }

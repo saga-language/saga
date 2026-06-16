@@ -411,7 +411,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
           elem_ll ? module->getDataLayout().getTypeAllocSize(elem_ll)
                   : 8;
       auto *new_fn = module->getFunction("saga_array_new");
-      auto *push_fn = module->getFunction("saga_array_push");
+      auto *push_fn = module->getFunction("saga_array_builder_push");
       int64_t var_count = node.args.size() > variadic_idx
                               ? static_cast<int64_t>(node.args.size() -
                                                      variadic_idx)
@@ -501,7 +501,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // Extern (C) callees: when the declared param is a pointer at the
     // LLVM level (e.g. TypeParam → void*) and the Saga value is a scalar,
     // spill it to a stack alloca and pass the pointer.  Polymorphic
-    // runtime functions like saga_array_push take elements via void*.
+    // runtime functions like saga_array_builder_push take elements via void*.
     if (callee_is_extern) {
       size_t param_idx = sret_slot ? i + 1 : i;
       if (param_idx < callee->getFunctionType()->getNumParams()) {
