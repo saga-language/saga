@@ -1,0 +1,14 @@
+// A constant array lives in read-only data. A value-returning method
+// (`Append`) copy-on-writes it: the result is a new array and the constant
+// is left unchanged. (docs/language.md "Compile-time values")
+import "std/io"
+
+const Primes = [2, 3, 5]
+
+pub fn Main() void {
+  bigger := Primes.Append(7)
+  io.Println(Primes.Size().String())
+  io.Println(bigger.Size().String())
+  io.Println(Primes.At(0).String())
+  io.Println(bigger.At(3).String())
+}

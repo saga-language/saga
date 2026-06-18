@@ -91,32 +91,45 @@ const MaxSize = 2 * 1024 * 1024 // 2MB
 const Math = import "std/math"
 ```
 
-Mutation of global objects is prohibited.
-
-## Initialisation
-
-Constants whose value can be represented as a single compile-time literal —
-scalars, strings, struct literals built from such values — are stored
-directly in the binary. Constants whose value requires allocation at
-runtime — arrays and maps — are populated before `Main` runs.
+A constant is immutable: its storage is never written after the program
+starts. A method that mutates in place — `Pop` on an array — is rejected
+on a constant. Value-returning methods such as `Append`, `Insert`, and
+`Set` do not write through the receiver; they return a new array and leave
+the constant unchanged, so they are allowed:
 
 ```
-pub const Pi Float = 3.14159           // baked into the binary
-pub const Primes Int[] = [2, 3, 5, 7]  // populated before Main
-pub const Ports {String: Int} = {"http": 80, "https": 443}
+const Primes = [2, 3, 5]
+
+pub fn Main() void {
+  bigger := Primes.Append(7)  // Primes is still [2, 3, 5]
+}
 ```
 
-When a binary imports another package, the imported package's
-initialisation runs first. The order is determined by the import graph: a
-package's constants are guaranteed to be initialised before any package
-that imports it, transitively.
+## Compile-time values
 
-Within a single package, files are processed in alphanumeric order, and
-declarations within a file are processed in textual order. A constant
-initialiser may read another constant declared earlier — earlier in the
-same file, earlier within the package's file order, or in any imported
-package. Reading a constant declared later in the same package is a
-compile-time error.
+A constant's value is computed at compile time and baked into the binary.
+There is no initialisation phase and no code runs before `Main`. This
+covers scalars, strings, struct literals, and arrays whose elements are
+themselves constant:
+
+```
+pub const Pi float = 3.14159
+pub const Primes array{int} = [2, 3, 5, 7]
+```
+
+Constant arrays live in read-only data with a sentinel reference count, so
+reading one allocates nothing. The first method that needs a mutable copy
+(`Append`, `Insert`, `Set`) clones the array once; the original stays in
+read-only data.
+
+Maps cannot be constants — building one requires hashing and allocation at
+runtime — so a map constant is a compile-time error. Expose a function that
+returns a freshly built map instead.
+
+A constant initialiser may read another constant declared earlier — earlier
+in the same file, earlier within the package's file order, or in any
+imported package. Reading a constant declared later in the same package is
+a compile-time error.
 
 Saga does not provide a user-defined package initialiser (an `init`
 function or block that runs implicitly on import). The omission is
@@ -132,14 +145,8 @@ program.
 ```
 // Don't reach for a hidden init. Expose what setup needs to happen
 // and let the caller decide when.
-pub fn Connect(url String) Connection { ... }
+pub fn Connect(url string) Connection { ... }
 ```
-
-Saga today does not run any of its own code before `Main` — no
-spawn-driven work, no signal handlers, no threads. A package's
-initialisation can therefore allocate freely without guarding against
-concurrent access. This is a property of the current runtime; it is
-documented here because the initialisation model relies on it.
 
 ## Visibility
 

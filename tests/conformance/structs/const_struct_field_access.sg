@@ -1,0 +1,14 @@
+// Reading a field of a struct constant: the struct lives in read-only data,
+// and field access must GEP through its address rather than a by-value load.
+import "std/io"
+
+struct Point {
+  x, y int
+}
+
+const Origin = Point{x: 3, y: 7}
+
+pub fn Main() void {
+  io.Println(Origin.x.String())
+  io.Println(Origin.y.String())
+}

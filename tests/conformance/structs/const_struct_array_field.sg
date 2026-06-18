@@ -1,0 +1,18 @@
+// A struct constant whose field is a constant array: both the struct header
+// and the array buffer live in read-only data; reading and copy-on-writing
+// the field must work like any other constant array.
+import "std/io"
+
+struct Bag {
+  tags array{int}
+}
+
+const Inventory = Bag{tags: [7, 8, 9]}
+
+pub fn Main() void {
+  io.Println(Inventory.tags.Size().String())
+  io.Println(Inventory.tags.At(2).String())
+  bigger := Inventory.tags.Append(10)
+  io.Println(bigger.Size().String())
+  io.Println(Inventory.tags.Size().String())
+}

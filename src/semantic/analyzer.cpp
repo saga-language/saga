@@ -15,12 +15,12 @@ namespace saga {
 namespace {
 
 // Methods whose body passes the receiver as the first argument to one of
-// these C runtime functions mutate the caller's collection in place. Used
-// to enforce "mutation of global objects is prohibited" (docs/language.md:96)
-// at the call site for stdlib Array/Map methods.
+// these C runtime functions mutate the caller's collection in place, so they
+// cannot be applied to an immutable constant.  Value-returning copy-on-write
+// methods (Append/Insert/Set) are absent: they never write through the
+// receiver, so they are valid on a const (the result is a fresh array).
 const std::unordered_set<std::string> kMutatingIntrinsics{
-    "saga_array_append", "saga_array_pop", "saga_array_set",
-    "saga_array_insert", "saga_map_set", "saga_map_remove"};
+    "saga_array_pop", "saga_map_set", "saga_map_remove"};
 
 bool is_kind_method_mutating(const FuncDeclNode &fn) {
   if (!fn.body || !fn.receiver) return false;

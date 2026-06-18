@@ -1,10 +1,11 @@
-// Spec: "Mutation of global objects is prohibited." (docs/language.md:96)
-// Global const array; attempting to mutate it must be rejected.
+// A constant is immutable: an in-place mutator (`Pop`) must be rejected.
+// Value-returning methods like `Append` are allowed — see
+// constants/const_array_append_exchange.
 import "std/io"
 
 const Primes = [2, 3, 5]
 
 pub fn Main() void {
-  Primes.Append(7)
-  io.Println(Primes.Size().String())
+  last := Primes.Pop()
+  io.Println(last.String())
 }
