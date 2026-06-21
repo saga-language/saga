@@ -8,6 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <set>
+#include <string>
+
 namespace saga {
 
 // ---------------------------------------------------------------------------
@@ -236,6 +239,84 @@ TEST(Analyzer, ResolveEnumVariants) {
 TEST(Analyzer, ResolveInterfaceMethods) {
   auto r = AnalysisResult::from("interface Reader { Read() string }");
   EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, EmptyInterfaceReportsError) {
+  auto r = AnalysisResult::from("interface Anything {}");
+  EXPECT_TRUE(r.has_error_containing("must declare at least one method"));
+}
+
+TEST(Analyzer, InterfaceEmbedFlattensMethods) {
+  auto r = AnalysisResult::from(
+      "interface Reader { Read() string }\n"
+      "interface Writer { Write(s string) void }\n"
+      "interface ReadWriter {\n"
+      "  Reader\n"
+      "  Writer\n"
+      "  Flush() void\n"
+      "}\n");
+  ASSERT_TRUE(r.has_no_errors());
+
+  auto &syms = r.analyzer->package_scope_->symbols;
+  auto it = syms.find("ReadWriter");
+  ASSERT_NE(it, syms.end());
+  ASSERT_EQ(it->second.type->kind, TypeKind::Interface);
+  auto &info = std::get<InterfaceTypeInfo>(it->second.type->detail);
+  ASSERT_EQ(info.methods.size(), 3u);
+  std::set<std::string> names;
+  for (auto &m : info.methods) names.insert(m.name);
+  EXPECT_EQ(names, (std::set<std::string>{"Read", "Write", "Flush"}));
+}
+
+TEST(Analyzer, InterfaceEmbedIsTransitive) {
+  auto r = AnalysisResult::from(
+      "interface A { Foo() void }\n"
+      "interface B { A\n  Bar() void }\n"
+      "interface C { B\n  Baz() void }\n");
+  ASSERT_TRUE(r.has_no_errors());
+
+  auto &syms = r.analyzer->package_scope_->symbols;
+  auto &info = std::get<InterfaceTypeInfo>(syms.find("C")->second.type->detail);
+  EXPECT_EQ(info.methods.size(), 3u);
+}
+
+TEST(Analyzer, InterfaceEmbedOverlappingSameShapeMerges) {
+  auto r = AnalysisResult::from(
+      "interface Reader { Read() string }\n"
+      "interface ReadWriter { Reader\n  Write(s string) void }\n"
+      "interface ReadCloser { Reader\n  Close() void }\n"
+      "interface Everything { ReadWriter\n  ReadCloser }\n");
+  ASSERT_TRUE(r.has_no_errors());
+
+  auto &syms = r.analyzer->package_scope_->symbols;
+  auto &info =
+      std::get<InterfaceTypeInfo>(syms.find("Everything")->second.type->detail);
+  std::set<std::string> names;
+  for (auto &m : info.methods) names.insert(m.name);
+  EXPECT_EQ(names, (std::set<std::string>{"Read", "Write", "Close"}));
+  EXPECT_EQ(info.methods.size(), 3u); // Read merged, not duplicated
+}
+
+TEST(Analyzer, InterfaceEmbedConflictReportsError) {
+  auto r = AnalysisResult::from(
+      "interface P { Do() void }\n"
+      "interface Q { Do(x int) void }\n"
+      "interface PQ { P\n  Q }\n");
+  EXPECT_TRUE(r.has_error_containing("conflicts"));
+}
+
+TEST(Analyzer, InterfaceEmbedCycleReportsError) {
+  auto r = AnalysisResult::from(
+      "interface A { B\n  Foo() void }\n"
+      "interface B { A\n  Bar() void }\n");
+  EXPECT_TRUE(r.has_error_containing("cycle"));
+}
+
+TEST(Analyzer, InterfaceEmbedNonInterfaceReportsError) {
+  auto r = AnalysisResult::from(
+      "struct S { x int }\n"
+      "interface I { S\n  Foo() void }\n");
+  EXPECT_TRUE(r.has_error_containing("not an interface"));
 }
 
 TEST(Analyzer, ResolveConstWithType) {

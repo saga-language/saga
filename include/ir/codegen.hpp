@@ -356,6 +356,7 @@ private:
   /// Register interface vtable types.
   void declare_interfaces(const SourceNode &src);
   void emit_interface_decl(const InterfaceDeclNode &node);
+  std::vector<MethodInfo> ast_interface_methods(const InterfaceDeclNode &node);
 
   /// Forward-declare LLVM Function symbols for every non-generic struct
   /// method. Does not touch struct_method_links.

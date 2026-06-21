@@ -444,27 +444,37 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
   if (iface_vtable_types.count(key))
     return;
 
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-  // Build a vtable struct: one function pointer per method.
-  std::vector<llvm::Type *> vtable_fields;
-  std::vector<std::string> method_names;
-
-  for (auto &method : node.methods) {
-    vtable_fields.push_back(ptr_type); // fn ptr (opaque)
-    method_names.push_back(std::string(method.name.name));
+  // Prefer the analyzer's resolved interface type: its method set is already
+  // flattened across embedded interfaces. Fall back to the AST only when the
+  // symbol isn't available (degenerate paths).
+  TypePtr sem_type;
+  if (analyzer.package_scope_) {
+    auto it = analyzer.package_scope_->symbols.find(name);
+    if (it != analyzer.package_scope_->symbols.end())
+      sem_type = it->second.type;
   }
+  if (!sem_type || sem_type->kind != TypeKind::Interface)
+    sem_type = make_interface_type(name, ast_interface_methods(node), {},
+                                   package_name);
 
-  auto *vtable_st = llvm::StructType::create(
-      context, vtable_fields, "saga.vtable." + key);
+  auto &info = std::get<InterfaceTypeInfo>(sem_type->detail);
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  std::vector<llvm::Type *> vtable_fields(info.methods.size(), ptr_type);
+  std::vector<std::string> method_names;
+  for (auto &m : info.methods)
+    method_names.push_back(m.name);
+
+  auto *vtable_st =
+      llvm::StructType::create(context, vtable_fields, "saga.vtable." + key);
   iface_vtable_types[key] = vtable_st;
   iface_method_names[key] = std::move(method_names);
+  named_sem_types[key] = sem_type;
+}
 
-  // Build a minimal InterfaceTypeInfo for codegen type lookup.
-  // We just need the name and method names for vtable matching.
-  std::vector<MethodInfo> sem_methods;
+std::vector<MethodInfo>
+CodeGen::ast_interface_methods(const InterfaceDeclNode &node) {
+  std::vector<MethodInfo> methods;
   for (auto &m : node.methods) {
-    // Build a simple FuncTypeInfo from the signature.
     std::vector<TypePtr> params;
     for (auto &p : m.signature.params) {
       auto pt = analyzer.resolve_type(*p.type);
@@ -474,12 +484,11 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
     TypePtr ret = m.signature.return_type
                       ? analyzer.resolve_type(*m.signature.return_type)
                       : nullptr;
-    auto fn_type = make_func_type(std::move(params), std::move(ret));
-    sem_methods.push_back(
-        {std::string(m.name.name), fn_type, m.is_public, package_name});
+    methods.push_back({std::string(m.name.name),
+                       make_func_type(std::move(params), std::move(ret)),
+                       m.is_public, package_name});
   }
-  named_sem_types[key] =
-      make_interface_type(name, std::move(sem_methods), {}, package_name);
+  return methods;
 }
 
 // ===========================================================================

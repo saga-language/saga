@@ -1,0 +1,12 @@
+// Spec: embedding two interfaces that declare the same method name with
+// incompatible signatures is a compile error — the composed interface has no
+// single signature for the method. (docs/language.md §Interfaces)
+interface Pinger { Ping() void }
+interface Sizer { Ping(n int) void }
+
+interface Both {
+  Pinger
+  Sizer
+}
+
+pub fn Main() void {}

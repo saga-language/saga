@@ -1828,12 +1828,15 @@ std::optional<ReceiverNode> Parser::parse_receiver() {
 }
 
 // parse_interface_decl — InterfaceDecl = "interface" [ Generic ] Identifier
-//                        "{" [ InterfaceField { terminal InterfaceField } ] "}"
+//                        "{" { InterfaceMember terminal } "}"
 //
-// InterfaceField = [ "pub" ] Identifier Signature
+// InterfaceMember = EmbeddedName | MethodSig
+// MethodSig       = [ "pub" ] Identifier Signature
+// EmbeddedName    = Identifier | Selector  (composes the embedded method sets)
 //
-// Fields are separated by terminators (newlines).  The closing "}" may appear
-// on the same line as the last field or on a new line.
+// A member is a method when its name is followed by "(" (the signature), and an
+// embedded interface otherwise.  Members are terminator-separated; the closing
+// "}" may share a line with the last member.
 NodePtr Parser::parse_interface_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Interface);
@@ -1849,21 +1852,27 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
   skip_terminators();
 
   std::vector<InterfaceFieldNode> methods;
+  std::vector<NodePtr> embeds;
 
   while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-    auto field_start = mark();
-    bool field_public = match(Token::Kind::Pub);
+    auto member_start = mark();
+    bool member_public = match(Token::Kind::Pub);
 
-    auto field_name_start = mark();
-    Token field_name_tok = expect(Token::Kind::Identifier);
-    IdentifierNode field_name{span_from(field_name_start),
-                              field_name_tok.literal};
+    auto member_name_start = mark();
+    Token member_name_tok = expect(Token::Kind::Identifier);
 
-    SignatureNode sig = parse_interface_signature();
+    if (member_public || check(Token::Kind::LeftParenthesis)) {
+      IdentifierNode method_name{span_from(member_name_start),
+                                 member_name_tok.literal};
+      SignatureNode sig = parse_interface_signature();
+      methods.push_back(InterfaceFieldNode{span_from(member_start),
+                                           member_public, std::move(method_name),
+                                           std::move(sig)});
+    } else {
+      embeds.push_back(
+          finish_embed_name(member_name_start, member_name_tok.literal));
+    }
 
-    methods.push_back(InterfaceFieldNode{span_from(field_start), field_public,
-                                         std::move(field_name),
-                                         std::move(sig)});
     consume_stray_member_separator("interface");
     skip_terminators();
   }
@@ -1872,7 +1881,7 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
 
   return make_node<InterfaceDeclNode>(span_from(start), is_public,
                                       std::move(generic), std::move(name),
-                                      std::move(methods));
+                                      std::move(methods), std::move(embeds));
 }
 
 // parse_embed_name — EmbedName = Identifier [ "." Identifier ]
@@ -1884,7 +1893,11 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
 NodePtr Parser::parse_embed_name() {
   auto start = mark();
   Token id_tok = expect(Token::Kind::Identifier);
-  NodePtr ident = make_node<IdentifierNode>(span_from(start), id_tok.literal);
+  return finish_embed_name(start, id_tok.literal);
+}
+
+NodePtr Parser::finish_embed_name(size_t start, std::string_view name) {
+  NodePtr ident = make_node<IdentifierNode>(span_from(start), name);
   if (!check(Token::Kind::Dot))
     return ident;
   advance(); // consume "."

@@ -541,6 +541,18 @@ private:
   void resolve_struct_decl(const StructDeclNode &node);
   void resolve_enum_decl(const EnumDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);
+  void flatten_all_interfaces(
+      const std::vector<const InterfaceDeclNode *> &ifaces);
+  void flatten_interface(
+      const InterfaceDeclNode &decl,
+      const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+      std::unordered_map<std::string, int> &state);
+  void merge_embed(
+      InterfaceTypeInfo &info, const Node &embed_node,
+      const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+      std::unordered_map<std::string, int> &state);
+  void merge_embedded_methods(InterfaceTypeInfo &target,
+                              const TypePtr &embedded, const Node &embed_node);
   void resolve_const_decl(const ConstDeclNode &node);
   void resolve_type_decl(const TypeDeclNode &node);
 

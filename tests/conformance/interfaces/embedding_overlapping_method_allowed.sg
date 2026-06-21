@@ -1,0 +1,37 @@
+// Spec: when a method name reaches a composed interface through more than one
+// embedding path, it is merged rather than rejected — provided every
+// occurrence has the same signature. Here `Read` arrives via both ReadWriter
+// and ReadCloser (a diamond over Reader). (docs/language.md §Interfaces)
+import "std/io"
+
+interface Reader { Read() string }
+interface Writer { Write(s string) void }
+interface Closer { Close() void }
+
+interface ReadWriter {
+  Reader
+  Writer
+}
+interface ReadCloser {
+  Reader
+  Closer
+}
+interface Everything {
+  ReadWriter
+  ReadCloser
+}
+
+struct File {}
+pub fn (f File) Read() string { "r" }
+pub fn (f File) Write(s string) void { io.Println(s) }
+pub fn (f File) Close() void { io.Println("closed") }
+
+fn Use(x Everything) void {
+  io.Println(x.Read())
+  x.Write("w")
+  x.Close()
+}
+
+pub fn Main() void {
+  Use(File{})
+}

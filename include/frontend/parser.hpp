@@ -238,6 +238,11 @@ private:
   /// Generic-typed embeds are not yet permitted.
   NodePtr parse_embed_name();
 
+  /// Build an embedded name from an already-consumed leading identifier,
+  /// extending it into a Selector when a "." follows. Shared by the struct
+  /// embed clause and the interface member parser.
+  NodePtr finish_embed_name(size_t start, std::string_view name);
+
   // ── Module / Program ─────────────────────────────────────────────────
 
   NodePtr parse_package();

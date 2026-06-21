@@ -511,14 +511,17 @@ struct InterfaceFieldNode {
   SignatureNode signature;
 };
 
-// InterfaceDecl = [ "pub" ] "interface" [ Generic ] Identifier "{" [
-// InterfaceField ... ] "}"
+// InterfaceDecl  = [ "pub" ] "interface" [ Generic ] Identifier "{"
+//                  { InterfaceMember terminal } "}"
+// InterfaceMember = EmbeddedName | MethodSig
+// EmbeddedName    = Identifier | Selector
 struct InterfaceDeclNode {
   Span span;
   bool is_public;
   std::optional<GenericNode> generic;
   IdentifierNode name;
   std::vector<InterfaceFieldNode> methods;
+  std::vector<NodePtr> embeds; // IdentifierNode or SelectorNode
 };
 
 // StructMember = [ "pub" ] FieldSpec

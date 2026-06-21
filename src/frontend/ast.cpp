@@ -504,6 +504,8 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             os << pad(indent) << "InterfaceDeclNode"
                << (n.is_public ? " pub" : "") << " \"" << n.name.name << "\"\n";
             dump_opt_generic(n.generic, os, c);
+            for (const auto &e : n.embeds)
+              dump_ptr(e, os, c);
             for (const auto &m : n.methods)
               dump_interface_field(m, os, c);
           },

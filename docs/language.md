@@ -992,42 +992,66 @@ u.Touch() // Feels like a native method, acts on 'updated_at' inside 'User'
 
 ## Interfaces
 
-An interface is a list of one or more methods that a type must implement in
-order to match the interface. Interface matching is implicit. 
-
-Interfaces are intended to be small and composible with union types.
+Interfaces describe a set of desired behaviour. An interface is a list of 
+methods that a type must implement in order to match the interface. Interface
+matching is implicit. A type satisfies an interface simply by having every
+method.
 
 ```
 interface Reader {
-  Read() String
+  Read() string
 }
 interface Writer {
-  Write(String) Void
+  Write(s string) void
 }
 interface Closer {
-  Close() Void
+  Close() void
 }
-
-const ReadWriter = Reader | Writer
-const ReadCloser = Reader | Closer
-const WriteCloser = Writer | Closer
-const ReadWriteCloser = Reader | Writer | Closer
 ```
 
-Interfaces are not narrowed by a union, they are widened. Using the above
-example, a `ReadWriteCloser` expects all three methods be implemented in
-order to match it. On the other hand, an interface can be narrowed 
-provided the receiving interface is a subset of the wider interface.
+An interface must declare at least one method. An empty interface would
+describe no behaviour and is a compile error.
+
+### Composing interfaces
+
+Interfaces are intended to be small and composed. An interface composes others
+by *embedding* them. Including an interface as a member merges its whole method
+set into the composed interface.
 
 ```
-// A File return by Open satisfies the interface because it implements a
-// Read, Write, and Close method.
-f ReadWriteCloser = io.Open("file.txt")
+interface ReadWriter {
+  Reader
+  Writer
+}
+interface ReadWriteCloser {
+  ReadWriter
+  Closer
+}
+```
 
-// Since ReadCloser is a subset of ReadWriteCloser, they are compatible.
-// Both Read and Close are implemented.
-fn ReadAndClose(f ReadCloser) { ... }
-ReadAndClose(f) // valid because ReadCloser is a subset of the wider interface
+A value matches `ReadWriter` only if it implements both `Read` and `Write`;
+`ReadWriteCloser` requires all three. Embedding is transitive (a composed
+interface carries methods from interfaces embedded several levels deep) and
+order-independent. An embedded interface may be qualified by its package
+(`io.Reader`).
+
+Method names must be unique. Redefining a method with the same shape is
+accepted but redefining a method with a different shape is an error. This
+allows composing interfaces that might have overlap.
+
+For example, combining a ReadWriter and ReadCloser to make a
+ReadWriteCloser would be safe provided the Read() shapes are identical.
+
+```
+interface NewReader {
+  Reader
+  Read() string       // Okay, same shape
+  Read() string | int // Error, different shape
+}
+interface ReadWriteCloser {
+  ReadWriter
+  ReadCloser // Okay, provided Read() has the same shape as ReadWriter
+}
 ```
 
 ## Enums

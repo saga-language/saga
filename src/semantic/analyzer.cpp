@@ -609,6 +609,19 @@ void Analyzer::visit_package(const PackageNode &pkg) {
     }
   }
 
+  // Phase 2a.5: merge embedded interface method sets, now that every
+  // interface's own methods are resolved.
+  {
+    std::vector<const InterfaceDeclNode *> ifaces;
+    for (auto &src : pkg.sources) {
+      auto &src_node = std::get<SourceNode>(src->data);
+      for (auto &decl : src_node.declarations)
+        if (auto *i = std::get_if<InterfaceDeclNode>(&decl->data))
+          ifaces.push_back(i);
+    }
+    flatten_all_interfaces(ifaces);
+  }
+
   // Phase 2b: resolve remaining declarations (functions, constants, etc.)
   // from ALL files.
   for (auto &src : pkg.sources) {
@@ -677,6 +690,15 @@ void Analyzer::visit_source(const SourceNode &src) {
   // Pass 2: resolve declaration types (struct fields, signatures, etc.).
   for (auto &decl : src.declarations) {
     resolve_declaration(*decl);
+  }
+
+  // Pass 2.5: merge embedded interface method sets.
+  {
+    std::vector<const InterfaceDeclNode *> ifaces;
+    for (auto &decl : src.declarations)
+      if (auto *i = std::get_if<InterfaceDeclNode>(&decl->data))
+        ifaces.push_back(i);
+    flatten_all_interfaces(ifaces);
   }
 
   // Pass 3: resolve names inside function/method bodies.
@@ -1840,11 +1862,96 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
                        current_package_name()});
   }
 
-  // Patch the interface type with its resolved methods.
+  // Patch the interface type with its resolved methods.  Embedded interfaces
+  // are merged later in flatten_all_interfaces, once every interface's own
+  // method set is resolved.
   std::get<InterfaceTypeInfo>(iface_type->detail).methods = std::move(methods);
 
   if (has_generics) {
     pop_scope();
+  }
+}
+
+void Analyzer::flatten_all_interfaces(
+    const std::vector<const InterfaceDeclNode *> &ifaces) {
+  std::unordered_map<std::string, const InterfaceDeclNode *> by_name;
+  for (auto *i : ifaces)
+    by_name[std::string(i->name.name)] = i;
+
+  std::unordered_map<std::string, int> state; // 0 unvisited, 1 active, 2 done
+  for (auto *i : ifaces)
+    flatten_interface(*i, by_name, state);
+}
+
+// Merge each embedded interface's method set into `decl`'s own.  Local embeds
+// are flattened first (depth-first) so transitive methods are carried through;
+// imported embeds already arrive flat from their `.sgi`.
+void Analyzer::flatten_interface(
+    const InterfaceDeclNode &decl,
+    const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+    std::unordered_map<std::string, int> &state) {
+  std::string key(decl.name.name);
+  if (state[key] == 2)
+    return;
+  if (state[key] == 1) {
+    error(decl.span,
+          std::format("interface '{}' is part of an embedding cycle", key));
+    state[key] = 2;
+    return;
+  }
+  state[key] = 1;
+
+  auto sym = lookup(key);
+  if (sym && sym->type && sym->type->kind == TypeKind::Interface) {
+    auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+    for (auto &embed_node : decl.embeds)
+      merge_embed(info, *embed_node, by_name, state);
+  }
+
+  state[key] = 2;
+}
+
+// Resolve a single embedded name to an interface and fold its methods in,
+// recursing first when the embed names another local interface.
+void Analyzer::merge_embed(
+    InterfaceTypeInfo &info, const Node &embed_node,
+    const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+    std::unordered_map<std::string, int> &state) {
+  if (auto *id = std::get_if<IdentifierNode>(&embed_node.data)) {
+    auto it = by_name.find(std::string(id->name));
+    if (it != by_name.end())
+      flatten_interface(*it->second, by_name, state);
+  }
+
+  TypePtr embedded = resolve_type(embed_node);
+  if (!embedded || is_error_type(embedded))
+    return;
+  if (embedded->kind != TypeKind::Interface) {
+    error(embed_node.span,
+          std::format("embedded type '{}' is not an interface",
+                      type_to_string(embedded)));
+    return;
+  }
+  merge_embedded_methods(info, embedded, embed_node);
+}
+
+void Analyzer::merge_embedded_methods(InterfaceTypeInfo &target,
+                                      const TypePtr &embedded,
+                                      const Node &embed_node) {
+  auto &source = std::get<InterfaceTypeInfo>(embedded->detail);
+  for (auto &method : source.methods) {
+    auto existing =
+        std::find_if(target.methods.begin(), target.methods.end(),
+                     [&](const MethodInfo &m) { return m.name == method.name; });
+    if (existing == target.methods.end()) {
+      target.methods.push_back(method);
+      continue;
+    }
+    if (!types_equal(existing->signature, method.signature))
+      error(embed_node.span,
+            std::format("embedded method '{}' conflicts with an existing "
+                        "method of the same name",
+                        method.name));
   }
 }
 
@@ -4806,8 +4913,16 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
   if (!sym || !sym->type || sym->type->kind != TypeKind::Interface)
     return;
 
-  // Check duplicate methods.
   auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+
+  if (info.methods.empty()) {
+    error(i.span,
+          std::format("interface '{}' must declare at least one method "
+                      "(directly or through an embedded interface)",
+                      info.name));
+  }
+
+  // Check duplicate methods.
   std::unordered_map<std::string, bool> seen;
   for (auto &m : info.methods) {
     if (seen.count(m.name)) {

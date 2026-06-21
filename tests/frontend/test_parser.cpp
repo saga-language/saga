@@ -494,6 +494,25 @@ TEST(ParserDeclaration, Interface_WithMethods) {
   EXPECT_EQ(iface->methods[1].name.name, "Hash");
 }
 
+TEST(ParserDeclaration, Interface_WithEmbeds) {
+  auto r = ParseResult::from(
+      "interface ReadWriter {\n"
+      "  Reader\n"
+      "  lib.Writer\n"
+      "  Flush() void\n"
+      "}\n");
+  EXPECT_TRUE(r.errors.empty());
+  ASSERT_EQ(r.source_node().declarations.size(), 1);
+  auto *iface = std::get_if<saga::InterfaceDeclNode>(
+      &r.source_node().declarations[0]->data);
+  ASSERT_NE(iface, nullptr);
+  ASSERT_EQ(iface->embeds.size(), 2);
+  EXPECT_NE(std::get_if<saga::IdentifierNode>(&iface->embeds[0]->data), nullptr);
+  EXPECT_NE(std::get_if<saga::SelectorNode>(&iface->embeds[1]->data), nullptr);
+  ASSERT_EQ(iface->methods.size(), 1);
+  EXPECT_EQ(iface->methods[0].name.name, "Flush");
+}
+
 // ---------------------------------------------------------------------------
 // Error recovery
 // ---------------------------------------------------------------------------

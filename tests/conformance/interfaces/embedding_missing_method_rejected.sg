@@ -1,0 +1,22 @@
+// Spec: a value must implement *every* method of a composed interface,
+// including those inherited from embedded interfaces. A type that omits one
+// does not satisfy the composed interface. (docs/language.md §Interfaces)
+import "std/io"
+
+interface Reader { Read() string }
+interface Writer { Write(s string) void }
+interface ReadWriter {
+  Reader
+  Writer
+}
+
+struct ReadOnly {}
+pub fn (r ReadOnly) Read() string { "data" }
+
+fn Use(rw ReadWriter) void {
+  io.Println(rw.Read())
+}
+
+pub fn Main() void {
+  Use(ReadOnly{})
+}

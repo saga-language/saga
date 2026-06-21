@@ -1,0 +1,28 @@
+// Spec: an interface composes embedded interfaces' method sets — a value
+// satisfies the composed interface only by implementing every method from
+// every embedded interface. (docs/language.md §Interfaces)
+import "std/io"
+
+interface Reader {
+  Read() string
+}
+interface Writer {
+  Write(s string) void
+}
+interface ReadWriter {
+  Reader
+  Writer
+}
+
+struct File {}
+pub fn (f File) Read() string { "data" }
+pub fn (f File) Write(s string) void { io.Println(s) }
+
+fn Use(rw ReadWriter) void {
+  io.Println(rw.Read())
+  rw.Write("written")
+}
+
+pub fn Main() void {
+  Use(File{})
+}
