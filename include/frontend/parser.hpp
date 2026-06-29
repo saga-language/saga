@@ -214,6 +214,8 @@ private:
   NodePtr parse_import_decl();
   NodePtr parse_interface_decl(bool is_public);
   NodePtr parse_struct_decl(bool is_public);
+  bool at_struct_embed() const;
+  StructMemberNode parse_struct_field();
 
   // ── Declaration sub-helpers ──────────────────────────────────────────
 

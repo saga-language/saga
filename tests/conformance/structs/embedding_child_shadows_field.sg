@@ -1,0 +1,18 @@
+// Spec: a child field shadows an embedded field of the same name — the
+// child's own field wins for direct access. (docs/language.md §Structural
+// embedding)
+import "std/io"
+
+struct Base {
+  label string
+}
+
+struct Wrap {
+  Base
+  label string
+}
+
+pub fn Main() void {
+  w := Wrap{label: "child"}
+  io.Println(w.label)
+}

@@ -577,10 +577,10 @@ TEST(TypeCheck, BitwiseOnFloat) {
 // Embedded struct member access
 // ===========================================================================
 
-TEST(TypeCheck, DISABLED_EmbeddedFieldAccess) {
+TEST(TypeCheck, EmbeddedFieldAccess) {
   auto r = TC::from(
       "struct Base { x int }\n"
-      "struct Child < Base { y int }\n"
+      "struct Child {\n  Base\n  y int\n}\n"
       "fn f() int {\n  c := Child{x: 1, y: 2}\n  c.x\n}");
   EXPECT_TRUE(r.ok());
 }

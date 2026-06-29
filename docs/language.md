@@ -912,82 +912,73 @@ data := json.Parse(raw, Payload)
 value := data.optional or { "unknown" }
 ```
 
-### Structural embedding (mix-ins)
+### Struct embedding (mix-ins)
 
-Structs can be merged, or "mixed in" to each other. The syntax will look
-familiar to those used to inheritance but it's important to note this is
-NOT inheritance.
+A struct may be embedding inside another struct. Unlike class inheritance, a
+struct that is embedded passes is members and methods on to the child struct
+but does not create a parent-child hierarchial inheritance.
 
-The "child" struct, the struct receiving the embedding, inherits all the
-fields and methods of the other struct. The embedded struct can not access
-any fields or methods outside of its own scope but the child struct can
-access all the fields and methods of the embedded struct. This is similar
-to onion architecture. Things on the outside can see in but things on the
-inside can't see out.
+The "child" struct, the one receiving the embedding, gains all the fields and
+methods of the embedded struct as if they were its own. The embedded struct
+cannot reach out to the child; the child can reach in. This is like onion
+architecture: the outside can see in, the inside can't see out.
 
 ```
 struct Timestamps {
-    created_at Int
-    updated_at Int
-    
-    pub fn Touch() Void {
-        updated_at = time.Now() // Implicit scope access!
-    }
+  created int
+  updated int
 }
 
-// this is NOT inheritance
-struct User < Timestamps {
-    name String
+// A method bound to Timestamps, with a named receiver.
+pub fn (t Timestamps) Age() int { t.updated - t.created }
+
+// This is NOT inheritance — User embeds Timestamps.
+struct User {
+  Timestamps
+  name string
 }
 
-u := User{name: "Alice"}
-u.Touch() // Feels like a native method, acts on 'updated_at' inside 'User'
+u := User{name: "Alice", created: 100, updated: 175}
+u.created   // promoted field
+u.Age()     // promoted method
 ```
 
-Structs that do not have fields and only methods become Traits. That doesn't
-really do anything but make it a nice way to refer to them. That's it.
+A promoted method still runs against the embedded struct's own fields; calling
+it through the child simply finds the embedded value to act on. The embedded
+struct keeps its own memory inside the child.
 
-Methods in a parent struct can shadow those of a mix-in. If you need to access
-the embedded struct's method, you can call it by its struct name.
+Structs with only methods and no fields make useful mix-ins of pure behaviour.
+
+A child member shadows an embedded member of the same name: if the child
+declares a field or method whose name an embedded struct also uses, the child's
+wins for direct access.
 
 ```
-struct user < Timestamps {
-  name String
- 
-  // making this private "erases" the visibility from this struct's available
-  // symbols
-  fn Touch() Void { Timestamps.Touch() } 
+struct Base {}
+pub fn (b Base) Kind() string { "base" }
+
+struct Child {
+  Base
 }
+pub fn (c Child) Kind() string { "child" }
+
+c := Child{}
+c.Kind() // returns "child" because the child's method shadows the embedded one
 ```
-
-The fields and methods are merged into the child's symbol table. If a mixin's
-methods are called, it's accessing the child's fields but thinks they're its
-own fields. That doesn't make the mixin's fields disappear. If a child defines
-a field or method that shared the same name as
-an embedded struct's, then the child erases the mixed in version. The mixin
-can still "see" its original fields can can still access them. For the child
-to access the embedded version, it must use a selector.
-
-The embedded struct has its own memory so that when erasure from the embedded
-target happens, it can still access its own fields. The merge is symbolic and
-the field is not actually erased.
 
 ```
 struct Greeter {
-    pub fn Greet() String {
+    pub fn Greet() string {
       "Hello!"
     }
 }
 
 // Note that the visibility and return type are erased by the new definition
 struct Different < Greeter {
-    fn Greet() Void {
+    fn Greet() void {
         io.Println(Greeter.Greet()) // ...but can still access the original
     }
 }
-
-u := User{name: "Alice"}
-u.Touch() // Feels like a native method, acts on 'updated_at' inside 'User'
 ```
 
 ## Interfaces

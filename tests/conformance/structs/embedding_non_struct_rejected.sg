@@ -1,0 +1,11 @@
+// Spec: only structs can be embedded in a struct. Embedding an interface (or
+// any non-struct type) is a compile error. (docs/language.md §Structural
+// embedding)
+interface Greeter { Greet() string }
+
+struct Bad {
+  Greeter
+  name string
+}
+
+pub fn Main() void {}

@@ -393,9 +393,11 @@ TEST(ParserDeclaration, Dispatch_Struct) {
   EXPECT_EQ(field->names.identifiers[1].name, "y");
 }
 
-TEST(ParserDeclaration, DISABLED_Struct_GenericWithEmbeds) {
+TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   auto r = ParseResult::from(
-      "pub struct |T| Node < Base, Mixin {\n"
+      "pub struct Node<T> {\n"
+      "  Base\n"
+      "  Mixin\n"
       "  pub value T\n"
       "}\n");
   EXPECT_TRUE(r.errors.empty());
@@ -2473,8 +2475,8 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmptyBody) {
   EXPECT_TRUE(s->embeds.empty());
 }
 
-TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_EmbedsOnly) {
-  auto r = ParseResult::from("struct Child < Parent {}\n");
+TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
+  auto r = ParseResult::from("struct Child {\n  Parent\n}\n");
   EXPECT_TRUE(r.errors.empty());
   auto *s = r.decl_as<StructDeclNode>(0);
   ASSERT_NE(s, nullptr);
@@ -2486,8 +2488,9 @@ TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_EmbedsOnly) {
   EXPECT_TRUE(s->members.empty());
 }
 
-TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_QualifiedEmbed) {
-  auto r = ParseResult::from("struct User < lib.Timestamps { name string }\n");
+TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
+  auto r = ParseResult::from(
+      "struct User {\n  lib.Timestamps\n  name string\n}\n");
   EXPECT_TRUE(r.errors.empty());
   auto *s = r.decl_as<StructDeclNode>(0);
   ASSERT_NE(s, nullptr);
@@ -2498,6 +2501,7 @@ TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_QualifiedEmbed) {
   ASSERT_NE(obj, nullptr);
   EXPECT_EQ(obj->name, "lib");
   EXPECT_EQ(sel->field.name, "Timestamps");
+  ASSERT_EQ(s->members.size(), 1);
 }
 
 // =============================================================================

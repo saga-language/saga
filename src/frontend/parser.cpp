@@ -1908,13 +1908,15 @@ NodePtr Parser::finish_embed_name(size_t start, std::string_view name) {
 }
 
 // parse_struct_decl — StructDecl = "struct" [ Generic ] Identifier
-//                     [ "<" EmbedList ] "{" [ StructMember
-//                     { terminal StructMember } ] "}"
+//                     "{" { StructMember terminal } "}"
 //
-// StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
+// StructMember = EmbeddedName | [ "pub" ] FieldSpec
+// EmbeddedName = Identifier | Selector  (mixes in the named struct)
 //
-// Struct members are field specs only.  Methods are bound externally
-// (`fn (x T) M()`), so a non-field token in the body is a syntax error.
+// A member is an embed when a bare (qualified) type name stands alone — its
+// first identifier is followed by a "." (qualified) or a member terminator.
+// Otherwise it is a field (`names Type`). `pub` only prefixes a field; methods
+// are bound externally (`fn (x T) M()`).
 NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
@@ -1932,14 +1934,10 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
 
   std::vector<StructMemberNode> members;
   while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-    auto member_start = mark();
-    bool member_public = match(Token::Kind::Pub);
-
-    FieldSpecNode field = parse_field_spec();
-    NodePtr field_node = make_node<FieldSpecNode>(
-        field.span, std::move(field.names), std::move(field.type));
-    members.push_back(StructMemberNode{span_from(member_start), member_public,
-                                       std::move(field_node)});
+    if (at_struct_embed())
+      embeds.push_back(parse_embed_name());
+    else
+      members.push_back(parse_struct_field());
 
     consume_stray_member_separator("struct");
     skip_terminators();
@@ -1950,6 +1948,35 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
   return make_node<StructDeclNode>(span_from(start), is_public,
                                    std::move(generic), std::move(name),
                                    std::move(embeds), std::move(members));
+}
+
+// A struct member is an embedded name when the current member is a bare
+// (possibly qualified) type name: a non-`pub` Identifier followed by "." or a
+// member terminator. Anything else (a second identifier, a type opener, ",")
+// makes it a `names Type` field.
+bool Parser::at_struct_embed() const {
+  if (!check(Token::Kind::Identifier))
+    return false;
+  switch (peek().kind) {
+  case Token::Kind::Dot:
+  case Token::Kind::Terminator:
+  case Token::Kind::RightBrace:
+  case Token::Kind::Eof:
+    return true;
+  default:
+    return false;
+  }
+}
+
+StructMemberNode Parser::parse_struct_field() {
+  auto member_start = mark();
+  bool member_public = match(Token::Kind::Pub);
+
+  FieldSpecNode field = parse_field_spec();
+  NodePtr field_node = make_node<FieldSpecNode>(
+      field.span, std::move(field.names), std::move(field.type));
+  return StructMemberNode{span_from(member_start), member_public,
+                          std::move(field_node)};
 }
 
 // ── parse_import_decl ────────────────────────────────────────────────────────

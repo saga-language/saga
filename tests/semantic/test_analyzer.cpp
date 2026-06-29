@@ -324,15 +324,15 @@ TEST(Analyzer, ResolveConstWithType) {
   EXPECT_TRUE(r.has_no_errors());
 }
 
-TEST(Analyzer, DISABLED_ResolveStructWithEmbed) {
+TEST(Analyzer, ResolveStructWithEmbed) {
   auto r = AnalysisResult::from(
       "struct Base { x int }\n"
-      "struct Child < Base { y int }");
+      "struct Child {\n  Base\n  y int\n}");
   EXPECT_TRUE(r.has_no_errors());
 }
 
-TEST(Analyzer, DISABLED_ResolveStructWithUnknownEmbed) {
-  auto r = AnalysisResult::from("struct Child < Unknown { y int }");
+TEST(Analyzer, ResolveStructWithUnknownEmbed) {
+  auto r = AnalysisResult::from("struct Child {\n  Unknown\n  y int\n}");
   EXPECT_TRUE(r.has_error_containing("undefined"));
 }
 

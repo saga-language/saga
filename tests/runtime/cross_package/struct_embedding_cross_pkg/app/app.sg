@@ -1,13 +1,14 @@
-import "io"
+import "std/io"
 import "lib"
 
-struct User < lib.Timestamps {
-  name String
+struct User {
+  lib.Timestamps
+  name string
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   u := User{name: "alice", created: 1, updated: 2}
   io.Println(u.name)
-  io.Println(u.created.String())
-  io.Println(u.updated.String())
+  io.Println("{u.created}")
+  io.Println("{u.updated}")
 }

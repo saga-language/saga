@@ -257,7 +257,7 @@ pub fn Main() void {
     std::cerr << "  " << e.message << "\n";
 }
 
-TEST(Modules, DISABLED_EmbedQualifiedStructFromImport) {
+TEST(Modules, EmbedQualifiedStructFromImport) {
   auto ts_type = make_struct_type("Timestamps",
       {FieldInfo{"created", make_int_type(), true},
        FieldInfo{"updated", make_int_type(), true}},
@@ -269,7 +269,8 @@ TEST(Modules, DISABLED_EmbedQualifiedStructFromImport) {
   auto r = ModuleTestResult::with_mocks(R"(
 import "lib"
 
-struct User < lib.Timestamps {
+struct User {
+  lib.Timestamps
   name string
 }
 

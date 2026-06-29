@@ -1,18 +1,19 @@
-import "io"
+import "std/io"
 
 struct Greeter {
-  prefix String
+  prefix string
 }
 
-fn (g Greeter) Greet(name String) String {
-  g.prefix + " " + name
+fn (g Greeter) Greet(name string) string {
+  "{g.prefix} {name}"
 }
 
-struct U < Greeter {
-  who String
+struct U {
+  Greeter
+  who string
 }
 
-pub fn Main() Void {
+pub fn Main() void {
   u := U{who: "world", prefix: "hello"}
   io.Println(u.Greet(u.who))
 }
