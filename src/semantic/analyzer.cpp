@@ -2886,15 +2886,11 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
 
   auto &info = std::get<StructTypeInfo>(effective_type->detail);
 
-  // Collect all fields including those from embedded types.
-  auto all_fields = info.fields;
-  for (auto &embed : info.embeds) {
-    if (embed && embed->kind == TypeKind::Struct) {
-      auto &embed_info = std::get<StructTypeInfo>(embed->detail);
-      all_fields.insert(all_fields.end(), embed_info.fields.begin(),
-                        embed_info.fields.end());
-    }
-  }
+  // Collect all fields including those promoted from embedded types
+  // (transitively). Own fields come first, so a child field shadows an
+  // embedded one of the same name.
+  std::vector<FieldInfo> all_fields;
+  collect_promoted_fields(info, all_fields);
 
   // Validate each field assignment against the (possibly instantiated) type.
   for (size_t i = 0; i < field_vals.size(); ++i) {
@@ -3541,18 +3537,25 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
     return sig;
   }
 
+  // Promoted members: recurse through embeds so a member declared several
+  // levels deep is still found. Own members are checked above first, so a
+  // child member shadows an embedded one of the same name.
   for (auto &embed : info.embeds) {
     if (!embed || embed->kind != TypeKind::Struct)
       continue;
-    auto &einfo = std::get<StructTypeInfo>(embed->detail);
-    for (auto &f : einfo.fields)
-      if (f.name == field_name)
-        return f.type ? f.type : builtins.error_type;
-    for (auto &m : einfo.methods)
-      if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
+    if (auto t = resolve_struct_member(embed, field_name, field_span))
+      return t;
   }
   return nullptr;
+}
+
+void Analyzer::collect_promoted_fields(const StructTypeInfo &info,
+                                       std::vector<FieldInfo> &out) {
+  out.insert(out.end(), info.fields.begin(), info.fields.end());
+  for (auto &embed : info.embeds) {
+    if (embed && embed->kind == TypeKind::Struct)
+      collect_promoted_fields(std::get<StructTypeInfo>(embed->detail), out);
+  }
 }
 
 TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,

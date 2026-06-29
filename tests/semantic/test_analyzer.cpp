@@ -336,6 +336,25 @@ TEST(Analyzer, ResolveStructWithUnknownEmbed) {
   EXPECT_TRUE(r.has_error_containing("undefined"));
 }
 
+TEST(Analyzer, ResolveTransitiveEmbedField) {
+  auto r = AnalysisResult::from(
+      "struct A { x int }\n"
+      "struct B {\n  A\n  y int\n}\n"
+      "struct C {\n  B\n  z int\n}\n"
+      "fn f(c C) int { c.x }");
+  EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, ResolveTransitiveEmbedMethod) {
+  auto r = AnalysisResult::from(
+      "struct A { x int }\n"
+      "fn (a A) Get() int { a.x }\n"
+      "struct B {\n  A\n  y int\n}\n"
+      "struct C {\n  B\n  z int\n}\n"
+      "fn f(c C) int { c.Get() }");
+  EXPECT_TRUE(r.has_no_errors());
+}
+
 TEST(Analyzer, ResolveUnknownTypeInSignature) {
   auto r = AnalysisResult::from("fn foo(x Nonexistent) {}");
   EXPECT_TRUE(r.has_error_containing("undefined"));

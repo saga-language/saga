@@ -1171,5 +1171,36 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
   return {nullptr, nullptr};
 }
 
+std::pair<llvm::Value *, TypePtr>
+CodeGen::embed_method_receiver(llvm::Value *struct_ptr,
+                               const TypePtr &struct_sem,
+                               const std::string &method) {
+  auto &info = std::get<StructTypeInfo>(struct_sem->detail);
+  for (auto &m : info.methods)
+    if (m.name == method)
+      return {struct_ptr, struct_sem};
+
+  std::string skey = struct_cache_key(info);
+  auto st_it = struct_types.find(skey);
+  if (st_it == struct_types.end())
+    return {nullptr, nullptr};
+  auto *st = st_it->second;
+
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= st->getNumElements()) break;
+
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                             embed_slot_name(einfo));
+    auto inner = embed_method_receiver(slot_gep, embed, method);
+    if (inner.first) return inner;
+  }
+
+  return {nullptr, nullptr};
+}
+
 
 } // namespace saga

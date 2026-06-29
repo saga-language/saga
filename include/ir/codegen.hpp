@@ -552,6 +552,15 @@ private:
   struct_field_gep(llvm::Value *struct_ptr, const TypePtr &struct_sem_type,
                    const std::string &field_name);
 
+  /// Walk `__embed_<Name>` slots from `struct_ptr` (a pointer to a
+  /// `struct_sem` value) down to the embedded struct that *directly* declares
+  /// `method`. Returns the receiver pointer and that struct's semantic type,
+  /// or {nullptr, nullptr} if no embed in the subtree declares it. Mirrors
+  /// struct_field_gep for promoted method dispatch.
+  std::pair<llvm::Value *, TypePtr>
+  embed_method_receiver(llvm::Value *struct_ptr, const TypePtr &struct_sem,
+                        const std::string &method);
+
   /// Append one synthetic `__embed_<TypeName>` slot per embed in `info` to
   /// the given LLVM type/name vectors. Embed slots are laid out after the
   /// struct's own fields and contain the embedded struct by value, not as

@@ -632,6 +632,8 @@ private:
   TypePtr resolve_struct_member(const TypePtr &owner_type,
                                 const std::string &field_name,
                                 Span field_span);
+  void collect_promoted_fields(const StructTypeInfo &info,
+                               std::vector<FieldInfo> &out);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
                                    const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);

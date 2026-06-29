@@ -947,6 +947,10 @@ A promoted method still runs against the embedded struct's own fields; calling
 it through the child simply finds the embedded value to act on. The embedded
 struct keeps its own memory inside the child.
 
+Embedding is transitive: if `User` embeds `Base` and `Base` embeds `Timestamps`,
+then `Timestamps`' fields and methods are promoted all the way up to `User`. A
+field or method shadows embedded methods of any depth.
+
 Structs with only methods and no fields make useful mix-ins of pure behaviour.
 
 A child member shadows an embedded member of the same name: if the child
