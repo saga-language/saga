@@ -512,6 +512,15 @@ private:
                                       const ForLoopBlocks &bbs);
   llvm::Value *emit_struct_literal(const StructLiteralNode &node,
                                    const Node &parent);
+  /// Store a comptime/runtime field value into a struct slot, handling
+  /// union-wrap and inline-aggregate memcpy. `gep` points at the slot.
+  void store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
+                          const TypePtr &field_sem, const Node &value_node);
+  /// Recursively apply field defaults into `struct_ptr`, descending embed
+  /// slots so an embedded struct's own defaults are honoured. Run before
+  /// explicit literal fields, which override.
+  void apply_struct_field_defaults(llvm::Value *struct_ptr,
+                                   const TypePtr &struct_sem);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);

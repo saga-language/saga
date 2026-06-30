@@ -129,6 +129,8 @@ void dump_field_spec(const FieldSpecNode &n, std::ostream &os, int indent) {
   os << pad(indent) << "FieldSpecNode\n";
   dump_identifier_list(n.names, os, indent + 1);
   dump_ptr(n.type, os, indent + 1);
+  if (n.default_value)
+    dump_ptr(n.default_value, os, indent + 1);
 }
 
 void dump_field_assignment(const FieldAssignmentNode &n, std::ostream &os,

@@ -870,6 +870,31 @@ fn (f Foo) SetName(value String) Void {
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
 
+### Default field values
+
+A field may declare a default with `= expression`. The default must be a
+compile-time value (the same expressions allowed for a `const`), and it must be
+assignable to the field's type. A list of names shares one default.
+
+```
+struct Config {
+  timeout int = 30
+  name string = "anon"
+  active bool = true
+  retries int            // no default — zero value when omitted
+}
+```
+
+When a struct literal omits a field, its default is applied; a field with no
+default takes its zero value. A value given in the literal overrides the
+default. Defaults from an embedded struct are applied too, so embedding a
+struct with defaults keeps those defaults.
+
+```
+Config{}                 // timeout 30, name "anon", active true, retries 0
+Config{timeout: 5}       // timeout 5,  name "anon", active true, retries 0
+```
+
 ### Struct literals
 
 To initialize a struct, its literal form must be used. The structs Identifier,

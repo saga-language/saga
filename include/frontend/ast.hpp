@@ -161,11 +161,14 @@ struct FuncTypeNode {
   NodePtr return_type;         // nullptr = Void
 };
 
-// FieldSpec = IdentifierList Type  (one field declaration in a struct)
+// FieldSpec = IdentifierList Type [ "=" Expression ]  (one struct field
+// declaration; the optional default is a comptime expression shared by every
+// name in the list)
 struct FieldSpecNode {
   Span span;
   IdentifierListNode names;
   NodePtr type;
+  NodePtr default_value; // nullptr when no `= Expression` is present
 };
 
 // StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"

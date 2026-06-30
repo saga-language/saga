@@ -2488,6 +2488,21 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
   EXPECT_TRUE(s->members.empty());
 }
 
+TEST_F(ParserDeclCoverageTest, StructDecl_FieldDefault) {
+  auto r = ParseResult::from(
+      "struct Config {\n  timeout int = 30\n  retries int\n}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *s = r.decl_as<StructDeclNode>(0);
+  ASSERT_NE(s, nullptr);
+  ASSERT_EQ(s->members.size(), 2);
+  auto *f0 = std::get_if<saga::FieldSpecNode>(&s->members[0].member->data);
+  ASSERT_NE(f0, nullptr);
+  EXPECT_NE(f0->default_value, nullptr);
+  auto *f1 = std::get_if<saga::FieldSpecNode>(&s->members[1].member->data);
+  ASSERT_NE(f1, nullptr);
+  EXPECT_EQ(f1->default_value, nullptr);
+}
+
 TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
   auto r = ParseResult::from(
       "struct User {\n  lib.Timestamps\n  name string\n}\n");

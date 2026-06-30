@@ -336,6 +336,24 @@ TEST(Analyzer, ResolveStructWithUnknownEmbed) {
   EXPECT_TRUE(r.has_error_containing("undefined"));
 }
 
+TEST(Analyzer, FieldDefaultComptimeAccepted) {
+  auto r = AnalysisResult::from(
+      "struct S {\n  x int = 1\n  y string = \"a\"\n}");
+  EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, FieldDefaultNonComptimeRejected) {
+  auto r = AnalysisResult::from(
+      "fn f() int { 1 }\n"
+      "struct S {\n  x int = f()\n}");
+  EXPECT_TRUE(r.has_error_containing("compile-time constant"));
+}
+
+TEST(Analyzer, FieldDefaultTypeMismatchRejected) {
+  auto r = AnalysisResult::from("struct S {\n  x int = \"no\"\n}");
+  EXPECT_TRUE(r.has_error_containing("default for field 'x'"));
+}
+
 TEST(Analyzer, ResolveTransitiveEmbedField) {
   auto r = AnalysisResult::from(
       "struct A { x int }\n"

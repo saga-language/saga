@@ -840,7 +840,13 @@ FieldSpecNode Parser::parse_field_spec() {
   // ── Type ─────────────────────────────────────────────────────────────
   NodePtr type = parse_type();
 
-  return FieldSpecNode{span_from(start), std::move(names), std::move(type)};
+  // ── Optional default value ───────────────────────────────────────────
+  NodePtr default_value;
+  if (match(Token::Kind::Assignment))
+    default_value = parse_expression();
+
+  return FieldSpecNode{span_from(start), std::move(names), std::move(type),
+                       std::move(default_value)};
 }
 
 // parse_parameter — IdentifierList ParameterType
@@ -1974,7 +1980,8 @@ StructMemberNode Parser::parse_struct_field() {
 
   FieldSpecNode field = parse_field_spec();
   NodePtr field_node = make_node<FieldSpecNode>(
-      field.span, std::move(field.names), std::move(field.type));
+      field.span, std::move(field.names), std::move(field.type),
+      std::move(field.default_value));
   return StructMemberNode{span_from(member_start), member_public,
                           std::move(field_node)};
 }

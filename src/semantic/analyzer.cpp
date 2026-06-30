@@ -1757,7 +1757,8 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
       continue;
     auto ft = resolve_type(*fs->type);
     for (auto &ident : fs->names.identifiers) {
-      fields.push_back({std::string(ident.name), ft, member.is_public});
+      fields.push_back({std::string(ident.name), ft, member.is_public,
+                        fs->default_value.get()});
     }
   }
 
@@ -4908,6 +4909,30 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
                                 info.name));
     }
     seen_methods[m.name] = true;
+  }
+
+  check_field_defaults(s);
+}
+
+// A field default must be a comptime expression assignable to the field type.
+void Analyzer::check_field_defaults(const StructDeclNode &s) {
+  for (auto &member : s.members) {
+    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
+    if (!fs || !fs->default_value)
+      continue;
+
+    auto field_type = resolve_type(*fs->type);
+    auto def_type = check_expr(*fs->default_value);
+    if (!require_const_expr(*fs->default_value))
+      continue;
+    if (!field_type || is_error_type(def_type))
+      continue;
+
+    std::string fname = fs->names.identifiers.empty()
+                            ? "field"
+                            : std::string(fs->names.identifiers.front().name);
+    expect_assignable(fs->default_value->span, field_type, def_type,
+                      std::format("default for field '{}'", fname));
   }
 }
 

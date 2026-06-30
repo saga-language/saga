@@ -686,6 +686,7 @@ private:
   void check_enum_decl(const EnumDeclNode &node);
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
+  void check_field_defaults(const StructDeclNode &node);
   void check_interface_decl(const InterfaceDeclNode &node);
   void check_import_decl(const ImportDeclNode &node);
 
