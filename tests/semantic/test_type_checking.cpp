@@ -376,6 +376,20 @@ TEST(TypeCheck, StructLiteralUnknownField) {
   EXPECT_TRUE(r.has_err("has no field 'z'"));
 }
 
+TEST(TypeCheck, TypeNameAsValueRejected) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn f() { p := Point }");
+  EXPECT_TRUE(r.has_err("cannot use type 'Point' as a value"));
+}
+
+TEST(TypeCheck, EmptyShapeOmitsBraces) {
+  auto r = TC::from(
+      "struct Marker {}\n"
+      "fn f() Marker { Marker }");
+  EXPECT_TRUE(r.ok());
+}
+
 // ===========================================================================
 // Array literals
 // ===========================================================================

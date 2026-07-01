@@ -1010,6 +1010,22 @@ struct Different < Greeter {
 }
 ```
 
+### Struct-shape literals
+
+A shape with no fields may omit the `{}` when the type is known. The bare type
+name and the empty literal are equivalent:
+
+```
+struct Marker {}
+
+a := Marker    // same as Marker{}
+b := Marker{}
+```
+
+This omission is the only case where a bare type name stands for a value. A type
+name used as a value anywhere else — including a shape that has fields — is a
+compile error; use the literal form instead.
+
 ## Interfaces
 
 Interfaces describe a set of desired behaviour. An interface is a list of 

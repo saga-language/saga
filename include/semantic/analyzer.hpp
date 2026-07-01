@@ -610,6 +610,7 @@ private:
 
   // Phase 5: Expression type-checking — infer/check expression types.
   TypePtr check_expr(const Node &node);
+  TypePtr check_type_or_value_expr(const Node &node);
   TypePtr check_identifier(const IdentifierNode &node, const Node &parent);
   TypePtr check_bool_literal(const BoolLiteralNode &node);
   TypePtr check_int_literal(const IntegerLiteralNode &node);

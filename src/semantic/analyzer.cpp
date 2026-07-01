@@ -2753,6 +2753,26 @@ TypePtr Analyzer::check_expr(const Node &node) {
   return type;
 }
 
+static bool is_empty_struct_shape(const TypePtr &t) {
+  if (!t || t->kind != TypeKind::Struct)
+    return false;
+  auto &info = std::get<StructTypeInfo>(t->detail);
+  return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
+}
+
+TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
+  if (auto *id = std::get_if<IdentifierNode>(&node.data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Type) {
+      record_symbol(node, *sym);
+      auto type = sym->type ? sym->type : builtins.error_type;
+      record_type(node, type);
+      return type;
+    }
+  }
+  return check_expr(node);
+}
+
 TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
                                    const Node &parent) {
   std::string name(ident.name);
@@ -2772,6 +2792,14 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
     return builtins.error_type;
   }
   record_symbol(parent, *sym);
+
+  if (sym->kind == SymbolKind::Type) {
+    if (is_empty_struct_shape(sym->type))
+      return sym->type;
+    error(ident.span,
+          std::format("cannot use type '{}' as a value", name));
+    return builtins.error_type;
+  }
 
   // For module symbols, return the module type directly.
   if (sym->kind == SymbolKind::Module && sym->type)
@@ -2851,7 +2879,7 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
 }
 
 TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
-  auto type_expr_type = check_expr(*node.type_expr);
+  auto type_expr_type = check_type_or_value_expr(*node.type_expr);
   if (is_error_type(type_expr_type))
     return builtins.error_type;
 
@@ -3700,7 +3728,7 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
 
 TypePtr Analyzer::check_selector(const SelectorNode &node,
                                  const Node & /*parent*/) {
-  auto obj_type = check_expr(*node.object);
+  auto obj_type = check_type_or_value_expr(*node.object);
   if (is_error_type(obj_type))
     return builtins.error_type;
 
@@ -3834,7 +3862,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   for (auto &arm : node.arms) {
     TypePtr first_pattern_type;
     for (auto &pat : arm.patterns) {
-      auto pattern_type = check_expr(*pat);
+      auto pattern_type = check_type_or_value_expr(*pat);
       if (!first_pattern_type)
         first_pattern_type = pattern_type;
 
@@ -3913,7 +3941,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       bool covered = false;
       for (auto &arm : node.arms) {
         for (auto &pat : arm.patterns) {
-          auto pat_t = check_expr(*pat);
+          auto pat_t = check_type_or_value_expr(*pat);
           if (is_error_type(pat_t)) continue;
           if (types_equal(alt, pat_t) || is_assignable_to(pat_t, alt)) {
             covered = true;
