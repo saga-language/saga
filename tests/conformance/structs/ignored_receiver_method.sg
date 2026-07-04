@@ -1,0 +1,17 @@
+// Spec: a receiver may be named `_` when the method does not use it — the
+// method is still bound to the type and callable through an instance
+// (docs/language.md §Methods, ignored identifiers).
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+fn (_ Counter) Tag() string {
+  "counter"
+}
+
+pub fn Main() void {
+  c := Counter{n: 5}
+  io.Println(c.Tag())
+}
