@@ -495,6 +495,7 @@ struct FuncDeclNode {
   bool is_extern;
   std::optional<GenericNode> generic;
   std::optional<ReceiverNode> receiver;
+  std::optional<IdentifierNode> type_name;
   IdentifierNode name;
   SignatureNode signature;
   NodePtr body; // BlockNode; nullptr when `extern`

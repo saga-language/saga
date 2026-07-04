@@ -214,6 +214,10 @@ struct CodeGen {
   /// Compute the mangled link name for a symbol in another package.
   static std::string mangle(const std::string &pkg, const std::string &name);
 
+  /// Link name for a free-function declaration, accounting for `Main`,
+  /// `extern`, and `fn Type.Fn()` type methods (qualified as `Type__Fn`).
+  std::string free_func_link_name(const FuncDeclNode &fn) const;
+
   /// Declare an external function from an imported package.
   /// Returns the LLVM Function*, creating it if needed.
   llvm::Function *declare_import(const std::string &pkg_name,
@@ -547,6 +551,18 @@ private:
   llvm::Value *emit_module_function_call(const CallExprNode &node,
                                          const std::string &method,
                                          const TypePtr &obj_sem);
+  /// Type method call: `Type.Fn(args)` — a receiver-less free function
+  /// namespaced to a struct type. The caller has already confirmed the
+  /// selector object is a type reference.
+  llvm::Value *emit_type_method_call(const CallExprNode &node,
+                                     const std::string &method,
+                                     const TypePtr &obj_sem);
+  /// Lower args (sret, variadic, union-wrap, interface-box, byval) and emit
+  /// the call to an already-resolved free function. Shared by module and
+  /// type-method calls.
+  llvm::Value *emit_resolved_call(llvm::Function *callee,
+                                  const TypePtr &func_type,
+                                  const CallExprNode &node);
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,

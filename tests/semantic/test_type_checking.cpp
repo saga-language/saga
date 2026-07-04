@@ -391,6 +391,53 @@ TEST(TypeCheck, EmptyShapeOmitsBraces) {
 }
 
 // ===========================================================================
+// Type methods (`fn Type.Fn()`)
+// ===========================================================================
+
+TEST(TypeCheck, TypeMethodDeclaredAndCalled) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn Point.Origin() Point { Point{x: 0, y: 0} }\n"
+      "fn f() Point { Point.Origin() }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeMethodUnknownType) {
+  auto r = TC::from("fn Nope.Foo() int { 0 }");
+  EXPECT_TRUE(r.has_err("unknown type 'Nope' for type method"));
+}
+
+TEST(TypeCheck, TypeMethodOnNonStructRejected) {
+  auto r = TC::from(
+      "enum Color {\n  Red\n  Green\n}\n"
+      "fn Color.Foo() int { 0 }");
+  EXPECT_TRUE(r.has_err("only supported on structs"));
+}
+
+TEST(TypeCheck, TypeMethodNoSuchMethod) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn f() int { Point.Missing() }");
+  EXPECT_TRUE(r.has_err("has no type method 'Missing'"));
+}
+
+TEST(TypeCheck, TypeMethodDuplicateRejected) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn Point.Origin() int { 0 }\n"
+      "fn Point.Origin() int { 1 }");
+  EXPECT_TRUE(r.has_err("already declared"));
+}
+
+TEST(TypeCheck, TypeMethodDoesNotShadowType) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn Point.Origin() Point { Point{x: 0, y: 0} }\n"
+      "fn f() Point { Point{x: 1, y: 2} }");
+  EXPECT_TRUE(r.ok());
+}
+
+// ===========================================================================
 // Array literals
 // ===========================================================================
 

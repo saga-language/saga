@@ -870,6 +870,30 @@ fn (f Foo) SetName(value String) Void {
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
 
+### Type bound methods
+
+Methods can be bound directly to a type using selector syntax: 
+`fn Type.Fn(...)`. This namespaces the method to `Type` and called as 
+`Type.Fn(...)`. There is no `self` or `this`, and no field access. It is
+intended to give a constructor-style method for building values of the type.
+
+```
+struct Point {
+  x, y Int
+}
+
+fn Point.Origin() Point { Point{x: 0, y: 0} }
+fn Point.Of(x, y Int) Point { Point{x: x, y: y} }
+
+origin := Point.Origin()
+p := Point.Of(2, 4)
+```
+
+The name is bound to the type, not the enclosing scope, so `Point.Origin` never
+shadows an ordinary function named `Origin`. A bare type name reaches only its
+type methods; `Point.x` is an error, since `x` is an instance field, not a
+member of the type. 
+
 ### Default field values
 
 A field may declare a default with `= expression`. The default must be a

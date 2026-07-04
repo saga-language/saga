@@ -79,6 +79,15 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   if (obj_sem && obj_sem->kind == TypeKind::Module)
     return emit_module_function_call(node, method, obj_sem);
 
+  // ── Type method call: Type.Fn(args) ─────────────────────────────
+  //    A bare type-reference object (SymbolKind::Type) names a receiver-less
+  //    free function, not a value; this must precede the struct field/method
+  //    paths, which would emit the object as a value.
+  if (obj_sem && obj_sem->kind == TypeKind::Struct) {
+    auto *osym = node_symbol(*sel->object);
+    if (osym && osym->kind == SymbolKind::Type)
+      return emit_type_method_call(node, method, obj_sem);
+  }
 
   // ── Struct-field function call: r.handler(args) where `handler` is a
   //    field of function type.  Load the fn pointer from the field, then
@@ -914,6 +923,19 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
 // Per-callee helpers
 // ─────────────────────────────────────────────────────────────────────────
 
+llvm::Value *CodeGen::emit_type_method_call(const CallExprNode &node,
+                                            const std::string &method,
+                                            const TypePtr &obj_sem) {
+  auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
+  auto *callee = module->getFunction(mangle(sinfo.name + "__" + method));
+  if (!callee)
+    return nullptr;
+  auto func_type = semantic_type(*node.callee);
+  if (!func_type || func_type->kind != TypeKind::Func)
+    return nullptr;
+  return emit_resolved_call(callee, func_type, node);
+}
+
 llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
                                                 const std::string &method,
                                                 const TypePtr &obj_sem) {
@@ -932,6 +954,12 @@ llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
   if (!callee)
     return nullptr;
 
+  return emit_resolved_call(callee, func_type, node);
+}
+
+llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
+                                         const TypePtr &func_type,
+                                         const CallExprNode &node) {
   auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
   std::vector<llvm::Value *> args;
 

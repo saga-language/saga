@@ -1,0 +1,11 @@
+// Spec: a type method must name a declared struct type. `Nope` is undeclared,
+// so `fn Nope.Foo()` is rejected (docs/language.md §Type methods).
+import "std/io"
+
+fn Nope.Foo() int {
+  return 0
+}
+
+pub fn Main() void {
+  io.Println(Nope.Foo().String())
+}

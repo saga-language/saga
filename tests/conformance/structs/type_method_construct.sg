@@ -1,0 +1,29 @@
+// Spec: `fn Type.Fn()` declares a type method — a receiver-less free function
+// namespaced to a struct type, called as `Type.Fn(args)` (docs/language.md
+// §Type methods). It has no `self`; it is a constructor-style helper.
+import "std/io"
+
+struct Vec {
+  x int
+  y int
+}
+
+fn Vec.Zero() Vec {
+  return Vec{x: 0, y: 0}
+}
+
+fn Vec.Of(x, y int) Vec {
+  return Vec{x: x, y: y}
+}
+
+fn Vec.Add(a, b Vec) Vec {
+  return Vec{x: a.x + b.x, y: a.y + b.y}
+}
+
+pub fn Main() void {
+  z := Vec.Zero()
+  sum := Vec.Add(Vec.Of(1, 2), Vec.Of(3, 4))
+  io.Println(z.x.String())
+  io.Println(sum.x.String())
+  io.Println(sum.y.String())
+}

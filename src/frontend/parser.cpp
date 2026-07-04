@@ -1696,6 +1696,15 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
+  std::optional<IdentifierNode> type_name;
+  if (!receiver && check(Token::Kind::Dot)) {
+    advance(); // consume "."
+    auto method_start = mark();
+    Token method_tok = expect(Token::Kind::Identifier);
+    type_name = std::move(name);
+    name = IdentifierNode{span_from(method_start), method_tok.literal};
+  }
+
   std::optional<GenericNode> generic = parse_generic_params();
 
   if (receiver) {
@@ -1733,7 +1742,8 @@ NodePtr Parser::parse_func_decl(bool is_public) {
 
   return make_node<FuncDeclNode>(
       span_from(start), is_public, /*is_extern=*/false, std::move(generic),
-      std::move(receiver), std::move(name), std::move(sig), std::move(body));
+      std::move(receiver), std::move(type_name), std::move(name),
+      std::move(sig), std::move(body));
 }
 
 // lift_receiver_type_params — see header. The receiver's *base* (e.g. `Box`)
@@ -1805,7 +1815,8 @@ NodePtr Parser::parse_extern_decl() {
   return make_node<FuncDeclNode>(
       span_from(start), /*is_public=*/false, /*is_extern=*/true,
       std::move(generic), std::optional<ReceiverNode>{},
-      std::move(name), std::move(sig), NodePtr{});
+      std::optional<IdentifierNode>{}, std::move(name), std::move(sig),
+      NodePtr{});
 }
 
 // parse_receiver — Receiver = "(" Identifier Type ")"

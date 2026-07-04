@@ -2370,6 +2370,18 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithReceiver) {
   EXPECT_EQ(rty->name, "User");
 }
 
+TEST_F(ParserDeclCoverageTest, FuncDecl_TypeMethod) {
+  auto r = ParseResult::from("fn Point.Origin() Point { Point{x: 0, y: 0} }\n");
+  EXPECT_TRUE(r.errors.empty());
+  ASSERT_EQ(r.source_node().declarations.size(), 1);
+  auto *fn = r.decl_as<FuncDeclNode>(0);
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->name.name, "Origin");
+  EXPECT_FALSE(fn->receiver.has_value());
+  ASSERT_TRUE(fn->type_name.has_value());
+  EXPECT_EQ(fn->type_name->name, "Point");
+}
+
 TEST_F(ParserDeclCoverageTest, FuncDecl_Variadic) {
   auto r = ParseResult::from("fn Sum(args ...int) int { 0 }\n");
   EXPECT_TRUE(r.errors.empty());

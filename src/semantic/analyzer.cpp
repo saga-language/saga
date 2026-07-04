@@ -730,10 +730,11 @@ void Analyzer::visit_source(const SourceNode &src) {
 void Analyzer::collect_declaration(const Node &node) {
   std::visit(overloaded{
                  [&](const FuncDeclNode &fn) {
-                   // Receiver methods are bound to a type; they're not
-                   // callable as free functions and must not shadow types
-                   // (e.g. Bool.String() must not shadow the String type).
-                   if (!fn.receiver) {
+                   // Receiver methods and type methods (`fn Type.Fn()`) are
+                   // bound to a type; they're not callable as bare free
+                   // functions and must not shadow types (e.g. Bool.String()
+                   // must not shadow the String type).
+                   if (!fn.receiver && !fn.type_name) {
                      auto sym = Symbol::function(std::string(fn.name.name),
                                                  nullptr, fn.name.span,
                                                  fn.is_public);
@@ -1696,6 +1697,9 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
     }
   }
 
+  if (fn.type_name && !fn.receiver)
+    attach_type_method(fn, fn_type);
+
   if (has_generics)
     pop_scope();
 
@@ -1735,6 +1739,55 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         GenericTemplate{&fn, current_scope, std::move(generic_params),
                         is_stdlib};
   }
+}
+
+void Analyzer::attach_type_method(const FuncDeclNode &fn,
+                                  const TypePtr &fn_type) {
+  auto type_sym = lookup(std::string(fn.type_name->name));
+  if (!type_sym || !type_sym->type || type_sym->kind != SymbolKind::Type) {
+    error(fn.type_name->span,
+          std::format("unknown type '{}' for type method", fn.type_name->name));
+    return;
+  }
+  if (type_sym->type->kind != TypeKind::Struct) {
+    error(fn.type_name->span,
+          std::format("type methods are only supported on structs; '{}' is not "
+                      "a struct",
+                      fn.type_name->name));
+    return;
+  }
+  auto &sinfo = std::get<StructTypeInfo>(type_sym->type->detail);
+  if (!sinfo.origin_package.empty() &&
+      sinfo.origin_package != current_package_name()) {
+    error(fn.type_name->span,
+          std::format("cannot bind a type method to type '{}' from another "
+                      "package",
+                      fn.type_name->name));
+    return;
+  }
+  auto &vec = struct_type_methods_[type_sym->type.get()];
+  for (auto &m : vec)
+    if (m.name == std::string(fn.name.name)) {
+      error(fn.name.span,
+            std::format("type method '{}.{}' is already declared",
+                        fn.type_name->name, fn.name.name));
+      return;
+    }
+  vec.push_back({std::string(fn.name.name), fn_type, fn.is_public,
+                 current_package_name()});
+}
+
+TypePtr Analyzer::lookup_struct_type_method(const TypePtr &struct_type,
+                                            const std::string &name) const {
+  if (!struct_type)
+    return nullptr;
+  auto it = struct_type_methods_.find(struct_type.get());
+  if (it == struct_type_methods_.end())
+    return nullptr;
+  for (auto &m : it->second)
+    if (m.name == name)
+      return m.signature;
+  return nullptr;
 }
 
 void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
@@ -3733,6 +3786,22 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     return builtins.error_type;
 
   std::string field_name(node.field.name);
+
+  // A type-name object accesses the type's own members, not an instance's.
+  // For a struct that means its `fn Type.Fn()` type methods; a struct has no
+  // instance fields or receiver methods reachable through the bare type name.
+  if (auto *id = std::get_if<IdentifierNode>(&node.object->data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Type &&
+        obj_type->kind == TypeKind::Struct) {
+      if (auto sig = lookup_struct_type_method(obj_type, field_name))
+        return sig;
+      error(node.field.span,
+            std::format("type {} has no type method '{}'",
+                        type_to_string(obj_type), field_name));
+      return builtins.error_type;
+    }
+  }
 
   if (obj_type->kind == TypeKind::Module) {
     auto &mod = std::get<ModuleTypeInfo>(obj_type->detail);

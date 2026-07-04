@@ -216,6 +216,16 @@ struct Analyzer {
   /// methods vector (e.g. enums). Keyed by raw Type pointer.
   std::unordered_map<const Type *, std::vector<MethodInfo>> type_methods_;
 
+  /// Type methods `fn Type.Fn()` — namespaced free functions (no receiver),
+  /// called as `Type.Fn()`. Keyed by the struct's raw Type pointer.
+  std::unordered_map<const Type *, std::vector<MethodInfo>>
+      struct_type_methods_;
+
+  /// Look up a `fn Type.Fn()` type method on a struct type by name.
+  /// Returns its signature, or nullptr when none matches.
+  TypePtr lookup_struct_type_method(const TypePtr &struct_type,
+                                    const std::string &name) const;
+
   /// Stdlib-defined receiver methods on generic types (Array, Map).
   /// Keyed by TypeKind; signatures use sentinel type-param IDs (9990=T,
   /// 9991=K, 9992=V) matching the builtin_methods convention so that the
@@ -538,6 +548,8 @@ private:
   // that were left nullptr during collection.
   void resolve_declaration(const Node &node);
   void resolve_func_decl(const FuncDeclNode &node);
+  /// Register a `fn Type.Fn()` type method against its struct type.
+  void attach_type_method(const FuncDeclNode &fn, const TypePtr &fn_type);
   void resolve_struct_decl(const StructDeclNode &node);
   void resolve_enum_decl(const EnumDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);

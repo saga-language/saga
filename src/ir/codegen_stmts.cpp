@@ -200,7 +200,7 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
 
   std::string name(fn.name.name);
   bool is_main = (name == "Main");
-  std::string link_name = is_main ? "main" : mangle(name);
+  std::string link_name = free_func_link_name(fn);
 
   auto *func = module->getFunction(link_name);
   if (!func)

@@ -196,6 +196,17 @@ std::string CodeGen::mangle(const std::string &pkg, const std::string &name) {
   return pkg.empty() ? name : (pkg + "__" + name);
 }
 
+std::string CodeGen::free_func_link_name(const FuncDeclNode &fn) const {
+  std::string name(fn.name.name);
+  if (name == "Main")
+    return "main";
+  if (fn.is_extern)
+    return name;
+  if (fn.type_name)
+    return mangle(std::string(fn.type_name->name) + "__" + name);
+  return mangle(name);
+}
+
 llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
                                          const std::string &symbol_name,
                                          const TypePtr &func_type) {

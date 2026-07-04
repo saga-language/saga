@@ -62,11 +62,7 @@ void CodeGen::declare_functions(const SourceNode &src) {
         continue;
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
-      // Extern declarations link to a C symbol of the same name without
-      // package mangling.
-      std::string link_name = is_main      ? "main"
-                              : fn->is_extern ? name
-                                              : mangle(name);
+      std::string link_name = free_func_link_name(*fn);
 
       // Skip if already declared (e.g. by a previous source file).
       if (module->getFunction(link_name))
