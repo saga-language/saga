@@ -2798,6 +2798,24 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return builtins.void_type;
           },
           [&](const NextNode &) -> TypePtr { return builtins.void_type; },
+          [&](const ArrayTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const MapTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const StructTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const UnionTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const FuncTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const GenericTypeAppNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
           [&](const auto &) -> TypePtr { return builtins.error_type; },
       },
       node.data);
@@ -2813,6 +2831,15 @@ static bool is_empty_struct_shape(const TypePtr &t) {
   return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
 }
 
+static bool is_type_expr_node(const Node &node) {
+  return std::holds_alternative<ArrayTypeNode>(node.data) ||
+         std::holds_alternative<MapTypeNode>(node.data) ||
+         std::holds_alternative<StructTypeNode>(node.data) ||
+         std::holds_alternative<UnionTypeNode>(node.data) ||
+         std::holds_alternative<FuncTypeNode>(node.data) ||
+         std::holds_alternative<GenericTypeAppNode>(node.data);
+}
+
 TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
   if (auto *id = std::get_if<IdentifierNode>(&node.data)) {
     auto sym = lookup(std::string(id->name));
@@ -2822,8 +2849,20 @@ TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
       record_type(node, type);
       return type;
     }
+    return check_expr(node);
+  }
+  if (is_type_expr_node(node)) {
+    auto type = resolve_type(node);
+    record_type(node, type);
+    return type;
   }
   return check_expr(node);
+}
+
+TypePtr Analyzer::reject_type_as_value(const Node &node) {
+  error(node.span, std::format("cannot use type '{}' as a value",
+                               type_to_string(resolve_type(node))));
+  return builtins.error_type;
 }
 
 TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
@@ -4530,14 +4569,15 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
     // declared element type; without this, the array-of-error placeholder
     // produced by check_array_literal would fail expect_assignable.
     if (declared_type) {
+      TypePtr underlying = unwrap_alias(declared_type);
       bool empty_arr =
           std::get_if<ArrayLiteralNode>(&(*var.init)->data) != nullptr &&
           std::get<ArrayLiteralNode>((*var.init)->data).elements.empty();
       bool empty_map =
           std::get_if<MapLiteralNode>(&(*var.init)->data) != nullptr &&
           std::get<MapLiteralNode>((*var.init)->data).entries.empty();
-      if ((empty_arr && declared_type->kind == TypeKind::Array) ||
-          (empty_map && declared_type->kind == TypeKind::Map))
+      if ((empty_arr && underlying->kind == TypeKind::Array) ||
+          (empty_map && underlying->kind == TypeKind::Map))
         init_type = declared_type;
     }
     if (declared_type && !is_error_type(init_type)) {

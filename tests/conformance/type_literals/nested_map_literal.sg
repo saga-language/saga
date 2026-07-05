@@ -1,9 +1,9 @@
-// Spec: nested map literal with explicit type prefix.
-// (docs/language.md:609-614)
+// Nested map literals infer their type from entries — no type prefix.
+// (docs/language.md — Type Literals / Map Literal)
 import "std/io"
 
 pub fn Main() void {
-  registry := map{string: map{string: int}}{
+  registry := {
     "production": {"port": 80, "timeout": 30},
     "staging":    {"port": 8080, "timeout": 60}
   }

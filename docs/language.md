@@ -665,14 +665,14 @@ is assigned a zero value by the compiler.
 
 | Type | Zero Value | Values |
 |---|---|---|
-| Bool | false | true, false |
-| Byte | 0 | 42, 255 |
-| Float | 0.0 | 3.14, 0.4e-10 |
-| Int | 0 | 42, 0b1010, 0o775, 0x1f |
-| String | "" | "single-line", """multi-line""" | "{expr}" |
-| Void | | |
-| Type[] | [] | [1, 2, 3] |
-| {Type:Type} | {} | {"key": 42} |
+| bool | false | true, false |
+| byte | 0 | 42, 255 |
+| float | 0.0 | 3.14, 0.4e-10 |
+| int | 0 | 42, 0b1010, 0o775, 0x1f |
+| string | "" | "single-line", """multi-line""", "{expr}" |
+| void | | |
+| array{T} | [] | [1, 2, 3] |
+| map{K:V} | {} | {"key": 42} |
 
 Multiline strings also support interpolation.
 
@@ -680,27 +680,28 @@ In the case where a type might be ambiguous, either it must be made explicit
 or it will be a type error.
 
 ```
-arr1 := [] // invalid, no inferrable type
-arr2 Int[] = [] // valid, type is known
-arr3 Int[] // assigning an empty value isn't actually needed, that's the zero value
-arr4 := [1] // type can be inferred
+arr1 := []              // invalid, no inferrable type
+arr2 array{int} = []    // valid, type is known
+arr3 array{int}         // the empty value is already the zero value; `= []` is redundant
+arr4 := [1]             // type can be inferred
 ```
 
 ### Map Literal
 
+A map literal is a brace-delimited list of `key: value` pairs. Its type is
+inferred from the entries; when there are none, annotate the binding so the
+key/value types are known (a bare `{}`, like `[]`, has no inferrable type).
+
 ```
-// Nested map literal
-registry := {String: {String: Int}}{
+// Type inferred from the entries — nested maps infer transitively
+registry := {
   "production": {"port": 80, "timeout": 30},
   "staging":    {"port": 8080, "timeout": 60}
 }
 
-// Nested literal with map type
-const EnvironmentMap = {String: {String: Int}}
-registry EnvironmentMap = {
-  "production": {"port": 80, "timeout": 30},
-  "staging":    {"port": 8080, "timeout": 60}
-}
+// Empty map — the annotation supplies the key/value types
+type EnvironmentMap = map{string: map{string: int}}
+staging EnvironmentMap = {}
 ```
 
 ## Array and Map Access

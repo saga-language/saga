@@ -637,6 +637,7 @@ private:
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
+  TypePtr reject_type_as_value(const Node &node);
 
   // ── check_selector helpers ──────────────────────────────────────────
   TypePtr resolve_module_selector(const ModuleTypeInfo &mod,

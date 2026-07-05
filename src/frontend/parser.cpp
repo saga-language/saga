@@ -1201,6 +1201,17 @@ NodePtr Parser::parse_func_type() {
 // so this function needs no special-casing.
 NodePtr Parser::parse_expression() { return parse_expr_bp(0); }
 
+// A "{" begins a struct initialiser only after a type expression that can name
+// a struct: an Identifier, a Selector (`pkg.Type`), or an anonymous struct type
+// (`struct{...}`) — grammar.md:208.  After a container type (`array{T}`,
+// `map{K:V}`) it is not an infix, so the stray "{" surfaces as a natural syntax
+// error rather than a malformed struct literal.
+static bool begins_struct_initializer(const Node &lhs) {
+  return std::holds_alternative<IdentifierNode>(lhs.data) ||
+         std::holds_alternative<SelectorNode>(lhs.data) ||
+         std::holds_alternative<StructTypeNode>(lhs.data);
+}
+
 // parse_expr_bp — Pratt core loop.
 //
 // min_bp  the minimum *left* binding power the caller will accept.  Any
@@ -1236,6 +1247,9 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
   while (!is_at_end()) {
     int bp = infix_binding_power(current.kind);
     if (bp <= min_bp)
+      break;
+    if (current.kind == Token::Kind::LeftBrace &&
+        !begins_struct_initializer(*lhs))
       break;
 
     lhs = parse_infix(std::move(lhs), bp);
@@ -3331,33 +3345,6 @@ NodePtr Parser::parse_struct_literal(NodePtr type_expr) {
 
   expect(Token::Kind::LeftBrace);
   skip_terminators();
-
-  // Spec form `{K:V}{"k": v, ...}` is a typed map literal.  Field-assignment
-  // syntax requires identifier-named fields, so when the first key is not
-  // an Identifier we route to a map-literal parse instead.
-  if (!check(Token::Kind::RightBrace) &&
-      !check(Token::Kind::Identifier)) {
-    std::vector<KeyValueNode> entries;
-    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-      auto kv_start = mark();
-      NodePtr key = parse_expr_bp(1);
-      expect(Token::Kind::Colon);
-      NodePtr value = parse_expression();
-      entries.push_back(
-          KeyValueNode{span_from(kv_start), std::move(key), std::move(value)});
-      skip_terminators();
-      if (check(Token::Kind::Comma)) {
-        advance();
-        skip_terminators();
-      }
-    }
-    expect(Token::Kind::RightBrace);
-    // The type prefix becomes the literal's annotation context; we drop
-    // it here because MapLiteralNode has no annotation slot, and the
-    // analyzer will infer the same map type from the entries.
-    (void)type_expr;
-    return make_node<MapLiteralNode>(span_from(start), std::move(entries));
-  }
 
   std::vector<FieldAssignmentNode> fields;
 
