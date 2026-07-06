@@ -1,0 +1,12 @@
+// A constant may read another constant declared earlier, including a
+// whole-value array alias. Both names refer to the same read-only array.
+// (docs/language.md "Compile-time values")
+import "std/io"
+
+const A = [10, 20, 30]
+const B = A
+
+pub fn Main() void {
+  io.Println(B.Size().String())
+  io.Println(B.At(1).String())
+}

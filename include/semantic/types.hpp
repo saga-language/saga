@@ -20,6 +20,12 @@ namespace saga {
 struct Type;
 using TypePtr = std::shared_ptr<Type>;
 
+// A struct field's default value is an AST node owned by the parse tree, which
+// outlives codegen. FieldInfo holds a non-owning pointer; null for fields with
+// no default and for fields loaded from a `.sgi` (cross-package defaults are
+// not yet propagated — see the checklist's `.sgi` const-propagation item).
+struct Node;
+
 // ---------------------------------------------------------------------------
 // TypeKind — coarse classifier for a Type.
 // ---------------------------------------------------------------------------
@@ -132,6 +138,7 @@ struct FieldInfo {
   std::string name;
   TypePtr type;
   bool is_public = false;
+  const Node *default_value = nullptr; // comptime default; null = none
 };
 
 struct MethodInfo {
@@ -185,6 +192,7 @@ struct AliasTypeInfo {
   std::string origin_package;
   TypePtr underlying;                      // the aliased type
   std::vector<MethodInfo> methods;         // user-bound methods on this alias
+  bool structural = false;                 // `type X = T` (transparent) vs `type X T` (nominal)
 };
 
 struct ModuleExport {
@@ -281,7 +289,8 @@ TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound = std::nullopt);
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
                         std::vector<MethodInfo> methods = {},
-                        std::string origin_package = "");
+                        std::string origin_package = "",
+                        bool structural = false);
 TypePtr make_module_type(const std::string &name,
                          const std::string &import_path,
                          std::vector<ModuleExport> exports = {});

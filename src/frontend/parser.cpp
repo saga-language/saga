@@ -840,7 +840,13 @@ FieldSpecNode Parser::parse_field_spec() {
   // ── Type ─────────────────────────────────────────────────────────────
   NodePtr type = parse_type();
 
-  return FieldSpecNode{span_from(start), std::move(names), std::move(type)};
+  // ── Optional default value ───────────────────────────────────────────
+  NodePtr default_value;
+  if (match(Token::Kind::Assignment))
+    default_value = parse_expression();
+
+  return FieldSpecNode{span_from(start), std::move(names), std::move(type),
+                       std::move(default_value)};
 }
 
 // parse_parameter — IdentifierList ParameterType
@@ -1195,6 +1201,17 @@ NodePtr Parser::parse_func_type() {
 // so this function needs no special-casing.
 NodePtr Parser::parse_expression() { return parse_expr_bp(0); }
 
+// A "{" begins a struct initialiser only after a type expression that can name
+// a struct: an Identifier, a Selector (`pkg.Type`), or an anonymous struct type
+// (`struct{...}`) — grammar.md:208.  After a container type (`array{T}`,
+// `map{K:V}`) it is not an infix, so the stray "{" surfaces as a natural syntax
+// error rather than a malformed struct literal.
+static bool begins_struct_initializer(const Node &lhs) {
+  return std::holds_alternative<IdentifierNode>(lhs.data) ||
+         std::holds_alternative<SelectorNode>(lhs.data) ||
+         std::holds_alternative<StructTypeNode>(lhs.data);
+}
+
 // parse_expr_bp — Pratt core loop.
 //
 // min_bp  the minimum *left* binding power the caller will accept.  Any
@@ -1230,6 +1247,9 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
   while (!is_at_end()) {
     int bp = infix_binding_power(current.kind);
     if (bp <= min_bp)
+      break;
+    if (current.kind == Token::Kind::LeftBrace &&
+        !begins_struct_initializer(*lhs))
       break;
 
     lhs = parse_infix(std::move(lhs), bp);
@@ -1568,6 +1588,26 @@ NodePtr Parser::parse_const_decl(bool is_public) {
                                   std::move(type), std::move(value));
 }
 
+// parse_type_decl — TypeDecl = "type" Identifier ( Type | "=" Type )
+//
+// Adjacency (`type ID int`) declares a nominal type with a new identity.
+// An `=` (`type ID = int`) declares a structural alias, transparent to its
+// underlying.
+NodePtr Parser::parse_type_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Type);
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  bool is_structural = match(Token::Kind::Assignment);
+  NodePtr underlying = parse_type();
+
+  return make_node<TypeDeclNode>(span_from(start), is_public, std::move(name),
+                                 is_structural, std::move(underlying));
+}
+
 // parse_enum_decl — EnumDecl = "enum" Identifier "{" EnumField
 //                              { terminal EnumField } "}"
 //
@@ -1670,6 +1710,15 @@ NodePtr Parser::parse_func_decl(bool is_public) {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
+  std::optional<IdentifierNode> type_name;
+  if (!receiver && check(Token::Kind::Dot)) {
+    advance(); // consume "."
+    auto method_start = mark();
+    Token method_tok = expect(Token::Kind::Identifier);
+    type_name = std::move(name);
+    name = IdentifierNode{span_from(method_start), method_tok.literal};
+  }
+
   std::optional<GenericNode> generic = parse_generic_params();
 
   if (receiver) {
@@ -1707,7 +1756,8 @@ NodePtr Parser::parse_func_decl(bool is_public) {
 
   return make_node<FuncDeclNode>(
       span_from(start), is_public, /*is_extern=*/false, std::move(generic),
-      std::move(receiver), std::move(name), std::move(sig), std::move(body));
+      std::move(receiver), std::move(type_name), std::move(name),
+      std::move(sig), std::move(body));
 }
 
 // lift_receiver_type_params — see header. The receiver's *base* (e.g. `Box`)
@@ -1779,7 +1829,8 @@ NodePtr Parser::parse_extern_decl() {
   return make_node<FuncDeclNode>(
       span_from(start), /*is_public=*/false, /*is_extern=*/true,
       std::move(generic), std::optional<ReceiverNode>{},
-      std::move(name), std::move(sig), NodePtr{});
+      std::optional<IdentifierNode>{}, std::move(name), std::move(sig),
+      NodePtr{});
 }
 
 // parse_receiver — Receiver = "(" Identifier Type ")"
@@ -1808,12 +1859,15 @@ std::optional<ReceiverNode> Parser::parse_receiver() {
 }
 
 // parse_interface_decl — InterfaceDecl = "interface" [ Generic ] Identifier
-//                        "{" [ InterfaceField { terminal InterfaceField } ] "}"
+//                        "{" { InterfaceMember terminal } "}"
 //
-// InterfaceField = [ "pub" ] Identifier Signature
+// InterfaceMember = EmbeddedName | MethodSig
+// MethodSig       = [ "pub" ] Identifier Signature
+// EmbeddedName    = Identifier | Selector  (composes the embedded method sets)
 //
-// Fields are separated by terminators (newlines).  The closing "}" may appear
-// on the same line as the last field or on a new line.
+// A member is a method when its name is followed by "(" (the signature), and an
+// embedded interface otherwise.  Members are terminator-separated; the closing
+// "}" may share a line with the last member.
 NodePtr Parser::parse_interface_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Interface);
@@ -1829,21 +1883,27 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
   skip_terminators();
 
   std::vector<InterfaceFieldNode> methods;
+  std::vector<NodePtr> embeds;
 
   while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-    auto field_start = mark();
-    bool field_public = match(Token::Kind::Pub);
+    auto member_start = mark();
+    bool member_public = match(Token::Kind::Pub);
 
-    auto field_name_start = mark();
-    Token field_name_tok = expect(Token::Kind::Identifier);
-    IdentifierNode field_name{span_from(field_name_start),
-                              field_name_tok.literal};
+    auto member_name_start = mark();
+    Token member_name_tok = expect(Token::Kind::Identifier);
 
-    SignatureNode sig = parse_interface_signature();
+    if (member_public || check(Token::Kind::LeftParenthesis)) {
+      IdentifierNode method_name{span_from(member_name_start),
+                                 member_name_tok.literal};
+      SignatureNode sig = parse_interface_signature();
+      methods.push_back(InterfaceFieldNode{span_from(member_start),
+                                           member_public, std::move(method_name),
+                                           std::move(sig)});
+    } else {
+      embeds.push_back(
+          finish_embed_name(member_name_start, member_name_tok.literal));
+    }
 
-    methods.push_back(InterfaceFieldNode{span_from(field_start), field_public,
-                                         std::move(field_name),
-                                         std::move(sig)});
     consume_stray_member_separator("interface");
     skip_terminators();
   }
@@ -1852,7 +1912,7 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
 
   return make_node<InterfaceDeclNode>(span_from(start), is_public,
                                       std::move(generic), std::move(name),
-                                      std::move(methods));
+                                      std::move(methods), std::move(embeds));
 }
 
 // parse_embed_name — EmbedName = Identifier [ "." Identifier ]
@@ -1864,7 +1924,11 @@ NodePtr Parser::parse_interface_decl(bool is_public) {
 NodePtr Parser::parse_embed_name() {
   auto start = mark();
   Token id_tok = expect(Token::Kind::Identifier);
-  NodePtr ident = make_node<IdentifierNode>(span_from(start), id_tok.literal);
+  return finish_embed_name(start, id_tok.literal);
+}
+
+NodePtr Parser::finish_embed_name(size_t start, std::string_view name) {
+  NodePtr ident = make_node<IdentifierNode>(span_from(start), name);
   if (!check(Token::Kind::Dot))
     return ident;
   advance(); // consume "."
@@ -1875,13 +1939,15 @@ NodePtr Parser::parse_embed_name() {
 }
 
 // parse_struct_decl — StructDecl = "struct" [ Generic ] Identifier
-//                     [ "<" EmbedList ] "{" [ StructMember
-//                     { terminal StructMember } ] "}"
+//                     "{" { StructMember terminal } "}"
 //
-// StructMember = [ "pub" ] ( FieldSpec | FuncDecl )
+// StructMember = EmbeddedName | [ "pub" ] FieldSpec
+// EmbeddedName = Identifier | Selector  (mixes in the named struct)
 //
-// Struct members are field specs only.  Methods are bound externally
-// (`fn (x T) M()`), so a non-field token in the body is a syntax error.
+// A member is an embed when a bare (qualified) type name stands alone — its
+// first identifier is followed by a "." (qualified) or a member terminator.
+// Otherwise it is a field (`names Type`). `pub` only prefixes a field; methods
+// are bound externally (`fn (x T) M()`).
 NodePtr Parser::parse_struct_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Struct);
@@ -1899,14 +1965,10 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
 
   std::vector<StructMemberNode> members;
   while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-    auto member_start = mark();
-    bool member_public = match(Token::Kind::Pub);
-
-    FieldSpecNode field = parse_field_spec();
-    NodePtr field_node = make_node<FieldSpecNode>(
-        field.span, std::move(field.names), std::move(field.type));
-    members.push_back(StructMemberNode{span_from(member_start), member_public,
-                                       std::move(field_node)});
+    if (at_struct_embed())
+      embeds.push_back(parse_embed_name());
+    else
+      members.push_back(parse_struct_field());
 
     consume_stray_member_separator("struct");
     skip_terminators();
@@ -1917,6 +1979,36 @@ NodePtr Parser::parse_struct_decl(bool is_public) {
   return make_node<StructDeclNode>(span_from(start), is_public,
                                    std::move(generic), std::move(name),
                                    std::move(embeds), std::move(members));
+}
+
+// A struct member is an embedded name when the current member is a bare
+// (possibly qualified) type name: a non-`pub` Identifier followed by "." or a
+// member terminator. Anything else (a second identifier, a type opener, ",")
+// makes it a `names Type` field.
+bool Parser::at_struct_embed() const {
+  if (!check(Token::Kind::Identifier))
+    return false;
+  switch (peek().kind) {
+  case Token::Kind::Dot:
+  case Token::Kind::Terminator:
+  case Token::Kind::RightBrace:
+  case Token::Kind::Eof:
+    return true;
+  default:
+    return false;
+  }
+}
+
+StructMemberNode Parser::parse_struct_field() {
+  auto member_start = mark();
+  bool member_public = match(Token::Kind::Pub);
+
+  FieldSpecNode field = parse_field_spec();
+  NodePtr field_node = make_node<FieldSpecNode>(
+      field.span, std::move(field.names), std::move(field.type),
+      std::move(field.default_value));
+  return StructMemberNode{span_from(member_start), member_public,
+                          std::move(field_node)};
 }
 
 // ── parse_import_decl ────────────────────────────────────────────────────────
@@ -1954,6 +2046,8 @@ NodePtr Parser::parse_declaration() {
   switch (current.kind) {
   case Token::Kind::Const:
     return parse_const_decl(is_public);
+  case Token::Kind::Type:
+    return parse_type_decl(is_public);
   case Token::Kind::Enum:
     return parse_enum_decl(is_public);
   case Token::Kind::Extern:
@@ -3251,33 +3345,6 @@ NodePtr Parser::parse_struct_literal(NodePtr type_expr) {
 
   expect(Token::Kind::LeftBrace);
   skip_terminators();
-
-  // Spec form `{K:V}{"k": v, ...}` is a typed map literal.  Field-assignment
-  // syntax requires identifier-named fields, so when the first key is not
-  // an Identifier we route to a map-literal parse instead.
-  if (!check(Token::Kind::RightBrace) &&
-      !check(Token::Kind::Identifier)) {
-    std::vector<KeyValueNode> entries;
-    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-      auto kv_start = mark();
-      NodePtr key = parse_expr_bp(1);
-      expect(Token::Kind::Colon);
-      NodePtr value = parse_expression();
-      entries.push_back(
-          KeyValueNode{span_from(kv_start), std::move(key), std::move(value)});
-      skip_terminators();
-      if (check(Token::Kind::Comma)) {
-        advance();
-        skip_terminators();
-      }
-    }
-    expect(Token::Kind::RightBrace);
-    // The type prefix becomes the literal's annotation context; we drop
-    // it here because MapLiteralNode has no annotation slot, and the
-    // analyzer will infer the same map type from the entries.
-    (void)type_expr;
-    return make_node<MapLiteralNode>(span_from(start), std::move(entries));
-  }
 
   std::vector<FieldAssignmentNode> fields;
 

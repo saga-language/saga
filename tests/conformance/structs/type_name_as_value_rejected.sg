@@ -1,0 +1,10 @@
+// Spec: a type name is not a value. A shape with fields cannot omit `{}`;
+// writing the bare type name in value position is a compile error (only an
+// empty shape may omit `{}`). (docs/language.md §Structs)
+struct Point {
+  x, y int
+}
+
+pub fn Main() void {
+  p := Point
+}

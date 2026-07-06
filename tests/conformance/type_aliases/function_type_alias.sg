@@ -1,0 +1,10 @@
+// Function types live behind `type` (a structural alias). A value of the
+// alias type holds a function and is callable through it.
+import "std/io"
+
+type Op = fn(int) int
+
+pub fn Main() void {
+  double Op = fn (n int) int { n * 2 }
+  io.Println(double(21).String())
+}

@@ -196,6 +196,17 @@ std::string CodeGen::mangle(const std::string &pkg, const std::string &name) {
   return pkg.empty() ? name : (pkg + "__" + name);
 }
 
+std::string CodeGen::free_func_link_name(const FuncDeclNode &fn) const {
+  std::string name(fn.name.name);
+  if (name == "Main")
+    return "main";
+  if (fn.is_extern)
+    return name;
+  if (fn.type_name)
+    return mangle(std::string(fn.type_name->name) + "__" + name);
+  return mangle(name);
+}
+
 llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
                                          const std::string &symbol_name,
                                          const TypePtr &func_type) {
@@ -277,6 +288,14 @@ void CodeGen::init_types() {
       context,
       {llvm::PointerType::getUnqual(context), i64_type, i64_type},
       "saga_runtime_string");
+
+  // saga_runtime_array = { ptr, i64, i64, i64, i64 } — data, len, cap,
+  // elem_size, refcount
+  array_type = llvm::StructType::create(
+      context,
+      {llvm::PointerType::getUnqual(context), i64_type, i64_type, i64_type,
+       i64_type},
+      "saga_runtime_array");
 
   // Interface fat pointer: { ptr data, ptr vtable }
   auto *ptr_ty = llvm::PointerType::getUnqual(context);
@@ -413,55 +432,6 @@ void CodeGen::emit(const Node &root) {
           [&](const auto &) {},
       },
       root.data);
-
-  if (init_function_needed)
-    emit_init_function();
-}
-
-llvm::Function *CodeGen::declare_void_init(const std::string &link_name) {
-  if (auto *existing = module->getFunction(link_name))
-    return existing;
-  auto *fn_type = llvm::FunctionType::get(void_ll_type, {}, /*isVarArg=*/false);
-  return llvm::Function::Create(
-      fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
-}
-
-void CodeGen::emit_init_calls() {
-  for (auto &sym : imported_init_symbols)
-    builder.CreateCall(declare_void_init(sym), {});
-  if (init_function_needed)
-    builder.CreateCall(declare_void_init(package_name + "__init__"), {});
-}
-
-void CodeGen::emit_init_function() {
-  // Symbol convention: `<pkg>__init__`.  Built directly rather than via
-  // mangle() because mangle would inject a second `__` separator.  May
-  // already exist as a forward-declaration created by the Main wrapper.
-  llvm::Function *func =
-      declare_void_init(package_name + "__init__");
-  if (!func->empty())
-    return;
-
-  auto *entry = llvm::BasicBlock::Create(context, "entry", func);
-  builder.SetInsertPoint(entry);
-
-  locals.clear();
-  managed_locals.clear();
-  current_func_is_main = false;
-
-  for (const ConstDeclNode *node : deferred_const_inits_) {
-    std::string global_name = mangle(std::string(node->name.name));
-    auto *gv = module->getGlobalVariable(global_name);
-    if (!gv)
-      continue;
-    auto *val = emit_expr(*node->value);
-    if (!val)
-      continue;
-    builder.CreateStore(val, gv);
-  }
-
-  builder.CreateRetVoid();
-  llvm::verifyFunction(*func);
 }
 
 // ===========================================================================
@@ -530,10 +500,7 @@ void CodeGen::emit_package(const PackageNode &pkg) {
     declare_intrinsic_methods(s);
   }
 
-  // Pass 2b: emit package-level constants across all files.  Must run
-  // before any function body so `init_function_needed` is set when the
-  // Main wrapper is generated (Main may live in a different source file
-  // than the collection consts that need a runtime initialiser).
+  // Pass 2b: emit package-level constants across all files.
   for (auto &src : pkg.sources) {
     auto &s = std::get<SourceNode>(src->data);
     for (auto &decl : s.declarations) {

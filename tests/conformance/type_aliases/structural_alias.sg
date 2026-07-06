@@ -1,0 +1,14 @@
+// A structural alias (`type X = T`) is transparent: it is the same type as
+// its underlying, interchangeable in both directions.
+import "std/io"
+
+type MyInt = int
+
+fn TakeInt(n int) void {
+  io.Println(n.String())
+}
+
+pub fn Main() void {
+  x MyInt = 5 // int flows into a MyInt slot
+  TakeInt(x)  // a MyInt flows into an int parameter — transparent
+}

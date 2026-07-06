@@ -1,0 +1,17 @@
+// Spec: a shape with no fields may omit `{}` when the type is known
+// (docs/language.md §Default field values / empty-shape omission).
+// `Marker` constructs the same value whether written `Marker` or `Marker{}`.
+import "std/io"
+
+struct Marker {}
+
+fn (m Marker) Label() string { "marker" }
+
+fn describe(m Marker) string { m.Label() }
+
+pub fn Main() void {
+  a := Marker
+  b := Marker{}
+  io.Println(a.Label())
+  io.Println(describe(b))
+}

@@ -161,11 +161,14 @@ struct FuncTypeNode {
   NodePtr return_type;         // nullptr = Void
 };
 
-// FieldSpec = IdentifierList Type  (one field declaration in a struct)
+// FieldSpec = IdentifierList Type [ "=" Expression ]  (one struct field
+// declaration; the optional default is a comptime expression shared by every
+// name in the list)
 struct FieldSpecNode {
   Span span;
   IdentifierListNode names;
   NodePtr type;
+  NodePtr default_value; // nullptr when no `= Expression` is present
 };
 
 // StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
@@ -451,6 +454,15 @@ struct ConstDeclNode {
   NodePtr value;               // initialiser (required)
 };
 
+// TypeDecl = [ "pub" ] "type" Identifier ( Type | "=" Type )
+struct TypeDeclNode {
+  Span span;
+  bool is_public;
+  IdentifierNode name;
+  bool is_structural; // `= Type` (transparent) vs adjacency (nominal)
+  NodePtr underlying; // the aliased/underlying type
+};
+
 // EnumField = Identifier [ "{" Identifier ":" Expression { "," ... } "}" ]
 struct EnumFieldNode {
   Span span;
@@ -483,6 +495,7 @@ struct FuncDeclNode {
   bool is_extern;
   std::optional<GenericNode> generic;
   std::optional<ReceiverNode> receiver;
+  std::optional<IdentifierNode> type_name;
   IdentifierNode name;
   SignatureNode signature;
   NodePtr body; // BlockNode; nullptr when `extern`
@@ -502,14 +515,17 @@ struct InterfaceFieldNode {
   SignatureNode signature;
 };
 
-// InterfaceDecl = [ "pub" ] "interface" [ Generic ] Identifier "{" [
-// InterfaceField ... ] "}"
+// InterfaceDecl  = [ "pub" ] "interface" [ Generic ] Identifier "{"
+//                  { InterfaceMember terminal } "}"
+// InterfaceMember = EmbeddedName | MethodSig
+// EmbeddedName    = Identifier | Selector
 struct InterfaceDeclNode {
   Span span;
   bool is_public;
   std::optional<GenericNode> generic;
   IdentifierNode name;
   std::vector<InterfaceFieldNode> methods;
+  std::vector<NodePtr> embeds; // IdentifierNode or SelectorNode
 };
 
 // StructMember = [ "pub" ] FieldSpec
@@ -597,7 +613,7 @@ struct Node {
     ReturnNode,     BreakNode,       NextNode,
 
     // --- Declarations ---
-    ConstDeclNode,
+    ConstDeclNode,       TypeDeclNode,
     EnumDeclNode,        EnumFieldNode,
     FuncDeclNode,        ReceiverNode,        SignatureNode,
     ImportDeclNode,

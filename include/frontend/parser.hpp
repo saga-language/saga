@@ -207,12 +207,15 @@ private:
 
   NodePtr parse_declaration();
   NodePtr parse_const_decl(bool is_public);
+  NodePtr parse_type_decl(bool is_public);
   NodePtr parse_enum_decl(bool is_public);
   NodePtr parse_extern_decl();
   NodePtr parse_func_decl(bool is_public);
   NodePtr parse_import_decl();
   NodePtr parse_interface_decl(bool is_public);
   NodePtr parse_struct_decl(bool is_public);
+  bool at_struct_embed() const;
+  StructMemberNode parse_struct_field();
 
   // ── Declaration sub-helpers ──────────────────────────────────────────
 
@@ -236,6 +239,11 @@ private:
   /// Returns IdentifierNode for "Foo" or SelectorNode for "lib.Foo".
   /// Generic-typed embeds are not yet permitted.
   NodePtr parse_embed_name();
+
+  /// Build an embedded name from an already-consumed leading identifier,
+  /// extending it into a Selector when a "." follows. Shared by the struct
+  /// embed clause and the interface member parser.
+  NodePtr finish_embed_name(size_t start, std::string_view name);
 
   // ── Module / Program ─────────────────────────────────────────────────
 

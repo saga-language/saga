@@ -129,6 +129,8 @@ void dump_field_spec(const FieldSpecNode &n, std::ostream &os, int indent) {
   os << pad(indent) << "FieldSpecNode\n";
   dump_identifier_list(n.names, os, indent + 1);
   dump_ptr(n.type, os, indent + 1);
+  if (n.default_value)
+    dump_ptr(n.default_value, os, indent + 1);
 }
 
 void dump_field_assignment(const FieldAssignmentNode &n, std::ostream &os,
@@ -469,6 +471,12 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_opt_ptr(n.type, os, c);
             dump_ptr(n.value, os, c);
           },
+          [&](const TypeDeclNode &n) {
+            os << pad(indent) << "TypeDeclNode" << (n.is_public ? " pub" : "")
+               << (n.is_structural ? " structural" : " nominal") << " \""
+               << n.name.name << "\"\n";
+            dump_ptr(n.underlying, os, c);
+          },
           [&](const EnumFieldNode &n) { dump_enum_field(n, os, indent); },
           [&](const EnumDeclNode &n) {
             os << pad(indent) << "EnumDeclNode" << (n.is_public ? " pub" : "")
@@ -498,6 +506,8 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             os << pad(indent) << "InterfaceDeclNode"
                << (n.is_public ? " pub" : "") << " \"" << n.name.name << "\"\n";
             dump_opt_generic(n.generic, os, c);
+            for (const auto &e : n.embeds)
+              dump_ptr(e, os, c);
             for (const auto &m : n.methods)
               dump_interface_field(m, os, c);
           },

@@ -82,43 +82,54 @@ Constants are defined with top-level statements. With the exception of `Main`,
 constants are not required to use CamelCase but that is the preferred 
 convension.
 
-Constants are immutable. They can be used to create: type-aliases, value
-constants, and named imports. A value constant can be any simple expression
-that can be resolve at compile time.
+Constants are immutable. They carry values and named imports. A value constant
+can be any simple expression that can be resolved at compile time.
 
 ```
-const MyType = Int
 const Pi = 3.14159
 const MaxSize = 2 * 1024 * 1024 // 2MB
 const Math = import "std/math"
 ```
 
-Mutation of global objects is prohibited.
-
-## Initialisation
-
-Constants whose value can be represented as a single compile-time literal —
-scalars, strings, struct literals built from such values — are stored
-directly in the binary. Constants whose value requires allocation at
-runtime — arrays and maps — are populated before `Main` runs.
+A constant is immutable: its storage is never written after the program
+starts. A method that mutates in place — `Pop` on an array — is rejected
+on a constant. Value-returning methods such as `Append`, `Insert`, and
+`Set` do not write through the receiver; they return a new array and leave
+the constant unchanged, so they are allowed:
 
 ```
-pub const Pi Float = 3.14159           // baked into the binary
-pub const Primes Int[] = [2, 3, 5, 7]  // populated before Main
-pub const Ports {String: Int} = {"http": 80, "https": 443}
+const Primes = [2, 3, 5]
+
+pub fn Main() void {
+  bigger := Primes.Append(7)  // Primes is still [2, 3, 5]
+}
 ```
 
-When a binary imports another package, the imported package's
-initialisation runs first. The order is determined by the import graph: a
-package's constants are guaranteed to be initialised before any package
-that imports it, transitively.
+## Compile-time values
 
-Within a single package, files are processed in alphanumeric order, and
-declarations within a file are processed in textual order. A constant
-initialiser may read another constant declared earlier — earlier in the
-same file, earlier within the package's file order, or in any imported
-package. Reading a constant declared later in the same package is a
-compile-time error.
+A constant's value is computed at compile time and baked into the binary.
+There is no initialisation phase and no code runs before `Main`. This
+covers scalars, strings, struct literals, and arrays whose elements are
+themselves constant:
+
+```
+pub const Pi float = 3.14159
+pub const Primes array{int} = [2, 3, 5, 7]
+```
+
+Constant arrays live in read-only data with a sentinel reference count, so
+reading one allocates nothing. The first method that needs a mutable copy
+(`Append`, `Insert`, `Set`) clones the array once; the original stays in
+read-only data.
+
+Maps cannot be constants — building one requires hashing and allocation at
+runtime — so a map constant is a compile-time error. Expose a function that
+returns a freshly built map instead.
+
+A constant initialiser may read another constant declared earlier — earlier
+in the same file, earlier within the package's file order, or in any
+imported package. Reading a constant declared later in the same package is
+a compile-time error.
 
 Saga does not provide a user-defined package initialiser (an `init`
 function or block that runs implicitly on import). The omission is
@@ -134,14 +145,8 @@ program.
 ```
 // Don't reach for a hidden init. Expose what setup needs to happen
 // and let the caller decide when.
-pub fn Connect(url String) Connection { ... }
+pub fn Connect(url string) Connection { ... }
 ```
-
-Saga today does not run any of its own code before `Main` — no
-spawn-driven work, no signal handlers, no threads. A package's
-initialisation can therefore allocate freely without guarding against
-concurrent access. This is a property of the current runtime; it is
-documented here because the initialisation model relies on it.
 
 ## Visibility
 
@@ -406,13 +411,13 @@ may do so using privileged `intrinsic_*` operations.
 
 ### Function types
 
-Function types are just signatures.
+Function types are just signatures. Name one with a structural `type` alias.
 
 ```
-const CallbackFunc = fn(Int) Int
+type CallbackFunc = fn(int) int
 
 struct MyStruct {
-  action fn(Int) Int
+  action CallbackFunc
 }
 ```
 
@@ -625,28 +630,32 @@ the offending type.
 
 ## Type Aliases
 
-A type may be aliased to a new identifier. Aliases are constants and therefore
-are defined with the `const` keyword.
+The `type` keyword is used to define a new type. Adjacency creates a 
+**nominal** type; assignment (`=`) creates a **structural** alias.
 
-Aliases are not shadows of the original type, they are unique types, but they 
-inherit all the methods from the aliased type. This can make for a powerful
-tool where all types are open for extension but closed for modification. Like 
-structs, methods can be bound to any type provided it is within the same file
-scope. You can't, for instance, bind methods to types declared in other files
-(called monkey-patching).
+A **nominal** type (`type ID T`) is a new, distinct type. It is not
+interchangeable with its underlying type but it inherits the underlying's
+methods and operators, and you can add or shadow methods of your own. Like
+structs, methods can only be bound within the same file scope (no 
+monkey-patching across files). Conversion methods can be used to extract
+the original, underlying type.
 
 ```
-const UserID = Int  // UserID is a unique type
-i := UserID.Int() // to convert and extract the underlying integer
+type UserID int            // a new, distinct type
+i := id.Int()              // convert/extract the underlying integer
+io.Println(id.String())    // inherits int's String()
 
-const MyArray = MyArray[] // MyArray is an array of itself, infinitely
-size := MyArray.Size()  // Inherits Size() from the Array type.
+pub fn (u UserID) Validate() bool { ... }  // add behaviour
+```
 
-const MyPoint = math.Point
-// The new type inherits the methods from the original type
-p := MyPoint{x: 1, y: 2}.Add(math.Point{x: 3, y: 4})
-// ...but can also be extended with new methods
-pub fn (p MyPoint) Draw() Void { ... }
+A **structural** alias (`type ID = T`) is a transparent second name for the
+same type. It is fully interchangeable with its underlying type in both
+directions, and it cannot carry methods of its own. Function types are named
+this way.
+
+```
+type Identifier = int | string   // mirror: same type, another name
+type Callback   = fn(int) int    // define function types
 ```
 
 ## Type Literals
@@ -656,14 +665,14 @@ is assigned a zero value by the compiler.
 
 | Type | Zero Value | Values |
 |---|---|---|
-| Bool | false | true, false |
-| Byte | 0 | 42, 255 |
-| Float | 0.0 | 3.14, 0.4e-10 |
-| Int | 0 | 42, 0b1010, 0o775, 0x1f |
-| String | "" | "single-line", """multi-line""" | "{expr}" |
-| Void | | |
-| Type[] | [] | [1, 2, 3] |
-| {Type:Type} | {} | {"key": 42} |
+| bool | false | true, false |
+| byte | 0 | 42, 255 |
+| float | 0.0 | 3.14, 0.4e-10 |
+| int | 0 | 42, 0b1010, 0o775, 0x1f |
+| string | "" | "single-line", """multi-line""", "{expr}" |
+| void | | |
+| array{T} | [] | [1, 2, 3] |
+| map{K:V} | {} | {"key": 42} |
 
 Multiline strings also support interpolation.
 
@@ -671,27 +680,28 @@ In the case where a type might be ambiguous, either it must be made explicit
 or it will be a type error.
 
 ```
-arr1 := [] // invalid, no inferrable type
-arr2 Int[] = [] // valid, type is known
-arr3 Int[] // assigning an empty value isn't actually needed, that's the zero value
-arr4 := [1] // type can be inferred
+arr1 := []              // invalid, no inferrable type
+arr2 array{int} = []    // valid, type is known
+arr3 array{int}         // the empty value is already the zero value; `= []` is redundant
+arr4 := [1]             // type can be inferred
 ```
 
 ### Map Literal
 
+A map literal is a brace-delimited list of `key: value` pairs. Its type is
+inferred from the entries; when there are none, annotate the binding so the
+key/value types are known (a bare `{}`, like `[]`, has no inferrable type).
+
 ```
-// Nested map literal
-registry := {String: {String: Int}}{
+// Type inferred from the entries — nested maps infer transitively
+registry := {
   "production": {"port": 80, "timeout": 30},
   "staging":    {"port": 8080, "timeout": 60}
 }
 
-// Nested literal with map type
-const EnvironmentMap = {String: {String: Int}}
-registry EnvironmentMap = {
-  "production": {"port": 80, "timeout": 30},
-  "staging":    {"port": 8080, "timeout": 60}
-}
+// Empty map — the annotation supplies the key/value types
+type EnvironmentMap = map{string: map{string: int}}
+staging EnvironmentMap = {}
 ```
 
 ## Array and Map Access
@@ -861,6 +871,55 @@ fn (f Foo) SetName(value String) Void {
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
 
+### Type bound methods
+
+Methods can be bound directly to a type using selector syntax: 
+`fn Type.Fn(...)`. This namespaces the method to `Type` and called as 
+`Type.Fn(...)`. There is no `self` or `this`, and no field access. It is
+intended to give a constructor-style method for building values of the type.
+
+```
+struct Point {
+  x, y Int
+}
+
+fn Point.Origin() Point { Point{x: 0, y: 0} }
+fn Point.Of(x, y Int) Point { Point{x: x, y: y} }
+
+origin := Point.Origin()
+p := Point.Of(2, 4)
+```
+
+The name is bound to the type, not the enclosing scope, so `Point.Origin` never
+shadows an ordinary function named `Origin`. A bare type name reaches only its
+type methods; `Point.x` is an error, since `x` is an instance field, not a
+member of the type. 
+
+### Default field values
+
+A field may declare a default with `= expression`. The default must be a
+compile-time value (the same expressions allowed for a `const`), and it must be
+assignable to the field's type. A list of names shares one default.
+
+```
+struct Config {
+  timeout int = 30
+  name string = "anon"
+  active bool = true
+  retries int            // no default — zero value when omitted
+}
+```
+
+When a struct literal omits a field, its default is applied; a field with no
+default takes its zero value. A value given in the literal overrides the
+default. Defaults from an embedded struct are applied too, so embedding a
+struct with defaults keeps those defaults.
+
+```
+Config{}                 // timeout 30, name "anon", active true, retries 0
+Config{timeout: 5}       // timeout 5,  name "anon", active true, retries 0
+```
+
 ### Struct literals
 
 To initialize a struct, its literal form must be used. The structs Identifier,
@@ -903,122 +962,157 @@ data := json.Parse(raw, Payload)
 value := data.optional or { "unknown" }
 ```
 
-### Structural embedding (mix-ins)
+### Struct embedding (mix-ins)
 
-Structs can be merged, or "mixed in" to each other. The syntax will look
-familiar to those used to inheritance but it's important to note this is
-NOT inheritance.
+A struct may be embedding inside another struct. Unlike class inheritance, a
+struct that is embedded passes is members and methods on to the child struct
+but does not create a parent-child hierarchial inheritance.
 
-The "child" struct, the struct receiving the embedding, inherits all the
-fields and methods of the other struct. The embedded struct can not access
-any fields or methods outside of its own scope but the child struct can
-access all the fields and methods of the embedded struct. This is similar
-to onion architecture. Things on the outside can see in but things on the
-inside can't see out.
+The "child" struct, the one receiving the embedding, gains all the fields and
+methods of the embedded struct as if they were its own. The embedded struct
+cannot reach out to the child; the child can reach in. This is like onion
+architecture: the outside can see in, the inside can't see out.
 
 ```
 struct Timestamps {
-    created_at Int
-    updated_at Int
-    
-    pub fn Touch() Void {
-        updated_at = time.Now() // Implicit scope access!
-    }
+  created int
+  updated int
 }
 
-// this is NOT inheritance
-struct User < Timestamps {
-    name String
+// A method bound to Timestamps, with a named receiver.
+pub fn (t Timestamps) Age() int { t.updated - t.created }
+
+// This is NOT inheritance — User embeds Timestamps.
+struct User {
+  Timestamps
+  name string
 }
 
-u := User{name: "Alice"}
-u.Touch() // Feels like a native method, acts on 'updated_at' inside 'User'
+u := User{name: "Alice", created: 100, updated: 175}
+u.created   // promoted field
+u.Age()     // promoted method
 ```
 
-Structs that do not have fields and only methods become Traits. That doesn't
-really do anything but make it a nice way to refer to them. That's it.
+A promoted method still runs against the embedded struct's own fields; calling
+it through the child simply finds the embedded value to act on. The embedded
+struct keeps its own memory inside the child.
 
-Methods in a parent struct can shadow those of a mix-in. If you need to access
-the embedded struct's method, you can call it by its struct name.
+Embedding is transitive: if `User` embeds `Base` and `Base` embeds `Timestamps`,
+then `Timestamps`' fields and methods are promoted all the way up to `User`. A
+field or method shadows embedded methods of any depth.
+
+Structs with only methods and no fields make useful mix-ins of pure behaviour.
+
+A child member shadows an embedded member of the same name: if the child
+declares a field or method whose name an embedded struct also uses, the child's
+wins for direct access.
 
 ```
-struct user < Timestamps {
-  name String
- 
-  // making this private "erases" the visibility from this struct's available
-  // symbols
-  fn Touch() Void { Timestamps.Touch() } 
+struct Base {}
+pub fn (b Base) Kind() string { "base" }
+
+struct Child {
+  Base
 }
+pub fn (c Child) Kind() string { "child" }
+
+c := Child{}
+c.Kind() // returns "child" because the child's method shadows the embedded one
 ```
-
-The fields and methods are merged into the child's symbol table. If a mixin's
-methods are called, it's accessing the child's fields but thinks they're its
-own fields. That doesn't make the mixin's fields disappear. If a child defines
-a field or method that shared the same name as
-an embedded struct's, then the child erases the mixed in version. The mixin
-can still "see" its original fields can can still access them. For the child
-to access the embedded version, it must use a selector.
-
-The embedded struct has its own memory so that when erasure from the embedded
-target happens, it can still access its own fields. The merge is symbolic and
-the field is not actually erased.
 
 ```
 struct Greeter {
-    pub fn Greet() String {
+    pub fn Greet() string {
       "Hello!"
     }
 }
 
 // Note that the visibility and return type are erased by the new definition
 struct Different < Greeter {
-    fn Greet() Void {
+    fn Greet() void {
         io.Println(Greeter.Greet()) // ...but can still access the original
     }
 }
-
-u := User{name: "Alice"}
-u.Touch() // Feels like a native method, acts on 'updated_at' inside 'User'
 ```
+
+### Struct-shape literals
+
+A shape with no fields may omit the `{}` when the type is known. The bare type
+name and the empty literal are equivalent:
+
+```
+struct Marker {}
+
+a := Marker    // same as Marker{}
+b := Marker{}
+```
+
+This omission is the only case where a bare type name stands for a value. A type
+name used as a value anywhere else — including a shape that has fields — is a
+compile error; use the literal form instead.
 
 ## Interfaces
 
-An interface is a list of one or more methods that a type must implement in
-order to match the interface. Interface matching is implicit. 
-
-Interfaces are intended to be small and composible with union types.
+Interfaces describe a set of desired behaviour. An interface is a list of 
+methods that a type must implement in order to match the interface. Interface
+matching is implicit. A type satisfies an interface simply by having every
+method.
 
 ```
 interface Reader {
-  Read() String
+  Read() string
 }
 interface Writer {
-  Write(String) Void
+  Write(s string) void
 }
 interface Closer {
-  Close() Void
+  Close() void
 }
-
-const ReadWriter = Reader | Writer
-const ReadCloser = Reader | Closer
-const WriteCloser = Writer | Closer
-const ReadWriteCloser = Reader | Writer | Closer
 ```
 
-Interfaces are not narrowed by a union, they are widened. Using the above
-example, a `ReadWriteCloser` expects all three methods be implemented in
-order to match it. On the other hand, an interface can be narrowed 
-provided the receiving interface is a subset of the wider interface.
+An interface must declare at least one method. An empty interface would
+describe no behaviour and is a compile error.
+
+### Composing interfaces
+
+Interfaces are intended to be small and composed. An interface composes others
+by *embedding* them. Including an interface as a member merges its whole method
+set into the composed interface.
 
 ```
-// A File return by Open satisfies the interface because it implements a
-// Read, Write, and Close method.
-f ReadWriteCloser = io.Open("file.txt")
+interface ReadWriter {
+  Reader
+  Writer
+}
+interface ReadWriteCloser {
+  ReadWriter
+  Closer
+}
+```
 
-// Since ReadCloser is a subset of ReadWriteCloser, they are compatible.
-// Both Read and Close are implemented.
-fn ReadAndClose(f ReadCloser) { ... }
-ReadAndClose(f) // valid because ReadCloser is a subset of the wider interface
+A value matches `ReadWriter` only if it implements both `Read` and `Write`;
+`ReadWriteCloser` requires all three. Embedding is transitive (a composed
+interface carries methods from interfaces embedded several levels deep) and
+order-independent. An embedded interface may be qualified by its package
+(`io.Reader`).
+
+Method names must be unique. Redefining a method with the same shape is
+accepted but redefining a method with a different shape is an error. This
+allows composing interfaces that might have overlap.
+
+For example, combining a ReadWriter and ReadCloser to make a
+ReadWriteCloser would be safe provided the Read() shapes are identical.
+
+```
+interface NewReader {
+  Reader
+  Read() string       // Okay, same shape
+  Read() string | int // Error, different shape
+}
+interface ReadWriteCloser {
+  ReadWriter
+  ReadCloser // Okay, provided Read() has the same shape as ReadWriter
+}
 ```
 
 ## Enums

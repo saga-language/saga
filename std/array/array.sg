@@ -2,11 +2,11 @@
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
 extern fn saga_array_size<T>(a array{T}) int
-extern fn saga_array_push<T>(a array{T}, elem T) void
+extern fn saga_array_append<T>(a array{T}, elem T) array{T}
 extern fn saga_array_at<T>(a array{T}, index int) T
-extern fn saga_array_insert<T>(a array{T}, elem T, index int) void
+extern fn saga_array_insert<T>(a array{T}, elem T, index int) array{T}
 extern fn saga_array_pop<T>(a array{T}) T
-extern fn saga_array_set<T>(a array{T}, index int, elem T) void
+extern fn saga_array_set<T>(a array{T}, index int, elem T) array{T}
 extern fn saga_array_equals<T>(a array{T}, other array{T}) bool
 extern fn saga_array_find<T>(a array{T}, elem T) int | error
 
@@ -14,16 +14,15 @@ pub fn (a array{T}) Size() int {
   saga_array_size(a)
 }
 
-pub fn (a array{T}) Push(elem T) T {
-  saga_array_push(a, elem)
-  elem
+pub fn (a array{T}) Append(elem T) array{T} {
+  saga_array_append(a, elem)
 }
 
 pub fn (a array{T}) At(index int) T {
   saga_array_at(a, index)
 }
 
-pub fn (a array{T}) Insert(elem T, index int) void {
+pub fn (a array{T}) Insert(elem T, index int) array{T} {
   saga_array_insert(a, elem, index)
 }
 
@@ -31,7 +30,7 @@ pub fn (a array{T}) Pop() T {
   saga_array_pop(a)
 }
 
-pub fn (a array{T}) Set(index int, elem T) void {
+pub fn (a array{T}) Set(index int, elem T) array{T} {
   saga_array_set(a, index, elem)
 }
 

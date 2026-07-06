@@ -1,0 +1,11 @@
+// A container type followed by a `{...}` initializer is not a struct literal:
+// grammar.md:208 limits the struct-initializer prefix to an Identifier,
+// Selector, or `struct{...}`. `array{T}{...}` / `map{K:V}{...}` are rejected —
+// arrays use `[...]` and maps use a bare `{...}`, each with a type annotation
+// when the element type can't be inferred.
+import "std/io"
+
+pub fn Main() void {
+  a := array{int}{}
+  io.Println(a.Size().String())
+}

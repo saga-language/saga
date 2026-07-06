@@ -1,0 +1,17 @@
+// Spec: an ignored `_` receiver cannot be read in the body — `_` is the
+// ignored identifier and accessing it is an error (docs/language.md
+// §Identifiers, ignored variables).
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+fn (_ Counter) Peek() int {
+  _.n
+}
+
+pub fn Main() void {
+  c := Counter{n: 5}
+  io.Println(c.Peek().String())
+}

@@ -1,0 +1,11 @@
+// Nested map literals infer their type from entries — no type prefix.
+// (docs/language.md — Type Literals / Map Literal)
+import "std/io"
+
+pub fn Main() void {
+  registry := {
+    "production": {"port": 80, "timeout": 30},
+    "staging":    {"port": 8080, "timeout": 60}
+  }
+  io.Println(registry.Size().String())
+}

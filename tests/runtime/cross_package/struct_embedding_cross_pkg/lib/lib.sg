@@ -1,4 +1,4 @@
 pub struct Timestamps {
-  created Int
-  updated Int
+  created int
+  updated int
 }

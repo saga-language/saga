@@ -20,7 +20,6 @@ endfunction()
 
 cross_pkg_test(const_scalar)
 cross_pkg_test(const_array)
-cross_pkg_test(const_map)
 cross_pkg_test(fn_scalar_params)
 cross_pkg_test(fn_struct_param)
 cross_pkg_test(fn_struct_return)
@@ -28,10 +27,7 @@ cross_pkg_test(struct_literal)
 cross_pkg_test(struct_method)
 cross_pkg_test(struct_field_method)
 cross_pkg_test(struct_in_collection)
-# Deferred to Phase 2: struct embedding (`struct User < lib.Timestamps`). The
-# `<` now parses as generics and embedding is unimplemented; case kept for
-# re-authoring with the eventual non-`<` embedding syntax.
-# cross_pkg_test(struct_embedding_cross_pkg)
+cross_pkg_test(struct_embedding_cross_pkg)
 cross_pkg_test(enum_basic)
 cross_pkg_test(enum_with_fields)
 cross_pkg_test(interface_decl_and_impl)

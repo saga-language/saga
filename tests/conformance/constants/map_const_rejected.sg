@@ -1,0 +1,5 @@
+// Spec: maps require runtime hashmap construction, so they cannot be
+// declared `const`. (proposal §Const)
+const Ports map{string: int} = {"http": 80, "https": 443}
+
+pub fn Main() void {}

@@ -216,6 +216,16 @@ struct Analyzer {
   /// methods vector (e.g. enums). Keyed by raw Type pointer.
   std::unordered_map<const Type *, std::vector<MethodInfo>> type_methods_;
 
+  /// Type methods `fn Type.Fn()` — namespaced free functions (no receiver),
+  /// called as `Type.Fn()`. Keyed by the struct's raw Type pointer.
+  std::unordered_map<const Type *, std::vector<MethodInfo>>
+      struct_type_methods_;
+
+  /// Look up a `fn Type.Fn()` type method on a struct type by name.
+  /// Returns its signature, or nullptr when none matches.
+  TypePtr lookup_struct_type_method(const TypePtr &struct_type,
+                                    const std::string &name) const;
+
   /// Stdlib-defined receiver methods on generic types (Array, Map).
   /// Keyed by TypeKind; signatures use sentinel type-param IDs (9990=T,
   /// 9991=K, 9992=V) matching the builtin_methods convention so that the
@@ -538,11 +548,25 @@ private:
   // that were left nullptr during collection.
   void resolve_declaration(const Node &node);
   void resolve_func_decl(const FuncDeclNode &node);
+  /// Register a `fn Type.Fn()` type method against its struct type.
+  void attach_type_method(const FuncDeclNode &fn, const TypePtr &fn_type);
   void resolve_struct_decl(const StructDeclNode &node);
   void resolve_enum_decl(const EnumDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);
+  void flatten_all_interfaces(
+      const std::vector<const InterfaceDeclNode *> &ifaces);
+  void flatten_interface(
+      const InterfaceDeclNode &decl,
+      const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+      std::unordered_map<std::string, int> &state);
+  void merge_embed(
+      InterfaceTypeInfo &info, const Node &embed_node,
+      const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+      std::unordered_map<std::string, int> &state);
+  void merge_embedded_methods(InterfaceTypeInfo &target,
+                              const TypePtr &embedded, const Node &embed_node);
   void resolve_const_decl(const ConstDeclNode &node);
-  TypePtr try_interpret_as_type_expr(const Node &node);
+  void resolve_type_decl(const TypeDeclNode &node);
 
   // Signature / parameter helpers.
   TypePtr resolve_signature(const SignatureNode &sig);
@@ -598,6 +622,7 @@ private:
 
   // Phase 5: Expression type-checking — infer/check expression types.
   TypePtr check_expr(const Node &node);
+  TypePtr check_type_or_value_expr(const Node &node);
   TypePtr check_identifier(const IdentifierNode &node, const Node &parent);
   TypePtr check_bool_literal(const BoolLiteralNode &node);
   TypePtr check_int_literal(const IntegerLiteralNode &node);
@@ -612,6 +637,7 @@ private:
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
+  TypePtr reject_type_as_value(const Node &node);
 
   // ── check_selector helpers ──────────────────────────────────────────
   TypePtr resolve_module_selector(const ModuleTypeInfo &mod,
@@ -620,6 +646,8 @@ private:
   TypePtr resolve_struct_member(const TypePtr &owner_type,
                                 const std::string &field_name,
                                 Span field_span);
+  void collect_promoted_fields(const StructTypeInfo &info,
+                               std::vector<FieldInfo> &out);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
                                    const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
@@ -647,6 +675,15 @@ private:
   // Phase 7: Top-level declaration checking.
   void check_const_decl(const ConstDeclNode &node);
 
+  /// Validate that a `const` initializer is a compile-time-resolvable value
+  /// (spec: "a value constant can be any simple expression that can be
+  /// resolved at compile time").  Reports a construct-specific error at the
+  /// first offending sub-expression and returns false; true if all-const.
+  bool require_const_expr(const Node &expr);
+  bool const_ident_is_value(const IdentifierNode &id, Span span);
+  bool const_selector_is_enum_variant(const SelectorNode &sel, Span span);
+  bool reject_const(Span span, const std::string &message);
+
   /// Evaluate `expr` as a constant expression, returning nullopt when
   /// it is not reducible at compile time.  Recognised forms: scalar
   /// literals, unary `-`/`!`/`~`, binary arithmetic and bitwise on
@@ -663,6 +700,7 @@ private:
   void check_enum_decl(const EnumDeclNode &node);
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
+  void check_field_defaults(const StructDeclNode &node);
   void check_interface_decl(const InterfaceDeclNode &node);
   void check_import_decl(const ImportDeclNode &node);
 

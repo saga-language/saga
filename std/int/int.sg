@@ -47,10 +47,6 @@ pub fn (i int) Uint16() uint16 { intrinsic_zext_u16(i) }
 pub fn (i int) Uint32() uint32 { intrinsic_zext_u32(i) }
 pub fn (i int) Uint64() uint64 { intrinsic_zext_u64(i) }
 
-pub fn (i int) Char() Char {
-  intrinsic_zext_u32(i)
-}
-
 pub fn (i int) Float32() float32 {
   intrinsic_sitofp32(i)
 }

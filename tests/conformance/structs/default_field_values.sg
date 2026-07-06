@@ -1,0 +1,21 @@
+// Spec: a struct field may declare a comptime default. A literal that omits
+// the field gets the default; a literal that provides it overrides.
+// (docs/language.md §Structs)
+import "std/io"
+
+const Limit = 5
+
+struct Config {
+  timeout int = 30
+  name string = "anon"
+  active bool = true
+  max int = Limit * 2
+  retries int
+}
+
+pub fn Main() void {
+  a := Config{}
+  io.Println("{a.timeout} {a.name} {a.active} {a.max} {a.retries}")
+  b := Config{timeout: 1, name: "custom"}
+  io.Println("{b.timeout} {b.name} {b.active} {b.max} {b.retries}")
+}

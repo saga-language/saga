@@ -6,6 +6,9 @@ SAGA="$1"
 CASE_DIR="$2"
 BUILD_DIR="$3"
 
+# Hermetic build: saga's cache keys on source hash, not compiler identity,
+# so a stale artifacts dir would mask a compiler change.
+rm -rf "$BUILD_DIR/artifacts"
 mkdir -p "$BUILD_DIR"
 
 build_out=$("$SAGA" build --build "$CASE_DIR/app" \

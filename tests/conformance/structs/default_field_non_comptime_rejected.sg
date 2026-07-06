@@ -1,0 +1,9 @@
+// Spec: a field default must be resolvable at compile time. A default that
+// calls a function is rejected. (docs/language.md §Structs)
+fn compute() int { 42 }
+
+struct S {
+  x int = compute()
+}
+
+pub fn Main() void {}

@@ -521,7 +521,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
       "arr");
 
   // Push each element.
-  auto *push_fn = module->getFunction("saga_array_push");
+  auto *push_fn = module->getFunction("saga_array_builder_push");
   auto *func = builder.GetInsertBlock()->getParent();
 
   for (auto &elem_node : node.elements) {
@@ -529,7 +529,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (!val)
       continue;
 
-    // saga_array_push takes a void* to the element and memcpy's
+    // saga_array_builder_push takes a void* to the element and memcpy's
     // elem_size bytes from it.  For struct elements we pass the alloca
     // pointer directly; for SSA values we spill to a temp first.
     if (elem_ll_type->isStructTy()) {
@@ -1059,54 +1059,95 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
   // Zero-initialize all fields.
   builder.CreateStore(llvm::Constant::getNullValue(st), alloca);
 
-  // Store each provided field value. For a literal that addresses a
-  // promoted field (the field lives on an embedded struct), reuse
-  // struct_field_gep — it already walks the embed layout and hands back
-  // a pointer into the right inner slot.
+  // Apply comptime field defaults first (descending embed slots), then the
+  // explicit literal fields, which override. Defaults are side-effect-free
+  // comptime expressions, so a defaulted-then-provided field just lowers the
+  // default and overwrites it.
+  apply_struct_field_defaults(alloca, sem);
+
+  // Store each provided field. For a literal that addresses a promoted field
+  // (the field lives on an embedded struct), struct_field_gep walks the embed
+  // layout and hands back a pointer into the right inner slot.
   for (auto &fa : node.fields) {
     std::string fname(fa.name.name);
-
-    auto *val = emit_expr(*fa.value);
-    if (!val)
-      continue;
-
     auto [gep, field_ll] = struct_field_gep(alloca, sem, fname);
     if (!gep)
       continue;
-
-    // Find the field's semantic type for union-wrap detection.
     TypePtr field_sem;
     for (auto &fi : info.fields)
       if (fi.name == fname) { field_sem = fi.type; break; }
-
-    // Field is a union; the supplied value is one alternative.  Wrap
-    // before memcpy so the union's tag is set correctly.  Without this
-    // an `optional String | Missing` field given `Missing{}` would
-    // memcpy zero bytes into a 9-byte slot, leaving the tag at 0
-    // (i.e. interpreted as an empty String).
-    if (field_sem && field_sem->kind == TypeKind::Union) {
-      auto val_sem = semantic_type(*fa.value);
-      if (val_sem && val_sem->kind != TypeKind::Union) {
-        auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
-        if (wrapped) val = wrapped;
-      }
-    }
-
-    // D1: aggregate fields are stored inline. If the rhs is a pointer to
-    // a struct (e.g. from a nested struct literal), memcpy the bytes
-    // rather than storing the pointer into the struct slot.
-    if (field_ll && field_ll->isStructTy() && val->getType()->isPointerTy()) {
-      auto &dl = module->getDataLayout();
-      uint64_t sz = dl.getTypeAllocSize(field_ll);
-      llvm::Align al = dl.getABITypeAlign(field_ll);
-      builder.CreateMemCpy(gep, al, val, al, sz);
-    } else {
-      builder.CreateStore(val, gep);
-    }
+    store_struct_field(gep, field_ll, field_sem, *fa.value);
   }
 
   // Return a pointer to the struct alloca.
   return alloca;
+}
+
+void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
+                                 const TypePtr &field_sem,
+                                 const Node &value_node) {
+  auto *val = emit_expr(value_node);
+  if (!val)
+    return;
+
+  // Field is a union; the supplied value is one alternative. Wrap before
+  // memcpy so the union's tag is set correctly. Without this an
+  // `optional String | Missing` field given `Missing{}` would memcpy zero
+  // bytes into a 9-byte slot, leaving the tag at 0 (an empty String).
+  if (field_sem && field_sem->kind == TypeKind::Union) {
+    auto val_sem = semantic_type(value_node);
+    if (val_sem && val_sem->kind != TypeKind::Union) {
+      auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
+      if (wrapped) val = wrapped;
+    }
+  }
+
+  // D1: aggregate fields are stored inline. If the rhs is a pointer to a
+  // struct (e.g. from a nested struct literal), memcpy the bytes rather than
+  // storing the pointer into the struct slot.
+  if (field_ll && field_ll->isStructTy() && val->getType()->isPointerTy()) {
+    auto &dl = module->getDataLayout();
+    uint64_t sz = dl.getTypeAllocSize(field_ll);
+    llvm::Align al = dl.getABITypeAlign(field_ll);
+    builder.CreateMemCpy(gep, al, val, al, sz);
+  } else {
+    builder.CreateStore(val, gep);
+  }
+}
+
+void CodeGen::apply_struct_field_defaults(llvm::Value *struct_ptr,
+                                          const TypePtr &struct_sem) {
+  auto &info = std::get<StructTypeInfo>(struct_sem->detail);
+  std::string skey = struct_cache_key(info);
+  auto st_it = struct_types.find(skey);
+  if (st_it == struct_types.end())
+    return;
+  auto *st = st_it->second;
+
+  for (size_t i = 0; i < info.fields.size() && i < st->getNumElements(); ++i) {
+    if (!info.fields[i].default_value)
+      continue;
+    auto *gep = builder.CreateStructGEP(st, struct_ptr, i, info.fields[i].name);
+    llvm::Type *field_ll = st->getElementType(i);
+    if (info.fields[i].type)
+      if (auto *sem_ll = llvm_type(info.fields[i].type))
+        field_ll = sem_ll;
+    store_struct_field(gep, field_ll, info.fields[i].type,
+                       *info.fields[i].default_value);
+  }
+
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct)
+      continue;
+    size_t slot = info.fields.size() + ei;
+    if (slot >= st->getNumElements())
+      break;
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *eslot =
+        builder.CreateStructGEP(st, struct_ptr, slot, embed_slot_name(einfo));
+    apply_struct_field_defaults(eslot, embed);
+  }
 }
 
 // ===========================================================================
@@ -1165,6 +1206,37 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
     auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
                                              embed_slot_name(einfo));
     auto inner = struct_field_gep(slot_gep, embed, field_name);
+    if (inner.first) return inner;
+  }
+
+  return {nullptr, nullptr};
+}
+
+std::pair<llvm::Value *, TypePtr>
+CodeGen::embed_method_receiver(llvm::Value *struct_ptr,
+                               const TypePtr &struct_sem,
+                               const std::string &method) {
+  auto &info = std::get<StructTypeInfo>(struct_sem->detail);
+  for (auto &m : info.methods)
+    if (m.name == method)
+      return {struct_ptr, struct_sem};
+
+  std::string skey = struct_cache_key(info);
+  auto st_it = struct_types.find(skey);
+  if (st_it == struct_types.end())
+    return {nullptr, nullptr};
+  auto *st = st_it->second;
+
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= st->getNumElements()) break;
+
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                             embed_slot_name(einfo));
+    auto inner = embed_method_receiver(slot_gep, embed, method);
     if (inner.first) return inner;
   }
 

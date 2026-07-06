@@ -15,12 +15,12 @@ namespace saga {
 namespace {
 
 // Methods whose body passes the receiver as the first argument to one of
-// these C runtime functions mutate the caller's collection in place. Used
-// to enforce "mutation of global objects is prohibited" (docs/language.md:96)
-// at the call site for stdlib Array/Map methods.
+// these C runtime functions mutate the caller's collection in place, so they
+// cannot be applied to an immutable constant.  Value-returning copy-on-write
+// methods (Append/Insert/Set) are absent: they never write through the
+// receiver, so they are valid on a const (the result is a fresh array).
 const std::unordered_set<std::string> kMutatingIntrinsics{
-    "saga_array_push", "saga_array_pop", "saga_array_set",
-    "saga_array_insert", "saga_map_set", "saga_map_remove"};
+    "saga_array_pop", "saga_map_set", "saga_map_remove"};
 
 bool is_kind_method_mutating(const FuncDeclNode &fn) {
   if (!fn.body || !fn.receiver) return false;
@@ -602,10 +602,24 @@ void Analyzer::visit_package(const PackageNode &pkg) {
                      [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                      [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
                      [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
+                     [&](const TypeDeclNode &t) { resolve_type_decl(t); },
                      [&](const auto &) { /* handled in phase 2b */ },
                  },
                  decl->data);
     }
+  }
+
+  // Phase 2a.5: merge embedded interface method sets, now that every
+  // interface's own methods are resolved.
+  {
+    std::vector<const InterfaceDeclNode *> ifaces;
+    for (auto &src : pkg.sources) {
+      auto &src_node = std::get<SourceNode>(src->data);
+      for (auto &decl : src_node.declarations)
+        if (auto *i = std::get_if<InterfaceDeclNode>(&decl->data))
+          ifaces.push_back(i);
+    }
+    flatten_all_interfaces(ifaces);
   }
 
   // Phase 2b: resolve remaining declarations (functions, constants, etc.)
@@ -678,6 +692,15 @@ void Analyzer::visit_source(const SourceNode &src) {
     resolve_declaration(*decl);
   }
 
+  // Pass 2.5: merge embedded interface method sets.
+  {
+    std::vector<const InterfaceDeclNode *> ifaces;
+    for (auto &decl : src.declarations)
+      if (auto *i = std::get_if<InterfaceDeclNode>(&decl->data))
+        ifaces.push_back(i);
+    flatten_all_interfaces(ifaces);
+  }
+
   // Pass 3: resolve names inside function/method bodies.
   for (auto &decl : src.declarations) {
     std::visit(overloaded{
@@ -707,10 +730,11 @@ void Analyzer::visit_source(const SourceNode &src) {
 void Analyzer::collect_declaration(const Node &node) {
   std::visit(overloaded{
                  [&](const FuncDeclNode &fn) {
-                   // Receiver methods are bound to a type; they're not
-                   // callable as free functions and must not shadow types
-                   // (e.g. Bool.String() must not shadow the String type).
-                   if (!fn.receiver) {
+                   // Receiver methods and type methods (`fn Type.Fn()`) are
+                   // bound to a type; they're not callable as bare free
+                   // functions and must not shadow types (e.g. Bool.String()
+                   // must not shadow the String type).
+                   if (!fn.receiver && !fn.type_name) {
                      auto sym = Symbol::function(std::string(fn.name.name),
                                                  nullptr, fn.name.span,
                                                  fn.is_public);
@@ -733,6 +757,10 @@ void Analyzer::collect_declaration(const Node &node) {
                  [&](const ConstDeclNode &c) {
                    declare(Symbol::constant(std::string(c.name.name), nullptr,
                                             c.name.span, c.is_public));
+                 },
+                 [&](const TypeDeclNode &t) {
+                   declare(Symbol::type_sym(std::string(t.name.name), nullptr,
+                                            t.name.span, t.is_public));
                  },
                  [&](const ImportDeclNode &imp) {
                    // Derive the local name from the last path segment.
@@ -1458,6 +1486,7 @@ void Analyzer::resolve_declaration(const Node &node) {
                  [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
                  [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
                  [&](const ConstDeclNode &c) { resolve_const_decl(c); },
+                 [&](const TypeDeclNode &t) { resolve_type_decl(t); },
                  [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
                  [&](const auto &) { /* already reported in collect */ },
              },
@@ -1570,9 +1599,17 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                  current_package_name()});
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
-          alias_info.methods.push_back(
-              {std::string(fn.name.name), fn_type, fn.is_public,
-               current_package_name()});
+          if (alias_info.structural) {
+            error(recv_type_node->span,
+                  std::format("cannot attach methods to structural alias '{}'; "
+                              "declare it nominal (`type {} {}`) to add methods",
+                              alias_info.name, alias_info.name,
+                              type_to_string(alias_info.underlying)));
+          } else {
+            alias_info.methods.push_back(
+                {std::string(fn.name.name), fn_type, fn.is_public,
+                 current_package_name()});
+          }
         } else if (recv_sym->type->kind == TypeKind::Enum) {
           // Enums can also have methods bound to them.
           // Store in the type_methods side table.
@@ -1660,6 +1697,9 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
     }
   }
 
+  if (fn.type_name && !fn.receiver)
+    attach_type_method(fn, fn_type);
+
   if (has_generics)
     pop_scope();
 
@@ -1701,6 +1741,55 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   }
 }
 
+void Analyzer::attach_type_method(const FuncDeclNode &fn,
+                                  const TypePtr &fn_type) {
+  auto type_sym = lookup(std::string(fn.type_name->name));
+  if (!type_sym || !type_sym->type || type_sym->kind != SymbolKind::Type) {
+    error(fn.type_name->span,
+          std::format("unknown type '{}' for type method", fn.type_name->name));
+    return;
+  }
+  if (type_sym->type->kind != TypeKind::Struct) {
+    error(fn.type_name->span,
+          std::format("type methods are only supported on structs; '{}' is not "
+                      "a struct",
+                      fn.type_name->name));
+    return;
+  }
+  auto &sinfo = std::get<StructTypeInfo>(type_sym->type->detail);
+  if (!sinfo.origin_package.empty() &&
+      sinfo.origin_package != current_package_name()) {
+    error(fn.type_name->span,
+          std::format("cannot bind a type method to type '{}' from another "
+                      "package",
+                      fn.type_name->name));
+    return;
+  }
+  auto &vec = struct_type_methods_[type_sym->type.get()];
+  for (auto &m : vec)
+    if (m.name == std::string(fn.name.name)) {
+      error(fn.name.span,
+            std::format("type method '{}.{}' is already declared",
+                        fn.type_name->name, fn.name.name));
+      return;
+    }
+  vec.push_back({std::string(fn.name.name), fn_type, fn.is_public,
+                 current_package_name()});
+}
+
+TypePtr Analyzer::lookup_struct_type_method(const TypePtr &struct_type,
+                                            const std::string &name) const {
+  if (!struct_type)
+    return nullptr;
+  auto it = struct_type_methods_.find(struct_type.get());
+  if (it == struct_type_methods_.end())
+    return nullptr;
+  for (auto &m : it->second)
+    if (m.name == name)
+      return m.signature;
+  return nullptr;
+}
+
 void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   std::vector<FieldInfo> fields;
   std::vector<MethodInfo> methods;
@@ -1721,7 +1810,8 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
       continue;
     auto ft = resolve_type(*fs->type);
     for (auto &ident : fs->names.identifiers) {
-      fields.push_back({std::string(ident.name), ft, member.is_public});
+      fields.push_back({std::string(ident.name), ft, member.is_public,
+                        fs->default_value.get()});
     }
   }
 
@@ -1826,7 +1916,9 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
                        current_package_name()});
   }
 
-  // Patch the interface type with its resolved methods.
+  // Patch the interface type with its resolved methods.  Embedded interfaces
+  // are merged later in flatten_all_interfaces, once every interface's own
+  // method set is resolved.
   std::get<InterfaceTypeInfo>(iface_type->detail).methods = std::move(methods);
 
   if (has_generics) {
@@ -1834,56 +1926,87 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
   }
 }
 
-// Treat a const-decl RHS as a type expression for alias detection:
-// bare type identifier, module selector to a type, or `A | B | …` union
-// of those.  Returns the resolved TypePtr or null when the RHS doesn't
-// match — at which point the caller treats the const as a value, not
-// a type alias.
-TypePtr Analyzer::try_interpret_as_type_expr(const Node &node) {
-  if (auto *ident = std::get_if<IdentifierNode>(&node.data)) {
-    auto sym = lookup(std::string(ident->name));
-    if (sym && sym->kind == SymbolKind::Type && sym->type)
-      return sym->type;
-    return nullptr;
+void Analyzer::flatten_all_interfaces(
+    const std::vector<const InterfaceDeclNode *> &ifaces) {
+  std::unordered_map<std::string, const InterfaceDeclNode *> by_name;
+  for (auto *i : ifaces)
+    by_name[std::string(i->name.name)] = i;
+
+  std::unordered_map<std::string, int> state; // 0 unvisited, 1 active, 2 done
+  for (auto *i : ifaces)
+    flatten_interface(*i, by_name, state);
+}
+
+// Merge each embedded interface's method set into `decl`'s own.  Local embeds
+// are flattened first (depth-first) so transitive methods are carried through;
+// imported embeds already arrive flat from their `.sgi`.
+void Analyzer::flatten_interface(
+    const InterfaceDeclNode &decl,
+    const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+    std::unordered_map<std::string, int> &state) {
+  std::string key(decl.name.name);
+  if (state[key] == 2)
+    return;
+  if (state[key] == 1) {
+    error(decl.span,
+          std::format("interface '{}' is part of an embedding cycle", key));
+    state[key] = 2;
+    return;
   }
-  if (auto *sel = std::get_if<SelectorNode>(&node.data)) {
-    auto *obj_ident = std::get_if<IdentifierNode>(&sel->object->data);
-    if (!obj_ident) return nullptr;
-    auto obj_sym = lookup(std::string(obj_ident->name));
-    if (!obj_sym || obj_sym->kind != SymbolKind::Module || !obj_sym->type ||
-        obj_sym->type->kind != TypeKind::Module)
-      return nullptr;
-    auto &mod = std::get<ModuleTypeInfo>(obj_sym->type->detail);
-    std::string field_name(sel->field.name);
-    for (auto &exp : mod.exports) {
-      if (exp.name != field_name || !exp.type) continue;
-      if (exp.type->kind == TypeKind::Struct ||
-          exp.type->kind == TypeKind::Enum ||
-          exp.type->kind == TypeKind::Interface ||
-          exp.type->kind == TypeKind::Alias)
-        return exp.type;
+  state[key] = 1;
+
+  auto sym = lookup(key);
+  if (sym && sym->type && sym->type->kind == TypeKind::Interface) {
+    auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+    for (auto &embed_node : decl.embeds)
+      merge_embed(info, *embed_node, by_name, state);
+  }
+
+  state[key] = 2;
+}
+
+// Resolve a single embedded name to an interface and fold its methods in,
+// recursing first when the embed names another local interface.
+void Analyzer::merge_embed(
+    InterfaceTypeInfo &info, const Node &embed_node,
+    const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
+    std::unordered_map<std::string, int> &state) {
+  if (auto *id = std::get_if<IdentifierNode>(&embed_node.data)) {
+    auto it = by_name.find(std::string(id->name));
+    if (it != by_name.end())
+      flatten_interface(*it->second, by_name, state);
+  }
+
+  TypePtr embedded = resolve_type(embed_node);
+  if (!embedded || is_error_type(embedded))
+    return;
+  if (embedded->kind != TypeKind::Interface) {
+    error(embed_node.span,
+          std::format("embedded type '{}' is not an interface",
+                      type_to_string(embedded)));
+    return;
+  }
+  merge_embedded_methods(info, embedded, embed_node);
+}
+
+void Analyzer::merge_embedded_methods(InterfaceTypeInfo &target,
+                                      const TypePtr &embedded,
+                                      const Node &embed_node) {
+  auto &source = std::get<InterfaceTypeInfo>(embedded->detail);
+  for (auto &method : source.methods) {
+    auto existing =
+        std::find_if(target.methods.begin(), target.methods.end(),
+                     [&](const MethodInfo &m) { return m.name == method.name; });
+    if (existing == target.methods.end()) {
+      target.methods.push_back(method);
+      continue;
     }
-    return nullptr;
+    if (!types_equal(existing->signature, method.signature))
+      error(embed_node.span,
+            std::format("embedded method '{}' conflicts with an existing "
+                        "method of the same name",
+                        method.name));
   }
-  if (auto *bin = std::get_if<BinaryExprNode>(&node.data)) {
-    if (bin->op != Token::Kind::BitwiseOr) return nullptr;
-    auto lhs = try_interpret_as_type_expr(*bin->lhs);
-    auto rhs = try_interpret_as_type_expr(*bin->rhs);
-    if (!lhs || !rhs) return nullptr;
-    std::vector<TypePtr> alts;
-    auto add_alt = [&](const TypePtr &t) {
-      if (t->kind == TypeKind::Union) {
-        for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
-          alts.push_back(a);
-      } else {
-        alts.push_back(t);
-      }
-    };
-    add_alt(lhs);
-    add_alt(rhs);
-    return make_union_type(std::move(alts));
-  }
-  return nullptr;
 }
 
 void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
@@ -1892,32 +2015,25 @@ void Analyzer::resolve_const_decl(const ConstDeclNode &c) {
     const_type = resolve_type(**c.type);
   }
 
-  // Detect type alias pattern: const Name = TypeIdentifier
-  // If the value is an identifier (or selector) that refers to a type,
-  // create an alias type so methods can be bound to it.
-  if (!const_type && c.value) {
-    TypePtr alias_underlying = try_interpret_as_type_expr(*c.value);
-
-    if (alias_underlying) {
-      // Create a unique alias type that inherits the underlying type's methods.
-      auto alias_type = make_alias_type(
-          std::string(c.name.name), alias_underlying, {},
-          current_package_name());
-      auto sym_it = current_scope->symbols.find(std::string(c.name.name));
-      if (sym_it != current_scope->symbols.end()) {
-        sym_it->second.type = alias_type;
-        sym_it->second.kind = SymbolKind::Type;
-      }
-      return;
-    }
-  }
-
   // The initializer expression will be type-checked later; for now we just
   // record the declared type if present.
   auto sym_it = current_scope->symbols.find(std::string(c.name.name));
   if (sym_it != current_scope->symbols.end() && const_type) {
     sym_it->second.type = const_type;
   }
+}
+
+// type ID T      — nominal: distinct identity, inherits + shadows methods.
+// type ID = T    — structural: transparent to the underlying, no own methods.
+void Analyzer::resolve_type_decl(const TypeDeclNode &t) {
+  auto underlying = resolve_type(*t.underlying);
+  auto sym_it = current_scope->symbols.find(std::string(t.name.name));
+  if (sym_it == current_scope->symbols.end())
+    return;
+  sym_it->second.kind = SymbolKind::Type;
+  sym_it->second.type =
+      make_alias_type(std::string(t.name.name), underlying, {},
+                      current_package_name(), t.is_structural);
 }
 
 // ===========================================================================
@@ -2682,12 +2798,71 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return builtins.void_type;
           },
           [&](const NextNode &) -> TypePtr { return builtins.void_type; },
+          [&](const ArrayTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const MapTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const StructTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const UnionTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const FuncTypeNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
+          [&](const GenericTypeAppNode &) -> TypePtr {
+            return reject_type_as_value(node);
+          },
           [&](const auto &) -> TypePtr { return builtins.error_type; },
       },
       node.data);
 
   record_type(node, type);
   return type;
+}
+
+static bool is_empty_struct_shape(const TypePtr &t) {
+  if (!t || t->kind != TypeKind::Struct)
+    return false;
+  auto &info = std::get<StructTypeInfo>(t->detail);
+  return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
+}
+
+static bool is_type_expr_node(const Node &node) {
+  return std::holds_alternative<ArrayTypeNode>(node.data) ||
+         std::holds_alternative<MapTypeNode>(node.data) ||
+         std::holds_alternative<StructTypeNode>(node.data) ||
+         std::holds_alternative<UnionTypeNode>(node.data) ||
+         std::holds_alternative<FuncTypeNode>(node.data) ||
+         std::holds_alternative<GenericTypeAppNode>(node.data);
+}
+
+TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
+  if (auto *id = std::get_if<IdentifierNode>(&node.data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Type) {
+      record_symbol(node, *sym);
+      auto type = sym->type ? sym->type : builtins.error_type;
+      record_type(node, type);
+      return type;
+    }
+    return check_expr(node);
+  }
+  if (is_type_expr_node(node)) {
+    auto type = resolve_type(node);
+    record_type(node, type);
+    return type;
+  }
+  return check_expr(node);
+}
+
+TypePtr Analyzer::reject_type_as_value(const Node &node) {
+  error(node.span, std::format("cannot use type '{}' as a value",
+                               type_to_string(resolve_type(node))));
+  return builtins.error_type;
 }
 
 TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
@@ -2709,6 +2884,14 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
     return builtins.error_type;
   }
   record_symbol(parent, *sym);
+
+  if (sym->kind == SymbolKind::Type) {
+    if (is_empty_struct_shape(sym->type))
+      return sym->type;
+    error(ident.span,
+          std::format("cannot use type '{}' as a value", name));
+    return builtins.error_type;
+  }
 
   // For module symbols, return the module type directly.
   if (sym->kind == SymbolKind::Module && sym->type)
@@ -2788,7 +2971,7 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
 }
 
 TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
-  auto type_expr_type = check_expr(*node.type_expr);
+  auto type_expr_type = check_type_or_value_expr(*node.type_expr);
   if (is_error_type(type_expr_type))
     return builtins.error_type;
 
@@ -2824,15 +3007,11 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
 
   auto &info = std::get<StructTypeInfo>(effective_type->detail);
 
-  // Collect all fields including those from embedded types.
-  auto all_fields = info.fields;
-  for (auto &embed : info.embeds) {
-    if (embed && embed->kind == TypeKind::Struct) {
-      auto &embed_info = std::get<StructTypeInfo>(embed->detail);
-      all_fields.insert(all_fields.end(), embed_info.fields.begin(),
-                        embed_info.fields.end());
-    }
-  }
+  // Collect all fields including those promoted from embedded types
+  // (transitively). Own fields come first, so a child field shadows an
+  // embedded one of the same name.
+  std::vector<FieldInfo> all_fields;
+  collect_promoted_fields(info, all_fields);
 
   // Validate each field assignment against the (possibly instantiated) type.
   for (size_t i = 0; i < field_vals.size(); ++i) {
@@ -3190,6 +3369,10 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     return builtins.error_type;
   }
 
+  // A function-typed alias (`type Op = fn(...) ...`) is callable through its
+  // underlying signature.
+  callee_type = unwrap_alias(callee_type);
+
   // Check arguments first to collect their types.
   std::vector<TypePtr> arg_types;
   for (auto &arg : node.args) {
@@ -3475,18 +3658,25 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
     return sig;
   }
 
+  // Promoted members: recurse through embeds so a member declared several
+  // levels deep is still found. Own members are checked above first, so a
+  // child member shadows an embedded one of the same name.
   for (auto &embed : info.embeds) {
     if (!embed || embed->kind != TypeKind::Struct)
       continue;
-    auto &einfo = std::get<StructTypeInfo>(embed->detail);
-    for (auto &f : einfo.fields)
-      if (f.name == field_name)
-        return f.type ? f.type : builtins.error_type;
-    for (auto &m : einfo.methods)
-      if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
+    if (auto t = resolve_struct_member(embed, field_name, field_span))
+      return t;
   }
   return nullptr;
+}
+
+void Analyzer::collect_promoted_fields(const StructTypeInfo &info,
+                                       std::vector<FieldInfo> &out) {
+  out.insert(out.end(), info.fields.begin(), info.fields.end());
+  for (auto &embed : info.embeds) {
+    if (embed && embed->kind == TypeKind::Struct)
+      collect_promoted_fields(std::get<StructTypeInfo>(embed->detail), out);
+  }
 }
 
 TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
@@ -3630,11 +3820,27 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
 
 TypePtr Analyzer::check_selector(const SelectorNode &node,
                                  const Node & /*parent*/) {
-  auto obj_type = check_expr(*node.object);
+  auto obj_type = check_type_or_value_expr(*node.object);
   if (is_error_type(obj_type))
     return builtins.error_type;
 
   std::string field_name(node.field.name);
+
+  // A type-name object accesses the type's own members, not an instance's.
+  // For a struct that means its `fn Type.Fn()` type methods; a struct has no
+  // instance fields or receiver methods reachable through the bare type name.
+  if (auto *id = std::get_if<IdentifierNode>(&node.object->data)) {
+    auto sym = lookup(std::string(id->name));
+    if (sym && sym->kind == SymbolKind::Type &&
+        obj_type->kind == TypeKind::Struct) {
+      if (auto sig = lookup_struct_type_method(obj_type, field_name))
+        return sig;
+      error(node.field.span,
+            std::format("type {} has no type method '{}'",
+                        type_to_string(obj_type), field_name));
+      return builtins.error_type;
+    }
+  }
 
   if (obj_type->kind == TypeKind::Module) {
     auto &mod = std::get<ModuleTypeInfo>(obj_type->detail);
@@ -3764,7 +3970,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   for (auto &arm : node.arms) {
     TypePtr first_pattern_type;
     for (auto &pat : arm.patterns) {
-      auto pattern_type = check_expr(*pat);
+      auto pattern_type = check_type_or_value_expr(*pat);
       if (!first_pattern_type)
         first_pattern_type = pattern_type;
 
@@ -3843,7 +4049,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       bool covered = false;
       for (auto &arm : node.arms) {
         for (auto &pat : arm.patterns) {
-          auto pat_t = check_expr(*pat);
+          auto pat_t = check_type_or_value_expr(*pat);
           if (is_error_type(pat_t)) continue;
           if (types_equal(alt, pat_t) || is_assignable_to(pat_t, alt)) {
             covered = true;
@@ -4363,14 +4569,15 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
     // declared element type; without this, the array-of-error placeholder
     // produced by check_array_literal would fail expect_assignable.
     if (declared_type) {
+      TypePtr underlying = unwrap_alias(declared_type);
       bool empty_arr =
           std::get_if<ArrayLiteralNode>(&(*var.init)->data) != nullptr &&
           std::get<ArrayLiteralNode>((*var.init)->data).elements.empty();
       bool empty_map =
           std::get_if<MapLiteralNode>(&(*var.init)->data) != nullptr &&
           std::get<MapLiteralNode>((*var.init)->data).entries.empty();
-      if ((empty_arr && declared_type->kind == TypeKind::Array) ||
-          (empty_map && declared_type->kind == TypeKind::Map))
+      if ((empty_arr && underlying->kind == TypeKind::Array) ||
+          (empty_map && underlying->kind == TypeKind::Map))
         init_type = declared_type;
     }
     if (declared_type && !is_error_type(init_type)) {
@@ -4614,14 +4821,12 @@ bool Analyzer::always_returns(const Node &node) const {
 // ===========================================================================
 
 void Analyzer::check_const_decl(const ConstDeclNode &c) {
-  // If this const was already resolved as a type alias in Phase 2,
-  // don't overwrite the alias type.
   auto sym_it = current_scope->symbols.find(std::string(c.name.name));
-  if (sym_it != current_scope->symbols.end() &&
-      sym_it->second.kind == SymbolKind::Type &&
-      sym_it->second.type && sym_it->second.type->kind == TypeKind::Alias) {
+
+  // `const Name = import "..."` is a named-import binding (bound in
+  // process_imports), not a value constant.
+  if (std::get_if<ImportExprNode>(&c.value->data))
     return;
-  }
 
   TypePtr declared_type = nullptr;
   if (c.type)
@@ -4629,24 +4834,172 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
 
   auto init_type = check_expr(*c.value);
 
-  if (declared_type && !is_error_type(init_type)) {
+  if (!require_const_expr(*c.value)) {
+    if (sym_it != current_scope->symbols.end())
+      sym_it->second.type = builtins.error_type;
+    return;
+  }
+
+  if (declared_type && !is_error_type(init_type))
     expect_assignable(c.value->span, declared_type, init_type,
                       "constant initializer");
-  }
 
   // Forward-ref initializers (e.g. `const A = B * 2` with B declared
   // later) leave init_type as Error.  Spec: zero value with no
   // diagnostic.  Fall back to Int so downstream method dispatch
   // (`A.String()`) and codegen find the right ABI.
-  if (!declared_type && is_error_type(init_type))
-    init_type = builtins.int_type;
+  TypePtr const_type = declared_type             ? declared_type
+                       : is_error_type(init_type) ? builtins.int_type
+                                                  : init_type;
 
-  if (sym_it != current_scope->symbols.end()) {
-    sym_it->second.type = declared_type ? declared_type : init_type;
-  }
+  if (sym_it != current_scope->symbols.end())
+    sym_it->second.type = const_type;
 
   if (auto cv = evaluate_constant(*c.value))
     const_decl_values_[std::string(c.name.name)] = *cv;
+}
+
+bool Analyzer::reject_const(Span span, const std::string &message) {
+  error(span, message);
+  return false;
+}
+
+static bool string_has_interpolation(const StringLiteralNode &s) {
+  for (auto &frag : s.fragments)
+    if (!std::get_if<StringFragmentNode>(&frag->data))
+      return true;
+  return false;
+}
+
+bool Analyzer::const_ident_is_value(const IdentifierNode &id, Span span) {
+  auto sym = lookup(std::string(id.name));
+  if (!sym)
+    return reject_const(span, std::format("undefined name '{}'", id.name));
+  switch (sym->kind) {
+  case SymbolKind::Constant:
+  case SymbolKind::EnumVariant:
+    return true;
+  case SymbolKind::Type:
+  case SymbolKind::TypeParam:
+    return reject_const(
+        span, "a constant must be a value, not a type; use `type` to "
+              "declare an alias");
+  default:
+    return reject_const(
+        span, std::format("'{}' is not a compile-time constant", id.name));
+  }
+}
+
+bool Analyzer::const_selector_is_enum_variant(const SelectorNode &sel,
+                                              Span span) {
+  if (auto *base = std::get_if<IdentifierNode>(&sel.object->data)) {
+    if (auto sym = lookup(std::string(base->name)); sym && sym->type) {
+      auto t = unwrap_alias(sym->type);
+      if (t->kind == TypeKind::Enum) {
+        auto &info = std::get<EnumTypeInfo>(t->detail);
+        for (auto &v : info.variants)
+          if (v.name == sel.field.name)
+            return true;
+      }
+    }
+  }
+  return reject_const(
+      span, "a selector is not a compile-time constant unless it names an "
+            "enum variant");
+}
+
+bool Analyzer::require_const_expr(const Node &expr) {
+  return std::visit(
+      overloaded{
+          [](const BoolLiteralNode &) { return true; },
+          [](const IntegerLiteralNode &) { return true; },
+          [](const FloatLiteralNode &) { return true; },
+          [&](const StringLiteralNode &s) {
+            return string_has_interpolation(s)
+                       ? reject_const(expr.span,
+                                      "an interpolated string is not a "
+                                      "compile-time constant")
+                       : true;
+          },
+          [&](const GroupExprNode &g) { return require_const_expr(*g.inner); },
+          [&](const UnaryExprNode &u) { return require_const_expr(*u.operand); },
+          [&](const BinaryExprNode &b) {
+            return require_const_expr(*b.lhs) && require_const_expr(*b.rhs);
+          },
+          [&](const ArrayLiteralNode &a) {
+            for (auto &el : a.elements)
+              if (!require_const_expr(*el))
+                return false;
+            return true;
+          },
+          [&](const StructLiteralNode &s) {
+            for (auto &f : s.fields)
+              if (!require_const_expr(*f.value))
+                return false;
+            return true;
+          },
+          [&](const IdentifierNode &id) {
+            return const_ident_is_value(id, expr.span);
+          },
+          [&](const SelectorNode &sel) {
+            return const_selector_is_enum_variant(sel, expr.span);
+          },
+          [&](const MapLiteralNode &) {
+            return reject_const(expr.span,
+                                "maps cannot be constants — they need runtime "
+                                "construction; use a package-level variable");
+          },
+          [&](const CallExprNode &) {
+            return reject_const(
+                expr.span, "a function call is not a compile-time constant");
+          },
+          [&](const FuncExprNode &) {
+            return reject_const(
+                expr.span, "a function value is not a compile-time constant");
+          },
+          [&](const IndexExprNode &) {
+            return reject_const(
+                expr.span,
+                "an indexing expression is not a compile-time constant");
+          },
+          [&](const SliceNode &) {
+            return reject_const(expr.span,
+                                "a slice is not a compile-time constant");
+          },
+          [&](const IfExprNode &) {
+            return reject_const(
+                expr.span, "an `if` expression is not a compile-time constant");
+          },
+          [&](const SwitchExprNode &) {
+            return reject_const(
+                expr.span,
+                "a `switch` expression is not a compile-time constant");
+          },
+          [&](const ForExprNode &) {
+            return reject_const(
+                expr.span,
+                "a `for` expression is not a compile-time constant");
+          },
+          [&](const SpawnExprNode &) {
+            return reject_const(
+                expr.span,
+                "a `spawn` expression is not a compile-time constant");
+          },
+          [&](const OrExprNode &) {
+            return reject_const(
+                expr.span, "an `or` expression is not a compile-time constant");
+          },
+          [&](const IsExpr &) {
+            return reject_const(
+                expr.span, "an `is` expression is not a compile-time constant");
+          },
+          [&](const auto &) {
+            return reject_const(expr.span,
+                                "this expression is not a compile-time "
+                                "constant");
+          },
+      },
+      expr.data);
 }
 
 void Analyzer::check_enum_decl(const EnumDeclNode &e) {
@@ -4694,6 +5047,30 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
     }
     seen_methods[m.name] = true;
   }
+
+  check_field_defaults(s);
+}
+
+// A field default must be a comptime expression assignable to the field type.
+void Analyzer::check_field_defaults(const StructDeclNode &s) {
+  for (auto &member : s.members) {
+    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
+    if (!fs || !fs->default_value)
+      continue;
+
+    auto field_type = resolve_type(*fs->type);
+    auto def_type = check_expr(*fs->default_value);
+    if (!require_const_expr(*fs->default_value))
+      continue;
+    if (!field_type || is_error_type(def_type))
+      continue;
+
+    std::string fname = fs->names.identifiers.empty()
+                            ? "field"
+                            : std::string(fs->names.identifiers.front().name);
+    expect_assignable(fs->default_value->span, field_type, def_type,
+                      std::format("default for field '{}'", fname));
+  }
 }
 
 void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
@@ -4701,8 +5078,16 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
   if (!sym || !sym->type || sym->type->kind != TypeKind::Interface)
     return;
 
-  // Check duplicate methods.
   auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+
+  if (info.methods.empty()) {
+    error(i.span,
+          std::format("interface '{}' must declare at least one method "
+                      "(directly or through an embedded interface)",
+                      info.name));
+  }
+
+  // Check duplicate methods.
   std::unordered_map<std::string, bool> seen;
   for (auto &m : info.methods) {
     if (seen.count(m.name)) {

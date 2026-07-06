@@ -1,0 +1,18 @@
+// Spec: structural embedding — a struct mixes in another by naming it as a
+// bare member; the child gains the embedded struct's fields and methods.
+// (docs/language.md §Structural embedding)
+import "std/io"
+
+struct Greeter {}
+
+pub fn (g Greeter) Greet() string { "Hello!" }
+
+struct User {
+  Greeter
+  name string
+}
+
+pub fn Main() void {
+  u := User{name: "Alice"}
+  io.Println(u.Greet())
+}

@@ -1,0 +1,12 @@
+// A bare `{...}` is not a type. Map types are spelled `map{K:V}`; the old
+// brace-only spelling in type position must produce a clean parse error.
+// Regression: this once crashed the parser.
+import "std/io"
+
+fn f(m {string: int}) void {
+  io.Println("x")
+}
+
+pub fn Main() void {
+  io.Println("hi")
+}

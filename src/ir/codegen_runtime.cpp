@@ -136,10 +136,17 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_new", module.get());
 
-  // void saga_array_push(saga_runtime_array* arr, void* elem)
+  // void saga_array_builder_push(saga_runtime_array* arr, void* elem)
+  // In-place, no copy-on-write: only emitted for arrays codegen just allocated
+  // (literals, varargs packing), never for user-visible values.
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type}, false),
-      llvm::Function::ExternalLinkage, "saga_array_push", module.get());
+      llvm::Function::ExternalLinkage, "saga_array_builder_push", module.get());
+
+  // saga_runtime_array* saga_array_append(saga_runtime_array* arr, void* elem)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_array_append", module.get());
 
   // void* saga_array_at(saga_runtime_array* arr, i64 index)
   llvm::Function::Create(
@@ -151,9 +158,9 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(i64_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_size", module.get());
 
-  // void saga_array_insert(saga_runtime_array* arr, void* elem, i64 index)
+  // saga_runtime_array* saga_array_insert(saga_runtime_array* arr, void* elem, i64 index)
   llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type, {ptr_type, ptr_type, i64_type}, false),
+      llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_insert", module.get());
 
   // void* saga_array_pop(saga_runtime_array* arr)
@@ -161,9 +168,9 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_pop", module.get());
 
-  // void saga_array_set(saga_runtime_array* arr, i64 index, void* elem)
+  // saga_runtime_array* saga_array_set(saga_runtime_array* arr, i64 index, void* elem)
   llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type, {ptr_type, i64_type, ptr_type}, false),
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_set", module.get());
 
   // i64 saga_array_equals(saga_runtime_array* a, saga_runtime_array* b)

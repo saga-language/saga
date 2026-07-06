@@ -1,0 +1,7 @@
+// Spec: a field default must be assignable to the field's type. A string
+// default for an int field is rejected. (docs/language.md §Structs)
+struct S {
+  x int = "hello"
+}
+
+pub fn Main() void {}

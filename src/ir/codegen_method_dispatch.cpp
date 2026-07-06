@@ -79,6 +79,15 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   if (obj_sem && obj_sem->kind == TypeKind::Module)
     return emit_module_function_call(node, method, obj_sem);
 
+  // ── Type method call: Type.Fn(args) ─────────────────────────────
+  //    A bare type-reference object (SymbolKind::Type) names a receiver-less
+  //    free function, not a value; this must precede the struct field/method
+  //    paths, which would emit the object as a value.
+  if (obj_sem && obj_sem->kind == TypeKind::Struct) {
+    auto *osym = node_symbol(*sel->object);
+    if (osym && osym->kind == SymbolKind::Type)
+      return emit_type_method_call(node, method, obj_sem);
+  }
 
   // ── Struct-field function call: r.handler(args) where `handler` is a
   //    field of function type.  Load the fn pointer from the field, then
@@ -637,62 +646,47 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     }
   }
 
-  // Embedded-method redirect: when `method` lives on one of the struct's
-  // embedded structs (rather than directly on `obj_sem`), retarget the
-  // receiver pointer at the `__embed_<Name>` slot and switch `obj_sem`
-  // to the embed's type. The downstream struct-method branch then forms
-  // the link name and ABI from the embed's perspective. Mirrors the
-  // analyzer's one-level embed walk in resolve_struct_member.
+  // Embedded-method redirect: when `method` lives on an embedded struct
+  // (possibly several levels deep) rather than directly on `obj_sem`, retarget
+  // the receiver pointer down the `__embed_<Name>` slot chain and switch
+  // `obj_sem` to the declaring struct. The downstream struct-method branch then
+  // forms the link name and ABI from that struct's perspective.
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {
     auto &outer = std::get<StructTypeInfo>(obj_sem->detail);
     bool direct_method = false;
     for (auto &m : outer.methods) {
       if (m.name == method) { direct_method = true; break; }
     }
-    if (!direct_method) {
-      std::string okey = struct_cache_key(outer);
-      auto st_it = struct_types.find(okey);
-      auto fields_it = struct_fields.find(okey);
-      if (st_it != struct_types.end() && fields_it != struct_fields.end()) {
-        auto *outer_st = st_it->second;
-        auto &fields = fields_it->second;
-        for (size_t ei = 0; ei < outer.embeds.size(); ++ei) {
-          auto &embed = outer.embeds[ei];
-          if (!embed || embed->kind != TypeKind::Struct) continue;
-          auto &einfo = std::get<StructTypeInfo>(embed->detail);
-          bool found = false;
-          for (auto &m : einfo.methods)
-            if (m.name == method) { found = true; break; }
-          if (!found) continue;
+    std::string okey = struct_cache_key(outer);
+    auto st_it = struct_types.find(okey);
+    if (!direct_method && st_it != struct_types.end()) {
+      auto *outer_st = st_it->second;
 
-          size_t slot_idx = outer.fields.size() + ei;
-          if (slot_idx >= fields.size()) break;
-
-          // Pointer to outer struct: prefer the local alloca for an
-          // identifier; otherwise spill the SSA struct value.
-          llvm::Value *outer_ptr = nullptr;
-          if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
-            auto local_it = locals.find(std::string(id->name));
-            if (local_it != locals.end() &&
-                local_it->second->getAllocatedType() == outer_st)
-              outer_ptr = local_it->second;
-          }
-          if (!outer_ptr) {
-            if (obj->getType()->isPointerTy()) {
-              outer_ptr = obj;
-            } else {
-              auto *parent_fn = builder.GetInsertBlock()->getParent();
-              auto *tmp = create_entry_alloca(parent_fn,
-                                              "embed.self.spill", outer_st);
-              builder.CreateStore(obj, tmp);
-              outer_ptr = tmp;
-            }
-          }
-          obj = builder.CreateStructGEP(outer_st, outer_ptr, slot_idx,
-                                        embed_slot_name(einfo));
-          obj_sem = embed;
-          break;
+      // Pointer to outer struct: prefer the local alloca for an identifier;
+      // otherwise spill the SSA struct value.
+      llvm::Value *outer_ptr = nullptr;
+      if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
+        auto local_it = locals.find(std::string(id->name));
+        if (local_it != locals.end() &&
+            local_it->second->getAllocatedType() == outer_st)
+          outer_ptr = local_it->second;
+      }
+      if (!outer_ptr) {
+        if (obj->getType()->isPointerTy()) {
+          outer_ptr = obj;
+        } else {
+          auto *parent_fn = builder.GetInsertBlock()->getParent();
+          auto *tmp = create_entry_alloca(parent_fn,
+                                          "embed.self.spill", outer_st);
+          builder.CreateStore(obj, tmp);
+          outer_ptr = tmp;
         }
+      }
+
+      auto [recv, recv_sem] = embed_method_receiver(outer_ptr, obj_sem, method);
+      if (recv) {
+        obj = recv;
+        obj_sem = recv_sem;
       }
     }
   }
@@ -929,6 +923,19 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
 // Per-callee helpers
 // ─────────────────────────────────────────────────────────────────────────
 
+llvm::Value *CodeGen::emit_type_method_call(const CallExprNode &node,
+                                            const std::string &method,
+                                            const TypePtr &obj_sem) {
+  auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
+  auto *callee = module->getFunction(mangle(sinfo.name + "__" + method));
+  if (!callee)
+    return nullptr;
+  auto func_type = semantic_type(*node.callee);
+  if (!func_type || func_type->kind != TypeKind::Func)
+    return nullptr;
+  return emit_resolved_call(callee, func_type, node);
+}
+
 llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
                                                 const std::string &method,
                                                 const TypePtr &obj_sem) {
@@ -947,6 +954,12 @@ llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
   if (!callee)
     return nullptr;
 
+  return emit_resolved_call(callee, func_type, node);
+}
+
+llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
+                                         const TypePtr &func_type,
+                                         const CallExprNode &node) {
   auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
   std::vector<llvm::Value *> args;
 
@@ -981,7 +994,7 @@ llvm::Value *CodeGen::emit_module_function_call(const CallExprNode &node,
       if (!val) continue;
       auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
       builder.CreateStore(val, tmp);
-      builder.CreateCall(module->getFunction("saga_array_push"),
+      builder.CreateCall(module->getFunction("saga_array_builder_push"),
                          {arr, tmp});
     }
     args.push_back(arr);

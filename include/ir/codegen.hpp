@@ -51,6 +51,7 @@ struct CodeGen {
   // ── LLVM type cache ──────────────────────────────────────────────────
 
   llvm::StructType *string_type = nullptr;   // { ptr, i64 }
+  llvm::StructType *array_type = nullptr;    // { ptr, i64, i64, i64, i64 }
   llvm::Type *i64_type = nullptr;
   llvm::Type *f64_type = nullptr;
   llvm::Type *i1_type = nullptr;
@@ -143,17 +144,6 @@ struct CodeGen {
   /// (triggers executor init/shutdown in main).
   bool has_spawn = false;
 
-  /// True when the package contains at least one constant whose
-  /// initialiser must run at program start (arrays, maps).  Drives
-  /// emission of the per-package `<pkg>__init__` function.
-  bool init_function_needed = false;
-
-  /// Mangled link names of imported packages whose `<pkg>__init__` must be
-  /// invoked before user `Main` runs.  Topological order: deepest dependency
-  /// first.  Populated by the build driver before `emit()` runs; consumed by
-  /// the Main wrapper.  Empty for library mode (no Main).
-  std::vector<std::string> imported_init_symbols;
-
   /// Pending channel alloca from the most recent spawn with a generic type.
   /// Picked up by the next DeclAssign to create a companion ".channel" local.
   llvm::AllocaInst *pending_channel_alloca_ = nullptr;
@@ -223,6 +213,10 @@ struct CodeGen {
 
   /// Compute the mangled link name for a symbol in another package.
   static std::string mangle(const std::string &pkg, const std::string &name);
+
+  /// Link name for a free-function declaration, accounting for `Main`,
+  /// `extern`, and `fn Type.Fn()` type methods (qualified as `Type__Fn`).
+  std::string free_func_link_name(const FuncDeclNode &fn) const;
 
   /// Declare an external function from an imported package.
   /// Returns the LLVM Function*, creating it if needed.
@@ -347,32 +341,17 @@ private:
   /// Emit a package-level constant as an LLVM global variable.
   void emit_const_decl(const ConstDeclNode &node);
 
-  /// Emit `<pkg>__init__`: a single-entry void function whose body
-  /// allocates and stores every collection constant whose value cannot
-  /// be expressed as a compile-time LLVM constant.  Called once after
-  /// all source nodes have been processed.
-  void emit_init_function();
-
-  /// Get or forward-declare a `void(void)` function with the given link
-  /// name.  Used by the Main wrapper to call each imported package's
-  /// `<pkg>__init__` symbol.
-  llvm::Function *declare_void_init(const std::string &link_name);
-
-  /// Prepend init calls to the current insertion point: every symbol in
-  /// `imported_init_symbols` (topo order, deps first) followed by this
-  /// package's own `<pkg>__init__` when `init_function_needed` is true.
-  /// Called from the entry block of Main, before any executor setup.
-  void emit_init_calls();
-
-  /// Constants whose initialisers must run at program start, in source
-  /// order.  Populated by emit_const_decl, flushed by emit_init_function.
-  std::vector<const ConstDeclNode *> deferred_const_inits_;
-
   /// Build an LLVM constant for `val_node` whose Saga type is `expected`.
-  /// Supports integer/float/bool/string literals and nested struct literals.
-  /// Returns nullptr when the expression is not a compile-time constant.
+  /// Supports scalar/string literals, struct and array literals (nested),
+  /// and backward references to sibling constants.  Returns nullptr when the
+  /// expression is not a compile-time constant.
   llvm::Constant *build_const_value(const Node &val_node,
                                     const TypePtr &expected);
+
+  /// Lower a const array literal to a static `saga_runtime_array` header plus
+  /// element buffer in rodata (refcount -1).  Returns the header's address.
+  llvm::Constant *build_const_array_global(
+      llvm::Type *elem_ll, const std::vector<llvm::Constant *> &elems);
 
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
@@ -381,6 +360,7 @@ private:
   /// Register interface vtable types.
   void declare_interfaces(const SourceNode &src);
   void emit_interface_decl(const InterfaceDeclNode &node);
+  std::vector<MethodInfo> ast_interface_methods(const InterfaceDeclNode &node);
 
   /// Forward-declare LLVM Function symbols for every non-generic struct
   /// method. Does not touch struct_method_links.
@@ -430,6 +410,14 @@ private:
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
+
+  /// Look up a top-level symbol by name using the codegen-stable package
+  /// scope, falling back to the analyzer's current scope.
+  std::optional<Symbol> package_symbol(std::string_view name);
+  /// LLVM type for a bare named type (`Foo`), or null if `name` is not one.
+  llvm::Type *named_type_llvm(std::string_view name);
+  /// LLVM type for a qualified type (`pkg.Foo`), or null if not resolvable.
+  llvm::Type *qualified_type_llvm(const SelectorNode &sel);
 
   /// Emit a full function definition (entry block + body).
   void emit_func_decl(const FuncDeclNode &node);
@@ -528,6 +516,15 @@ private:
                                       const ForLoopBlocks &bbs);
   llvm::Value *emit_struct_literal(const StructLiteralNode &node,
                                    const Node &parent);
+  /// Store a comptime/runtime field value into a struct slot, handling
+  /// union-wrap and inline-aggregate memcpy. `gep` points at the slot.
+  void store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
+                          const TypePtr &field_sem, const Node &value_node);
+  /// Recursively apply field defaults into `struct_ptr`, descending embed
+  /// slots so an embedded struct's own defaults are honoured. Run before
+  /// explicit literal fields, which override.
+  void apply_struct_field_defaults(llvm::Value *struct_ptr,
+                                   const TypePtr &struct_sem);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
@@ -554,6 +551,18 @@ private:
   llvm::Value *emit_module_function_call(const CallExprNode &node,
                                          const std::string &method,
                                          const TypePtr &obj_sem);
+  /// Type method call: `Type.Fn(args)` — a receiver-less free function
+  /// namespaced to a struct type. The caller has already confirmed the
+  /// selector object is a type reference.
+  llvm::Value *emit_type_method_call(const CallExprNode &node,
+                                     const std::string &method,
+                                     const TypePtr &obj_sem);
+  /// Lower args (sret, variadic, union-wrap, interface-box, byval) and emit
+  /// the call to an already-resolved free function. Shared by module and
+  /// type-method calls.
+  llvm::Value *emit_resolved_call(llvm::Function *callee,
+                                  const TypePtr &func_type,
+                                  const CallExprNode &node);
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,
@@ -567,6 +576,15 @@ private:
   std::pair<llvm::Value *, llvm::Type *>
   struct_field_gep(llvm::Value *struct_ptr, const TypePtr &struct_sem_type,
                    const std::string &field_name);
+
+  /// Walk `__embed_<Name>` slots from `struct_ptr` (a pointer to a
+  /// `struct_sem` value) down to the embedded struct that *directly* declares
+  /// `method`. Returns the receiver pointer and that struct's semantic type,
+  /// or {nullptr, nullptr} if no embed in the subtree declares it. Mirrors
+  /// struct_field_gep for promoted method dispatch.
+  std::pair<llvm::Value *, TypePtr>
+  embed_method_receiver(llvm::Value *struct_ptr, const TypePtr &struct_sem,
+                        const std::string &method);
 
   /// Append one synthetic `__embed_<TypeName>` slot per embed in `info` to
   /// the given LLVM type/name vectors. Embed slots are laid out after the

@@ -1,0 +1,16 @@
+// A function value passed as an argument is callable through the parameter,
+// not only as a directly-named local. Regression: this once crashed at runtime
+// (the closure calling convention across the call boundary).
+import "std/io"
+
+fn Apply(f fn(int) int, n int) int {
+  f(n)
+}
+
+fn Double(n int) int {
+  n * 2
+}
+
+pub fn Main() void {
+  io.Println(Apply(Double, 21).String())
+}

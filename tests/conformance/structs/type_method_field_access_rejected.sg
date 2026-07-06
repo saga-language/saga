@@ -1,0 +1,14 @@
+// Spec: a bare type name reaches only the type's own members (its type
+// methods), never an instance's fields. `Point.x` names no type method and is
+// rejected (docs/language.md §Type methods).
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn Main() void {
+  n := Point.x
+  io.Println(n.String())
+}

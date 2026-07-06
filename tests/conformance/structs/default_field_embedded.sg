@@ -1,0 +1,20 @@
+// Spec: an embedded struct's field defaults are honoured when the outer
+// struct is constructed; a promoted field provided in the literal overrides
+// the embedded default. (docs/language.md §Structs)
+import "std/io"
+
+struct Base {
+  count int = 99
+}
+
+struct Wrap {
+  Base
+  name string
+}
+
+pub fn Main() void {
+  a := Wrap{name: "a"}
+  io.Println("{a.count} {a.name}")
+  b := Wrap{count: 7, name: "b"}
+  io.Println("{b.count} {b.name}")
+}

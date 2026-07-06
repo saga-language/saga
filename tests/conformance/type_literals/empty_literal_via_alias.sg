@@ -1,0 +1,15 @@
+// An empty `[]` / `{}` literal adopts its element type from a type-alias
+// annotation, not only a direct container type. Regression: the alias was not
+// unwrapped, so the element type stayed unresolved.
+import "std/io"
+
+type IntList = array{int}
+type Config = map{string: int}
+
+pub fn Main() void {
+  xs IntList = []
+  ys := xs.Append(7)
+  cfg Config = {}
+  io.Println(ys.Size().String())
+  io.Println(cfg.Size().String())
+}

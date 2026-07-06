@@ -1,0 +1,29 @@
+// Spec: embedding is transitive — a struct gains members promoted from
+// structs embedded several levels deep, for both field access and method
+// dispatch. (docs/language.md §Structural embedding)
+import "std/io"
+
+struct Timestamps {
+  created int
+  updated int
+}
+
+pub fn (t Timestamps) Age() int { t.updated - t.created }
+
+struct Base {
+  Timestamps
+  id int
+}
+
+struct User {
+  Base
+  name string
+}
+
+pub fn Main() void {
+  u := User{name: "Alice", id: 7, created: 100, updated: 175}
+  io.Println(u.name)
+  io.Println("{u.id}")
+  io.Println("{u.created}")
+  io.Println("{u.Age()}")
+}

@@ -1,0 +1,8 @@
+// Spec: an interface must declare at least one method. An empty interface
+// matches every type, which is a footgun rather than a useful contract, so it
+// is a compile error. (docs/language.md §Interfaces)
+interface Anything {}
+
+fn Use(x Anything) void {}
+
+pub fn Main() void {}

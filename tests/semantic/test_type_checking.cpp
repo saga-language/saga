@@ -376,6 +376,67 @@ TEST(TypeCheck, StructLiteralUnknownField) {
   EXPECT_TRUE(r.has_err("has no field 'z'"));
 }
 
+TEST(TypeCheck, TypeNameAsValueRejected) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn f() { p := Point }");
+  EXPECT_TRUE(r.has_err("cannot use type 'Point' as a value"));
+}
+
+TEST(TypeCheck, EmptyShapeOmitsBraces) {
+  auto r = TC::from(
+      "struct Marker {}\n"
+      "fn f() Marker { Marker }");
+  EXPECT_TRUE(r.ok());
+}
+
+// ===========================================================================
+// Type methods (`fn Type.Fn()`)
+// ===========================================================================
+
+TEST(TypeCheck, TypeMethodDeclaredAndCalled) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn Point.Origin() Point { Point{x: 0, y: 0} }\n"
+      "fn f() Point { Point.Origin() }");
+  EXPECT_TRUE(r.ok());
+}
+
+TEST(TypeCheck, TypeMethodUnknownType) {
+  auto r = TC::from("fn Nope.Foo() int { 0 }");
+  EXPECT_TRUE(r.has_err("unknown type 'Nope' for type method"));
+}
+
+TEST(TypeCheck, TypeMethodOnNonStructRejected) {
+  auto r = TC::from(
+      "enum Color {\n  Red\n  Green\n}\n"
+      "fn Color.Foo() int { 0 }");
+  EXPECT_TRUE(r.has_err("only supported on structs"));
+}
+
+TEST(TypeCheck, TypeMethodNoSuchMethod) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn f() int { Point.Missing() }");
+  EXPECT_TRUE(r.has_err("has no type method 'Missing'"));
+}
+
+TEST(TypeCheck, TypeMethodDuplicateRejected) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn Point.Origin() int { 0 }\n"
+      "fn Point.Origin() int { 1 }");
+  EXPECT_TRUE(r.has_err("already declared"));
+}
+
+TEST(TypeCheck, TypeMethodDoesNotShadowType) {
+  auto r = TC::from(
+      "struct Point { x, y int }\n"
+      "fn Point.Origin() Point { Point{x: 0, y: 0} }\n"
+      "fn f() Point { Point{x: 1, y: 2} }");
+  EXPECT_TRUE(r.ok());
+}
+
 // ===========================================================================
 // Array literals
 // ===========================================================================
@@ -577,10 +638,10 @@ TEST(TypeCheck, BitwiseOnFloat) {
 // Embedded struct member access
 // ===========================================================================
 
-TEST(TypeCheck, DISABLED_EmbeddedFieldAccess) {
+TEST(TypeCheck, EmbeddedFieldAccess) {
   auto r = TC::from(
       "struct Base { x int }\n"
-      "struct Child < Base { y int }\n"
+      "struct Child {\n  Base\n  y int\n}\n"
       "fn f() int {\n  c := Child{x: 1, y: 2}\n  c.x\n}");
   EXPECT_TRUE(r.ok());
 }
@@ -677,28 +738,17 @@ TEST(TypeCheck, DivAssignmentOnString) {
 }
 
 // ===========================================================================
-// Char builtin type
+// Integer width assignment strictness
 // ===========================================================================
 
-TEST(TypeCheck, CharTypeExists) {
-  // Char is a recognized builtin type and can be declared.
-  auto r = TC::from("fn f() {\n  c Char\n}");
-  EXPECT_TRUE(r.ok()) << "Char should be a recognized type";
-}
-
-TEST(TypeCheck, CharNotDirectlyAssignableFromInt) {
-  // A *typed* Int variable is not directly assignable to Char — even
-  // though both are integer kinds, narrowing requires a conversion.
-  // (A bare integer literal is "untyped" and may flow into any integer
-  // width; that case is exercised separately.)
-  auto r = TC::from("fn f() {\n  x := 65\n  c Char = x\n}");
-  EXPECT_FALSE(r.ok()) << "typed int should not be directly assignable to Char";
+TEST(TypeCheck, TypedIntNotDirectlyAssignableToNarrowerWidth) {
+  // A *typed* int variable is not directly assignable to a different integer
+  // width — narrowing requires an explicit conversion. (A bare integer
+  // literal is "untyped" and may flow into any integer width; that case is
+  // exercised separately.)
+  auto r = TC::from("fn f() {\n  x := 65\n  c uint32 = x\n}");
+  EXPECT_FALSE(r.ok()) << "typed int should not be directly assignable to uint32";
   EXPECT_TRUE(r.has_err("variable initializer"));
-}
-
-TEST(TypeCheck, IntCharConversion) {
-  auto r = TC::from("fn f() {\n  x := 65\n  x.Char()\n}");
-  EXPECT_TRUE(r.ok()) << "int should have a .Char() method";
 }
 
 // ===========================================================================
@@ -1033,13 +1083,13 @@ TEST(TypeCheck, SwitchTypeMatch) {
   EXPECT_TRUE(r.ok());
 }
 
-// Spec: `const X = A | B` is a type-union alias when A and B resolve
-// to types.  (docs/language.md:945-948)
-TEST(TypeCheck, ConstDecl_UnionOfInterfaces_IsTypeAlias) {
+// A structural alias (`type X = A | B`) is transparent to the union, so a
+// value satisfying any member is assignable through it.
+TEST(TypeCheck, TypeDecl_StructuralUnionOfInterfaces) {
   auto r = TC::from(
       "interface Reader { Read() string }\n"
       "interface Writer { Write(s string) void }\n"
-      "const ReadWriter = Reader | Writer\n"
+      "type ReadWriter = Reader | Writer\n"
       "struct Buffer {}\n"
       "pub fn (b Buffer) Read() string { \"\" }\n"
       "pub fn (b Buffer) Write(s string) void {}\n"
@@ -1392,7 +1442,7 @@ TEST(TypeCheck, IterableStructRecordedInAnalyzer) {
 
 TEST(TypeCheck, TypeAliasMethodOnInt) {
   auto r = TC::from(
-      "const UserID = int\n"
+      "type UserID int\n"
       "pub fn (u UserID) Validate() bool { true }\n"
       "fn f() bool {\n"
       "  id UserID\n"
@@ -1403,7 +1453,7 @@ TEST(TypeCheck, TypeAliasMethodOnInt) {
 
 TEST(TypeCheck, TypeAliasInheritsBuiltinMethods) {
   auto r = TC::from(
-      "const Name = string\n"
+      "type Name string\n"
       "fn f() string {\n"
       "  n Name\n"
       "  n.Upper()\n"
@@ -1414,7 +1464,7 @@ TEST(TypeCheck, TypeAliasInheritsBuiltinMethods) {
 TEST(TypeCheck, TypeAliasOnStructInheritsFields) {
   auto r = TC::from(
       "struct Point { pub x, y int }\n"
-      "const MyPoint = Point\n"
+      "type MyPoint Point\n"
       "pub fn (p MyPoint) Sum() int { p.x }\n"
       "fn f() int {\n"
       "  p := MyPoint{x: 1, y: 2}\n"
@@ -1425,7 +1475,7 @@ TEST(TypeCheck, TypeAliasOnStructInheritsFields) {
 
 TEST(TypeCheck, TypeAliasMethodAndBuiltinCoexist) {
   auto r = TC::from(
-      "const UserID = int\n"
+      "type UserID int\n"
       "pub fn (u UserID) Label() string { \"user\" }\n"
       "fn f() {\n"
       "  id UserID\n"
@@ -1439,7 +1489,7 @@ TEST(TypeCheck, TypeAliasIsResolvedAsType) {
   // A type alias should be resolved as a Type symbol, so it can be used
   // in variable declarations.
   auto r = TC::from(
-      "const UserID = int\n"
+      "type UserID int\n"
       "fn f() {\n"
       "  id UserID\n"
       "}");
@@ -1448,7 +1498,7 @@ TEST(TypeCheck, TypeAliasIsResolvedAsType) {
 
 TEST(TypeCheck, TypeAliasMethodOnFloat) {
   auto r = TC::from(
-      "const Temperature = float\n"
+      "type Temperature float\n"
       "pub fn (t Temperature) Celsius() Temperature { t }\n"
       "fn f() Temperature {\n"
       "  temp Temperature\n"
@@ -1459,7 +1509,7 @@ TEST(TypeCheck, TypeAliasMethodOnFloat) {
 
 TEST(TypeCheck, TypeAliasMethodOnBool) {
   auto r = TC::from(
-      "const Flag = bool\n"
+      "type Flag bool\n"
       "pub fn (fl Flag) IsSet() bool { true }\n"
       "fn test() bool {\n"
       "  active Flag\n"
@@ -1470,7 +1520,7 @@ TEST(TypeCheck, TypeAliasMethodOnBool) {
 
 TEST(TypeCheck, TypeAliasMultipleMethods) {
   auto r = TC::from(
-      "const ID = int\n"
+      "type ID int\n"
       "pub fn (i ID) IsValid() bool { true }\n"
       "pub fn (i ID) Label() string { \"id\" }\n"
       "fn f() {\n"

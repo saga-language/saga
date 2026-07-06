@@ -348,18 +348,29 @@ TEST(ParserDeclaration, Const_WithType) {
   EXPECT_EQ(val->literal, "1024");
 }
 
-TEST(ParserDeclaration, Const_TypeAlias) {
-  auto r = ParseResult::from("const MyType = int\n");
+TEST(ParserDeclaration, TypeDecl_Nominal) {
+  auto r = ParseResult::from("type MyType int\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
-  auto *c =
-      std::get_if<saga::ConstDeclNode>(&r.source_node().declarations[0]->data);
-  ASSERT_NE(c, nullptr);
-  EXPECT_EQ(c->name.name, "MyType");
-  EXPECT_FALSE(c->type.has_value());
-  auto *val = std::get_if<saga::IdentifierNode>(&c->value->data);
-  ASSERT_NE(val, nullptr);
-  EXPECT_EQ(val->name, "int");
+  auto *t =
+      std::get_if<saga::TypeDeclNode>(&r.source_node().declarations[0]->data);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(t->name.name, "MyType");
+  EXPECT_FALSE(t->is_structural);
+  auto *u = std::get_if<saga::IdentifierNode>(&t->underlying->data);
+  ASSERT_NE(u, nullptr);
+  EXPECT_EQ(u->name, "int");
+}
+
+TEST(ParserDeclaration, TypeDecl_Structural) {
+  auto r = ParseResult::from("type MyType = int\n");
+  EXPECT_TRUE(r.errors.empty());
+  ASSERT_EQ(r.source_node().declarations.size(), 1);
+  auto *t =
+      std::get_if<saga::TypeDeclNode>(&r.source_node().declarations[0]->data);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(t->name.name, "MyType");
+  EXPECT_TRUE(t->is_structural);
 }
 
 TEST(ParserDeclaration, Dispatch_Struct) {
@@ -382,9 +393,11 @@ TEST(ParserDeclaration, Dispatch_Struct) {
   EXPECT_EQ(field->names.identifiers[1].name, "y");
 }
 
-TEST(ParserDeclaration, DISABLED_Struct_GenericWithEmbeds) {
+TEST(ParserDeclaration, Struct_GenericWithEmbeds) {
   auto r = ParseResult::from(
-      "pub struct |T| Node < Base, Mixin {\n"
+      "pub struct Node<T> {\n"
+      "  Base\n"
+      "  Mixin\n"
       "  pub value T\n"
       "}\n");
   EXPECT_TRUE(r.errors.empty());
@@ -481,6 +494,25 @@ TEST(ParserDeclaration, Interface_WithMethods) {
   EXPECT_EQ(iface->methods[0].name.name, "String");
   EXPECT_FALSE(iface->methods[1].is_public);
   EXPECT_EQ(iface->methods[1].name.name, "Hash");
+}
+
+TEST(ParserDeclaration, Interface_WithEmbeds) {
+  auto r = ParseResult::from(
+      "interface ReadWriter {\n"
+      "  Reader\n"
+      "  lib.Writer\n"
+      "  Flush() void\n"
+      "}\n");
+  EXPECT_TRUE(r.errors.empty());
+  ASSERT_EQ(r.source_node().declarations.size(), 1);
+  auto *iface = std::get_if<saga::InterfaceDeclNode>(
+      &r.source_node().declarations[0]->data);
+  ASSERT_NE(iface, nullptr);
+  ASSERT_EQ(iface->embeds.size(), 2);
+  EXPECT_NE(std::get_if<saga::IdentifierNode>(&iface->embeds[0]->data), nullptr);
+  EXPECT_NE(std::get_if<saga::SelectorNode>(&iface->embeds[1]->data), nullptr);
+  ASSERT_EQ(iface->methods.size(), 1);
+  EXPECT_EQ(iface->methods[0].name.name, "Flush");
 }
 
 // ---------------------------------------------------------------------------
@@ -2338,6 +2370,18 @@ TEST_F(ParserDeclCoverageTest, FuncDecl_WithReceiver) {
   EXPECT_EQ(rty->name, "User");
 }
 
+TEST_F(ParserDeclCoverageTest, FuncDecl_TypeMethod) {
+  auto r = ParseResult::from("fn Point.Origin() Point { Point{x: 0, y: 0} }\n");
+  EXPECT_TRUE(r.errors.empty());
+  ASSERT_EQ(r.source_node().declarations.size(), 1);
+  auto *fn = r.decl_as<FuncDeclNode>(0);
+  ASSERT_NE(fn, nullptr);
+  EXPECT_EQ(fn->name.name, "Origin");
+  EXPECT_FALSE(fn->receiver.has_value());
+  ASSERT_TRUE(fn->type_name.has_value());
+  EXPECT_EQ(fn->type_name->name, "Point");
+}
+
 TEST_F(ParserDeclCoverageTest, FuncDecl_Variadic) {
   auto r = ParseResult::from("fn Sum(args ...int) int { 0 }\n");
   EXPECT_TRUE(r.errors.empty());
@@ -2443,8 +2487,8 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmptyBody) {
   EXPECT_TRUE(s->embeds.empty());
 }
 
-TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_EmbedsOnly) {
-  auto r = ParseResult::from("struct Child < Parent {}\n");
+TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
+  auto r = ParseResult::from("struct Child {\n  Parent\n}\n");
   EXPECT_TRUE(r.errors.empty());
   auto *s = r.decl_as<StructDeclNode>(0);
   ASSERT_NE(s, nullptr);
@@ -2456,8 +2500,24 @@ TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_EmbedsOnly) {
   EXPECT_TRUE(s->members.empty());
 }
 
-TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_QualifiedEmbed) {
-  auto r = ParseResult::from("struct User < lib.Timestamps { name string }\n");
+TEST_F(ParserDeclCoverageTest, StructDecl_FieldDefault) {
+  auto r = ParseResult::from(
+      "struct Config {\n  timeout int = 30\n  retries int\n}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *s = r.decl_as<StructDeclNode>(0);
+  ASSERT_NE(s, nullptr);
+  ASSERT_EQ(s->members.size(), 2);
+  auto *f0 = std::get_if<saga::FieldSpecNode>(&s->members[0].member->data);
+  ASSERT_NE(f0, nullptr);
+  EXPECT_NE(f0->default_value, nullptr);
+  auto *f1 = std::get_if<saga::FieldSpecNode>(&s->members[1].member->data);
+  ASSERT_NE(f1, nullptr);
+  EXPECT_EQ(f1->default_value, nullptr);
+}
+
+TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
+  auto r = ParseResult::from(
+      "struct User {\n  lib.Timestamps\n  name string\n}\n");
   EXPECT_TRUE(r.errors.empty());
   auto *s = r.decl_as<StructDeclNode>(0);
   ASSERT_NE(s, nullptr);
@@ -2468,6 +2528,7 @@ TEST_F(ParserDeclCoverageTest, DISABLED_StructDecl_QualifiedEmbed) {
   ASSERT_NE(obj, nullptr);
   EXPECT_EQ(obj->name, "lib");
   EXPECT_EQ(sel->field.name, "Timestamps");
+  ASSERT_EQ(s->members.size(), 1);
 }
 
 // =============================================================================

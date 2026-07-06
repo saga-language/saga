@@ -2,7 +2,7 @@
 // (docs/language.md:559)
 import "std/io"
 
-const UserID = int
+type UserID int
 
 pub fn Main() void {
   uid UserID = 42

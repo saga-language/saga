@@ -1,0 +1,23 @@
+// Spec: an embedded struct's fields are promoted into the child — they are
+// set in the child's literal and read through the child, and an embedded
+// method sees them as its own. (docs/language.md §Structural embedding)
+import "std/io"
+
+struct Timestamps {
+  created int
+  updated int
+}
+
+pub fn (t Timestamps) Age() int { t.updated - t.created }
+
+struct User {
+  Timestamps
+  name string
+}
+
+pub fn Main() void {
+  u := User{name: "Alice", created: 100, updated: 175}
+  io.Println(u.name)
+  io.Println("{u.created}")
+  io.Println("{u.Age()}")
+}

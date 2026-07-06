@@ -112,13 +112,21 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
     }
   }
 
-  // Fallback: emit the object as a value (pointer), then GEP.
+  // Fallback: emit the object, then GEP into it.
   auto *obj = emit_expr(*node.object);
   if (!obj)
     return nullptr;
 
   auto sem = semantic_type(*node.object);
   if (sem && sem->kind == TypeKind::Struct) {
+    // emit_expr may yield the struct by value (a const-global load or a call
+    // result); struct_field_gep needs a pointer, so spill to a temp first.
+    if (obj->getType()->isStructTy()) {
+      auto *func = builder.GetInsertBlock()->getParent();
+      auto *tmp = create_entry_alloca(func, "field.tmp", obj->getType());
+      builder.CreateStore(obj, tmp);
+      obj = tmp;
+    }
     auto [gep, ftype] = struct_field_gep(obj, sem, field_name);
     if (gep) {
       if (ftype && ftype->isStructTy())

@@ -62,11 +62,7 @@ void CodeGen::declare_functions(const SourceNode &src) {
         continue;
       std::string name(fn->name.name);
       bool is_main = (name == "Main");
-      // Extern declarations link to a C symbol of the same name without
-      // package mangling.
-      std::string link_name = is_main      ? "main"
-                              : fn->is_extern ? name
-                                              : mangle(name);
+      std::string link_name = free_func_link_name(*fn);
 
       // Skip if already declared (e.g. by a previous source file).
       if (module->getFunction(link_name))
@@ -241,26 +237,11 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   if (!ll_type || ll_type->isVoidTy())
     return;
 
-  // Collection constants (arrays, maps) cannot be built as compile-time
-  // LLVM constants — their backing storage is heap-allocated.  Emit a
-  // mutable null-valued ptr global and queue the value expression so it
-  // runs from `<pkg>__init__` before user code observes the global.
-  if (sem_type->kind == TypeKind::Array || sem_type->kind == TypeKind::Map) {
-    auto *ptr_ty = llvm::PointerType::getUnqual(context);
-    new llvm::GlobalVariable(
-        *module, ptr_ty, /*isConstant=*/false,
-        llvm::GlobalValue::ExternalLinkage,
-        llvm::Constant::getNullValue(ptr_ty), link_name);
-    deferred_const_inits_.push_back(&node);
-    init_function_needed = true;
-    return;
-  }
-
   // Try to build a constant initializer.
   llvm::Constant *init = nullptr;
 
   // If the analyzer folded the initialiser to a scalar, emit a literal
-  // global so the const skips the deferred __init__ store path.
+  // global directly.
   if (auto cv_it = analyzer.const_decl_values_.find(name);
       cv_it != analyzer.const_decl_values_.end()) {
     auto &cv = cv_it->second;
@@ -277,42 +258,21 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
     }
   }
 
-  // String and struct literals are not modelled by the scalar evaluator
-  // and stay on this per-AST-shape path.
+  // Non-scalar constants (strings, structs, arrays, sibling references) are
+  // not modelled by the scalar evaluator; build them as rodata constants.
   if (!init) {
-    if (auto *str_lit = std::get_if<StringLiteralNode>(&node.value->data)) {
-      std::string text;
-      for (auto &frag_node : str_lit->fragments) {
-        if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
-          text += unescape_fragment(frag->text);
-      }
-      init = llvm::cast<llvm::Constant>(make_string_constant(text));
-      ll_type = llvm::PointerType::getUnqual(context);
-    } else if (std::get_if<StructLiteralNode>(&node.value->data)) {
-      if (auto *c = build_const_value(*node.value, sem_type)) {
-        init = c;
-        ll_type = c->getType();
-      }
-    }
+    init = build_const_value(*node.value, sem_type);
+    if (init)
+      ll_type = init->getType();
   }
 
-  // No literal initializer: the value is a non-trivial compile-time
-  // expression (e.g. `const MaxSize = 2 * 1024 * 1024`). Create a
-  // mutable-storage global with a zero placeholder and queue the value
-  // expression to run from `<pkg>__init__` before user code observes
-  // the global.  Logically still immutable — semantic analysis enforces
-  // that user code cannot mutate it; isConstant=false here is purely a
-  // codegen necessity so the init function can write the value.
-  if (!init) {
-    auto *gv = new llvm::GlobalVariable(
-        *module, ll_type, /*isConstant=*/false,
-        llvm::GlobalValue::ExternalLinkage,
-        llvm::Constant::getNullValue(ll_type), link_name);
-    (void)gv;
-    deferred_const_inits_.push_back(&node);
-    init_function_needed = true;
-    return;
-  }
+  // The analyzer's comptime predicate guarantees every const initialiser is a
+  // compile-time constant, so a miss here is an unhandled accepted form, not a
+  // user error.
+  if (!init)
+    llvm::report_fatal_error(
+        llvm::Twine("const '") + name +
+        "' is not lowerable to a compile-time constant");
 
   auto *gv = new llvm::GlobalVariable(
       *module, ll_type, /*isConstant=*/true,
@@ -377,7 +337,53 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
     }
     return llvm::ConstantStruct::get(st, field_vals);
   }
+  if (auto *al = std::get_if<ArrayLiteralNode>(&val_node.data)) {
+    if (!expected || expected->kind != TypeKind::Array) return nullptr;
+    if (!std::holds_alternative<ArrayTypeInfo>(expected->detail))
+      return nullptr;
+    auto &ainfo = std::get<ArrayTypeInfo>(expected->detail);
+    auto *elem_ll = llvm_type(ainfo.element);
+    if (!elem_ll) return nullptr;
+    std::vector<llvm::Constant *> elems;
+    elems.reserve(al->elements.size());
+    for (auto &e : al->elements) {
+      auto *c = build_const_value(*e, ainfo.element);
+      if (!c) return nullptr;
+      elems.push_back(c);
+    }
+    return build_const_array_global(elem_ll, elems);
+  }
+  // Backward reference to a sibling const, already lowered to a global.
+  if (auto *id = std::get_if<IdentifierNode>(&val_node.data)) {
+    if (auto *g = module->getGlobalVariable(mangle(std::string(id->name)));
+        g && g->hasInitializer())
+      return g->getInitializer();
+    return nullptr;
+  }
   return nullptr;
+}
+
+llvm::Constant *CodeGen::build_const_array_global(
+    llvm::Type *elem_ll, const std::vector<llvm::Constant *> &elems) {
+  auto *buf_ty = llvm::ArrayType::get(elem_ll, elems.size());
+  auto *buf_global = new llvm::GlobalVariable(
+      *module, buf_ty, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantArray::get(buf_ty, elems), ".saga_arr_buf");
+  buf_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+
+  int64_t n = static_cast<int64_t>(elems.size());
+  int64_t elem_size =
+      static_cast<int64_t>(module->getDataLayout().getTypeAllocSize(elem_ll));
+  auto *hdr = llvm::ConstantStruct::get(
+      array_type, {buf_global, llvm::ConstantInt::get(i64_type, n),
+                   llvm::ConstantInt::get(i64_type, n),
+                   llvm::ConstantInt::get(i64_type, elem_size),
+                   llvm::ConstantInt::getSigned(i64_type, -1)});
+  auto *hdr_global = new llvm::GlobalVariable(
+      *module, array_type, /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, hdr, ".saga_arr_hdr");
+  hdr_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  return hdr_global;
 }
 
 void CodeGen::declare_enums(const SourceNode &src) {
@@ -434,27 +440,37 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
   if (iface_vtable_types.count(key))
     return;
 
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-  // Build a vtable struct: one function pointer per method.
-  std::vector<llvm::Type *> vtable_fields;
-  std::vector<std::string> method_names;
-
-  for (auto &method : node.methods) {
-    vtable_fields.push_back(ptr_type); // fn ptr (opaque)
-    method_names.push_back(std::string(method.name.name));
+  // Prefer the analyzer's resolved interface type: its method set is already
+  // flattened across embedded interfaces. Fall back to the AST only when the
+  // symbol isn't available (degenerate paths).
+  TypePtr sem_type;
+  if (analyzer.package_scope_) {
+    auto it = analyzer.package_scope_->symbols.find(name);
+    if (it != analyzer.package_scope_->symbols.end())
+      sem_type = it->second.type;
   }
+  if (!sem_type || sem_type->kind != TypeKind::Interface)
+    sem_type = make_interface_type(name, ast_interface_methods(node), {},
+                                   package_name);
 
-  auto *vtable_st = llvm::StructType::create(
-      context, vtable_fields, "saga.vtable." + key);
+  auto &info = std::get<InterfaceTypeInfo>(sem_type->detail);
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  std::vector<llvm::Type *> vtable_fields(info.methods.size(), ptr_type);
+  std::vector<std::string> method_names;
+  for (auto &m : info.methods)
+    method_names.push_back(m.name);
+
+  auto *vtable_st =
+      llvm::StructType::create(context, vtable_fields, "saga.vtable." + key);
   iface_vtable_types[key] = vtable_st;
   iface_method_names[key] = std::move(method_names);
+  named_sem_types[key] = sem_type;
+}
 
-  // Build a minimal InterfaceTypeInfo for codegen type lookup.
-  // We just need the name and method names for vtable matching.
-  std::vector<MethodInfo> sem_methods;
+std::vector<MethodInfo>
+CodeGen::ast_interface_methods(const InterfaceDeclNode &node) {
+  std::vector<MethodInfo> methods;
   for (auto &m : node.methods) {
-    // Build a simple FuncTypeInfo from the signature.
     std::vector<TypePtr> params;
     for (auto &p : m.signature.params) {
       auto pt = analyzer.resolve_type(*p.type);
@@ -464,12 +480,11 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
     TypePtr ret = m.signature.return_type
                       ? analyzer.resolve_type(*m.signature.return_type)
                       : nullptr;
-    auto fn_type = make_func_type(std::move(params), std::move(ret));
-    sem_methods.push_back(
-        {std::string(m.name.name), fn_type, m.is_public, package_name});
+    methods.push_back({std::string(m.name.name),
+                       make_func_type(std::move(params), std::move(ret)),
+                       m.is_public, package_name});
   }
-  named_sem_types[key] =
-      make_interface_type(name, std::move(sem_methods), {}, package_name);
+  return methods;
 }
 
 // ===========================================================================
