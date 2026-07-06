@@ -642,18 +642,8 @@ bool CodeGen::is_impure_union(const TypePtr &t) const {
     return false;
   auto &info = std::get<UnionTypeInfo>(t->detail);
   for (auto &alt : info.alternatives) {
-    if (alt->kind == TypeKind::Interface) {
-      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error")
-        return true;
-    }
-    // Concrete types that satisfy Error (e.g. Missing) also make the
-    // union impure for or-clause purposes — `String | Missing` reads
-    // the same way as `String | Error` to user code.
-    if (alt && alt->kind == TypeKind::Struct) {
-      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
-      if (sinfo.name == "Missing") return true;
-    }
+    if (is_error_valued(alt))
+      return true;
   }
   return false;
 }
@@ -664,15 +654,8 @@ TypePtr CodeGen::strip_error_from_union(const TypePtr &t) const {
   auto &info = std::get<UnionTypeInfo>(t->detail);
   std::vector<TypePtr> purified;
   for (auto &alt : info.alternatives) {
-    if (alt && alt->kind == TypeKind::Interface) {
-      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error") continue;
-    }
-    if (alt && alt->kind == TypeKind::Struct) {
-      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
-      if (sinfo.name == "Missing") continue;
-    }
-    purified.push_back(alt);
+    if (!is_error_valued(alt))
+      purified.push_back(alt);
   }
   if (purified.empty())
     return nullptr;

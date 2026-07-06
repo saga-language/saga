@@ -160,6 +160,16 @@ bool is_error_type(const TypePtr &t) {
   return t && t->kind == TypeKind::Error;
 }
 
+bool is_error_valued(const TypePtr &t) {
+  if (!t)
+    return false;
+  if (t->kind == TypeKind::Interface)
+    return std::get<InterfaceTypeInfo>(t->detail).name == "Error";
+  if (t->kind == TypeKind::Struct)
+    return std::get<StructTypeInfo>(t->detail).name == "Missing";
+  return false;
+}
+
 bool is_numeric(const TypePtr &t) {
   auto u = unwrap_alias(t);
   return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float);

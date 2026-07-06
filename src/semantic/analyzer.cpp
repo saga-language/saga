@@ -4376,28 +4376,7 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
     return builtins.error_type;
   }
 
-  // Check that the expression is an impure type (contains Error).
-  bool has_error = false;
-  if (expr_type->kind == TypeKind::Union) {
-    auto &info = std::get<UnionTypeInfo>(expr_type->detail);
-    for (auto &alt : info.alternatives) {
-      if (alt->kind == TypeKind::Interface &&
-          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
-        has_error = true;
-        break;
-      }
-      // Also check for concrete types that satisfy Error (e.g. Missing).
-      if (satisfies_interface(alt, builtins.error_iface)) {
-        has_error = true;
-        break;
-      }
-    }
-  }
-  if (!has_error && expr_type->kind != TypeKind::Union) {
-    // Non-union, non-error type — or is a no-op. Allow but pass through.
-  }
-
-  // The or-clause strips the Error from the union.
+  // The or-clause strips the error from the union.
   push_scope(ScopeKind::Block);
 
   if (node.pipe) {
@@ -4412,22 +4391,13 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
 
   pop_scope();
 
-  // Strip Error/Missing from the union to get the purified type.
+  // Strip error members from the union to get the purified type.
   if (expr_type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(expr_type->detail);
     std::vector<TypePtr> purified;
     for (auto &alt : info.alternatives) {
-      // Strip the Error interface.
-      if (alt->kind == TypeKind::Interface &&
-          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
-        continue;
-      }
-      // Strip concrete types that satisfy Error (e.g. Missing).
-      if (alt->kind == TypeKind::Struct &&
-          satisfies_interface(alt, builtins.error_iface)) {
-        continue;
-      }
-      purified.push_back(alt);
+      if (!is_error_valued(alt))
+        purified.push_back(alt);
     }
     if (purified.empty())
       return fallback_type ? fallback_type : builtins.void_type;

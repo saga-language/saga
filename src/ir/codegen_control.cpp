@@ -821,17 +821,10 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   std::vector<int> error_tags;
   std::vector<int> non_error_tags;
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
-    auto &alt = info.alternatives[i];
-    bool is_err = false;
-    if (alt && alt->kind == TypeKind::Interface) {
-      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error") is_err = true;
-    } else if (alt && alt->kind == TypeKind::Struct) {
-      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
-      if (sinfo.name == "Missing") is_err = true;
-    }
-    if (is_err) error_tags.push_back(static_cast<int>(i));
-    else non_error_tags.push_back(static_cast<int>(i));
+    if (is_error_valued(info.alternatives[i]))
+      error_tags.push_back(static_cast<int>(i));
+    else
+      non_error_tags.push_back(static_cast<int>(i));
   }
 
   // Create basic blocks.

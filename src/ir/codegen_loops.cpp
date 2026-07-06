@@ -64,12 +64,10 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
       int err_tag = -1;
       for (size_t i = 0; i < uinfo.alternatives.size(); ++i) {
         auto &alt = uinfo.alternatives[i];
-        if (alt && alt->kind == TypeKind::Interface &&
-            std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
+        if (is_error_valued(alt))
           err_tag = static_cast<int>(i);
-        } else if (alt) {
+        else if (alt)
           break_value_type = alt;
-        }
       }
       if (err_tag >= 0 && break_value_type) {
         break_result = create_entry_alloca(func, "for.result", union_st);
