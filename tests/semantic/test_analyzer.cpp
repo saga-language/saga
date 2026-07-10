@@ -211,6 +211,62 @@ TEST(Analyzer, CollectEnumDecl) {
   EXPECT_TRUE(r.has_no_errors());
 }
 
+TEST(Analyzer, CollectErrorDecl) {
+  auto r = AnalysisResult::from("error NetworkError { code int }");
+  EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, ResolveErrorInjectsMessageField) {
+  auto r = AnalysisResult::from("error NetworkError { code int }");
+  ASSERT_TRUE(r.has_no_errors());
+  auto &syms = r.analyzer->package_scope_->symbols;
+  auto it = syms.find("NetworkError");
+  ASSERT_NE(it, syms.end());
+  ASSERT_EQ(it->second.type->kind, TypeKind::Struct);
+  auto &info = std::get<StructTypeInfo>(it->second.type->detail);
+  EXPECT_TRUE(info.is_error);
+  ASSERT_EQ(info.fields.size(), 2u);
+  EXPECT_EQ(info.fields[0].name, "message"); // injected, field 0
+  ASSERT_NE(info.fields[0].type, nullptr);
+  EXPECT_EQ(info.fields[0].type->kind, TypeKind::String);
+  EXPECT_EQ(info.fields[1].name, "code");
+}
+
+TEST(Analyzer, ErrorMessageDefaultAccepted) {
+  auto r = AnalysisResult::from(
+      "error NetworkError {\n  message = \"a network error occurred\"\n}");
+  EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, ErrorExplicitMessageFieldRejected) {
+  // An explicit `message` field collides with the auto-injected one.
+  auto r = AnalysisResult::from("error E {\n  message string\n}");
+  EXPECT_TRUE(r.has_error_containing("duplicate field 'message'"));
+}
+
+TEST(Analyzer, ErrorNonComptimeMessageRejected) {
+  auto r = AnalysisResult::from(
+      "fn compute() string { \"x\" }\n"
+      "error E {\n  message = compute()\n}");
+  EXPECT_FALSE(r.has_no_errors());
+}
+
+TEST(Analyzer, ErrorReceiverMethodRejected) {
+  auto r = AnalysisResult::from(
+      "error E { code int }\n"
+      "fn (e E) Tag() int { e.code }");
+  EXPECT_TRUE(
+      r.has_error_containing("methods cannot be attached to error type 'E'"));
+}
+
+TEST(Analyzer, ErrorTypeMethodRejected) {
+  auto r = AnalysisResult::from(
+      "error E { code int }\n"
+      "fn E.New() int { 0 }");
+  EXPECT_TRUE(
+      r.has_error_containing("methods cannot be attached to error type 'E'"));
+}
+
 TEST(Analyzer, CollectMultipleDecls) {
   auto r = AnalysisResult::from(
       "fn foo() {}\nfn bar() {}\nstruct Baz {}");

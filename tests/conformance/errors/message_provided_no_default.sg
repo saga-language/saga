@@ -1,0 +1,13 @@
+// With no comptime default, the injected `message` field is set at the
+// construction site like any other field.
+import "std/io"
+
+error ParseError {
+  line int
+}
+
+pub fn Main() void {
+  e := ParseError{line: 7, message: "unexpected token"}
+  io.Println(e.message)
+  io.Println(e.line.String())
+}

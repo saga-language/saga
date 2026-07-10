@@ -601,6 +601,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
       std::visit(overloaded{
                      [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                      [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
+                     [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
                      [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
                      [&](const TypeDeclNode &t) { resolve_type_decl(t); },
                      [&](const auto &) { /* handled in phase 2b */ },
@@ -632,6 +633,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
                      [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                      [&](const StructDeclNode &) { /* done in phase 2a */ },
                      [&](const EnumDeclNode &) { /* done in phase 2a */ },
+                     [&](const ErrorDeclNode &) { /* done in phase 2a */ },
                      [&](const InterfaceDeclNode &) { /* done in phase 2a */ },
                      [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
                      [&](const auto &) { /* already reported in collect */ },
@@ -663,6 +665,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
               [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
               [&](const StructDeclNode &s) { check_struct_decl(s); },
               [&](const EnumDeclNode &e) { check_enum_decl(e); },
+              [&](const ErrorDeclNode &e) { check_error_decl(e); },
               [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
               [&](const ConstDeclNode &c) { check_const_decl(c); },
               [&](const ImportDeclNode &imp) { check_import_decl(imp); },
@@ -716,6 +719,7 @@ void Analyzer::visit_source(const SourceNode &src) {
                    [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
                    [&](const StructDeclNode &s) { check_struct_decl(s); },
                    [&](const EnumDeclNode &e) { check_enum_decl(e); },
+                   [&](const ErrorDeclNode &e) { check_error_decl(e); },
                    [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
                    [&](const ConstDeclNode &c) { check_const_decl(c); },
                    [&](const ImportDeclNode &imp) { check_import_decl(imp); },
@@ -747,6 +751,10 @@ void Analyzer::collect_declaration(const Node &node) {
                                             s.name.span, s.is_public));
                  },
                  [&](const EnumDeclNode &e) {
+                   declare(Symbol::type_sym(std::string(e.name.name), nullptr,
+                                            e.name.span, e.is_public));
+                 },
+                 [&](const ErrorDeclNode &e) {
                    declare(Symbol::type_sym(std::string(e.name.name), nullptr,
                                             e.name.span, e.is_public));
                  },
@@ -1484,6 +1492,7 @@ void Analyzer::resolve_declaration(const Node &node) {
                  [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
                  [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                  [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
+                 [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
                  [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
                  [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                  [&](const TypeDeclNode &t) { resolve_type_decl(t); },
@@ -1593,10 +1602,16 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
       if (recv_sym && recv_sym->type) {
         if (recv_sym->type->kind == TypeKind::Struct) {
           auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
-          if (check_recv_origin(struct_info.origin_package, struct_info.name))
+          if (struct_info.is_error) {
+            error(recv_type_node->span,
+                  std::format("methods cannot be attached to error type '{}'",
+                              struct_info.name));
+          } else if (check_recv_origin(struct_info.origin_package,
+                                       struct_info.name)) {
             struct_info.methods.push_back(
                 {std::string(fn.name.name), fn_type, fn.is_public,
                  current_package_name()});
+          }
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
           if (alias_info.structural) {
@@ -1757,6 +1772,12 @@ void Analyzer::attach_type_method(const FuncDeclNode &fn,
     return;
   }
   auto &sinfo = std::get<StructTypeInfo>(type_sym->type->detail);
+  if (sinfo.is_error) {
+    error(fn.type_name->span,
+          std::format("methods cannot be attached to error type '{}'",
+                      fn.type_name->name));
+    return;
+  }
   if (!sinfo.origin_package.empty() &&
       sinfo.origin_package != current_package_name()) {
     error(fn.type_name->span,
@@ -1849,6 +1870,35 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   if (has_generics) {
     pop_scope();
   }
+}
+
+// resolve_error_decl — a nominal error is struct-backed with the `is_error`
+// marker. Field 0 is the mandatory `message` string (auto-injected; the body
+// supplies only its optional `message = Expr` default); extra fields follow.
+void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
+  std::vector<FieldInfo> fields;
+  fields.push_back({"message", builtins.string_type, /*is_public=*/true,
+                    e.message_default.get()});
+
+  for (auto &member : e.members) {
+    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
+    if (!fs)
+      continue;
+    auto ft = resolve_type(*fs->type);
+    for (auto &ident : fs->names.identifiers)
+      fields.push_back({std::string(ident.name), ft, member.is_public,
+                        fs->default_value.get()});
+  }
+
+  auto error_type =
+      make_struct_type(std::string(e.name.name), std::move(fields),
+                       /*methods=*/{}, /*type_params=*/{},
+                       current_package_name());
+  std::get<StructTypeInfo>(error_type->detail).is_error = true;
+
+  auto sym_it = current_scope->symbols.find(std::string(e.name.name));
+  if (sym_it != current_scope->symbols.end())
+    sym_it->second.type = error_type;
 }
 
 void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
@@ -5021,25 +5071,56 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
   check_field_defaults(s);
 }
 
-// A field default must be a comptime expression assignable to the field type.
 void Analyzer::check_field_defaults(const StructDeclNode &s) {
   for (auto &member : s.members) {
-    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
-    if (!fs || !fs->default_value)
-      continue;
+    if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data))
+      check_field_default(*fs);
+  }
+}
 
-    auto field_type = resolve_type(*fs->type);
-    auto def_type = check_expr(*fs->default_value);
-    if (!require_const_expr(*fs->default_value))
-      continue;
-    if (!field_type || is_error_type(def_type))
-      continue;
+// A field default must be a comptime expression assignable to the field type.
+void Analyzer::check_field_default(const FieldSpecNode &fs) {
+  if (!fs.default_value)
+    return;
 
-    std::string fname = fs->names.identifiers.empty()
-                            ? "field"
-                            : std::string(fs->names.identifiers.front().name);
-    expect_assignable(fs->default_value->span, field_type, def_type,
-                      std::format("default for field '{}'", fname));
+  auto field_type = resolve_type(*fs.type);
+  auto def_type = check_expr(*fs.default_value);
+  if (!require_const_expr(*fs.default_value))
+    return;
+  if (!field_type || is_error_type(def_type))
+    return;
+
+  std::string fname = fs.names.identifiers.empty()
+                          ? "field"
+                          : std::string(fs.names.identifiers.front().name);
+  expect_assignable(fs.default_value->span, field_type, def_type,
+                    std::format("default for field '{}'", fname));
+}
+
+void Analyzer::check_error_decl(const ErrorDeclNode &e) {
+  auto sym = lookup(std::string(e.name.name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Struct)
+    return;
+  auto &info = std::get<StructTypeInfo>(sym->type->detail);
+
+  std::unordered_map<std::string, bool> seen;
+  for (auto &f : info.fields) {
+    if (seen.count(f.name))
+      error(e.span, std::format("duplicate field '{}' in error '{}'", f.name,
+                                info.name));
+    seen[f.name] = true;
+  }
+
+  if (e.message_default) {
+    auto def_type = check_expr(*e.message_default);
+    if (require_const_expr(*e.message_default) && !is_error_type(def_type))
+      expect_assignable(e.message_default->span, builtins.string_type, def_type,
+                        "error message default");
+  }
+
+  for (auto &member : e.members) {
+    if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data))
+      check_field_default(*fs);
   }
 }
 

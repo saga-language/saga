@@ -1641,6 +1641,60 @@ NodePtr Parser::parse_enum_decl(bool is_public) {
                                  std::move(fields));
 }
 
+// parse_error_decl — ErrorDecl = "error" Identifier "{"
+//                                { terminal ErrorMember } "}"
+//
+// ErrorMember = "message" "=" Expression | [ "pub" ] FieldSpec
+//
+// `message = Expr` (a bare `message` immediately followed by `=`) sets the
+// comptime default of the mandatory message field; everything else is an extra
+// field, reusing parse_struct_field. Errors take no generic params and no
+// embeds.
+NodePtr Parser::parse_error_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Error);
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  skip_terminators();
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  NodePtr message_default;
+  std::vector<StructMemberNode> members;
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    if (at_error_message())
+      message_default = parse_error_message();
+    else
+      members.push_back(parse_struct_field());
+
+    consume_stray_member_separator("error");
+    skip_terminators();
+  }
+
+  expect(Token::Kind::RightBrace);
+
+  return make_node<ErrorDeclNode>(span_from(start), is_public, std::move(name),
+                                  std::move(message_default),
+                                  std::move(members));
+}
+
+// A `message = Expr` member: a bare `message` identifier immediately followed
+// by `=`. A field named `message` with a type (`message string`) is a normal
+// field, not this form.
+bool Parser::at_error_message() const {
+  return check(Token::Kind::Identifier) && current.literal == "message" &&
+         peek().kind == Token::Kind::Assignment;
+}
+
+NodePtr Parser::parse_error_message() {
+  expect(Token::Kind::Identifier); // "message"
+  expect(Token::Kind::Assignment);
+  return parse_expression();
+}
+
 // parse_enum_field — EnumField = Identifier [ EnumInitializer ]
 // EnumInitializer = "{" Identifier ":" Expression
 //                   [ "," Identifier ":" Expression ] "}"
@@ -2050,6 +2104,8 @@ NodePtr Parser::parse_declaration() {
     return parse_type_decl(is_public);
   case Token::Kind::Enum:
     return parse_enum_decl(is_public);
+  case Token::Kind::Error:
+    return parse_error_decl(is_public);
   case Token::Kind::Extern:
     if (is_public)
       error("'pub' cannot be applied to an 'extern' declaration");

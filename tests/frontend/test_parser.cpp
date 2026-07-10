@@ -2487,6 +2487,41 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmptyBody) {
   EXPECT_TRUE(s->embeds.empty());
 }
 
+TEST_F(ParserDeclCoverageTest, ErrorDecl_EmptyBody) {
+  auto r = ParseResult::from("error NetworkError {}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *e = r.decl_as<ErrorDeclNode>(0);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(e->name.name, "NetworkError");
+  EXPECT_EQ(e->message_default, nullptr);
+  EXPECT_TRUE(e->members.empty());
+}
+
+TEST_F(ParserDeclCoverageTest, ErrorDecl_MessageDefault) {
+  auto r = ParseResult::from(
+      "error NetworkError {\n  message = \"a network error occurred\"\n}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *e = r.decl_as<ErrorDeclNode>(0);
+  ASSERT_NE(e, nullptr);
+  EXPECT_NE(e->message_default, nullptr);
+  EXPECT_TRUE(e->members.empty());
+}
+
+TEST_F(ParserDeclCoverageTest, ErrorDecl_FieldsAndMessage) {
+  auto r = ParseResult::from(
+      "error NetworkError {\n  pub code int\n  message = \"boom\"\n}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *e = r.decl_as<ErrorDeclNode>(0);
+  ASSERT_NE(e, nullptr);
+  EXPECT_NE(e->message_default, nullptr);
+  ASSERT_EQ(e->members.size(), 1u);
+  EXPECT_TRUE(e->members[0].is_public);
+  auto *f0 = std::get_if<saga::FieldSpecNode>(&e->members[0].member->data);
+  ASSERT_NE(f0, nullptr);
+  ASSERT_FALSE(f0->names.identifiers.empty());
+  EXPECT_EQ(f0->names.identifiers[0].name, "code");
+}
+
 TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {
   auto r = ParseResult::from("struct Child {\n  Parent\n}\n");
   EXPECT_TRUE(r.errors.empty());

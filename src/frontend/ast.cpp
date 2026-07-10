@@ -521,6 +521,14 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             for (const auto &m : n.members)
               dump_struct_member(m, os, c);
           },
+          [&](const ErrorDeclNode &n) {
+            os << pad(indent) << "ErrorDeclNode" << (n.is_public ? " pub" : "")
+               << " \"" << n.name.name << "\"\n";
+            if (n.message_default)
+              dump_ptr(n.message_default, os, c);
+            for (const auto &m : n.members)
+              dump_struct_member(m, os, c);
+          },
 
           // -----------------------------------------------------------------------
           // Structure

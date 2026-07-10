@@ -549,6 +549,21 @@ struct StructDeclNode {
   std::vector<StructMemberNode> members;
 };
 
+// ErrorDecl   = [ "pub" ] "error" Identifier "{" { terminal ErrorMember } "}"
+// ErrorMember = "message" "=" Expression | [ "pub" ] FieldSpec
+//
+// `message` is the mandatory string field; the analyzer auto-injects it when a
+// body omits it. message_default carries its optional comptime default
+// expression (`message = "..."`). members holds the extra fields, reusing
+// StructMemberNode for the `pub` flag + FieldSpec.
+struct ErrorDeclNode {
+  Span span;
+  bool is_public;
+  IdentifierNode name;
+  NodePtr message_default;               // `message = Expr`; nullptr if omitted
+  std::vector<StructMemberNode> members; // extra fields
+};
+
 // ===========================================================================
 // Section 7: Structural nodes
 // ===========================================================================
@@ -614,7 +629,7 @@ struct Node {
 
     // --- Declarations ---
     ConstDeclNode,       TypeDeclNode,
-    EnumDeclNode,        EnumFieldNode,
+    EnumDeclNode,        EnumFieldNode,       ErrorDeclNode,
     FuncDeclNode,        ReceiverNode,        SignatureNode,
     ImportDeclNode,
     InterfaceDeclNode,   InterfaceFieldNode,

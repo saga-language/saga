@@ -209,6 +209,9 @@ private:
   NodePtr parse_const_decl(bool is_public);
   NodePtr parse_type_decl(bool is_public);
   NodePtr parse_enum_decl(bool is_public);
+  NodePtr parse_error_decl(bool is_public);
+  bool at_error_message() const;
+  NodePtr parse_error_message();
   NodePtr parse_extern_decl();
   NodePtr parse_func_decl(bool is_public);
   NodePtr parse_import_decl();

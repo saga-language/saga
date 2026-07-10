@@ -156,6 +156,7 @@ struct StructTypeInfo {
   std::vector<TypePtr> embeds;                 // mixin / embedded types
   std::vector<TypeParam> type_params;          // generic parameters
   std::vector<TypePtr> type_args;              // concrete arguments (instantiated)
+  bool is_error = false; // `error Name {...}` — a nominal error, struct-backed
 };
 
 struct EnumVariant {

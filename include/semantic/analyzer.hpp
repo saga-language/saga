@@ -552,6 +552,7 @@ private:
   void attach_type_method(const FuncDeclNode &fn, const TypePtr &fn_type);
   void resolve_struct_decl(const StructDeclNode &node);
   void resolve_enum_decl(const EnumDeclNode &node);
+  void resolve_error_decl(const ErrorDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);
   void flatten_all_interfaces(
       const std::vector<const InterfaceDeclNode *> &ifaces);
@@ -698,9 +699,11 @@ private:
                                     const Node &parent, const TypePtr &lhs,
                                     const TypePtr &rhs);
   void check_enum_decl(const EnumDeclNode &node);
+  void check_error_decl(const ErrorDeclNode &node);
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
   void check_field_defaults(const StructDeclNode &node);
+  void check_field_default(const FieldSpecNode &fs);
   void check_interface_decl(const InterfaceDeclNode &node);
   void check_import_decl(const ImportDeclNode &node);
 
