@@ -154,18 +154,16 @@ int64_t     saga_context_cancelled(saga_runtime_actor *a);
 void        saga_context_exit(saga_runtime_actor *a, void *value, int64_t size);
 int         saga_context_send(saga_runtime_actor *a, const void *data);
 
-/* ── Error interface plumbing (used by Task.Wait()'s error branch) ─────── */
+/* ── Error box plumbing (used by Task.Wait()'s error branch) ──────────── */
 
 void       *saga_error_from_trap(saga_runtime_actor *a);
 
+/* Mirror of runtime.c's saga_runtime_error: the { type_id, message } prefix
+ * shared by every error box. */
 typedef struct {
-  void *message_fn;
-} saga_runtime_trap_error_vtable;
-
-typedef struct {
-  void *data;
-  void *vtable;
-} saga_runtime_iface_fat_ptr;
+  int64_t type_id;
+  saga_runtime_string *message;
+} saga_runtime_error;
 
 /* ── Channel API ───────────────────────────────────────────────────────── */
 

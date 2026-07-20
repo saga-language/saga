@@ -103,6 +103,10 @@ struct CodeGen {
   /// Maps canonical union type string → LLVM struct type { i8 tag, [N x i8] }.
   std::unordered_map<std::string, llvm::StructType *> union_llvm_types;
 
+  /// Reverse of union_llvm_types: LLVM struct → semantic union type, so the
+  /// sret return paths can recover a union's alternatives from its layout.
+  std::unordered_map<llvm::Type *, TypePtr> union_sem_by_llvm;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -280,6 +284,10 @@ private:
   /// sized for the template's `ptr`, corrupting adjacent memory on field
   /// store.
   std::string struct_cache_key(const StructTypeInfo &info) const;
+
+  /// Stable per-error-type id stamped into a box's field 0. Built-in errors
+  /// use reserved ids; user errors use an FNV-1a hash of the mangled name.
+  uint64_t error_type_id(const StructTypeInfo &info) const;
 
   /// Saga key-kind tags matching the runtime's saga_runtime_key_kind enum.
   /// Encoded as the i64 third argument to saga_map_new.  USER means the
@@ -478,7 +486,7 @@ private:
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_is_expr(const IsExpr &node);
   llvm::Value *emit_group_expr(const GroupExprNode &node);
-  llvm::Value *emit_if_expr(const IfExprNode &node);
+  llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
 
   // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
@@ -651,10 +659,25 @@ private:
   llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
                                 const TypePtr &union_type);
 
-  /// Build a Missing-as-Error iface fat pointer carrying `message`.  Returns
-  /// the i8* result of `saga_missing_new`, suitable for use as the err
-  /// payload of a `T | Error` union.
-  llvm::Value *emit_missing_fat_ptr(const std::string &message);
+  /// Produce a pointer to union memory holding `val`: an already-union pointer
+  /// passes through (converting if its layout differs); a concrete/error member
+  /// value is wrapped. Returns null if it can't place the value.
+  llvm::Value *as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
+                            const TypePtr &union_sem);
+
+  /// Convert a union value to a different union type, remapping each
+  /// alternative's tag and copying its payload. Returns a fresh dst union ptr.
+  llvm::Value *emit_union_convert(llvm::Value *src_ptr, const TypePtr &src_sem,
+                                  const TypePtr &dst_sem);
+
+  /// Recover the semantic union type from its cached LLVM struct (populated by
+  /// get_union_llvm_type), or null if unknown.
+  TypePtr union_sem_for_llvm(llvm::Type *st) const;
+
+  /// Build a Missing error box carrying `message`. Returns the pointer from
+  /// `saga_missing_new`, suitable for use as the err payload of a
+  /// `T | error` union.
+  llvm::Value *emit_missing_box(const std::string &message);
 
   /// Extract a concrete value from a union alloca given the expected alt type.
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,

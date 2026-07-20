@@ -303,11 +303,16 @@ TypePtr make_module_type(const std::string &name,
 /// True if `t` is the error-recovery sentinel.
 bool is_error_type(const TypePtr &t);
 
-/// True if a value of `t` is an error handled by `or` — today the base `Error`
-/// interface or the `Missing` struct. Becomes a nominal-error-kind check when
-/// errors go nominal in Phase 3. Not the same as `is_error_type` (the
-/// unresolved-type sentinel).
+/// True if a value of `t` is an error handled by `or` — any struct carrying
+/// the `is_error` marker (the abstract base `error`, the built-in `Missing`
+/// and `Trapped`, and every user `error Name {}`). Not the same as
+/// `is_error_type` (the unresolved-type sentinel).
 bool is_error_valued(const TypePtr &t);
+
+/// True if `t` is the abstract base `error` — the widening target every
+/// concrete error value assigns into. Distinguished from concrete errors by
+/// its reserved name.
+bool is_abstract_error(const TypePtr &t);
 
 /// True if `t` is a numeric type (Int or Float).
 bool is_numeric(const TypePtr &t);

@@ -1873,10 +1873,14 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
 }
 
 // resolve_error_decl — a nominal error is struct-backed with the `is_error`
-// marker. Field 0 is the mandatory `message` string (auto-injected; the body
-// supplies only its optional `message = Expr` default); extra fields follow.
+// marker, boxed at runtime as a pointer to { type_id, message, ...fields }.
+// Field 0 is the hidden `type_id`; field 1 the mandatory `message` string
+// (auto-injected; the body supplies only its optional `message = Expr`
+// default); extra fields follow.
 void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
   std::vector<FieldInfo> fields;
+  fields.push_back({"type_id", builtins.int64_type, /*is_public=*/false,
+                    nullptr});
   fields.push_back({"message", builtins.string_type, /*is_public=*/true,
                     e.message_default.get()});
 
@@ -2548,7 +2552,7 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   // Declare the error pipe if present.
   if (node.pipe) {
     declare_local(Symbol::variable(std::string(node.pipe->name),
-                                   builtins.error_iface, node.pipe->span));
+                                   builtins.error_base, node.pipe->span));
   }
 
   auto &block = std::get<BlockNode>(node.fallback->data);
@@ -3166,7 +3170,7 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
     if (has_method("Div")) {
       expect_assignable(node.rhs->span, lhs, rhs, "Div argument");
       // Divisable returns T | Error (can fail, e.g. divide by zero).
-      return resolve("Div", make_union_type({lhs, builtins.error_iface}));
+      return resolve("Div", make_union_type({lhs, builtins.error_base}));
     }
     error(node.span,
           std::format("type {} does not implement Divisable (no Div method)",
@@ -3272,7 +3276,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       return builtins.error_type;
     }
     auto result = common_type(lhs, rhs);
-    return make_union_type({result, builtins.error_iface});
+    return make_union_type({result, builtins.error_base});
   }
 
   // Comparison: == != > < >= <=
@@ -3625,7 +3629,7 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
       error(node.index->span, "array index must be an integer");
     }
     // Indexing returns T | Error (out of bounds).
-    return make_union_type({arr.element, builtins.error_iface});
+    return make_union_type({arr.element, builtins.error_base});
   }
   case TypeKind::Map: {
     auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
@@ -3633,7 +3637,7 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
       expect_assignable(node.index->span, map_info.key, index_type, "map key");
     }
     // Map access returns V | Error (missing key).
-    return make_union_type({map_info.value, builtins.error_iface});
+    return make_union_type({map_info.value, builtins.error_base});
   }
   case TypeKind::String: {
     if (!is_error_type(index_type) && index_type->kind != TypeKind::Int) {
@@ -4311,7 +4315,7 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
         if (types_equal(existing, bt)) { seen = true; break; }
       if (!seen) alts.push_back(bt);
     }
-    alts.push_back(builtins.error_iface);
+    alts.push_back(builtins.error_base);
     return make_union_type(std::move(alts));
   }
 
@@ -4417,7 +4421,7 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
     if (node.pipe) {
       current_scope->symbols.emplace(
           std::string(node.pipe->name),
-          Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
+          Symbol::variable(std::string(node.pipe->name), builtins.error_base,
                            node.pipe->span));
     }
     auto &block = std::get<BlockNode>(node.fallback->data);
@@ -4432,7 +4436,7 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   if (node.pipe) {
     current_scope->symbols.emplace(
         std::string(node.pipe->name),
-        Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
+        Symbol::variable(std::string(node.pipe->name), builtins.error_base,
                          node.pipe->span));
   }
 

@@ -41,7 +41,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_group_expr(n);
           },
           [&](const IfExprNode &n) -> llvm::Value * {
-            return emit_if_expr(n);
+            return emit_if_expr(n, node);
           },
           [&](const ForExprNode &n) -> llvm::Value * {
             return emit_for_expr(n, node);
@@ -534,7 +534,7 @@ llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
     } else if (method == "Div") {
       // Div returns T | Error; we return the union struct ptr.
       auto union_sem =
-          make_union_type({lhs_sem, analyzer.builtins.error_iface});
+          make_union_type({lhs_sem, analyzer.builtins.error_base});
       auto *union_st = get_union_llvm_type(union_sem);
       ret_ll = union_st ? static_cast<llvm::Type *>(union_st) : ptr_type;
     } else {

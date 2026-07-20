@@ -302,18 +302,25 @@ void CodeGen::emit_function_body_inner(
     } else if (has_sret) {
       // Struct return via sret.  tail_val is either a pointer to a struct
       // alloca (struct literal, identifier, byval param) or a struct SSA
-      // value (loaded from an alloca).  Copy into the sret slot.
+      // value (loaded from an alloca).  Copy into the sret slot.  For a union
+      // return, a bare/error tail value is first wrapped into union memory.
       auto *sret_arg = func->getArg(0);
       llvm::Type *struct_ty =
           resolve_type_node(*fn.signature.return_type);
-      if (tail_val && struct_ty && struct_ty->isStructTy()) {
-        if (tail_val->getType()->isPointerTy()) {
-          auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
-          auto al = module->getDataLayout().getABITypeAlign(struct_ty);
-          builder.CreateMemCpy(sret_arg, al, tail_val, al, sz);
-        } else if (tail_val->getType() == struct_ty) {
-          builder.CreateStore(tail_val, sret_arg);
-        }
+      llvm::Value *src = tail_val;
+      if (auto union_sem = union_sem_for_llvm(struct_ty)) {
+        TypePtr tail_sem = block.stmts.empty()
+                               ? nullptr
+                               : semantic_type(*block.stmts.back());
+        src = as_union_ptr(tail_val, tail_sem, union_sem);
+      }
+      if (src && struct_ty && struct_ty->isStructTy() &&
+          src->getType()->isPointerTy()) {
+        auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
+        auto al = module->getDataLayout().getABITypeAlign(struct_ty);
+        builder.CreateMemCpy(sret_arg, al, src, al, sz);
+      } else if (tail_val && struct_ty && tail_val->getType() == struct_ty) {
+        builder.CreateStore(tail_val, sret_arg);
       }
       builder.CreateRetVoid();
     } else if (ret_type->isVoidTy()) {
@@ -333,25 +340,33 @@ void CodeGen::emit_function_body_inner(
         conv = builder.CreateZExt(tail_val, ret_type, "ret.zext");
       builder.CreateRet(conv);
     } else if (tail_val && ret_type->isStructTy() &&
-               tail_val->getType()->isPointerTy()) {
-      // Union tail: pointer to union struct — load and return.
-      auto *st = llvm::cast<llvm::StructType>(ret_type);
-      if (st->getNumElements() == 2 &&
-          st->getElementType(0)->isIntegerTy(8) &&
-          st->getElementType(1)->isArrayTy()) {
-        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-          if (ai->getAllocatedType() == ret_type) {
-            auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
-            builder.CreateRet(loaded);
-          } else {
-            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-          }
-        } else {
-          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-        }
-      } else {
-        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+               llvm::cast<llvm::StructType>(ret_type)->getNumElements() == 2 &&
+               llvm::cast<llvm::StructType>(ret_type)
+                   ->getElementType(0)
+                   ->isIntegerTy(8) &&
+               llvm::cast<llvm::StructType>(ret_type)
+                   ->getElementType(1)
+                   ->isArrayTy()) {
+      // Union tail. Either tail_val already points at this union alloca, or
+      // it's a concrete/error value that must be wrapped into the union
+      // (e.g. `fn f() int | error { NetworkError{...} }`).
+      llvm::Value *union_val = nullptr;
+      if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val))
+        if (ai->getAllocatedType() == ret_type)
+          union_val = builder.CreateLoad(ret_type, tail_val, "ret.union");
+      if (!union_val) {
+        TypePtr ret_sem = fn.signature.return_type
+                              ? semantic_type(*fn.signature.return_type)
+                              : nullptr;
+        TypePtr tail_sem = block.stmts.empty()
+                               ? nullptr
+                               : semantic_type(*block.stmts.back());
+        if (tail_sem && ret_sem && ret_sem->kind == TypeKind::Union)
+          if (auto *wrapped = emit_union_wrap(tail_val, tail_sem, ret_sem))
+            union_val = builder.CreateLoad(ret_type, wrapped, "ret.union");
       }
+      builder.CreateRet(union_val ? union_val
+                                  : llvm::Constant::getNullValue(ret_type));
     } else {
       builder.CreateRet(llvm::Constant::getNullValue(ret_type));
     }
@@ -487,7 +502,12 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     // struct SSA value.
     {
       auto sem = semantic_type(**node.init);
-      if (val && sem && sem->kind == TypeKind::Struct) {
+      // Errors are boxed (pointer rep); bind the box pointer, don't copy the
+      // struct by value (which would overflow an 8-byte union payload later).
+      bool boxed_error =
+          sem && sem->kind == TypeKind::Struct &&
+          std::get<StructTypeInfo>(sem->detail).is_error;
+      if (val && sem && sem->kind == TypeKind::Struct && !boxed_error) {
         auto &sinfo = std::get<StructTypeInfo>(sem->detail);
         std::string skey = struct_cache_key(sinfo);
         auto st_it = struct_types.find(skey);
@@ -598,8 +618,11 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       auto *alloca = create_entry_alloca(func, name, var_type);
       locals[name] = alloca;
       builder.CreateStore(map, alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct) {
+    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
+               !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
       // Struct zero value: allocate struct, zero-initialize all fields.
+      // (Errors are boxed pointers — they fall to the scalar path below,
+      // yielding a null box pointer.)
       auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
       std::string skey = struct_cache_key(info);
       auto st_it = struct_types.find(skey);
@@ -639,7 +662,12 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     // or an SSA struct value.
     {
       auto sem = semantic_type(*node.value);
-      if (val && sem && sem->kind == TypeKind::Struct) {
+      // Errors are boxed (llvm_type is a pointer), so they bind like a
+      // string/array local — the box pointer is stored, not copied by value.
+      bool boxed_error =
+          sem && sem->kind == TypeKind::Struct &&
+          std::get<StructTypeInfo>(sem->detail).is_error;
+      if (val && sem && sem->kind == TypeKind::Struct && !boxed_error) {
         auto &sinfo = std::get<StructTypeInfo>(sem->detail);
         std::string skey = struct_cache_key(sinfo);
         auto st_it = struct_types.find(skey);
@@ -851,18 +879,22 @@ void CodeGen::emit_return(const ReturnNode &node) {
     auto *func = builder.GetInsertBlock()->getParent();
     auto *ret_type = func->getReturnType();
 
-    // Sret return: copy struct value/alloca into the hidden first arg.
+    // Sret return: copy struct value/alloca into the hidden first arg.  For a
+    // union return, a bare/error value is first wrapped into union memory.
     if (ret_type->isVoidTy() && func->arg_size() > 0 &&
         func->getArg(0)->hasStructRetAttr()) {
       auto *sret_arg = func->getArg(0);
       auto *struct_ty = func->getParamStructRetType(0);
-      if (val && struct_ty) {
-        if (val->getType()->isPointerTy()) {
+      llvm::Value *src = val;
+      if (auto union_sem = union_sem_for_llvm(struct_ty))
+        src = as_union_ptr(val, semantic_type(*node.value), union_sem);
+      if (src && struct_ty) {
+        if (src->getType()->isPointerTy()) {
           auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
           auto al = module->getDataLayout().getABITypeAlign(struct_ty);
-          builder.CreateMemCpy(sret_arg, al, val, al, sz);
-        } else if (val->getType() == struct_ty) {
-          builder.CreateStore(val, sret_arg);
+          builder.CreateMemCpy(sret_arg, al, src, al, sz);
+        } else if (src->getType() == struct_ty) {
+          builder.CreateStore(src, sret_arg);
         }
       }
       emit_release_locals();

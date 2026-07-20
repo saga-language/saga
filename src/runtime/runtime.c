@@ -18,6 +18,8 @@
 #include <setjmp.h>
 #include <time.h>
 
+#include "runtime/error_ids.h"
+
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Arena allocator                                                          */
 /*                                                                          */
@@ -1247,115 +1249,55 @@ void saga_actor_trap(saga_runtime_string *reason) {
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
-/* TrapError — concrete type returned from Task.Wait()'s Error branch.      */
-/*                                                                          */
-/* Layout mirrors the compiler's iface_fat_ptr layout { data*, vtable* }.   */
-/* The vtable has one slot (Message) matching the Error interface.          */
-/* ───────────────────────────────────────────────────────────────────────── */
-
-typedef struct {
-  saga_runtime_string *reason;
-} saga_runtime_trap_error;
-
-typedef struct {
-  void *message_fn;
-} saga_runtime_trap_error_vtable;
-
-typedef struct {
-  void *data;
-  void *vtable;
-} saga_runtime_iface_fat_ptr;
-
-/* Forward declaration for the vtable initializer. */
-static saga_runtime_string *saga_trap_error_message(void *self);
-
-static const saga_runtime_trap_error_vtable saga_trap_error_vtable_instance = {
-    .message_fn = (void *)saga_trap_error_message,
-};
-
-static saga_runtime_string *saga_trap_error_message(void *self) {
-  saga_runtime_trap_error *e = (saga_runtime_trap_error *)self;
-  if (e && e->reason) {
-    /* Hand out a retained reference — the caller owns it. */
-    if (e->reason->refcount > 0) e->reason->refcount++;
-    return e->reason;
-  }
-  /* Fall back to a fresh "killed" string. */
-  static const char kFallback[] = "killed";
-  char *heap = (char *)malloc(sizeof(kFallback));
-  memcpy(heap, kFallback, sizeof(kFallback));
-  saga_runtime_string *s = (saga_runtime_string *)malloc(sizeof(saga_runtime_string));
-  s->data = heap;
-  s->len = sizeof(kFallback) - 1;
-  s->refcount = 1;
-  return s;
-}
-
-/* ───────────────────────────────────────────────────────────────────────── */
-/* Missing — concrete error returned by index/map lookups and the failure   */
-/* path of intrinsic_runtime_try.                                           */
-/*                                                                          */
-/* Uses the same saga_runtime_iface_fat_ptr shape as TrapError, with a      */
-/* one-slot vtable (Message) so callers can dispatch through the Error      */
-/* interface uniformly.                                                     */
+/* Error box — the uniform runtime representation of every error value.      */
+/*                                                                           */
+/* An error is a heap pointer to { i64 type_id, saga_runtime_string *message,*/
+/* ...concrete fields }.  The compiler lays out user errors; the built-in    */
+/* Missing (index/map miss, parse failure) and Trapped (Task.Wait) errors    */
+/* carry only the common { type_id, message } prefix.  There is no vtable —  */
+/* errors have no methods, and `.message` is a plain field read.             */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 /* saga_runtime_alloc_string is defined further below; forward-declare it
- * here so the Missing constructor can reach it. */
+ * here so the error constructors can reach it. */
 static saga_runtime_string *saga_runtime_alloc_string(const char *buf,
                                                       int64_t len);
 
 typedef struct {
+  int64_t type_id;
   saga_runtime_string *message;
-} saga_runtime_missing;
+} saga_runtime_error;
 
-static saga_runtime_string *saga_missing_message(void *self) {
-  saga_runtime_missing *m = (saga_runtime_missing *)self;
-  if (m && m->message) {
-    if (m->message->refcount > 0) m->message->refcount++;
-    return m->message;
-  }
-  return saga_runtime_alloc_string("", 0);
-}
-
-static const saga_runtime_trap_error_vtable saga_missing_vtable_instance = {
-    .message_fn = (void *)saga_missing_message,
-};
+/* Zero-initialised heap block sized by the compiler for a user error box
+ * whose concrete fields follow the { type_id, message } prefix. */
+void *saga_error_alloc(int64_t size) { return calloc(1, (size_t)size); }
 
 void *saga_missing_new(const char *msg, int64_t len) {
-  saga_runtime_missing *m =
-      (saga_runtime_missing *)malloc(sizeof(saga_runtime_missing));
-  if (!m) return NULL;
-  m->message = saga_runtime_alloc_string(msg ? msg : "", msg ? len : 0);
-
-  saga_runtime_iface_fat_ptr *fat =
-      (saga_runtime_iface_fat_ptr *)malloc(sizeof(saga_runtime_iface_fat_ptr));
-  if (!fat) { free(m); return NULL; }
-  fat->data = m;
-  fat->vtable = (void *)&saga_missing_vtable_instance;
-  return fat;
+  saga_runtime_error *e =
+      (saga_runtime_error *)malloc(sizeof(saga_runtime_error));
+  if (!e) return NULL;
+  e->type_id = SAGA_ERR_ID_MISSING;
+  e->message = saga_runtime_alloc_string(msg ? msg : "", msg ? len : 0);
+  return e;
 }
 
 /*
- * saga_error_from_trap — build an Error interface fat pointer from the
- * trapped actor's stashed reason string.  Returns a heap-allocated
- * saga_runtime_iface_fat_ptr whose data points to a saga_runtime_trap_error and whose vtable
- * points to saga_trap_error_vtable_instance.
+ * saga_error_from_trap — build a Trapped error box from the trapped actor's
+ * stashed reason string.  The reason is retained (the box outlives the actor);
+ * a killed actor with no reason gets a fresh "killed" message.
  *
  * Called by the Task.Wait() lowering on the error path.
  */
 void *saga_error_from_trap(saga_runtime_actor *a) {
-  saga_runtime_trap_error *e = (saga_runtime_trap_error *)malloc(sizeof(saga_runtime_trap_error));
+  saga_runtime_error *e =
+      (saga_runtime_error *)malloc(sizeof(saga_runtime_error));
   if (!e) return NULL;
-  saga_runtime_string *reason = (a && a->result) ? (saga_runtime_string *)a->result : NULL;
+  e->type_id = SAGA_ERR_ID_TRAPPED;
+  saga_runtime_string *reason =
+      (a && a->result) ? (saga_runtime_string *)a->result : NULL;
   if (reason && reason->refcount > 0) reason->refcount++;
-  e->reason = reason;
-
-  saga_runtime_iface_fat_ptr *fat = (saga_runtime_iface_fat_ptr *)malloc(sizeof(saga_runtime_iface_fat_ptr));
-  if (!fat) { free(e); return NULL; }
-  fat->data = e;
-  fat->vtable = (void *)&saga_trap_error_vtable_instance;
-  return fat;
+  e->message = reason ? reason : saga_runtime_alloc_string("killed", 6);
+  return e;
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */

@@ -41,16 +41,20 @@ TEST(Builtins, SizedFloatTypes) {
   EXPECT_NE(types.float64_type, nullptr);
 }
 
-TEST(Builtins, InternalInterfaces) {
+TEST(Builtins, BaseError) {
   BuiltinTypes types;
   types.init();
-  EXPECT_NE(types.error_iface, nullptr);
-  EXPECT_EQ(types.error_iface->kind, TypeKind::Interface);
+  EXPECT_NE(types.error_base, nullptr);
+  EXPECT_EQ(types.error_base->kind, TypeKind::Struct);
 
-  auto &error_info = std::get<InterfaceTypeInfo>(types.error_iface->detail);
-  EXPECT_EQ(error_info.name, "Error");
-  ASSERT_EQ(error_info.methods.size(), 1u);
-  EXPECT_EQ(error_info.methods[0].name, "Message");
+  auto &error_info = std::get<StructTypeInfo>(types.error_base->detail);
+  EXPECT_EQ(error_info.name, "error");
+  EXPECT_TRUE(error_info.is_error);
+  EXPECT_TRUE(error_info.methods.empty());
+  // Every error box carries the { type_id, message } prefix.
+  ASSERT_EQ(error_info.fields.size(), 2u);
+  EXPECT_EQ(error_info.fields[0].name, "type_id");
+  EXPECT_EQ(error_info.fields[1].name, "message");
 
   EXPECT_NE(types.iterable_iface, nullptr);
   EXPECT_EQ(types.iterable_iface->kind, TypeKind::Interface);
@@ -70,9 +74,9 @@ TEST(Builtins, MissingType) {
 
   auto &info = std::get<StructTypeInfo>(types.missing_type->detail);
   EXPECT_EQ(info.name, "Missing");
-  // Missing implements Error via Message() method.
-  ASSERT_EQ(info.methods.size(), 1u);
-  EXPECT_EQ(info.methods[0].name, "Message");
+  // Missing is a built-in error, not a method-bearing struct.
+  EXPECT_TRUE(info.is_error);
+  EXPECT_TRUE(info.methods.empty());
 }
 
 TEST(Builtins, ComparisonEnum) {
@@ -173,7 +177,8 @@ TEST(Builtins, TypeSymbolKinds) {
   auto error_sym = scope->lookup("error");
   ASSERT_TRUE(error_sym.has_value());
   EXPECT_EQ(error_sym->kind, SymbolKind::Type);
-  EXPECT_EQ(error_sym->type->kind, TypeKind::Interface);
+  EXPECT_EQ(error_sym->type->kind, TypeKind::Struct);
+  EXPECT_TRUE(std::get<StructTypeInfo>(error_sym->type->detail).is_error);
 }
 
 // String, Int, Float, Bool methods are fully migrated to stdlib packages.

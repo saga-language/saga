@@ -161,13 +161,16 @@ bool is_error_type(const TypePtr &t) {
 }
 
 bool is_error_valued(const TypePtr &t) {
-  if (!t)
-    return false;
-  if (t->kind == TypeKind::Interface)
-    return std::get<InterfaceTypeInfo>(t->detail).name == "Error";
-  if (t->kind == TypeKind::Struct)
-    return std::get<StructTypeInfo>(t->detail).name == "Missing";
-  return false;
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Struct &&
+         std::get<StructTypeInfo>(u->detail).is_error;
+}
+
+bool is_abstract_error(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Struct &&
+         std::get<StructTypeInfo>(u->detail).is_error &&
+         std::get<StructTypeInfo>(u->detail).name == "error";
 }
 
 bool is_numeric(const TypePtr &t) {
@@ -523,6 +526,10 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 
   // Exact match.
   if (types_equal(source, target))
+    return true;
+
+  // Any error value widens to the abstract base `error`.
+  if (is_error_valued(source) && is_abstract_error(target))
     return true;
 
   // Int → Float promotion.

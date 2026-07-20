@@ -852,11 +852,16 @@ struct SgiParser {
           "Comparison",
           {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
            EnumVariant{"Greater", {}}});
-    if (name == "Error")
-      return make_interface_type(
-          "Error",
-          {MethodInfo{"Message", make_func_type({}, {make_string_type()}),
-                      true}});
+    if (name == "error") {
+      // The abstract base error: struct-backed with the is_error marker so
+      // is_error_valued() strips it from unions (matches builtins.error_base).
+      auto t = make_struct_type(
+          "error",
+          {FieldInfo{"type_id", make_int_type(64, true), false, nullptr},
+           FieldInfo{"message", make_string_type(), true, nullptr}});
+      std::get<StructTypeInfo>(t->detail).is_error = true;
+      return t;
+    }
 
     // Bare identifier matching a type-param in scope → TypeParam.
     if (auto tp = lookup_type_param(name))

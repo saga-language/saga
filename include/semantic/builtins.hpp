@@ -40,9 +40,13 @@ struct BuiltinTypes {
   TypePtr float32_type;
   TypePtr float64_type;
 
+  // Base error: struct-backed abstract error, boxed at runtime as a pointer
+  // to { i64 type_id, String message, ...fields }. Every concrete error
+  // widens to it; `.message` is the common prefix.
+  TypePtr error_base;      // error { type_id Int64, message String }
+
   // Internal interfaces
-  TypePtr error_iface;     // Error { Message() String }
-  TypePtr iterable_iface;  // |T| Iterable { Next() T | Error }
+  TypePtr iterable_iface;  // |T| Iterable { Next() T | error }
 
   // Named protocols loaded from std/proto.  Populated by load_prelude
   // from proto.sgi; null when the package is unavailable (during the
@@ -53,7 +57,8 @@ struct BuiltinTypes {
   TypePtr stringable_iface;  // Stringable { String() String }
 
   // Internal structs
-  TypePtr missing_type;    // Missing (implements Error)
+  TypePtr missing_type;    // Missing (error; index/map miss, parse failure)
+  TypePtr trapped_type;    // Trapped (error; Task.Wait on a killed actor)
   TypePtr task_type;       // Task (returned from spawn)
   TypePtr context_type;    // Context (available inside spawn block)
 

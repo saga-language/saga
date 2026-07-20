@@ -483,7 +483,7 @@ void CodeGen::emit_for_range_iterable_struct(const ForExprNode &node,
   }
   if (!next_ret_sem)
     next_ret_sem =
-        make_union_type({elem_sem, analyzer.builtins.error_iface});
+        make_union_type({elem_sem, analyzer.builtins.error_base});
 
   auto *union_st = get_union_llvm_type(next_ret_sem);
 

@@ -402,8 +402,8 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
           // No concrete T — semantic analysis should have bound it.
           return nullptr;
         }
-        auto error_iface_sem_pre = analyzer.builtins.error_iface;
-        auto union_sem = make_union_type({t_sem, error_iface_sem_pre});
+        auto error_base_sem_pre = analyzer.builtins.error_base;
+        auto union_sem = make_union_type({t_sem, error_base_sem_pre});
         auto *union_st = get_union_llvm_type(union_sem);
 
         auto *status_alloca = create_entry_alloca(func, "wait.status",
@@ -445,16 +445,14 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         auto *bb_ok_end = builder.GetInsertBlock();
         builder.CreateBr(bb_merge);
 
-        // ── Error path: build TrapError fat pointer, wrap as Error. ──
+        // ── Error path: build the Trapped error box, wrap as error. ──
         func->insert(func->end(), bb_err);
         builder.SetInsertPoint(bb_err);
-        auto *err_fat = builder.CreateCall(
+        auto *err_box = builder.CreateCall(
             module->getFunction("saga_error_from_trap"),
-            {obj}, "wait.err.fat");
-        // error_iface has kind Interface; emit_union_wrap finds its tag
-        // via the interface-satisfaction path in union_tag_for_type.
-        auto error_iface_sem = analyzer.builtins.error_iface;
-        auto *wrapped_err = emit_union_wrap(err_fat, error_iface_sem,
+            {obj}, "wait.err.box");
+        auto error_base_sem = analyzer.builtins.error_base;
+        auto *wrapped_err = emit_union_wrap(err_box, error_base_sem,
                                              union_sem);
         if (!wrapped_err)
           wrapped_err = llvm::ConstantPointerNull::get(ptr_type);

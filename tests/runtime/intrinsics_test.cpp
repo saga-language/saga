@@ -257,8 +257,8 @@ TEST_F(TrapExecutorTest, TrapWithoutReasonCompletes) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
-/* P1 end-to-end: trap reason round-trips through Wait → Error interface.  */
-/* Mirrors the Saga-level `task.Wait() or |err| { err.Message() }` path.   */
+/* P1 end-to-end: trap reason round-trips through Wait → error box.        */
+/* Mirrors the Saga-level `task.Wait() or |err| { err.message }` path.     */
 /* ═══════════════════════════════════════════════════════════════════════ */
 
 /* Nested call: the trap happens several frames below the actor's entry,
@@ -271,8 +271,6 @@ static void trap_deep_inner(void) {
 static void trap_deep_mid(void)   { trap_deep_inner(); }
 static void trap_deep_entry(saga_runtime_actor *a) { (void)a; trap_deep_mid(); }
 
-typedef saga_runtime_string *(*msg_fn_t)(void *);
-
 TEST_F(TrapExecutorTest, WaitErrorBranchCarriesTrapReason) {
   saga_runtime_actor *a = saga_executor_spawn(trap_deep_entry, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
@@ -284,24 +282,16 @@ TEST_F(TrapExecutorTest, WaitErrorBranchCarriesTrapReason) {
      thing the Wait() lowering branches on is status != COMPLETED. */
   EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_ZOMBIE);
 
-  /* Build the Error fat pointer the same way codegen does. */
-  saga_runtime_iface_fat_ptr *fat = (saga_runtime_iface_fat_ptr *)saga_error_from_trap(a);
-  ASSERT_NE(fat, nullptr);
-  ASSERT_NE(fat->data, nullptr);
-  ASSERT_NE(fat->vtable, nullptr);
-
-  /* Dispatch Message() through the vtable, just like the codegen'd
-     `err.Message()` call would. */
-  auto *vt = (saga_runtime_trap_error_vtable *)fat->vtable;
-  auto msg_fn = (msg_fn_t)vt->message_fn;
-  saga_runtime_string *msg = msg_fn(fat->data);
+  /* Build the error box the same way codegen does, then read `.message`. */
+  saga_runtime_error *e = (saga_runtime_error *)saga_error_from_trap(a);
+  ASSERT_NE(e, nullptr);
+  saga_runtime_string *msg = e->message;
   ASSERT_NE(msg, nullptr);
   EXPECT_EQ(msg->len, 4);
   EXPECT_EQ(std::memcmp(msg->data, "boom", 4), 0);
 
   saga_release_string(msg);
-  free(fat->data);
-  free(fat);
+  free(e);
   saga_task_drop(a);
 }
 

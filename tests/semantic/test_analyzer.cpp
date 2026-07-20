@@ -225,11 +225,12 @@ TEST(Analyzer, ResolveErrorInjectsMessageField) {
   ASSERT_EQ(it->second.type->kind, TypeKind::Struct);
   auto &info = std::get<StructTypeInfo>(it->second.type->detail);
   EXPECT_TRUE(info.is_error);
-  ASSERT_EQ(info.fields.size(), 2u);
-  EXPECT_EQ(info.fields[0].name, "message"); // injected, field 0
-  ASSERT_NE(info.fields[0].type, nullptr);
-  EXPECT_EQ(info.fields[0].type->kind, TypeKind::String);
-  EXPECT_EQ(info.fields[1].name, "code");
+  ASSERT_EQ(info.fields.size(), 3u);
+  EXPECT_EQ(info.fields[0].name, "type_id"); // injected, field 0 (boxed id)
+  EXPECT_EQ(info.fields[1].name, "message"); // injected, field 1
+  ASSERT_NE(info.fields[1].type, nullptr);
+  EXPECT_EQ(info.fields[1].type->kind, TypeKind::String);
+  EXPECT_EQ(info.fields[2].name, "code");
 }
 
 TEST(Analyzer, ErrorMessageDefaultAccepted) {

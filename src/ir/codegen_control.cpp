@@ -22,10 +22,29 @@ llvm::Value *CodeGen::emit_group_expr(const GroupExprNode &node) {
 // If/else expression
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
+llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   auto *cond = emit_expr(*node.condition);
   if (!cond)
     return nullptr;
+
+  // When the if is used as a union-typed value, its branches may yield
+  // different member types (e.g. `if fail { NetworkError{...} } else { 200 }`
+  // is `int | error`). Wrap each branch into union memory so they share a
+  // pointer type for the merge PHI.
+  auto if_sem = semantic_type(parent);
+  bool if_is_union = if_sem && if_sem->kind == TypeKind::Union;
+  auto wrap_branch = [&](llvm::Value *v, const BlockNode &b) -> llvm::Value * {
+    if (!if_is_union || !v || v->getType()->isVoidTy())
+      return v;
+    // The branch already returned/broke — its value can't reach the merge, so
+    // there's nothing to wrap (and the block is terminated).
+    if (builder.GetInsertBlock()->getTerminator())
+      return v;
+    TypePtr vs = b.stmts.empty() ? nullptr : semantic_type(*b.stmts.back());
+    if (auto *w = as_union_ptr(v, vs, if_sem))
+      return w;
+    return v;
+  };
 
   // If the condition is an i64 (from a comparison that got widened), truncate
   // to i1.  If it's already i1, use it directly.
@@ -91,6 +110,7 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
 
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   auto *then_val = emit_block(then_block);
+  then_val = wrap_branch(then_val, then_block);
 
   // Restore the original alloca after the then-block.
   if (saved_alloca) {
@@ -115,6 +135,7 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node) {
     builder.SetInsertPoint(else_bb);
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     else_val = emit_block(else_block);
+    else_val = wrap_branch(else_val, else_block);
     else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
     if (!else_terminated)
       builder.CreateBr(merge_bb);
@@ -648,7 +669,7 @@ CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                             const TypePtr &val_type,
                                             const std::string &miss_msg) {
   auto result_union =
-      make_union_type({val_type, analyzer.builtins.error_iface});
+      make_union_type({val_type, analyzer.builtins.error_base});
   auto *union_st = get_union_llvm_type(result_union);
   if (!union_st)
     return nullptr;
@@ -665,14 +686,11 @@ CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
   builder.CreateCondBr(is_null, null_bb, ok_bb);
 
   builder.SetInsertPoint(null_bb);
-  // The error payload is the Error interface, lowered as a fat pointer.
-  // saga_missing_new allocates one (data = Missing carrying the message,
-  // vtable = single-slot Message vtable) so `or |err| { err.Message() }`
-  // can dispatch through the Error interface without crashing on a null
-  // vtable.
-  auto *err_fat = emit_missing_fat_ptr(miss_msg);
+  // The error payload is a Missing error box carrying the message, so
+  // `or |err| { err.message }` reads it as a plain field.
+  auto *err_box = emit_missing_box(miss_msg);
   auto *err_wrapped =
-      emit_union_wrap(err_fat, analyzer.builtins.error_iface, result_union);
+      emit_union_wrap(err_box, analyzer.builtins.error_base, result_union);
   auto *null_end_bb = builder.GetInsertBlock();
   builder.CreateBr(merge_bb);
 
@@ -1044,26 +1062,38 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
     return nullptr;
 
   auto *st = st_it->second;
-
-  // Allocate the struct on the stack.
   auto *func = builder.GetInsertBlock()->getParent();
-  auto *alloca = create_entry_alloca(func, info.name + ".lit", st);
 
-  // Zero-initialize all fields.
-  builder.CreateStore(llvm::Constant::getNullValue(st), alloca);
+  // Errors are boxed on the heap (they escape via unions/returns) and carry a
+  // type_id in field 0; other structs get a zero-initialised stack alloca.
+  llvm::Value *storage = nullptr;
+  if (info.is_error) {
+    uint64_t size = module->getDataLayout().getTypeAllocSize(st);
+    storage = builder.CreateCall(
+        module->getFunction("saga_error_alloc"),
+        {llvm::ConstantInt::get(i64_type, size)}, info.name + ".box");
+    auto *tid_gep = builder.CreateStructGEP(st, storage, 0, "type_id");
+    builder.CreateStore(
+        llvm::ConstantInt::get(i64_type,
+                               static_cast<uint64_t>(error_type_id(info))),
+        tid_gep);
+  } else {
+    storage = create_entry_alloca(func, info.name + ".lit", st);
+    builder.CreateStore(llvm::Constant::getNullValue(st), storage);
+  }
 
   // Apply comptime field defaults first (descending embed slots), then the
   // explicit literal fields, which override. Defaults are side-effect-free
   // comptime expressions, so a defaulted-then-provided field just lowers the
   // default and overwrites it.
-  apply_struct_field_defaults(alloca, sem);
+  apply_struct_field_defaults(storage, sem);
 
   // Store each provided field. For a literal that addresses a promoted field
   // (the field lives on an embedded struct), struct_field_gep walks the embed
   // layout and hands back a pointer into the right inner slot.
   for (auto &fa : node.fields) {
     std::string fname(fa.name.name);
-    auto [gep, field_ll] = struct_field_gep(alloca, sem, fname);
+    auto [gep, field_ll] = struct_field_gep(storage, sem, fname);
     if (!gep)
       continue;
     TypePtr field_sem;
@@ -1072,8 +1102,8 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
     store_struct_field(gep, field_ll, field_sem, *fa.value);
   }
 
-  // Return a pointer to the struct alloca.
-  return alloca;
+  // For a boxed error this is the heap box pointer; for a struct, the alloca.
+  return storage;
 }
 
 void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,

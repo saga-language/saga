@@ -5,7 +5,7 @@ import "std/io"
 pub fn Main() void {
   arr := [10, 20, 30]
   i := arr[99] or |err| {
-    io.Println("captured: " + err.Message())
+    io.Println("captured: " + err.message)
     -1
   }
   io.Println(i.String())
