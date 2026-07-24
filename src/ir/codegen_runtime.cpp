@@ -639,25 +639,6 @@ int CodeGen::union_tag_for_type(const TypePtr &alt_type,
   return -1;
 }
 
-llvm::Value *CodeGen::emit_missing_box(const std::string &message) {
-  auto *char_array = llvm::ConstantDataArray::getString(
-      context, message, /*AddNull=*/false);
-  auto *raw_global = new llvm::GlobalVariable(
-      *module, char_array->getType(), /*isConstant=*/true,
-      llvm::GlobalValue::PrivateLinkage, char_array, ".missing.msg");
-  raw_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  raw_global->setAlignment(llvm::Align(1));
-  auto *data_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
-      char_array->getType(), raw_global,
-      llvm::ArrayRef<llvm::Constant *>{
-          llvm::ConstantInt::get(i64_type, 0),
-          llvm::ConstantInt::get(i64_type, 0)});
-  auto *len = llvm::ConstantInt::get(i64_type,
-                                     static_cast<int64_t>(message.size()));
-  return builder.CreateCall(module->getFunction("saga_missing_new"),
-                            {data_ptr, len}, "missing.fat");
-}
-
 llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
                                        const TypePtr &val_type,
                                        const TypePtr &union_type) {

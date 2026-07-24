@@ -1,0 +1,42 @@
+// `==`/`!=` on errors is structural: equal iff same type_id and equal fields.
+// A base `error` operand compares against a concrete instance's fields.
+import "std/io"
+
+error NetworkError {
+  code int
+  message = "net {code}"
+}
+
+error DiskError {
+  message = "disk"
+}
+
+fn report(name string, yes bool) void {
+  if yes {
+    io.Println(name)
+  }
+}
+
+fn first(which int) int | error {
+  if which == 0 {
+    return NetworkError{code: 429}
+  }
+  return DiskError{}
+}
+
+pub fn Main() void {
+  a := NetworkError{code: 429}
+  b := NetworkError{code: 429}
+  c := NetworkError{code: 500}
+  d := DiskError{}
+
+  report("eq", a == b)
+  report("ne-code", a != c)
+  report("ne-type", a != d)
+
+  want := NetworkError{code: 429}
+  first(0) or |err| {
+    report("base-eq", err == want)
+    0
+  }
+}

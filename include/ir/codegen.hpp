@@ -12,6 +12,7 @@
 #include <llvm/IR/Module.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -110,6 +111,10 @@ struct CodeGen {
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
+
+  // Field-less, const-message error boxes lower to one shared rodata global
+  // (keyed by type_id + message), so `E{}` / a `Missing` miss costs 0 allocs.
+  std::unordered_map<std::string, llvm::GlobalVariable *> error_singletons;
 
   // ── Local variable storage (per-function) ────────────────────────────
 
@@ -485,6 +490,20 @@ private:
                                      const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_is_expr(const IsExpr &node);
+  llvm::Value *emit_error_is(const IsExpr &node, const TypePtr &value_sem,
+                             const TypePtr &test_sem);
+  llvm::Value *emit_union_is(const IsExpr &node, const TypePtr &value_sem,
+                             const TypePtr &test_sem);
+  llvm::Value *emit_error_equality(const BinaryExprNode &node,
+                                   const TypePtr &lhs_sem,
+                                   const TypePtr &rhs_sem);
+  llvm::Value *emit_error_fields_eq(llvm::Value *a, llvm::Value *b,
+                                    const TypePtr &layout);
+  llvm::Value *emit_struct_fields_eq(llvm::Value *a, llvm::Value *b,
+                                     const TypePtr &struct_sem, size_t start);
+  llvm::Value *emit_value_eq(const TypePtr &field_type, llvm::Type *field_ll,
+                             llvm::Value *a_gep, llvm::Value *b_gep);
+  llvm::Function *get_or_declare_memcmp();
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
@@ -535,6 +554,15 @@ private:
                                    const TypePtr &struct_sem);
   void emit_error_message_default(llvm::Value *box, const TypePtr &sem,
                                   const StructTypeInfo &info);
+  /// A field-less error with a compile-time-constant message lowers to one
+  /// shared rodata global {type_id, message} — no heap allocation. Returns the
+  /// cached global pointer.
+  llvm::Value *emit_error_singleton(const StructTypeInfo &info,
+                                    const std::string &message);
+  /// The constant message text of an error literal (explicit or default), or
+  /// nullopt when the message is a runtime expression / interpolation.
+  std::optional<std::string> const_error_message(const StructLiteralNode &node,
+                                                 const StructTypeInfo &info);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
@@ -679,7 +707,6 @@ private:
   /// Build a Missing error box carrying `message`. Returns the pointer from
   /// `saga_missing_new`, suitable for use as the err payload of a
   /// `T | error` union.
-  llvm::Value *emit_missing_box(const std::string &message);
 
   /// Extract a concrete value from a union alloca given the expected alt type.
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,

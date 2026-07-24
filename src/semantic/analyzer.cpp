@@ -3232,6 +3232,21 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   if (is_error_type(lhs) || is_error_type(rhs))
     return builtins.error_type;
 
+  // Errors compare by value: `==`/`!=` on two errors is structural (same type
+  // and equal fields). Errors have no methods, so they never reach the struct
+  // operator-overload path below. Structural comparison needs a concrete layout,
+  // so at least one side must have a concrete error type — comparing two base
+  // `error` values can't see their extra fields and is rejected.
+  using EK = Token::Kind;
+  if ((node.op == EK::Equal || node.op == EK::NotEqual) &&
+      is_error_valued(lhs) && is_error_valued(rhs)) {
+    if (is_abstract_error(lhs) && is_abstract_error(rhs))
+      error(node.span,
+            "cannot compare two base `error` values; at least one side must "
+            "have a concrete error type (narrow with `is` first)");
+    return builtins.bool_type;
+  }
+
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
@@ -4657,6 +4672,15 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   }
 }
 
+// Errors are immutable pure data: reject writing a field via `=`, a compound
+// assignment, or `++`/`--`.
+void Analyzer::reject_error_field_mutation(const Node &target) {
+  if (auto *sel = std::get_if<SelectorNode>(&target.data))
+    if (is_error_valued(check_expr(*sel->object)))
+      error(target.span,
+            "cannot assign to a field of an error (errors are immutable)");
+}
+
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
@@ -4670,6 +4694,8 @@ void Analyzer::check_assign(const AssignNode &node) {
               std::format("cannot assign to constant '{}'", id->name));
       }
     }
+
+    reject_error_field_mutation(*node.targets[i]);
 
     auto target_type = check_expr(*node.targets[i]);
     if (i < node.values.size()) {
@@ -4721,6 +4747,7 @@ void Analyzer::check_increment(const IncrementNode &node) {
             std::format("cannot increment constant '{}'", id->name));
     }
   }
+  reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("increment requires integer type, got {}",
@@ -4736,6 +4763,7 @@ void Analyzer::check_decrement(const DecrementNode &node) {
             std::format("cannot decrement constant '{}'", id->name));
     }
   }
+  reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
   if (!is_error_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("decrement requires integer type, got {}",
@@ -5106,6 +5134,12 @@ void Analyzer::check_error_decl(const ErrorDeclNode &e) {
   if (!sym || !sym->type || sym->type->kind != TypeKind::Struct)
     return;
   auto &info = std::get<StructTypeInfo>(sym->type->detail);
+
+  // `Missing` and `Trapped` are built-in errors with reserved type_ids; a
+  // user redeclaration would alias them (breaking `is`/`==` identity).
+  if (info.name == "Missing" || info.name == "Trapped")
+    error(e.name.span,
+          std::format("'{}' is a reserved built-in error type", info.name));
 
   std::unordered_map<std::string, bool> seen;
   for (auto &f : info.fields) {

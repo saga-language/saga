@@ -1,0 +1,10 @@
+// Rule: errors are immutable pure data — assigning a field is a compile error.
+error Config {
+  code int
+  message = "bad"
+}
+
+pub fn Main() void {
+  e := Config{code: 1}
+  e.code = 2
+}

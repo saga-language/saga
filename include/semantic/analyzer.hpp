@@ -667,6 +667,7 @@ private:
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
   void check_assign(const AssignNode &node);
+  void reject_error_field_mutation(const Node &target);
   void check_increment(const IncrementNode &node);
   void check_decrement(const DecrementNode &node);
   void check_return(const ReturnNode &node);
