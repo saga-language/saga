@@ -46,7 +46,7 @@ enum class TypeKind : uint8_t {
   TypeParam,   // unresolved generic parameter, e.g. T
   Alias,       // type alias (const MyType = Int)
   Module,      // package/module (from import)
-  Error,       // sentinel for error-recovery (propagates silently)
+  Invalid,     // sentinel for a type-check failure (propagates silently)
 };
 
 // ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ struct FloatType {
 };
 
 struct StringType {};
-struct ErrorType {};      // error-recovery sentinel
+struct InvalidType {};      // type-check-failure sentinel
 
 struct ArrayTypeInfo {
   TypePtr element;
@@ -233,7 +233,7 @@ struct Type {
     TypeParamInfo,
     AliasTypeInfo,
     ModuleTypeInfo,
-    ErrorType
+    InvalidType
   >;
   // clang-format on
 
@@ -266,7 +266,7 @@ TypePtr make_float_type(uint8_t bits = 0);
 /// literal before context-driven materialization.
 TypePtr make_untyped_float_type();
 TypePtr make_string_type();
-TypePtr make_error_type();
+TypePtr make_invalid_type();
 
 TypePtr make_array_type(TypePtr element);
 TypePtr make_map_type(TypePtr key, TypePtr value);
@@ -301,12 +301,12 @@ TypePtr make_module_type(const std::string &name,
 // ---------------------------------------------------------------------------
 
 /// True if `t` is the error-recovery sentinel.
-bool is_error_type(const TypePtr &t);
+bool is_invalid_type(const TypePtr &t);
 
 /// True if a value of `t` is an error handled by `or` — any struct carrying
 /// the `is_error` marker (the abstract base `error`, the built-in `Missing`
 /// and `Trapped`, and every user `error Name {}`). Not the same as
-/// `is_error_type` (the unresolved-type sentinel).
+/// `is_invalid_type` (the unresolved-type sentinel).
 bool is_error_valued(const TypePtr &t);
 
 /// True if `t` is the abstract base `error` — the widening target every

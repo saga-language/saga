@@ -58,8 +58,8 @@ TypePtr make_string_type() {
   return std::make_shared<Type>(TypeKind::String, StringType{});
 }
 
-TypePtr make_error_type() {
-  return std::make_shared<Type>(TypeKind::Error, ErrorType{});
+TypePtr make_invalid_type() {
+  return std::make_shared<Type>(TypeKind::Invalid, InvalidType{});
 }
 
 TypePtr make_array_type(TypePtr element) {
@@ -153,11 +153,11 @@ TypePtr unwrap_alias(const TypePtr &t) {
 
 TypeKind underlying_kind(const TypePtr &t) {
   auto unwrapped = unwrap_alias(t);
-  return unwrapped ? unwrapped->kind : TypeKind::Error;
+  return unwrapped ? unwrapped->kind : TypeKind::Invalid;
 }
 
-bool is_error_type(const TypePtr &t) {
-  return t && t->kind == TypeKind::Error;
+bool is_invalid_type(const TypePtr &t) {
+  return t && t->kind == TypeKind::Invalid;
 }
 
 bool is_error_valued(const TypePtr &t) {
@@ -280,7 +280,7 @@ std::string type_to_string(const TypePtr &t) {
   }
   case TypeKind::String:
     return "string";
-  case TypeKind::Error:
+  case TypeKind::Invalid:
     return "<error>";
 
   case TypeKind::Array: {
@@ -369,7 +369,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     return false;
 
   // Error types propagate silently — treat as equal to anything.
-  if (a->kind == TypeKind::Error)
+  if (a->kind == TypeKind::Invalid)
     return true;
 
   switch (a->kind) {
@@ -478,7 +478,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     return ai.import_path == bi.import_path;
   }
 
-  case TypeKind::Error:
+  case TypeKind::Invalid:
     return true;
   }
 
@@ -494,7 +494,7 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     return false;
 
   // Error types propagate silently.
-  if (is_error_type(source) || is_error_type(target))
+  if (is_invalid_type(source) || is_invalid_type(target))
     return true;
 
   // Alias assignability.  A structural alias (`type X = T`) is transparent:
@@ -655,9 +655,9 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 TypePtr common_type(const TypePtr &a, const TypePtr &b) {
   if (!a || !b)
     return nullptr;
-  if (is_error_type(a))
+  if (is_invalid_type(a))
     return b;
-  if (is_error_type(b))
+  if (is_invalid_type(b))
     return a;
   if (types_equal(a, b))
     return a;

@@ -122,7 +122,7 @@ std::string type_to_sgi(const TypePtr &t) {
   }
   case TypeKind::String:
     return "String";
-  case TypeKind::Error:
+  case TypeKind::Invalid:
     return "Void"; // error types shouldn't appear in .sgi
 
   case TypeKind::Array: {

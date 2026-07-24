@@ -15,7 +15,7 @@ TEST(Builtins, TypesInit) {
   EXPECT_NE(types.int_type, nullptr);
   EXPECT_NE(types.float_type, nullptr);
   EXPECT_NE(types.string_type, nullptr);
-  EXPECT_NE(types.error_type, nullptr);
+  EXPECT_NE(types.invalid_type, nullptr);
 }
 
 TEST(Builtins, SizedIntegerTypes) {

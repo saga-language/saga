@@ -230,7 +230,7 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // diagnostic" (docs/language.md:120-122).  Without an inferred type
   // the safest fallback is Int — the spec's primary numeric type and
   // the common case for compile-time arithmetic.
-  if (is_error_type(sem_type))
+  if (is_invalid_type(sem_type))
     sem_type = analyzer.builtins.int_type;
 
   auto *ll_type = llvm_type(sem_type);

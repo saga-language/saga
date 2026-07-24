@@ -66,7 +66,7 @@ struct BuiltinTypes {
   TypePtr comparison_type; // Comparison { Less, Equal, Greater }
 
   // Error-recovery sentinel (not a language type)
-  TypePtr error_type;
+  TypePtr invalid_type;
 
   /// Initialise all built-in type singletons.
   void init();

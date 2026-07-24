@@ -97,7 +97,7 @@ struct PackageResolver {
 //
 // Performs name resolution, type checking, and generic instantiation.
 // Errors are accumulated into an ErrorList; analysis continues as far as
-// possible (error-recovery via ErrorType propagation).
+// possible (error-recovery via InvalidType propagation).
 //
 // Usage:
 //   Analyzer analyzer(fileset);
@@ -428,7 +428,7 @@ struct Analyzer {
 private:
   /// Return a cached/mock TypePtr for `import_path` if present, or nullopt
   /// to signal the caller to continue with sgi/source resolution. Returns
-  /// builtins.error_type wrapped in optional on cycle detection.
+  /// builtins.invalid_type wrapped in optional on cycle detection.
   std::optional<TypePtr> resolve_import_cached(const std::string &import_path,
                                                Span span);
 
@@ -440,7 +440,7 @@ private:
                                                Span span);
 
   /// Parse and analyze the import's source files. Returns the constructed
-  /// module TypePtr on success, builtins.error_type on failure.
+  /// module TypePtr on success, builtins.invalid_type on failure.
   TypePtr compile_import_from_source(const std::string &import_path,
                                      Span span);
 
@@ -751,7 +751,7 @@ private:
 
   /// Verify `concrete` satisfies the named protocol `p`; emit a named
   /// diagnostic at `at` if not.  Skips silently when `concrete` is a
-  /// TypeParam (deferred to the monomorphisation site), an ErrorType,
+  /// TypeParam (deferred to the monomorphisation site), an InvalidType,
   /// or when the protocol interface hasn't been loaded yet (e.g. during
   /// std/proto's own bootstrap or in tests without a package resolver).
   /// `context` describes where the requirement comes from

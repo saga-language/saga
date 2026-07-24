@@ -95,7 +95,7 @@ void BuiltinTypes::init() {
       {TypeParam{0, "T"}});
 
   // -- Error-recovery sentinel (compiler internal) -------------------------
-  error_type = make_error_type();
+  invalid_type = make_invalid_type();
 }
 
 // ===========================================================================

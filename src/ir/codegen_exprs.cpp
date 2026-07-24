@@ -905,7 +905,7 @@ llvm::Value *CodeGen::emit_is_expr(const IsExpr &node) {
   return llvm::ConstantInt::get(i1, same ? 1 : 0);
 }
 
-// `err is ErrorType` on an error-typed value. Testing against base `error` is
+// `err is SomeError` on an error-typed value. Testing against base `error` is
 // true for any error; a concrete-typed value folds statically; a base-`error`
 // value compares the box's runtime type_id (offset 0) against the tested type.
 llvm::Value *CodeGen::emit_error_is(const IsExpr &node, const TypePtr &value_sem,
