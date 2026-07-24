@@ -1,0 +1,13 @@
+// Rule: an interpolated name in the message default must be one of the error's
+// own fields; a typo is a compile error, not a silently dropped fragment.
+import "std/io"
+
+error Bad {
+  code int
+  message = "value {kode}"
+}
+
+pub fn Main() void {
+  e := Bad{code: 1}
+  io.Println(e.message)
+}

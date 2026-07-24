@@ -533,6 +533,8 @@ private:
   /// explicit literal fields, which override.
   void apply_struct_field_defaults(llvm::Value *struct_ptr,
                                    const TypePtr &struct_sem);
+  void emit_error_message_default(llvm::Value *box, const TypePtr &sem,
+                                  const StructTypeInfo &info);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);

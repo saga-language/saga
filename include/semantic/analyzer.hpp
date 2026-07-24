@@ -700,6 +700,8 @@ private:
                                     const TypePtr &rhs);
   void check_enum_decl(const EnumDeclNode &node);
   void check_error_decl(const ErrorDeclNode &node);
+  void check_error_message_default(const StructTypeInfo &info,
+                                   const Node &msg_default);
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
   void check_field_defaults(const StructDeclNode &node);

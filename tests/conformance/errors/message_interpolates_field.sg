@@ -1,0 +1,13 @@
+// A `message = "... {field} ..."` default interpolates the error's own fields
+// at construction; `.message` then reads the substituted string.
+import "std/io"
+
+error Errno {
+  code int
+  message = "errno {code}"
+}
+
+pub fn Main() void {
+  e := Errno{code: 5}
+  io.Println(e.message)
+}

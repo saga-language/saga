@@ -5115,17 +5115,37 @@ void Analyzer::check_error_decl(const ErrorDeclNode &e) {
     seen[f.name] = true;
   }
 
-  if (e.message_default) {
-    auto def_type = check_expr(*e.message_default);
-    if (require_const_expr(*e.message_default) && !is_error_type(def_type))
-      expect_assignable(e.message_default->span, builtins.string_type, def_type,
-                        "error message default");
-  }
+  if (e.message_default)
+    check_error_message_default(info, *e.message_default);
 
   for (auto &member : e.members) {
     if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data))
       check_field_default(*fs);
   }
+}
+
+// The message default is checked with the error's own fields in scope, so a
+// `message = "code {code}"` default can interpolate them. Being runtime by
+// nature, it is not required to be a compile-time constant.
+void Analyzer::check_error_message_default(const StructTypeInfo &info,
+                                           const Node &msg_default) {
+  push_scope(ScopeKind::Block);
+  for (auto &f : info.fields) {
+    if (f.name == "type_id" || f.name == "message")
+      continue;
+    current_scope->symbols[f.name] =
+        Symbol::variable(f.name, f.type, msg_default.span);
+  }
+  // The message default isn't reached by the normal resolve pass (its scope is
+  // the error's fields, not a lexical scope), so resolve it here to report
+  // undefined names before the interpolation silently drops them.
+  resolve_expr(msg_default);
+  auto def_type = check_expr(msg_default);
+  pop_scope();
+
+  if (!is_error_type(def_type))
+    expect_assignable(msg_default.span, builtins.string_type, def_type,
+                      "error message default");
 }
 
 void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {

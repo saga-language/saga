@@ -1102,8 +1102,49 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
     store_struct_field(gep, field_ll, field_sem, *fa.value);
   }
 
+  if (info.is_error) {
+    bool msg_provided = false;
+    for (auto &fa : node.fields)
+      if (fa.name.name == "message") { msg_provided = true; break; }
+    if (!msg_provided)
+      emit_error_message_default(storage, sem, info);
+  }
+
   // For a boxed error this is the heap box pointer; for a struct, the alloca.
   return storage;
+}
+
+// An error's `message = Expr` default may interpolate the error's own fields.
+// The referenced fields are already stored in the box, so bind each to a temp
+// local for the duration of the message expression and store the result into
+// the message slot. Unbound temps are dropped by later passes.
+void CodeGen::emit_error_message_default(llvm::Value *box, const TypePtr &sem,
+                                         const StructTypeInfo &info) {
+  const Node *msg_default = nullptr;
+  for (auto &f : info.fields)
+    if (f.name == "message") { msg_default = f.default_value; break; }
+  if (!msg_default)
+    return;
+
+  auto *st = struct_types.at(struct_cache_key(info));
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto saved = locals;
+  for (size_t i = 0; i < info.fields.size() && i < st->getNumElements(); ++i) {
+    auto &f = info.fields[i];
+    if (f.name == "type_id" || f.name == "message")
+      continue;
+    auto *field_ll = st->getElementType(i);
+    auto *gep = builder.CreateStructGEP(st, box, i, f.name);
+    auto *tmp = create_entry_alloca(func, f.name + ".self", field_ll);
+    builder.CreateStore(builder.CreateLoad(field_ll, gep, f.name), tmp);
+    locals[f.name] = tmp;
+  }
+
+  auto [msg_gep, msg_ll] = struct_field_gep(box, sem, "message");
+  if (msg_gep)
+    store_struct_field(msg_gep, msg_ll, analyzer.builtins.string_type,
+                       *msg_default);
+  locals = saved;
 }
 
 void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
@@ -1149,6 +1190,10 @@ void CodeGen::apply_struct_field_defaults(llvm::Value *struct_ptr,
 
   for (size_t i = 0; i < info.fields.size() && i < st->getNumElements(); ++i) {
     if (!info.fields[i].default_value)
+      continue;
+    // An error's message default may interpolate sibling fields, so it is
+    // emitted last (emit_error_message_default) once they are populated.
+    if (info.is_error && info.fields[i].name == "message")
       continue;
     auto *gep = builder.CreateStructGEP(st, struct_ptr, i, info.fields[i].name);
     llvm::Type *field_ll = st->getElementType(i);

@@ -1,0 +1,14 @@
+// The message default may interpolate several fields, including one left at its
+// own comptime default rather than supplied at the construction site.
+import "std/io"
+
+error HttpError {
+  status int = 500
+  path string
+  message = "HTTP {status} at {path}"
+}
+
+pub fn Main() void {
+  e := HttpError{path: "/index"}
+  io.Println(e.message)
+}
