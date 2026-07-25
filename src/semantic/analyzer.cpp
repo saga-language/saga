@@ -399,24 +399,42 @@ std::optional<Symbol> Analyzer::lookup(const std::string &name) const {
 
 uint32_t Analyzer::fresh_type_param_id() { return next_type_param_id++; }
 
+TypePtr Analyzer::resolve_constraint_bound(const IdentifierNode &constraint) {
+  if (auto sym = lookup(std::string(constraint.name))) {
+    if (sym->type && sym->type->kind == TypeKind::Interface)
+      return sym->type;
+    error(constraint.span,
+          std::format("'{}' is not an interface — a constraint must be an "
+                      "interface or one of integer, float, numeric",
+                      constraint.name));
+    return nullptr;
+  }
+  if (constraint.name == "Stringable" && builtins.stringable_iface)
+    return builtins.stringable_iface;
+  if (constraint.name == "Hashable" && builtins.hashable_iface)
+    return builtins.hashable_iface;
+  error(constraint.span,
+        std::format("unknown type constraint '{}' — expected an interface or "
+                    "one of integer, float, numeric",
+                    constraint.name));
+  return nullptr;
+}
+
 std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
   std::vector<TypeParam> params;
   for (auto &tp_node : generic.type_params) {
     std::string_view name;
     Span span = tp_node->span;
     TypeConstraint constraint = TypeConstraint::None;
+    TypePtr bound;
 
     if (auto *tp = std::get_if<TypeParamNode>(&tp_node->data)) {
       name = tp->name.name;
       span = tp->name.span;
       if (tp->constraint) {
         constraint = constraint_from_name(tp->constraint->name);
-        if (constraint == TypeConstraint::None) {
-          error(tp->constraint->span,
-                std::format("unknown type constraint '{}' — expected one of "
-                            "integer, float, numeric",
-                            tp->constraint->name));
-        }
+        if (constraint == TypeConstraint::None)
+          bound = resolve_constraint_bound(*tp->constraint);
       }
     } else if (auto *ident = std::get_if<IdentifierNode>(&tp_node->data)) {
       // Legacy / instantiation-position shape; no constraint slot.
@@ -428,7 +446,8 @@ std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
 
     uint32_t id = fresh_type_param_id();
     TypeParam tp{id, std::string(name), constraint};
-    auto tp_type = make_type_param(id, tp.name);
+    auto tp_type = make_type_param(
+        id, tp.name, bound ? std::optional<TypePtr>(bound) : std::nullopt);
     if (tp_type) {
       auto &info = std::get<TypeParamInfo>(tp_type->detail);
       info.param.constraint = constraint;
@@ -3909,6 +3928,14 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
         kind_method_uses_typeparam_dispatch_.insert(
             current_eager_kind_method_decl_);
     };
+    auto &tpinfo = std::get<TypeParamInfo>(obj_type->detail);
+    if (tpinfo.bound) {
+      if (auto t = try_protocol(*tpinfo.bound)) {
+        record_dispatch();
+        return t;
+      }
+      return nullptr;
+    }
     if (auto t = try_protocol(builtins.stringable_iface)) {
       record_dispatch();
       return t;
@@ -5312,12 +5339,15 @@ Analyzer::instantiate_generic_call(
   // Constraints are carried on the TypeParam nodes embedded in the function's
   // parameter/return types — walk the type tree to recover them.
   std::unordered_map<uint32_t, TypeConstraint> constraints;
+  std::unordered_map<uint32_t, TypePtr> bounds;
   auto collect = [&](auto &self, const TypePtr &t) -> void {
     if (!t) return;
     if (t->kind == TypeKind::TypeParam) {
       auto &info = std::get<TypeParamInfo>(t->detail);
       if (info.param.constraint != TypeConstraint::None)
         constraints[info.param.id] = info.param.constraint;
+      if (info.bound)
+        bounds[info.param.id] = *info.bound;
       return;
     }
     switch (t->kind) {
@@ -5358,6 +5388,17 @@ Analyzer::instantiate_generic_call(
                         constraint_name(it->second)));
       constraint_violation = true;
     }
+  }
+  for (auto &[id, concrete] : bindings) {
+    auto it = bounds.find(id);
+    if (it == bounds.end()) continue;
+    if (!concrete || is_invalid_type(concrete) ||
+        concrete->kind == TypeKind::TypeParam)
+      continue;
+    auto &ii = std::get<InterfaceTypeInfo>(it->second->detail);
+    if (!report_interface_unsatisfied(concrete, it->second, ii.name, call_span,
+                                      ""))
+      constraint_violation = true;
   }
   if (constraint_violation)
     return builtins.invalid_type;

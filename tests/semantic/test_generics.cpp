@@ -341,4 +341,40 @@ TEST(Generics, BoundedGenericBitwiseOnlyOnInteger) {
   EXPECT_FALSE(r_bad.ok());
 }
 
+TEST(Generics, InterfaceBoundAcceptsSatisfyingType) {
+  auto r = GR::from(
+      "interface Named { Name() string }\n"
+      "struct Cat {}\n"
+      "pub fn (c Cat) Name() string { \"cat\" }\n"
+      "fn Describe<T Named>(x T) string { x.Name() }\n"
+      "fn f() string { Describe(Cat{}) }");
+  EXPECT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
+}
+
+TEST(Generics, InterfaceBoundRejectsMissingMethod) {
+  auto r = GR::from(
+      "interface Named { Name() string }\n"
+      "struct Dog {}\n"
+      "fn Describe<T Named>(x T) string { x.Name() }\n"
+      "fn f() { Describe(Dog{}) }");
+  EXPECT_TRUE(r.has_err("does not satisfy Named"));
+}
+
+TEST(Generics, InterfaceBoundMethodCallableThroughBound) {
+  auto r = GR::from(
+      "interface Named { Name() string }\n"
+      "struct Cat {}\n"
+      "pub fn (c Cat) Name() string { \"cat\" }\n"
+      "fn Greet<T Named>(x T) string { \"hi \" + x.Name() }\n"
+      "fn f() string { Greet(Cat{}) }");
+  EXPECT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
+}
+
+TEST(Generics, ConcreteTypeAsConstraintRejected) {
+  auto r = GR::from(
+      "struct Point { x int }\n"
+      "fn Id<T Point>(x T) T { x }");
+  EXPECT_TRUE(r.has_err("not an interface"));
+}
+
 } // namespace saga

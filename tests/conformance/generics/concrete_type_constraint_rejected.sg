@@ -1,0 +1,7 @@
+// Spec: a `<T C>` constraint must be an interface (or a built-in type-set);
+// naming a concrete type as a constraint is rejected.
+struct Point { x int }
+
+fn Id<T Point>(x T) T { x }
+
+pub fn Main() void {}

@@ -745,6 +745,13 @@ private:
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
 
+  /// Resolve a `<T C>` constraint name that is not a built-in type-set
+  /// (integer/float/numeric) to its interface bound.  A same-scope
+  /// interface wins; the compiler-known protocols Stringable/Hashable are
+  /// reachable by their bare names.  Emits a diagnostic and returns null
+  /// when the name is not an interface.
+  TypePtr resolve_constraint_bound(const IdentifierNode &constraint);
+
   /// Report `concrete` failing to satisfy `iface`, listing the missing
   /// methods.  `iface_name` is the name printed in the diagnostic.  Returns
   /// true (no error) when satisfied.  Shared by `check_satisfies_protocol`

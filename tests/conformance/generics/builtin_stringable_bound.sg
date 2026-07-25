@@ -1,0 +1,12 @@
+// Spec: the compiler-known protocols are nameable as constraints by their
+// bare names; `<T Stringable>` accepts a type implementing String().
+import "std/io"
+
+struct Coin {}
+pub fn (c Coin) String() string { "coin" }
+
+fn Show<T Stringable>(x T) string { x.String() }
+
+pub fn Main() void {
+  io.Println(Show(Coin{}))
+}

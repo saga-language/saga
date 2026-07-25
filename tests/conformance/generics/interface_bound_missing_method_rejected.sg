@@ -1,0 +1,13 @@
+// Spec: instantiating a bounded generic with a type that does not satisfy
+// the interface bound is rejected.
+interface Named {
+  Name() string
+}
+
+struct Dog {}
+
+fn Describe<T Named>(x T) string { x.Name() }
+
+pub fn Main() void {
+  _ := Describe(Dog{})
+}
