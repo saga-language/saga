@@ -651,6 +651,12 @@ private:
                                std::vector<FieldInfo> &out);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
                                    const std::string &field_name);
+  /// Resolve a method callable on a union value without narrowing: the
+  /// union satisfies some interface declaring `field_name` (every member
+  /// satisfies it) and that method is Self-free (no interface-self in its
+  /// params/return).  Returns the interface method's signature, else null.
+  TypePtr resolve_union_method(const TypePtr &union_type,
+                               const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,

@@ -1,0 +1,21 @@
+// Spec: a method declared by an interface that every union member satisfies
+// is callable on the union without narrowing; it dispatches on the union tag
+// to each member's implementation.
+import "std/io"
+
+interface HasArea { Area() int }
+
+struct Circle { r int }
+pub fn (c Circle) Area() int { c.r }
+
+struct Square { s int }
+pub fn (sq Square) Area() int { sq.s }
+
+fn area(shape Circle | Square) int { shape.Area() }
+
+pub fn Main() void {
+  a Circle | Square = Circle{r: 5}
+  b Circle | Square = Square{s: 9}
+  io.Println("{area(a)}")
+  io.Println("{area(b)}")
+}

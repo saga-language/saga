@@ -147,6 +147,11 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   if (!obj)
     return nullptr;
 
+  // Union receiver: dispatch `method` through the union tag, calling each
+  // member's implementation (the analyzer verified a shared interface).
+  if (obj_sem && obj_sem->kind == TypeKind::Union)
+    return emit_union_method_dispatch(node, method, obj_sem, obj);
+
   // Stdlib-defined receiver methods on generic intrinsic types (Array, Map).
   // These are compiled from stdlib source (e.g. std/array/array.sg) and use
   // opaque ptr for TypeParam parameters.  At the call site we box/unbox
@@ -1082,6 +1087,179 @@ llvm::Value *CodeGen::emit_receiver_call(
   if (callee->getReturnType()->isVoidTy())
     return nullptr;
   return call;
+}
+
+llvm::Function *CodeGen::resolve_member_method_callee(
+    const TypePtr &member_sem, const std::string &method,
+    const FuncTypeInfo **out_sig) {
+  *out_sig = nullptr;
+  if (!member_sem)
+    return nullptr;
+
+  auto declare = [&](const std::string &link, llvm::Type *self_ll,
+                     const FuncTypeInfo &fi) -> llvm::Function * {
+    std::vector<llvm::Type *> params;
+    params.push_back(self_ll);
+    for (auto &p : fi.params)
+      params.push_back(llvm_type(p));
+    llvm::Type *ret =
+        fi.return_type ? llvm_type(fi.return_type) : void_ll_type;
+    auto *ft = llvm::FunctionType::get(ret, params, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, link,
+                                  module.get());
+  };
+
+  if (member_sem->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(member_sem->detail);
+    for (auto &m : info.methods) {
+      if (m.name != method || !m.signature ||
+          m.signature->kind != TypeKind::Func)
+        continue;
+      auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+      *out_sig = &fi;
+      std::string origin =
+          info.origin_package.empty() ? package_name : info.origin_package;
+      std::string link = mangle(origin, info.name + "__" + method);
+      if (auto *fn = module->getFunction(link))
+        return fn;
+      return declare(link, llvm::PointerType::getUnqual(context), fi);
+    }
+    return nullptr;
+  }
+
+  const Type *canonical = nullptr;
+  const char *pkg = nullptr;
+  switch (member_sem->kind) {
+  case TypeKind::Int: {
+    auto &ii = std::get<IntType>(member_sem->detail);
+    pkg = "int";
+    if (ii.bits == 0)
+      canonical = analyzer.builtins.int_type.get();
+    else if (ii.is_signed)
+      switch (ii.bits) {
+      case 8:  canonical = analyzer.builtins.int8_type.get();  break;
+      case 16: canonical = analyzer.builtins.int16_type.get(); break;
+      case 32: canonical = analyzer.builtins.int32_type.get(); break;
+      case 64: canonical = analyzer.builtins.int64_type.get(); break;
+      }
+    else
+      switch (ii.bits) {
+      case 8:  canonical = analyzer.builtins.uint8_type.get();  break;
+      case 16: canonical = analyzer.builtins.uint16_type.get(); break;
+      case 32: canonical = analyzer.builtins.uint32_type.get(); break;
+      case 64: canonical = analyzer.builtins.uint64_type.get(); break;
+      }
+    break;
+  }
+  case TypeKind::Float:  canonical = analyzer.builtins.float_type.get();  pkg = "float";  break;
+  case TypeKind::Bool:   canonical = analyzer.builtins.bool_type.get();   pkg = "bool";   break;
+  case TypeKind::String: canonical = analyzer.builtins.string_type.get(); pkg = "string"; break;
+  default: return nullptr;
+  }
+
+  auto tm_it = analyzer.type_methods_.find(member_sem.get());
+  if (tm_it == analyzer.type_methods_.end() && canonical &&
+      canonical != member_sem.get())
+    tm_it = analyzer.type_methods_.find(canonical);
+  if (tm_it == analyzer.type_methods_.end())
+    return nullptr;
+  for (auto &m : tm_it->second) {
+    if (m.name != method || !m.signature ||
+        m.signature->kind != TypeKind::Func)
+      continue;
+    auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+    *out_sig = &fi;
+    std::string tn = scalar_intrinsic_mangle_name(member_sem);
+    if (auto *fn = module->getFunction(mangle(tn + "__" + method)))
+      return fn;
+    std::string cross = mangle(pkg, tn + "__" + method);
+    if (auto *fn = module->getFunction(cross))
+      return fn;
+    return declare(cross, llvm_type(member_sem), fi);
+  }
+  return nullptr;
+}
+
+llvm::Value *CodeGen::emit_union_method_dispatch(const CallExprNode &node,
+                                                 const std::string &method,
+                                                 const TypePtr &union_sem,
+                                                 llvm::Value *union_ptr) {
+  auto &alts = std::get<UnionTypeInfo>(union_sem->detail).alternatives;
+
+  // Emit call arguments once — they are identical for every arm and must not
+  // re-run their side effects per member.
+  std::vector<llvm::Value *> arg_vals;
+  for (auto &arg_node : node.args)
+    if (auto *v = emit_expr(*arg_node))
+      arg_vals.push_back(v);
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *union_st = get_union_llvm_type(union_sem);
+  auto *i8_ty = llvm::Type::getInt8Ty(context);
+
+  auto *tag_gep =
+      builder.CreateStructGEP(union_st, union_ptr, 0, "um.tag.ptr");
+  auto *tag_val = builder.CreateLoad(i8_ty, tag_gep, "um.tag");
+
+  auto *default_bb = llvm::BasicBlock::Create(context, "um.default");
+  auto *merge_bb = llvm::BasicBlock::Create(context, "um.merge");
+  auto *sw = builder.CreateSwitch(tag_val, default_bb, alts.size());
+
+  struct ArmResult {
+    llvm::Value *value;
+    llvm::BasicBlock *block;
+    bool terminated;
+  };
+  std::vector<ArmResult> results;
+
+  for (size_t i = 0; i < alts.size(); ++i) {
+    auto &alt = alts[i];
+    auto *case_bb = llvm::BasicBlock::Create(
+        context, "um.case." + std::to_string(i), func);
+    int tag = union_tag_for_type(alt, union_sem);
+    sw->addCase(llvm::ConstantInt::get(i8_ty, tag >= 0 ? tag : (int)i),
+                case_bb);
+
+    builder.SetInsertPoint(case_bb);
+    auto *recv = emit_union_extract(union_ptr, alt, union_sem);
+    const FuncTypeInfo *m_fi = nullptr;
+    auto *callee = resolve_member_method_callee(alt, method, &m_fi);
+    llvm::Value *result =
+        callee ? emit_receiver_call(callee, alt, recv, arg_vals, m_fi)
+               : nullptr;
+
+    bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+    if (!terminated)
+      builder.CreateBr(merge_bb);
+    results.push_back({result, builder.GetInsertBlock(), terminated});
+  }
+
+  // The tag is always one of the members, so the default is unreachable.
+  func->insert(func->end(), default_bb);
+  builder.SetInsertPoint(default_bb);
+  builder.CreateUnreachable();
+
+  func->insert(func->end(), merge_bb);
+  builder.SetInsertPoint(merge_bb);
+
+  llvm::Type *phi_type = nullptr;
+  bool all_have_value = true;
+  for (auto &r : results) {
+    if (!r.value || r.terminated)
+      all_have_value = false;
+    else if (!phi_type)
+      phi_type = r.value->getType();
+    else if (r.value->getType() != phi_type)
+      all_have_value = false;
+  }
+  if (all_have_value && phi_type && !phi_type->isVoidTy()) {
+    auto *phi = builder.CreatePHI(phi_type, results.size(), "um.val");
+    for (auto &r : results)
+      if (!r.terminated && r.value)
+        phi->addIncoming(r.value, r.block);
+    return phi;
+  }
+  return nullptr;
 }
 
 llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,

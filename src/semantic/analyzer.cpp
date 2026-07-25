@@ -3946,6 +3946,83 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     }
   }
 
+  if (auto u = unwrap_structural_alias(obj_type);
+      u && u->kind == TypeKind::Union)
+    return resolve_union_method(u, field_name);
+
+  return nullptr;
+}
+
+TypePtr Analyzer::resolve_union_method(const TypePtr &union_type,
+                                       const std::string &field_name) {
+  auto &alts = std::get<UnionTypeInfo>(union_type->detail).alternatives;
+  if (alts.empty())
+    return nullptr;
+
+  // Codegen dispatches per member through a struct- or scalar-receiver call;
+  // other member kinds (array/map/alias/enum) have no receiver-call lowering
+  // yet, so restrict eligibility to avoid accepting a call codegen can't emit.
+  auto dispatchable = [](const TypePtr &t) {
+    switch (t->kind) {
+    case TypeKind::Struct:
+    case TypeKind::Int:
+    case TypeKind::Float:
+    case TypeKind::Bool:
+    case TypeKind::String:
+      return true;
+    default:
+      return false;
+    }
+  };
+  for (auto &alt : alts)
+    if (!dispatchable(alt))
+      return nullptr;
+
+  auto self_free = [](const TypePtr &sig, const TypePtr &iface) -> bool {
+    if (!sig || sig->kind != TypeKind::Func)
+      return false;
+    auto &fi = std::get<FuncTypeInfo>(sig->detail);
+    auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+    auto refs_self = [&](const TypePtr &t) {
+      if (!t || t->kind != TypeKind::Interface)
+        return false;
+      auto &ti = std::get<InterfaceTypeInfo>(t->detail);
+      return ti.name == ii.name && ti.origin_package == ii.origin_package;
+    };
+    for (auto &p : fi.params)
+      if (refs_self(p))
+        return false;
+    return !(fi.return_type && refs_self(fi.return_type));
+  };
+
+  auto try_iface = [&](const TypePtr &iface) -> TypePtr {
+    if (!iface || iface->kind != TypeKind::Interface)
+      return nullptr;
+    auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+    const MethodInfo *m = nullptr;
+    for (auto &im : ii.methods)
+      if (im.name == field_name) {
+        m = &im;
+        break;
+      }
+    if (!m || !self_free(m->signature, iface))
+      return nullptr;
+    for (auto &alt : alts)
+      if (!satisfies_interface(alt, iface))
+        return nullptr;
+    return m->signature;
+  };
+
+  if (auto s = try_iface(builtins.stringable_iface))
+    return s;
+  if (auto s = try_iface(builtins.hashable_iface))
+    return s;
+  if (package_scope_)
+    for (auto &[name, sym] : package_scope_->symbols)
+      if (sym.kind == SymbolKind::Type && sym.type &&
+          sym.type->kind == TypeKind::Interface)
+        if (auto s = try_iface(sym.type))
+          return s;
   return nullptr;
 }
 

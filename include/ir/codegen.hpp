@@ -620,6 +620,21 @@ private:
                                        const std::string &method,
                                        const TypePtr &obj_sem,
                                        llvm::Value *obj);
+  /// Dispatch a method call on a union receiver without narrowing: switch on
+  /// the union tag and, per member, extract the payload and call that
+  /// member's `method` (via emit_receiver_call), PHI-ing the common result.
+  /// The analyzer has already verified every member satisfies a shared
+  /// interface declaring `method`.
+  llvm::Value *emit_union_method_dispatch(const CallExprNode &node,
+                                          const std::string &method,
+                                          const TypePtr &union_sem,
+                                          llvm::Value *union_ptr);
+  /// Resolve (forward-declaring if needed) the callee for a concrete union
+  /// member's `method` and report its signature via `out_sig`. Handles struct
+  /// members (pointer self) and scalar members (value self); null otherwise.
+  llvm::Function *resolve_member_method_callee(const TypePtr &member_sem,
+                                               const std::string &method,
+                                               const FuncTypeInfo **out_sig);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   /// Promoted-field access (the field lives on an embedded struct) is
