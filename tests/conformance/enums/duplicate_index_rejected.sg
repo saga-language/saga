@@ -1,0 +1,6 @@
+// Spec: enum variant backing values (indices) must be unique.
+enum Bad {
+  A = 2
+  B = 2
+}
+pub fn Main() void {}

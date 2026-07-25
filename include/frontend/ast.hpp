@@ -472,8 +472,7 @@ struct TypeDeclNode {
 struct EnumFieldNode {
   Span span;
   IdentifierNode name;
-  std::vector<FieldAssignmentNode>
-      initializer; // {name: expr, ...}; empty if none
+  NodePtr value; // optional `= Expression` backing value; null if none
 };
 
 // EnumDecl = [ "pub" ] "enum" Identifier "{" EnumField { terminal EnumField }

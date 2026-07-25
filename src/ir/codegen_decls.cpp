@@ -404,17 +404,12 @@ void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
   for (auto &field : node.fields) {
     std::string variant_name(field.name.name);
 
-    // Check for explicit {index: N} override.
-    for (auto &init : field.initializer) {
-      std::string init_key(init.name.name);
-      if (init_key == "index") {
-        if (auto *lit =
-                std::get_if<IntegerLiteralNode>(&init.value->data)) {
-          std::string clean;
-          for (char c : lit->literal)
-            if (c != '_') clean += c;
-          next_index = std::stoll(clean);
-        }
+    if (field.value) {
+      if (auto *lit = std::get_if<IntegerLiteralNode>(&field.value->data)) {
+        std::string clean;
+        for (char c : lit->literal)
+          if (c != '_') clean += c;
+        next_index = std::stoll(clean);
       }
     }
 

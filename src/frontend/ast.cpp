@@ -181,8 +181,8 @@ void dump_case_arm(const CaseArmNode &n, std::ostream &os, int indent) {
 
 void dump_enum_field(const EnumFieldNode &n, std::ostream &os, int indent) {
   os << pad(indent) << "EnumFieldNode \"" << n.name.name << "\"\n";
-  for (const auto &fa : n.initializer)
-    dump_field_assignment(fa, os, indent + 1);
+  if (n.value)
+    dump_ptr(n.value, os, indent + 1);
 }
 
 void dump_receiver(const ReceiverNode &n, std::ostream &os, int indent) {

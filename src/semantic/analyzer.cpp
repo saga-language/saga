@@ -1959,26 +1959,17 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
   std::vector<EnumVariant> variants;
   int64_t next_index = 0;
   for (auto &field : e.fields) {
-    std::vector<FieldInfo> variant_fields;
-    int64_t explicit_index = -1;
-    for (auto &fa : field.initializer) {
-      auto field_type = check_expr(*fa.value);
-      variant_fields.push_back({std::string(fa.name.name), field_type, false});
-      // Extract explicit index value.
-      if (std::string(fa.name.name) == "index") {
-        if (auto *lit = std::get_if<IntegerLiteralNode>(&fa.value->data)) {
-          std::string clean;
-          for (char c : lit->literal)
-            if (c != '_') clean += c;
-          explicit_index = std::stoll(clean);
-        }
+    int64_t index = next_index;
+    if (field.value) {
+      if (auto *lit = std::get_if<IntegerLiteralNode>(&field.value->data)) {
+        std::string clean;
+        for (char c : lit->literal)
+          if (c != '_') clean += c;
+        index = std::stoll(clean);
       }
     }
-    if (explicit_index >= 0)
-      next_index = explicit_index;
-    variants.push_back(
-        {std::string(field.name.name), std::move(variant_fields), next_index});
-    next_index++;
+    variants.push_back({std::string(field.name.name), {}, index});
+    next_index = index + 1;
   }
 
   auto enum_type =
@@ -5217,13 +5208,31 @@ bool Analyzer::require_const_expr(const Node &expr) {
 
 void Analyzer::check_enum_decl(const EnumDeclNode &e) {
   auto sym = lookup(std::string(e.name.name));
-  if (!sym || !sym->type)
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Enum)
     return;
+  auto &info = std::get<EnumTypeInfo>(sym->type->detail);
 
-  // Check enum field initializer expressions.
-  for (auto &field : e.fields) {
-    for (auto &fa : field.initializer) {
-      check_expr(*fa.value);
+  std::unordered_set<std::string> seen_names;
+  std::unordered_map<int64_t, std::string> seen_index;
+  for (size_t i = 0; i < e.fields.size(); ++i) {
+    auto &field = e.fields[i];
+    std::string vname(field.name.name);
+    if (!seen_names.insert(vname).second)
+      error(field.name.span, std::format("duplicate enum variant '{}'", vname));
+
+    if (field.value && !std::get_if<IntegerLiteralNode>(&field.value->data))
+      error(field.value->span,
+            std::format("enum variant '{}' backing value must be an integer "
+                        "literal",
+                        vname));
+
+    if (i < info.variants.size()) {
+      int64_t idx = info.variants[i].index;
+      auto [it, inserted] = seen_index.try_emplace(idx, vname);
+      if (!inserted)
+        error(field.name.span,
+              std::format("enum variant '{}' has index {} already used by '{}'",
+                          vname, idx, it->second));
     }
   }
 }

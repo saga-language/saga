@@ -1699,9 +1699,9 @@ NodePtr Parser::parse_error_message() {
   return parse_expression();
 }
 
-// parse_enum_field — EnumField = Identifier [ EnumInitializer ]
-// EnumInitializer = "{" Identifier ":" Expression
-//                   [ "," Identifier ":" Expression ] "}"
+// parse_enum_field — EnumField = Identifier [ "=" Expression ]
+// The optional `= Expression` is the variant's explicit backing value: an
+// integer ordinal for an int-backed enum.
 EnumFieldNode Parser::parse_enum_field() {
   auto start = mark();
 
@@ -1709,38 +1709,13 @@ EnumFieldNode Parser::parse_enum_field() {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
-  std::vector<FieldAssignmentNode> initializer;
-
-  if (check(Token::Kind::LeftBrace)) {
+  NodePtr value;
+  if (check(Token::Kind::Assignment)) {
     advance();
-    skip_terminators();
-
-    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-      auto fa_start = mark();
-
-      auto fa_name_start = mark();
-      Token fa_name_tok = expect(Token::Kind::Identifier);
-      IdentifierNode fa_name{span_from(fa_name_start), fa_name_tok.literal};
-
-      expect(Token::Kind::Colon);
-
-      NodePtr value = parse_expression();
-
-      initializer.push_back(FieldAssignmentNode{
-          span_from(fa_start), std::move(fa_name), std::move(value)});
-
-      skip_terminators();
-      if (check(Token::Kind::Comma)) {
-        advance();
-        skip_terminators();
-      }
-    }
-
-    expect(Token::Kind::RightBrace);
+    value = parse_expression();
   }
 
-  return EnumFieldNode{span_from(start), std::move(name),
-                       std::move(initializer)};
+  return EnumFieldNode{span_from(start), std::move(name), std::move(value)};
 }
 
 // parse_func_decl — FuncDecl = "fn" [ Generic ] [ Receiver ] Identifier

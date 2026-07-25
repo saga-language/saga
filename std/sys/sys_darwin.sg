@@ -7,119 +7,119 @@
 
 pub enum Number {
   // File I/O
-  Read            {index: 3}
-  Write           {index: 4}
-  Open            {index: 5}
-  Close           {index: 6}
-  Lseek           {index: 199}
-  Pread64         {index: 153}
-  Pwrite64        {index: 154}
-  Readv           {index: 120}
-  Writev          {index: 121}
+  Read            = 3
+  Write           = 4
+  Open            = 5
+  Close           = 6
+  Lseek           = 199
+  Pread64         = 153
+  Pwrite64        = 154
+  Readv           = 120
+  Writev          = 121
 
   // File metadata
-  Stat            {index: 338}   // stat64
-  Fstat           {index: 339}   // fstat64
-  Lstat           {index: 340}   // lstat64
-  Access          {index: 33}
-  Chmod           {index: 15}
-  Fchmod          {index: 124}
-  Chown           {index: 16}
-  Fchown          {index: 123}
-  Lchown          {index: 364}
-  Umask           {index: 60}
+  Stat            = 338   // stat64
+  Fstat           = 339   // fstat64
+  Lstat           = 340   // lstat64
+  Access          = 33
+  Chmod           = 15
+  Fchmod          = 124
+  Chown           = 16
+  Fchown          = 123
+  Lchown          = 364
+  Umask           = 60
 
   // File system
-  Link            {index: 9}
-  Unlink          {index: 10}
-  Symlink         {index: 57}
-  Readlink        {index: 58}
-  Rename          {index: 128}
-  Mkdir           {index: 136}
-  Rmdir           {index: 137}
-  Truncate        {index: 200}
-  Ftruncate       {index: 201}
+  Link            = 9
+  Unlink          = 10
+  Symlink         = 57
+  Readlink        = 58
+  Rename          = 128
+  Mkdir           = 136
+  Rmdir           = 137
+  Truncate        = 200
+  Ftruncate       = 201
 
   // Directory-relative operations (*at family)
-  Openat          {index: 463}
-  Mkdirat         {index: 475}
-  Fchownat        {index: 468}
-  Fstatat         {index: 469}   // fstatat64
-  Unlinkat        {index: 472}
-  Renameat        {index: 465}
-  Linkat          {index: 471}
-  Symlinkat       {index: 474}
-  Readlinkat      {index: 473}
-  Fchmodat        {index: 467}
+  Openat          = 463
+  Mkdirat         = 475
+  Fchownat        = 468
+  Fstatat         = 469   // fstatat64
+  Unlinkat        = 472
+  Renameat        = 465
+  Linkat          = 471
+  Symlinkat       = 474
+  Readlinkat      = 473
+  Fchmodat        = 467
 
   // Directory
-  Getcwd          {index: 304}
-  Chdir           {index: 12}
-  Fchdir          {index: 13}
-  Getdents        {index: 344}   // getdirentries64
+  Getcwd          = 304
+  Chdir           = 12
+  Fchdir          = 13
+  Getdents        = 344   // getdirentries64
 
   // File descriptor
-  Dup             {index: 41}
-  Dup2            {index: 90}
-  Pipe            {index: 42}
-  Fcntl           {index: 92}
-  Flock           {index: 131}
-  Fsync           {index: 95}
-  Fdatasync       {index: 187}
-  Ioctl           {index: 54}
+  Dup             = 41
+  Dup2            = 90
+  Pipe            = 42
+  Fcntl           = 92
+  Flock           = 131
+  Fsync           = 95
+  Fdatasync       = 187
+  Ioctl           = 54
 
   // Memory
-  Mmap            {index: 197}
-  Mprotect        {index: 74}
-  Munmap          {index: 73}
-  Madvise         {index: 75}
+  Mmap            = 197
+  Mprotect        = 74
+  Munmap          = 73
+  Madvise         = 75
 
   // Process
-  Fork            {index: 2}
-  Vfork           {index: 66}
-  Execve          {index: 59}
-  Exit            {index: 1}
-  Getpid          {index: 20}
-  Getppid         {index: 39}
-  Getuid          {index: 24}
-  Geteuid         {index: 25}
-  Getgid          {index: 47}
-  Getegid         {index: 43}
-  Wait4           {index: 7}
+  Fork            = 2
+  Vfork           = 66
+  Execve          = 59
+  Exit            = 1
+  Getpid          = 20
+  Getppid         = 39
+  Getuid          = 24
+  Geteuid         = 25
+  Getgid          = 47
+  Getegid         = 43
+  Wait4           = 7
 
   // Signals
-  Kill            {index: 37}
-  Sigaction       {index: 46}
-  Sigprocmask     {index: 48}
+  Kill            = 37
+  Sigaction       = 46
+  Sigprocmask     = 48
 
   // Network
-  Socket          {index: 97}
-  Connect         {index: 98}
-  Accept          {index: 30}
-  Bind            {index: 104}
-  Listen          {index: 106}
-  Sendto          {index: 133}
-  Recvfrom        {index: 29}
-  Sendmsg         {index: 28}
-  Recvmsg         {index: 27}
-  Shutdown        {index: 134}
-  Setsockopt      {index: 105}
-  Getsockopt      {index: 118}
-  Getsockname     {index: 32}
-  Getpeername     {index: 31}
+  Socket          = 97
+  Connect         = 98
+  Accept          = 30
+  Bind            = 104
+  Listen          = 106
+  Sendto          = 133
+  Recvfrom        = 29
+  Sendmsg         = 28
+  Recvmsg         = 27
+  Shutdown        = 134
+  Setsockopt      = 105
+  Getsockopt      = 118
+  Getsockname     = 32
+  Getpeername     = 31
 
   // I/O multiplexing (Darwin uses kqueue, not epoll)
-  Poll            {index: 230}
-  Select          {index: 93}
-  Kqueue          {index: 362}
-  Kevent          {index: 363}
-  Kevent64        {index: 369}
+  Poll            = 230
+  Select          = 93
+  Kqueue          = 362
+  Kevent          = 363
+  Kevent64        = 369
 
   // Time
-  Gettimeofday    {index: 116}
+  Gettimeofday    = 116
 
   // Misc
-  Getentropy      {index: 500}
+  Getentropy      = 500
 }
 
 // Darwin errno messages (sys/errno.h)
