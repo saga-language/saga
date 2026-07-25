@@ -1,0 +1,6 @@
+// A union of unions flattens into a unique set; a member that repeats one
+// already present (here `int`, pulled in by U1) is a duplicate error.
+type U1 = string | int
+type Bad = int | U1
+
+pub fn Main() void {}

@@ -1085,17 +1085,15 @@ TEST(TypeCheck, SwitchTypeMatch) {
 
 // A structural alias (`type X = A | B`) is transparent to the union, so a
 // value satisfying any member is assignable through it.
-TEST(TypeCheck, TypeDecl_StructuralUnionOfInterfaces) {
+TEST(TypeCheck, TypeDecl_InterfaceInUnionRejected) {
+  // Unions are concrete-only: an interface alternative (even all-interface,
+  // which used to mean "implements both") is a compile error. The "implements
+  // both" use case is interface block-embedding instead.
   auto r = TC::from(
       "interface Reader { Read() string }\n"
       "interface Writer { Write(s string) void }\n"
-      "type ReadWriter = Reader | Writer\n"
-      "struct Buffer {}\n"
-      "pub fn (b Buffer) Read() string { \"\" }\n"
-      "pub fn (b Buffer) Write(s string) void {}\n"
-      "fn use(rw ReadWriter) void {}\n"
-      "fn f() void { use(Buffer{}) }");
-  EXPECT_TRUE(r.ok());
+      "type ReadWriter = Reader | Writer\n");
+  EXPECT_FALSE(r.ok());
 }
 
 // Spec: arrays of the same element type pass directly into a variadic.

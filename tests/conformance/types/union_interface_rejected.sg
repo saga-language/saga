@@ -1,0 +1,9 @@
+// Rule: a type union may contain only concrete types. An interface alternative
+// is a compile error (the "implements both" case is interface block-embedding).
+interface Reader {
+  Read() int
+}
+
+type Bad = string | Reader
+
+pub fn Main() void {}

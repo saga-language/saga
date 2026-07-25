@@ -108,9 +108,49 @@ TypePtr make_interface_type(const std::string &name,
                         std::move(type_params), {}});
 }
 
+// Unwrap only transparent (structural) aliases. A nominal alias is a distinct
+// type and stays a union member as itself, so its members are not spliced.
+static TypePtr union_surface(const TypePtr &t) {
+  auto c = t;
+  while (c && c->kind == TypeKind::Alias &&
+         std::get<AliasTypeInfo>(c->detail).structural)
+    c = std::get<AliasTypeInfo>(c->detail).underlying;
+  return c;
+}
+
+static void flatten_union_into(const TypePtr &alt, std::vector<TypePtr> &out) {
+  auto s = union_surface(alt);
+  if (s && s->kind == TypeKind::Union) {
+    for (auto &m : std::get<UnionTypeInfo>(s->detail).alternatives)
+      flatten_union_into(m, out);
+  } else {
+    out.push_back(alt);
+  }
+}
+
+std::vector<TypePtr>
+flatten_union_alternatives(const std::vector<TypePtr> &alts) {
+  std::vector<TypePtr> flat;
+  for (auto &a : alts)
+    flatten_union_into(a, flat);
+  return flat;
+}
+
 TypePtr make_union_type(std::vector<TypePtr> alternatives) {
+  // Canonicalize every union: splice nested unions and drop duplicates,
+  // preserving first-seen order (the leftmost type is the zero value). User
+  // duplicates are diagnosed in resolve_union_type; here dedupe is silent so
+  // internal composition (e.g. `(T|error) | error` after substitution) is clean.
+  std::vector<TypePtr> uniq;
+  for (auto &a : flatten_union_alternatives(alternatives)) {
+    bool dup = false;
+    for (auto &e : uniq)
+      if (types_equal(e, a)) { dup = true; break; }
+    if (!dup)
+      uniq.push_back(a);
+  }
   return std::make_shared<Type>(TypeKind::Union,
-                                UnionTypeInfo{std::move(alternatives)});
+                                UnionTypeInfo{std::move(uniq)});
 }
 
 TypePtr make_type_param(uint32_t id, const std::string &name,
@@ -581,26 +621,11 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     }
   }
 
-  // Union source: when every alternative is an interface, the union is
-  // conjunctive (interface widening — spec language.md:951-953).  A
-  // value of `Reader | Writer` implements *both* sets of methods, so
-  // assignment to either Reader or Writer is fine.  For other unions
-  // (e.g. `Int | String`), the union is disjunctive and every alternative
-  // must independently be assignable to the target.
+  // Union source is disjunctive: a `A | B` value is assignable to the target
+  // only if every alternative independently is. (Unions are concrete-only, so
+  // there is no interface-widening case.)
   if (source->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(source->detail);
-    bool all_ifaces = !info.alternatives.empty();
-    for (auto &alt : info.alternatives)
-      if (!alt || alt->kind != TypeKind::Interface) {
-        all_ifaces = false;
-        break;
-      }
-    if (all_ifaces) {
-      for (auto &alt : info.alternatives)
-        if (is_assignable_to(alt, target))
-          return true;
-      return false;
-    }
     for (auto &alt : info.alternatives)
       if (!is_assignable_to(alt, target))
         return false;

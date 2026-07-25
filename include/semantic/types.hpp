@@ -364,6 +364,11 @@ inline std::string origin_of(const TypePtr &t) {
 /// Structural type equality (recursive).
 bool types_equal(const TypePtr &a, const TypePtr &b);
 
+/// Flatten a union's alternatives: splice the members of any alternative that is
+/// (through structural aliases) itself a union, preserving order. No dedupe.
+std::vector<TypePtr>
+flatten_union_alternatives(const std::vector<TypePtr> &alts);
+
 /// True if `source` can be assigned to a location of type `target`.
 /// Handles union widening, interface satisfaction, etc.
 bool is_assignable_to(const TypePtr &source, const TypePtr &target);

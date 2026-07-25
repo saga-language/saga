@@ -620,10 +620,9 @@ int CodeGen::union_tag_for_type(const TypePtr &alt_type,
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
     if (types_equal(info.alternatives[i], alt_type))
       return static_cast<int>(i);
-    // Interface satisfaction, or a concrete error widening into the base
-    // `error` slot (e.g. Missing / a user error into `T | error`).
-    if ((info.alternatives[i]->kind == TypeKind::Interface ||
-         is_abstract_error(info.alternatives[i])) &&
+    // A concrete error widening into the base `error` slot (e.g. Missing / a
+    // user error into `T | error`). Unions are concrete-only — no interfaces.
+    if (is_abstract_error(info.alternatives[i]) &&
         is_assignable_to(alt_type, info.alternatives[i]))
       return static_cast<int>(i);
   }

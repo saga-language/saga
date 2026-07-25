@@ -1387,8 +1387,34 @@ TypePtr Analyzer::resolve_struct_type(const StructTypeNode &node) {
 
 TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
   std::vector<TypePtr> alts;
-  for (auto &t : node.types)
-    alts.push_back(resolve_type(*t));
+  std::vector<TypePtr> seen; // flattened members, for duplicate detection
+  for (auto &t : node.types) {
+    auto rt = resolve_type(*t);
+    alts.push_back(rt);
+
+    // Rule 1 — concrete types only. A TypeParam is allowed (concrete after
+    // instantiation); an interface (by any alias) is not.
+    if (auto u = unwrap_alias(rt); u && u->kind == TypeKind::Interface) {
+      error(t->span,
+            std::format("a type union may only contain concrete types; "
+                        "'{}' is an interface",
+                        type_to_string(rt)));
+      continue;
+    }
+
+    // Rule 2 — the composed set must be unique. A union alternative is spliced,
+    // so `T | (T | U)` and `T | T` both report the repeat.
+    for (auto &m : flatten_union_alternatives({rt})) {
+      bool dup = false;
+      for (auto &s : seen)
+        if (types_equal(s, m)) { dup = true; break; }
+      if (dup)
+        error(t->span, std::format("duplicate type '{}' in union",
+                                   type_to_string(m)));
+      else
+        seen.push_back(m);
+    }
+  }
   return make_union_type(std::move(alts));
 }
 
