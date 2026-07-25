@@ -663,13 +663,25 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
   builder.CreateStore(
       llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), tag), tag_gep);
 
-  // Store the value into the payload.
+  // Store the value into the payload.  A struct member is stored inline
+  // (the payload is sized to hold it), so when `val` is a pointer to the
+  // struct copy its bytes rather than storing the pointer — `emit_union_extract`
+  // loads the struct by value.  Scalars, strings, arrays, and boxed errors are
+  // value- or pointer-represented and round-trip through a plain store.
   if (!val->getType()->isVoidTy()) {
     auto *payload_gep = builder.CreateStructGEP(union_st, alloca, 1,
                                                  "union.payload");
     auto *cast = builder.CreateBitOrPointerCast(
         payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
-    builder.CreateStore(val, cast);
+    auto *ll_alt = llvm_type(val_type);
+    if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
+      auto &dl = module->getDataLayout();
+      builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
+                           dl.getABITypeAlign(ll_alt),
+                           dl.getTypeAllocSize(ll_alt));
+    } else {
+      builder.CreateStore(val, cast);
+    }
   }
 
   return alloca;
