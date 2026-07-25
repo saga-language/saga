@@ -366,14 +366,17 @@ llvm::Value *CodeGen::make_string_constant(const std::string &text) {
 // ===========================================================================
 
 TypePtr CodeGen::semantic_type(const Node &node) const {
+  // Structural aliases are transparent (no methods, same ABI), so unwrap them
+  // here: every codegen decision that branches on a type's kind (union, struct,
+  // …) then sees through a `type U = A | B` name. Nominal aliases are kept.
   if (current_instantiation_) {
     auto it = current_instantiation_->node_types.find(&node);
     if (it != current_instantiation_->node_types.end())
-      return it->second;
+      return unwrap_structural_alias(it->second);
   }
   auto it = analyzer.node_types.find(&node);
   if (it != analyzer.node_types.end())
-    return it->second;
+    return unwrap_structural_alias(it->second);
   return nullptr;
 }
 

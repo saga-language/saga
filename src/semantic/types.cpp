@@ -108,18 +108,10 @@ TypePtr make_interface_type(const std::string &name,
                         std::move(type_params), {}});
 }
 
-// Unwrap only transparent (structural) aliases. A nominal alias is a distinct
-// type and stays a union member as itself, so its members are not spliced.
-static TypePtr union_surface(const TypePtr &t) {
-  auto c = t;
-  while (c && c->kind == TypeKind::Alias &&
-         std::get<AliasTypeInfo>(c->detail).structural)
-    c = std::get<AliasTypeInfo>(c->detail).underlying;
-  return c;
-}
-
 static void flatten_union_into(const TypePtr &alt, std::vector<TypePtr> &out) {
-  auto s = union_surface(alt);
+  // A nominal alias is a distinct type and stays a member; only a structural
+  // alias to a union has its members spliced.
+  auto s = unwrap_structural_alias(alt);
   if (s && s->kind == TypeKind::Union) {
     for (auto &m : std::get<UnionTypeInfo>(s->detail).alternatives)
       flatten_union_into(m, out);
@@ -186,6 +178,17 @@ TypePtr unwrap_alias(const TypePtr &t) {
   if (!t) return t;
   auto curr = t;
   while (curr && curr->kind == TypeKind::Alias) {
+    curr = std::get<AliasTypeInfo>(curr->detail).underlying;
+  }
+  return curr;
+}
+
+// Unwrap only transparent (structural) aliases, which carry no methods and no
+// distinct identity. A nominal alias (`type X T`) is a real type and stays.
+TypePtr unwrap_structural_alias(const TypePtr &t) {
+  auto curr = t;
+  while (curr && curr->kind == TypeKind::Alias &&
+         std::get<AliasTypeInfo>(curr->detail).structural) {
     curr = std::get<AliasTypeInfo>(curr->detail).underlying;
   }
   return curr;

@@ -336,6 +336,9 @@ std::string type_to_string(const TypePtr &t);
 /// Returns the input if it is not an alias.
 TypePtr unwrap_alias(const TypePtr &t);
 
+/// Unwrap only structural (transparent) aliases; a nominal alias stays as-is.
+TypePtr unwrap_structural_alias(const TypePtr &t);
+
 /// Get the TypeKind of the underlying type, unwrapping aliases.
 TypeKind underlying_kind(const TypePtr &t);
 
