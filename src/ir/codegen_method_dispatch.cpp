@@ -626,18 +626,16 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
 
         if (callee) {
-          std::vector<llvm::Value *> args;
-          args.push_back(obj); // self (value, not pointer)
+          const FuncTypeInfo *m_fi =
+              m.signature && m.signature->kind == TypeKind::Func
+                  ? &std::get<FuncTypeInfo>(m.signature->detail)
+                  : nullptr;
+          std::vector<llvm::Value *> arg_vals;
           for (auto &arg_node : node.args) {
-            auto *val = emit_expr(*arg_node);
-            if (val)
-              args.push_back(val);
+            if (auto *val = emit_expr(*arg_node))
+              arg_vals.push_back(val);
           }
-          if (callee->getReturnType()->isVoidTy()) {
-            builder.CreateCall(callee, args);
-            return nullptr;
-          }
-          return builder.CreateCall(callee, args, "mcall");
+          return emit_receiver_call(callee, obj_sem, obj, arg_vals, m_fi);
         }
         break;
       }
@@ -798,23 +796,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     }
 
     if (callee) {
-      auto *parent_fn = builder.GetInsertBlock()->getParent();
-
-      // Sret lowering: if callee returns a struct via sret, alloca a
-      // result slot and pass it as the hidden first argument.
-      std::vector<llvm::Value *> args;
-      llvm::Value *sret_slot = nullptr;
-      llvm::Type *sret_struct_ty = nullptr;
-      if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
-        sret_struct_ty = callee->getParamStructRetType(0);
-        sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
-        args.push_back(sret_slot);
-      }
-
-      // For struct methods, self is a pointer to the struct.  Resolve
-      // through the parameterized cache key so a generic instantiation
-      // (e.g. `lib__Box<Int>`) matches its actual LLVM struct type, not
-      // the unparameterized base name.
+      // Self is a pointer to the struct.  Resolve through the parameterized
+      // cache key so a generic instantiation (e.g. `lib__Box<Int>`) matches
+      // its actual LLVM struct type, not the unparameterized base name.
       std::string self_struct_key = struct_cache_key(info);
       llvm::Value *self_ptr = obj;
       if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
@@ -831,18 +815,6 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
       }
 
-      // If self_ptr is a struct value (not a pointer/alloca), spill.
-      auto st_it2 = struct_types.find(self_struct_key);
-      if (st_it2 != struct_types.end() &&
-          self_ptr->getType() == st_it2->second) {
-        auto *tmp = create_entry_alloca(parent_fn, "self.tmp",
-                                         st_it2->second);
-        builder.CreateStore(self_ptr, tmp);
-        self_ptr = tmp;
-      }
-      args.push_back(self_ptr);
-
-      // Resolve the method signature for byval lowering of struct args.
       const FuncTypeInfo *m_fi = nullptr;
       for (auto &m : info.methods) {
         if (m.name == method && m.signature &&
@@ -852,61 +824,12 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
       }
 
-      for (size_t ai = 0; ai < node.args.size(); ++ai) {
-        auto *val = emit_expr(*node.args[ai]);
-        if (!val)
-          continue;
-        if (m_fi && ai < m_fi->params.size() && m_fi->params[ai] &&
-            (m_fi->params[ai]->kind == TypeKind::Struct ||
-             m_fi->params[ai]->kind == TypeKind::Union)) {
-          auto *p_ll = llvm_type(m_fi->params[ai]);
-          if (p_ll && p_ll->isStructTy() && val->getType()->isStructTy()) {
-            auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-            builder.CreateStore(val, tmp);
-            val = tmp;
-          }
-        }
-        args.push_back(val);
+      std::vector<llvm::Value *> arg_vals;
+      for (auto &arg_node : node.args) {
+        if (auto *val = emit_expr(*arg_node))
+          arg_vals.push_back(val);
       }
-
-      std::string call_name =
-          callee->getReturnType()->isVoidTy() ? "" : "mcall";
-      auto *call = builder.CreateCall(callee, args, call_name);
-
-      // Mirror sret/byval attrs on the call site.
-      unsigned cidx = 0;
-      if (sret_slot) {
-        call->addParamAttr(cidx,
-            llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
-        call->addParamAttr(cidx,
-            llvm::Attribute::getWithAlignment(context,
-                module->getDataLayout().getABITypeAlign(sret_struct_ty)));
-        ++cidx;
-      }
-      ++cidx; // self
-      if (m_fi) {
-        for (size_t ai = 0; ai < m_fi->params.size(); ++ai) {
-          if (m_fi->params[ai] &&
-              (m_fi->params[ai]->kind == TypeKind::Struct ||
-               m_fi->params[ai]->kind == TypeKind::Union)) {
-            auto *p_ll = llvm_type(m_fi->params[ai]);
-            if (p_ll && p_ll->isStructTy()) {
-              call->addParamAttr(cidx,
-                  llvm::Attribute::getWithByValType(context, p_ll));
-              call->addParamAttr(cidx,
-                  llvm::Attribute::getWithAlignment(context,
-                      module->getDataLayout().getABITypeAlign(p_ll)));
-            }
-          }
-          ++cidx;
-        }
-      }
-
-      if (sret_slot)
-        return sret_slot;
-      if (callee->getReturnType()->isVoidTy())
-        return nullptr;
-      return call;
+      return emit_receiver_call(callee, obj_sem, self_ptr, arg_vals, m_fi);
     }
   }
 
@@ -1074,6 +997,85 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
     }
     ++idx;
   }
+
+  if (sret_slot)
+    return sret_slot;
+  if (callee->getReturnType()->isVoidTy())
+    return nullptr;
+  return call;
+}
+
+llvm::Value *CodeGen::emit_receiver_call(
+    llvm::Function *callee, const TypePtr &recv_sem, llvm::Value *recv_value,
+    const std::vector<llvm::Value *> &arg_vals, const FuncTypeInfo *method_fi) {
+  auto *parent_fn = builder.GetInsertBlock()->getParent();
+  std::vector<llvm::Value *> args;
+
+  llvm::Value *sret_slot = nullptr;
+  llvm::Type *sret_struct_ty = nullptr;
+  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
+    sret_struct_ty = callee->getParamStructRetType(0);
+    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
+    args.push_back(sret_slot);
+  }
+
+  llvm::Value *self = recv_value;
+  bool ptr_self = recv_sem && (recv_sem->kind == TypeKind::Struct ||
+                               recv_sem->kind == TypeKind::Alias);
+  if (ptr_self) {
+    auto *self_ll = llvm_type(recv_sem);
+    if (self_ll && self_ll->isStructTy() && self->getType() == self_ll) {
+      auto *tmp = create_entry_alloca(parent_fn, "self.tmp", self_ll);
+      builder.CreateStore(self, tmp);
+      self = tmp;
+    }
+  }
+  args.push_back(self);
+
+  auto is_byval_param = [&](size_t i) -> llvm::Type * {
+    if (!method_fi || i >= method_fi->params.size() || !method_fi->params[i])
+      return nullptr;
+    if (method_fi->params[i]->kind != TypeKind::Struct &&
+        method_fi->params[i]->kind != TypeKind::Union)
+      return nullptr;
+    auto *p_ll = llvm_type(method_fi->params[i]);
+    return (p_ll && p_ll->isStructTy()) ? p_ll : nullptr;
+  };
+
+  for (size_t i = 0; i < arg_vals.size(); ++i) {
+    auto *val = arg_vals[i];
+    if (!val)
+      continue;
+    if (auto *p_ll = is_byval_param(i);
+        p_ll && val->getType()->isStructTy()) {
+      auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+      builder.CreateStore(val, tmp);
+      val = tmp;
+    }
+    args.push_back(val);
+  }
+
+  std::string call_name = callee->getReturnType()->isVoidTy() ? "" : "mcall";
+  auto *call = builder.CreateCall(callee, args, call_name);
+
+  auto &dl = module->getDataLayout();
+  unsigned cidx = 0;
+  if (sret_slot) {
+    call->addParamAttr(cidx,
+        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
+    call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
+                                 context, dl.getABITypeAlign(sret_struct_ty)));
+    ++cidx;
+  }
+  ++cidx; // self
+  if (method_fi)
+    for (size_t i = 0; i < method_fi->params.size(); ++i, ++cidx)
+      if (auto *p_ll = is_byval_param(i)) {
+        call->addParamAttr(
+            cidx, llvm::Attribute::getWithByValType(context, p_ll));
+        call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
+                                     context, dl.getABITypeAlign(p_ll)));
+      }
 
   if (sret_slot)
     return sret_slot;

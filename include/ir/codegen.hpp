@@ -605,6 +605,16 @@ private:
   llvm::Value *emit_resolved_call(llvm::Function *callee,
                                   const TypePtr &func_type,
                                   const CallExprNode &node);
+  /// Emit a receiver-method call `callee(self, args...)`. `recv_sem` selects
+  /// the self ABI — struct/alias receivers pass a pointer (an SSA struct
+  /// value is spilled to an alloca), scalar receivers pass the value. Handles
+  /// sret return slots and byval struct/union arg attrs (from `method_fi`).
+  /// Shared by the struct, intrinsic, and union-dispatch receiver paths.
+  llvm::Value *emit_receiver_call(llvm::Function *callee,
+                                  const TypePtr &recv_sem,
+                                  llvm::Value *recv_value,
+                                  const std::vector<llvm::Value *> &arg_vals,
+                                  const FuncTypeInfo *method_fi);
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,
