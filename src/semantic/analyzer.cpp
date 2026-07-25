@@ -5784,6 +5784,14 @@ bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
     return false;
   }
 
+  return report_interface_unsatisfied(concrete, iface, proto_name, at, context);
+}
+
+bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
+                                            const TypePtr &iface,
+                                            const std::string &iface_name,
+                                            Span at,
+                                            const std::string &context) {
   if (satisfies_interface(concrete, iface))
     return true;
 
@@ -5819,7 +5827,7 @@ bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
   std::string ctx = context.empty() ? "" : (" (" + context + ")");
   error(at, std::format(
                 "type {} does not satisfy {}{}: missing {}",
-                type_to_string(concrete), proto_name, ctx, list));
+                type_to_string(concrete), iface_name, ctx, list));
   return false;
 }
 

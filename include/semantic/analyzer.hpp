@@ -745,6 +745,15 @@ private:
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
 
+  /// Report `concrete` failing to satisfy `iface`, listing the missing
+  /// methods.  `iface_name` is the name printed in the diagnostic.  Returns
+  /// true (no error) when satisfied.  Shared by `check_satisfies_protocol`
+  /// and generic interface-bound validation.
+  bool report_interface_unsatisfied(const TypePtr &concrete,
+                                    const TypePtr &iface,
+                                    const std::string &iface_name, Span at,
+                                    const std::string &context);
+
   /// Named protocols the compiler dispatches through.  Used by
   /// `check_satisfies_protocol` to pick the relevant interface from
   /// `builtins.*_iface` and to render the protocol name in diagnostics.
