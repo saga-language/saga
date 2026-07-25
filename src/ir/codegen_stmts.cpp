@@ -20,6 +20,13 @@ namespace saga {
 // and qualified types here against the stable package scope; everything else
 // (builtins, composite type nodes) falls through to the analyzer.
 llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
+  // Prefer the type the analyzer already resolved for this node (recorded with
+  // the package scope active). Codegen's current_scope can't resolve a
+  // package-local name like the `E` in `int | E`, which would otherwise fall
+  // through to the Invalid sentinel and desync the sret union from the caller.
+  if (auto rec = semantic_type(type_node))
+    return llvm_type(rec);
+
   auto *ident = std::get_if<IdentifierNode>(&type_node.data);
   if (ident) {
     auto *ll = named_type_llvm(ident->name);

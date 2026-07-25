@@ -1,0 +1,31 @@
+// A `T | ConcreteError` union return (a concrete error alternative, not base
+// `error`) routes correctly through `or`, and the pipe var is typed as that
+// concrete error so its own fields — not just `.message` — are readable.
+import "std/io"
+
+error DiskError {
+  code int
+  message = "disk {code}"
+}
+
+fn read(fail bool) int | DiskError {
+  if fail {
+    return DiskError{code: 5}
+  }
+  return 100
+}
+
+pub fn Main() void {
+  a := read(true) or |err| {
+    io.Println(err.message)
+    io.Println(err.code.String())
+    -1
+  }
+  io.Println(a.String())
+
+  b := read(false) or |err| {
+    io.Println(err.message)
+    -2
+  }
+  io.Println(b.String())
+}

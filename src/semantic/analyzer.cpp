@@ -1473,6 +1473,11 @@ TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
     }
   }
   TypePtr ret = sig.return_type ? resolve_type(*sig.return_type) : nullptr;
+  // Record the resolved return type so codegen can recover it without
+  // re-resolving the AST against a scope where package-local names (a user
+  // error `E` in `int | E`) aren't reachable.
+  if (sig.return_type && ret)
+    record_type(*sig.return_type, ret);
   return make_func_type(std::move(params), std::move(ret));
 }
 
@@ -4427,6 +4432,27 @@ TypePtr Analyzer::instantiate_task_type(const TypePtr &chan_type) {
   return result;
 }
 
+// The type bound to an `or |err|` pipe: the union's error alternative(s). A base
+// `error` slot (or a mix that includes it) widens to base `error`; otherwise the
+// concrete error type, or a union of the concrete errors.
+TypePtr Analyzer::or_error_type(const TypePtr &union_type) {
+  if (!union_type || union_type->kind != TypeKind::Union)
+    return builtins.error_base;
+  auto &info = std::get<UnionTypeInfo>(union_type->detail);
+  std::vector<TypePtr> errs;
+  for (auto &alt : info.alternatives) {
+    if (is_abstract_error(alt))
+      return builtins.error_base;
+    if (is_error_valued(alt))
+      errs.push_back(alt);
+  }
+  if (errs.size() == 1)
+    return errs[0];
+  if (errs.empty())
+    return builtins.error_base;
+  return make_union_type(std::move(errs));
+}
+
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   auto expr_type = check_expr(*node.expr);
 
@@ -4451,8 +4477,8 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   if (node.pipe) {
     current_scope->symbols.emplace(
         std::string(node.pipe->name),
-        Symbol::variable(std::string(node.pipe->name), builtins.error_base,
-                         node.pipe->span));
+        Symbol::variable(std::string(node.pipe->name),
+                         or_error_type(expr_type), node.pipe->span));
   }
 
   auto &block = std::get<BlockNode>(node.fallback->data);

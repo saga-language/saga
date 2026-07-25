@@ -658,6 +658,7 @@ private:
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);
+  TypePtr or_error_type(const TypePtr &union_type);
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
