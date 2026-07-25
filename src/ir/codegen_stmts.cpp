@@ -418,6 +418,69 @@ void CodeGen::emit_stmt(const Node &node) {
 // Statement emitters
 // ===========================================================================
 
+llvm::Value *CodeGen::emit_empty_array(const TypePtr &array_sem) {
+  auto &arr_info = std::get<ArrayTypeInfo>(array_sem->detail);
+  int64_t elem_size = 8;
+  if (arr_info.element) {
+    auto *elem_ll = llvm_type(arr_info.element);
+    if (elem_ll->isIntegerTy(1))
+      elem_size = 1;
+  }
+  return builder.CreateCall(
+      module->getFunction("saga_array_new"),
+      {llvm::ConstantInt::get(i64_type, elem_size),
+       llvm::ConstantInt::get(i64_type, 4)}, "arr");
+}
+
+llvm::Value *CodeGen::emit_empty_map(const TypePtr &map_sem) {
+  auto &map_info = std::get<MapTypeInfo>(map_sem->detail);
+  int64_t key_size = 8, val_size = 8;
+  if (map_info.key) {
+    auto *key_ll = llvm_type(map_info.key);
+    if (key_ll->isStructTy())
+      key_size = module->getDataLayout().getTypeAllocSize(key_ll);
+    else if (key_ll->isIntegerTy(1))
+      key_size = 1;
+  }
+  if (map_info.value) {
+    auto *val_ll = llvm_type(map_info.value);
+    if (val_ll->isStructTy())
+      val_size = module->getDataLayout().getTypeAllocSize(val_ll);
+    else if (val_ll->isIntegerTy(1))
+      val_size = 1;
+  }
+  int64_t key_kind_tag = static_cast<int64_t>(CodeGen::key_kind_for(map_info.key));
+  return builder.CreateCall(
+      module->getFunction("saga_map_new"),
+      {llvm::ConstantInt::get(i64_type, key_size),
+       llvm::ConstantInt::get(i64_type, val_size),
+       llvm::ConstantInt::get(i64_type, key_kind_tag),
+       get_or_emit_key_ops(map_info.key)}, "map");
+}
+
+// A union with no initializer zeroes to tag 0 (the leftmost alternative). For a
+// reference-typed leftmost, the zeroed payload is a null pointer that would
+// crash on use, so materialize its real empty value (`""` / `[]` / `{}`).
+void CodeGen::emit_union_leftmost_zero(llvm::Value *alloca,
+                                       const TypePtr &union_sem) {
+  auto &info = std::get<UnionTypeInfo>(union_sem->detail);
+  if (info.alternatives.empty())
+    return;
+  auto lead = unwrap_alias(info.alternatives[0]);
+  llvm::Value *zv = nullptr;
+  if (lead && lead->kind == TypeKind::String)
+    zv = make_string_constant("");
+  else if (lead && lead->kind == TypeKind::Array)
+    zv = emit_empty_array(lead);
+  else if (lead && lead->kind == TypeKind::Map)
+    zv = emit_empty_map(lead);
+  if (!zv)
+    return; // scalar / struct / void leftmost: zeroed payload is already correct
+  auto *union_st = get_union_llvm_type(union_sem);
+  auto *payload = builder.CreateStructGEP(union_st, alloca, 1, "u.zero.payload");
+  builder.CreateStore(zv, payload);
+}
+
 void CodeGen::emit_var_decl(const VarDeclNode &node) {
   std::string name(node.name.name);
   auto *func = builder.GetInsertBlock()->getParent();
@@ -577,59 +640,19 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       locals[name] = alloca;
       builder.CreateStore(empty_str, alloca);
     } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Array) {
-      // Array zero value: empty array []
-      auto &arr_info = std::get<ArrayTypeInfo>(sem_type_ptr->detail);
-      int64_t elem_size = 8; // default
-      if (arr_info.element) {
-        auto *elem_ll = llvm_type(arr_info.element);
-        if (elem_ll->isIntegerTy(1))
-          elem_size = 1;
-        else if (elem_ll->isDoubleTy() || elem_ll->isIntegerTy(64) ||
-                 elem_ll->isPointerTy())
-          elem_size = 8;
-      }
-      auto *new_fn = module->getFunction("saga_array_new");
-      auto *arr = builder.CreateCall(
-          new_fn,
-          {llvm::ConstantInt::get(i64_type, elem_size),
-           llvm::ConstantInt::get(i64_type, 4)},
-          "arr");
       auto *alloca = create_entry_alloca(func, name, var_type);
       locals[name] = alloca;
-      builder.CreateStore(arr, alloca);
+      builder.CreateStore(emit_empty_array(sem_type_ptr), alloca);
     } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Map) {
-      // Map zero value: empty map {}
-      auto &map_info = std::get<MapTypeInfo>(sem_type_ptr->detail);
-      int64_t key_size = 8;
-      int64_t val_size = 8;
-      if (map_info.key) {
-        auto *key_ll = llvm_type(map_info.key);
-        if (key_ll->isStructTy())
-          key_size = module->getDataLayout().getTypeAllocSize(key_ll);
-        else if (key_ll->isIntegerTy(1))
-          key_size = 1;
-      }
-      if (map_info.value) {
-        auto *val_ll = llvm_type(map_info.value);
-        if (val_ll->isStructTy())
-          val_size = module->getDataLayout().getTypeAllocSize(val_ll);
-        else if (val_ll->isIntegerTy(1))
-          val_size = 1;
-      }
-      int64_t key_kind_tag =
-          static_cast<int64_t>(CodeGen::key_kind_for(map_info.key));
-      llvm::Constant *ops_ptr = get_or_emit_key_ops(map_info.key);
-      auto *new_fn = module->getFunction("saga_map_new");
-      auto *map = builder.CreateCall(
-          new_fn,
-          {llvm::ConstantInt::get(i64_type, key_size),
-           llvm::ConstantInt::get(i64_type, val_size),
-           llvm::ConstantInt::get(i64_type, key_kind_tag),
-           ops_ptr},
-          "map");
       auto *alloca = create_entry_alloca(func, name, var_type);
       locals[name] = alloca;
-      builder.CreateStore(map, alloca);
+      builder.CreateStore(emit_empty_map(sem_type_ptr), alloca);
+    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
+      // Zero = tag 0 (leftmost); materialize a reference-typed leftmost's value.
+      auto *alloca = create_entry_alloca(func, name, var_type);
+      locals[name] = alloca;
+      builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
+      emit_union_leftmost_zero(alloca, sem_type_ptr);
     } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
                !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
       // Struct zero value: allocate struct, zero-initialize all fields.

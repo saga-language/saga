@@ -462,6 +462,9 @@ private:
   // ── Statement emitters ───────────────────────────────────────────────
 
   void emit_var_decl(const VarDeclNode &node);
+  llvm::Value *emit_empty_array(const TypePtr &array_sem);
+  llvm::Value *emit_empty_map(const TypePtr &map_sem);
+  void emit_union_leftmost_zero(llvm::Value *alloca, const TypePtr &union_sem);
   void emit_decl_assign(const DeclAssignNode &node);
   void emit_assign(const AssignNode &node);
   void emit_return(const ReturnNode &node);

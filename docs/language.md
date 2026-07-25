@@ -421,88 +421,87 @@ struct MyStruct {
 }
 ```
 
-### Pure union types
+A type union holds one of several **concrete** types, tagged so you can recover
+which one it is with `is` or `switch`. Its size is a small tag plus the largest
+alternative's payload.
 
-A pure union is one that contains any combinations of types that is not an 
-Error type. Example: `Bool | Int` is a union of a boolean and integer type.
-The size of this type is the size of the largest type.
+Rules:
 
-Including more than one of the same Type is an error: `Int | Int`. A type
-alias of another type is not the same type: `Int : MyInt`. They are treated
-as distinct types with different behaviours.
+- **Concrete types only.** An interface alternative is an error: `string | Reader`
+  does not compile. A union answers "which *type* is it"; an interface answers
+  "what *behaviour* does it have" — different axes. To accept any type with a
+  behaviour, take the interface itself and narrow with `is`; to require several
+  behaviours at once, embed interfaces (`interface RW { Reader, Writer }`).
+- **Unique set.** A repeated type is an error: `int | int`. A union of unions
+  flattens into the combined set — `float | (string | int)` becomes
+  `float | string | int` — and a duplicate that flattening exposes is likewise an
+  error. A **nominal** alias (`type ID int`) is a distinct type, so it is *not*
+  flattened into its underlying.
+- **Zero value is the leftmost alternative.** `string | int` zeroes to `""`,
+  `int | string` to `0`; an unset union reads as its leftmost type.
 
-### Impure union types
+### Optional values (`T | void`)
 
-Impure types are type unions that contain an Error type: `Int | Error`. Errors
-must be resolved with the `or` keyword before they can be narrowed, or 
-"purified". This strips the error from the type and returns the resulting
-type, union or not, without an `Error` type.
-
-### Error type and Missing
-
-The [Error](./language.md#error) type is an interface which expects a concrete
-type to implement a public method called `Message()` that returns the type `String`.
-The language also includes a type [Missing](./language.md#missing) that 
-implements this  interface. To require a specific error type, you can use that
-type directly or use Unions for a list of specific error types. Like any type,
-Errors can be narrowed with type matching.
-
-Creating your own error type can be as simple as creating a type that 
-implements the `Error` interface. This can be a powerful tool for adding extra
-metadata to your errors.
+`void` is assignable and holds a single value, `null`. A `T | void` union is an
+optional: the value, or its absence. Its main use is over-the-wire data (a JSON
+`null`); in Saga-only code an error union is usually preferable, since it carries
+context. Narrow with `is` (`or` does not apply — `void` is not an error).
 
 ```
-struct BasicError {
-  message String
-  
-  pub fn Message() String { message }
+fn lookup(key string) int | void {
+  // ... return an int, or:
+  return null
 }
 
-struct NetworkError < BasicError {
-  code Int
-  
-  pub fn Message() String { "Network error [{code}]: {message}" } 
+x := lookup("a")
+if x is int {
+  // present
+} else {
+  // x is void — absent
 }
 ```
 
-### Or clause
+### Error unions
 
-The or clause is used to resolve Error types. It's an incredibly powerful tool
-for "correctness" or provide default values. To capture the error itself, use 
-the pipe syntax prior to the block and give it a name. This is really useful 
-for logging and default values.
+Errors are **nominal** types (`error Name { ... }`), not an interface, so they
+compose in unions like any other concrete type: `int | error`. Base `error`
+accepts any error; a concrete error type accepts only itself. Comparing errors
+uses `is` (same error type) and `==` (same type and fields); the message is a
+plain `.message` field.
 
-While `err` is probably the most common name, you can call it whatever you like.
-The variable is locked to the following block's scope, so no need to worry if
-the outer block has a variable with the same name, it won't be an error.
+The `or` clause resolves the error before the value is used: it strips the error
+alternative(s) and yields the remaining type — a value, or a smaller union.
 
 ```
-value Int | Error = 0
-i := value or { 1 } // i is now an Int
+value int | error = 0
+i := value or { 1 } // i is int
 
-many_types Int | String | Error
-int_or_string := many_types or {} // strips Error, Int | String remains
+many int | string | error
+narrowed := many or {} // strips error, int | string remains
 
-// capturing the error
+// capturing the error with the pipe syntax; `err` is scoped to the block.
 json := http.Get("example.com/api/data") or |err| {
-  log.Error(err)
-  "{}" // return a valid (empty) JSON string
+  log.Error(err.message)
+  "{}" // a valid (empty) JSON string
 }
 ```
 
-By convension, the Error type should be the final type of a union. If code
-needs to return multiple error types, use `Error`. Including more than one
-Error type in a type union will result in an error.
+The pipe variable is typed as the union's error alternative(s), so a concrete
+error union exposes that error's own fields:
 
 ```
-data := http.Get(...) or |err| {
-    switch err {
-      case NetworkError: log.Error(err)
-      case ParseError: log.Warn(err)
-      else {}
-    }
+data := parse(raw) or |err| {
+  switch err {
+    case NetworkError: log.Error(err)
+    case ParseError:   log.Warn(err)
+    else {}
+  }
 }
 ```
+
+**Ordering convention.** Write a union as `T... | void | error` — the value
+types first, then an optional `void`, then the error. This is only a convention:
+errors are nominal and carry no positional requirement, so any order is legal.
 
 ### Generics
 
