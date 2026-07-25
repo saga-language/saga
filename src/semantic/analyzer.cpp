@@ -2185,6 +2185,7 @@ void Analyzer::resolve_expr(const Node &node) {
       overloaded{
           [&](const IdentifierNode &n) { resolve_identifier(n, node); },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
+          [&](const NullLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const IntegerLiteralNode &) { /* leaf */ },
           [&](const FloatLiteralNode &) { /* leaf */ },
           [&](const StringLiteralNode &n) { resolve_string_literal(n); },
@@ -2791,6 +2792,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
           },
           [&](const BoolLiteralNode &n) -> TypePtr {
             return check_bool_literal(n);
+          },
+          [&](const NullLiteralNode &) -> TypePtr {
+            return builtins.void_type;
           },
           [&](const IntegerLiteralNode &n) -> TypePtr {
             return check_int_literal(n);
@@ -5016,6 +5020,7 @@ bool Analyzer::require_const_expr(const Node &expr) {
   return std::visit(
       overloaded{
           [](const BoolLiteralNode &) { return true; },
+          [](const NullLiteralNode &) { return true; },
           [](const IntegerLiteralNode &) { return true; },
           [](const FloatLiteralNode &) { return true; },
           [&](const StringLiteralNode &s) {

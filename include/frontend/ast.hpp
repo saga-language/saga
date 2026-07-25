@@ -66,6 +66,11 @@ struct BoolLiteralNode {
   std::string_view literal; // "true" or "false"
 };
 
+// NullLiteral = "null" — the single value of type `void`.
+struct NullLiteralNode {
+  Span span;
+};
+
 // IntegerLiteral = decimal | "0b" binary | "0x" hex | "0o" octal
 struct IntegerLiteralNode {
   Span span;
@@ -601,7 +606,7 @@ struct Node {
   using Variant = std::variant<
     // --- Leaves / atoms ---
     IdentifierNode,     IdentifierListNode,
-    BoolLiteralNode,    IntegerLiteralNode,  FloatLiteralNode,
+    BoolLiteralNode,    NullLiteralNode,     IntegerLiteralNode,  FloatLiteralNode,
     StringLiteralNode,  StringFragmentNode,
     ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,
     StructLiteralNode,  FieldAssignmentNode,

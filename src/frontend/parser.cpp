@@ -313,6 +313,7 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::IntegerLiteral:
   case Token::Kind::FloatLiteral:
   case Token::Kind::BoolLiteral:
+  case Token::Kind::Null:            // null literal (the value of type void)
   case Token::Kind::StringLiteral:
   case Token::Kind::StringStart:
   case Token::Kind::Not:             // unary !
@@ -1296,6 +1297,9 @@ NodePtr Parser::parse_prefix() {
   case Token::Kind::BoolLiteral:
     return parse_bool_literal();
 
+  case Token::Kind::Null:
+    return parse_null_literal();
+
   case Token::Kind::StringLiteral:
   case Token::Kind::StringStart:
     return parse_string_literal();
@@ -2255,6 +2259,12 @@ NodePtr Parser::parse_number() {
 //
 // On mismatch, we report an error and return a BoolLiteralNode with an empty
 // literal so callers always receive a non-null node.
+NodePtr Parser::parse_null_literal() {
+  auto start = mark();
+  expect(Token::Kind::Null);
+  return make_node<NullLiteralNode>(span_from(start));
+}
+
 NodePtr Parser::parse_bool_literal() {
   auto start = mark();
 

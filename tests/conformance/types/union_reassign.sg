@@ -1,0 +1,18 @@
+// A union variable can be reassigned to a different alternative; the tag is
+// updated so `is` reflects the new stored type.
+import "std/io"
+
+pub fn Main() void {
+  z int | string = 5
+  if z is int {
+    io.Println("int")
+  }
+  z = "hi"
+  if z is string {
+    io.Println("string")
+  }
+  z = 99
+  if z is int {
+    io.Println("int again")
+  }
+}

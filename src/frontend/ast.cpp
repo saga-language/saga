@@ -229,6 +229,9 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           [&](const BoolLiteralNode &n) {
             os << pad(indent) << "BoolLiteralNode " << n.literal << "\n";
           },
+          [&](const NullLiteralNode &) {
+            os << pad(indent) << "NullLiteralNode\n";
+          },
           [&](const IntegerLiteralNode &n) {
             os << pad(indent) << "IntegerLiteralNode " << n.literal << "\n";
           },

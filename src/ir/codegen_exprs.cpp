@@ -27,6 +27,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const BoolLiteralNode &n) -> llvm::Value * {
             return emit_bool_literal(n);
           },
+          [&](const NullLiteralNode &n) -> llvm::Value * {
+            return emit_null_literal(n);
+          },
           [&](const StringLiteralNode &n) -> llvm::Value * {
             return emit_string_literal(n);
           },
@@ -199,6 +202,14 @@ llvm::Value *CodeGen::emit_float_literal(const FloatLiteralNode &node) {
 llvm::Value *CodeGen::emit_bool_literal(const BoolLiteralNode &node) {
   bool val = (node.literal == "true");
   return llvm::ConstantInt::get(i1_type, val ? 1 : 0);
+}
+
+// `void` (its single value, `null`) has no data. It carries a 1-byte placeholder
+// so it is a valid SSA value; in a `T | void` union the payload store is skipped
+// (emit_union_wrap keys on the semantic void type), and a standalone `void`
+// variable stores this byte.
+llvm::Value *CodeGen::emit_null_literal(const NullLiteralNode &) {
+  return llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 0);
 }
 
 // ===========================================================================

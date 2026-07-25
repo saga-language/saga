@@ -439,6 +439,11 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
       var_type = llvm_type(recorded);
   }
 
+  // A `void` variable holds only `null` (no data), but native LLVM void is
+  // unstorable — give it a 1-byte slot matching emit_null_literal's placeholder.
+  if (var_type->isVoidTy())
+    var_type = llvm::Type::getInt8Ty(context);
+
   // Determine semantic type for refcount tracking and interface boxing.
   TypePtr sem_type_ptr = nullptr;
   if (node.type) {
@@ -826,6 +831,22 @@ void CodeGen::emit_assign(const AssignNode &node) {
 
     using K = Token::Kind;
     if (node.op == K::Assignment) {
+      // Reassigning a union variable to a bare member value: wrap it so the
+      // tag is set (mirrors the var-decl / struct-field union stores).
+      if (target_sem && target_sem->kind == TypeKind::Union) {
+        auto val_sem = semantic_type(*node.values[i]);
+        if (val_sem && val_sem->kind != TypeKind::Union) {
+          if (auto *wrapped = emit_union_wrap(rhs, val_sem, target_sem);
+              wrapped && wrapped->getType()->isPointerTy()) {
+            auto *ut = alloca->getAllocatedType();
+            auto &dl = module->getDataLayout();
+            auto al = dl.getABITypeAlign(ut);
+            builder.CreateMemCpy(alloca, al, wrapped, al,
+                                 dl.getTypeAllocSize(ut));
+            continue;
+          }
+        }
+      }
       // Release old value before overwriting if managed.
       if (target_sem && (target_sem->kind == TypeKind::String ||
                          target_sem->kind == TypeKind::Array ||

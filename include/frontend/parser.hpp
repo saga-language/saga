@@ -167,6 +167,7 @@ private:
   NodePtr parse_identifier();
   NodePtr parse_number(); // IntegerLiteral or FloatLiteral
   NodePtr parse_bool_literal();
+  NodePtr parse_null_literal();
   NodePtr parse_string_literal(); // handles interpolation fragments
   NodePtr parse_array_literal();  // "[" ... "]"
   NodePtr parse_map_or_block();   // disambiguate "{" — map literal vs block
