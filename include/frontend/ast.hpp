@@ -71,6 +71,14 @@ struct NullLiteralNode {
   Span span;
 };
 
+// EnumShorthand = "." Identifier — an enum variant with the enum type inferred
+// from context (`c Color = .Red`, `case .Red`). It is an error where no target
+// enum type is known (`c := .Red`).
+struct EnumShorthandNode {
+  Span span;
+  IdentifierNode variant;
+};
+
 // IntegerLiteral = decimal | "0b" binary | "0x" hex | "0o" octal
 struct IntegerLiteralNode {
   Span span;
@@ -610,7 +618,8 @@ struct Node {
   using Variant = std::variant<
     // --- Leaves / atoms ---
     IdentifierNode,     IdentifierListNode,
-    BoolLiteralNode,    NullLiteralNode,     IntegerLiteralNode,  FloatLiteralNode,
+    BoolLiteralNode,    NullLiteralNode,     EnumShorthandNode,
+    IntegerLiteralNode,  FloatLiteralNode,
     StringLiteralNode,  StringFragmentNode,
     ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,
     StructLiteralNode,  FieldAssignmentNode,

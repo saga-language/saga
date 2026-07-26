@@ -1,0 +1,6 @@
+// Spec: `.Variant` needs a known target enum type; `c := .Red` cannot infer one.
+enum Color { Red Green Blue }
+
+pub fn Main() void {
+  c := .Red
+}

@@ -1,0 +1,6 @@
+// Spec: a `.Variant` shorthand must name an existing variant of the target enum.
+enum Color { Red Green Blue }
+
+pub fn Main() void {
+  c Color = .Purple
+}

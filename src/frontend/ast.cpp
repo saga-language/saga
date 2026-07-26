@@ -278,6 +278,9 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           [&](const NullLiteralNode &) {
             os << pad(indent) << "NullLiteralNode\n";
           },
+          [&](const EnumShorthandNode &n) {
+            os << pad(indent) << "EnumShorthandNode ." << n.variant.name << "\n";
+          },
           [&](const IntegerLiteralNode &n) {
             os << pad(indent) << "IntegerLiteralNode " << n.literal << "\n";
           },

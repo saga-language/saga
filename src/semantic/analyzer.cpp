@@ -2217,6 +2217,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const IdentifierNode &n) { resolve_identifier(n, node); },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const NullLiteralNode &) { /* leaf — nothing to resolve */ },
+          [&](const EnumShorthandNode &) { /* leaf — resolved in check */ },
           [&](const IntegerLiteralNode &) { /* leaf */ },
           [&](const FloatLiteralNode &) { /* leaf */ },
           [&](const StringLiteralNode &n) { resolve_string_literal(n); },
@@ -2826,6 +2827,13 @@ TypePtr Analyzer::check_expr(const Node &node) {
           },
           [&](const NullLiteralNode &) -> TypePtr {
             return builtins.void_type;
+          },
+          [&](const EnumShorthandNode &n) -> TypePtr {
+            error(n.span,
+                  std::format("cannot infer enum type for '.{}' here; name the "
+                              "enum (Type.{}) or supply a target type",
+                              n.variant.name, n.variant.name));
+            return builtins.invalid_type;
           },
           [&](const IntegerLiteralNode &n) -> TypePtr {
             return check_int_literal(n);
@@ -4783,7 +4791,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
       init_type = check_for_expr(*for_node, declared_type);
       record_type(**var.init, init_type);
     } else {
-      init_type = check_expr(**var.init);
+      init_type = check_expr_expecting(**var.init, declared_type);
     }
     // An empty `[]` / `{}` literal under a typed declaration adopts the
     // declared element type; without this, the array-of-error placeholder
@@ -5289,6 +5297,35 @@ void Analyzer::check_enum_decl(const EnumDeclNode &e) {
   if (methods != type_methods_.end())
     check_method_uniqueness(methods->second, "enum", info.name, e.name.span,
                             {"Int", "String", "From"});
+}
+
+TypePtr Analyzer::check_enum_shorthand(const EnumShorthandNode &sh,
+                                       const Node &node,
+                                       const TypePtr &expected) {
+  TypePtr enum_type = expected ? unwrap_alias(expected) : nullptr;
+  if (!enum_type || enum_type->kind != TypeKind::Enum) {
+    error(sh.span,
+          std::format("'.{}' shorthand needs a known enum type here",
+                      sh.variant.name));
+    return builtins.invalid_type;
+  }
+  auto &info = std::get<EnumTypeInfo>(enum_type->detail);
+  for (auto &v : info.variants)
+    if (v.name == sh.variant.name) {
+      record_type(node, enum_type);
+      return enum_type;
+    }
+  error(sh.variant.span,
+        std::format("enum '{}' has no variant '{}'", info.name,
+                    sh.variant.name));
+  return builtins.invalid_type;
+}
+
+TypePtr Analyzer::check_expr_expecting(const Node &expr,
+                                       const TypePtr &expected) {
+  if (auto *sh = std::get_if<EnumShorthandNode>(&expr.data))
+    return check_enum_shorthand(*sh, expr, expected);
+  return check_expr(expr);
 }
 
 void Analyzer::check_type_decl(const TypeDeclNode &t) {

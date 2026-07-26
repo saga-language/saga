@@ -314,6 +314,7 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::FloatLiteral:
   case Token::Kind::BoolLiteral:
   case Token::Kind::Null:            // null literal (the value of type void)
+  case Token::Kind::Dot:             // .Variant enum shorthand
   case Token::Kind::StringLiteral:
   case Token::Kind::StringStart:
   case Token::Kind::Not:             // unary !
@@ -1300,6 +1301,9 @@ NodePtr Parser::parse_prefix() {
   case Token::Kind::Null:
     return parse_null_literal();
 
+  case Token::Kind::Dot:
+    return parse_enum_shorthand();
+
   case Token::Kind::StringLiteral:
   case Token::Kind::StringStart:
     return parse_string_literal();
@@ -2244,6 +2248,17 @@ NodePtr Parser::parse_null_literal() {
   auto start = mark();
   expect(Token::Kind::Null);
   return make_node<NullLiteralNode>(span_from(start));
+}
+
+// EnumShorthand = "." Identifier — the enum type is resolved from context by
+// the analyzer.
+NodePtr Parser::parse_enum_shorthand() {
+  auto start = mark();
+  expect(Token::Kind::Dot);
+  auto var_start = mark();
+  Token var_tok = expect(Token::Kind::Identifier);
+  IdentifierNode variant{span_from(var_start), var_tok.literal};
+  return make_node<EnumShorthandNode>(span_from(start), std::move(variant));
 }
 
 NodePtr Parser::parse_bool_literal() {

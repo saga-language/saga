@@ -30,6 +30,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const NullLiteralNode &n) -> llvm::Value * {
             return emit_null_literal(n);
           },
+          [&](const EnumShorthandNode &n) -> llvm::Value * {
+            return emit_enum_shorthand(n, node);
+          },
           [&](const StringLiteralNode &n) -> llvm::Value * {
             return emit_string_literal(n);
           },
@@ -210,6 +213,22 @@ llvm::Value *CodeGen::emit_bool_literal(const BoolLiteralNode &node) {
 // variable stores this byte.
 llvm::Value *CodeGen::emit_null_literal(const NullLiteralNode &) {
   return llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 0);
+}
+
+// `.Variant` shorthand — the analyzer recorded the resolved enum type on the
+// node; emit the variant's ordinal constant, identical to EnumName.Variant.
+llvm::Value *CodeGen::emit_enum_shorthand(const EnumShorthandNode &n,
+                                          const Node &node) {
+  auto sem = semantic_type(node);
+  if (!sem || sem->kind != TypeKind::Enum)
+    return nullptr;
+  auto &info = std::get<EnumTypeInfo>(sem->detail);
+  std::string ev_key =
+      key_for(info.origin_package, info.name) + "." + std::string(n.variant.name);
+  auto it = enum_variants.find(ev_key);
+  if (it != enum_variants.end())
+    return llvm::ConstantInt::get(i64_type, it->second);
+  return nullptr;
 }
 
 // ===========================================================================

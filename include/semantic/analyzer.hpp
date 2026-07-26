@@ -707,6 +707,15 @@ private:
                                     const Node &parent, const TypePtr &lhs,
                                     const TypePtr &rhs);
   void check_enum_decl(const EnumDeclNode &node);
+  /// Resolve a `.Variant` shorthand against the target enum type known at the
+  /// use site. `expected` may be a nominal alias over an enum. Records the enum
+  /// type on `node` for codegen and returns it (or invalid on mismatch).
+  TypePtr check_enum_shorthand(const EnumShorthandNode &sh, const Node &node,
+                               const TypePtr &expected);
+  /// check_expr, but a bare `.Variant` shorthand resolves against `expected`
+  /// (the type known at this use site) instead of erroring. Use at every
+  /// context that supplies a target type (decl, return, arg, field, case).
+  TypePtr check_expr_expecting(const Node &expr, const TypePtr &expected);
   void check_type_decl(const TypeDeclNode &node);
   /// A type's own method set is unique: redefining a name it already declares
   /// is an error, as is redefining a compiler-provided method (`reserved`).
