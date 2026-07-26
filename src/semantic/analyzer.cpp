@@ -1955,12 +1955,30 @@ void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
     sym_it->second.type = err_type;
 }
 
+// A plain (non-interpolated) string literal's text, else nullopt.
+static std::optional<std::string> plain_string_literal(const NodePtr &n) {
+  if (!n)
+    return std::nullopt;
+  auto *sl = std::get_if<StringLiteralNode>(&n->data);
+  if (!sl || sl->fragments.size() != 1)
+    return std::nullopt;
+  auto *frag = std::get_if<StringFragmentNode>(&sl->fragments[0]->data);
+  if (!frag)
+    return std::nullopt;
+  return unescape_string_fragment(frag->text);
+}
+
 void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
   std::vector<EnumVariant> variants;
   int64_t next_index = 0;
   for (auto &field : e.fields) {
     int64_t index = next_index;
-    if (field.value) {
+    std::string string_value;
+    if (e.string_backed) {
+      string_value = std::string(field.name.name);
+      if (auto s = plain_string_literal(field.value))
+        string_value = *s;
+    } else if (field.value) {
       if (auto *lit = std::get_if<IntegerLiteralNode>(&field.value->data)) {
         std::string clean;
         for (char c : lit->literal)
@@ -1968,13 +1986,14 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
         index = std::stoll(clean);
       }
     }
-    variants.push_back({std::string(field.name.name), {}, index});
+    variants.push_back(
+        {std::string(field.name.name), {}, index, std::move(string_value)});
     next_index = index + 1;
   }
 
   auto enum_type =
       make_enum_type(std::string(e.name.name), std::move(variants),
-                     current_package_name());
+                     current_package_name(), e.string_backed);
 
   auto sym_it = current_scope->symbols.find(std::string(e.name.name));
   if (sym_it != current_scope->symbols.end()) {
@@ -5214,11 +5233,30 @@ void Analyzer::check_enum_decl(const EnumDeclNode &e) {
 
   std::unordered_set<std::string> seen_names;
   std::unordered_map<int64_t, std::string> seen_index;
+  std::unordered_map<std::string, std::string> seen_string;
   for (size_t i = 0; i < e.fields.size(); ++i) {
     auto &field = e.fields[i];
     std::string vname(field.name.name);
     if (!seen_names.insert(vname).second)
       error(field.name.span, std::format("duplicate enum variant '{}'", vname));
+
+    if (e.string_backed) {
+      if (field.value && !plain_string_literal(field.value))
+        error(field.value->span,
+              std::format("string-backed enum variant '{}' backing value must "
+                          "be a string literal",
+                          vname));
+      if (i < info.variants.size()) {
+        auto &sv = info.variants[i].string_value;
+        auto [it, inserted] = seen_string.try_emplace(sv, vname);
+        if (!inserted)
+          error(field.name.span,
+                std::format("enum variant '{}' backing string \"{}\" already "
+                            "used by '{}'",
+                            vname, sv, it->second));
+      }
+      continue;
+    }
 
     if (field.value && !std::get_if<IntegerLiteralNode>(&field.value->data))
       error(field.value->span,

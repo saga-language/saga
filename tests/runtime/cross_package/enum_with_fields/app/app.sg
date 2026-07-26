@@ -6,4 +6,6 @@ pub fn Main() void {
   io.Println(lib.StateName(lib.State.Running))
   io.Println((lib.State.Stopped == lib.State.Stopped).String())
   io.Println((lib.State.Stopped == lib.State.Running).String())
+  io.Println(lib.State.Stopped.String())
+  io.Println(lib.State.Running.String())
 }

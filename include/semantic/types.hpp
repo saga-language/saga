@@ -161,14 +161,16 @@ struct StructTypeInfo {
 
 struct EnumVariant {
   std::string name;
-  std::vector<FieldInfo> fields;               // associated data
+  std::vector<FieldInfo> fields;               // dead: no source form produces it
   int64_t index = -1;                          // discriminant value (-1 = auto)
+  std::string string_value;                    // backing string; empty ⇒ use name
 };
 
 struct EnumTypeInfo {
   std::string name;
   std::string origin_package;
   std::vector<EnumVariant> variants;
+  bool string_backed = false;                  // `enum Name string { ... }`
 };
 
 struct InterfaceTypeInfo {
@@ -280,7 +282,8 @@ TypePtr make_struct_type(const std::string &name,
                          std::string origin_package = "");
 TypePtr make_enum_type(const std::string &name,
                        std::vector<EnumVariant> variants = {},
-                       std::string origin_package = "");
+                       std::string origin_package = "",
+                       bool string_backed = false);
 TypePtr make_interface_type(const std::string &name,
                             std::vector<MethodInfo> methods = {},
                             std::vector<TypeParam> type_params = {},

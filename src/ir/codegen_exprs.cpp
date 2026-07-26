@@ -217,48 +217,7 @@ llvm::Value *CodeGen::emit_null_literal(const NullLiteralNode &) {
 // ===========================================================================
 
 std::string CodeGen::unescape_fragment(std::string_view raw) {
-  // A fragment is either a fully-quoted StringLiteral ("..."), or one of
-  // the interpolation pieces (StringStart "..{, StringMiddle }..{,
-  // StringEnd }..").  Only the partial pieces carry the unquoted `{`/`}`
-  // interpolation delimiters; stripping them from a fully-quoted literal
-  // would chew off escaped braces like `"\{"`.
-  bool is_literal =
-      raw.size() >= 2 && raw.front() == '"' && raw.back() == '"';
-  if (is_literal) {
-    raw = raw.substr(1, raw.size() - 2);
-  } else if (raw.size() >= 1 && raw.front() == '"') {
-    raw = raw.substr(1);
-    if (raw.size() >= 1 && raw.back() == '{')
-      raw = raw.substr(0, raw.size() - 1);
-  } else if (raw.size() >= 1 && raw.back() == '"') {
-    raw = raw.substr(0, raw.size() - 1);
-    if (raw.size() >= 1 && raw.front() == '}')
-      raw = raw.substr(1);
-  } else {
-    if (raw.size() >= 1 && raw.front() == '}')
-      raw = raw.substr(1);
-    if (raw.size() >= 1 && raw.back() == '{')
-      raw = raw.substr(0, raw.size() - 1);
-  }
-
-  std::string out;
-  out.reserve(raw.size());
-  for (size_t i = 0; i < raw.size(); ++i) {
-    if (raw[i] == '\\' && i + 1 < raw.size()) {
-      ++i;
-      switch (raw[i]) {
-      case 'n':  out += '\n'; break;
-      case 't':  out += '\t'; break;
-      case '\\': out += '\\'; break;
-      case '"':  out += '"';  break;
-      case '{':  out += '{';  break;
-      default:   out += '\\'; out += raw[i]; break;
-      }
-    } else {
-      out += raw[i];
-    }
-  }
-  return out;
+  return unescape_string_fragment(raw);
 }
 
 /// Convert an LLVM value to an saga_runtime_string* based on its semantic type.

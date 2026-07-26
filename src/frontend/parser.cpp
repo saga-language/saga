@@ -1628,6 +1628,12 @@ NodePtr Parser::parse_enum_decl(bool is_public) {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
+  bool string_backed = false;
+  if (check(Token::Kind::String)) {
+    advance();
+    string_backed = true;
+  }
+
   skip_terminators();
   expect(Token::Kind::LeftBrace);
   skip_terminators();
@@ -1641,8 +1647,8 @@ NodePtr Parser::parse_enum_decl(bool is_public) {
 
   expect(Token::Kind::RightBrace);
 
-  return make_node<EnumDeclNode>(span_from(start), is_public, std::move(name),
-                                 std::move(fields));
+  return make_node<EnumDeclNode>(span_from(start), is_public, string_backed,
+                                 std::move(name), std::move(fields));
 }
 
 // parse_error_decl — ErrorDecl = "error" Identifier "{"

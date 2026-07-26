@@ -92,10 +92,10 @@ TypePtr make_struct_type(const std::string &name,
 
 TypePtr make_enum_type(const std::string &name,
                        std::vector<EnumVariant> variants,
-                       std::string origin_package) {
+                       std::string origin_package, bool string_backed) {
   return std::make_shared<Type>(
-      TypeKind::Enum,
-      EnumTypeInfo{name, std::move(origin_package), std::move(variants)});
+      TypeKind::Enum, EnumTypeInfo{name, std::move(origin_package),
+                                   std::move(variants), string_backed});
 }
 
 TypePtr make_interface_type(const std::string &name,

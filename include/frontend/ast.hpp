@@ -91,6 +91,10 @@ struct StringFragmentNode {
   std::string_view text;
 };
 
+// Strip the delimiters from a raw string-fragment token (a full `"..."`
+// literal or an interpolation piece) and resolve its escape sequences.
+std::string unescape_string_fragment(std::string_view raw);
+
 // StringLiteral = fragments of StringFragmentNode and interpolated expressions.
 // A plain string with no interpolation has a single StringFragmentNode child.
 struct StringLiteralNode {
@@ -480,6 +484,7 @@ struct EnumFieldNode {
 struct EnumDeclNode {
   Span span;
   bool is_public;
+  bool string_backed; // `enum Name string { ... }`
   IdentifierNode name;
   std::vector<EnumFieldNode> fields;
 };

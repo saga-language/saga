@@ -304,27 +304,34 @@ static void write_enum_export(std::ostringstream &os, const std::string &name,
                                const TypePtr &t, const std::string &doc) {
   write_doc(os, doc);
   auto &info = std::get<EnumTypeInfo>(t->detail);
-  os << "enum " << name << " {";
+  os << "enum " << name;
+  if (info.string_backed)
+    os << " string";
+  os << " {";
 
   for (size_t i = 0; i < info.variants.size(); ++i) {
+    auto &v = info.variants[i];
     if (i > 0)
       os << ";";
-    os << " " << info.variants[i].name;
-    // Emit variant data: index and/or associated fields.
+    os << " " << v.name;
+    // Emit variant data: index, backing string, and/or associated fields.
     bool has_data_fields = false;
-    for (auto &f : info.variants[i].fields) {
+    for (auto &f : v.fields) {
       if (f.name != "index") { has_data_fields = true; break; }
     }
-    if (has_data_fields || info.variants[i].index >= 0) {
+    if (has_data_fields || v.index >= 0 || !v.string_value.empty()) {
       os << "(";
       bool first = true;
-      // Emit explicit index if present.
-      if (info.variants[i].index >= 0) {
-        os << "#" << info.variants[i].index;
+      if (v.index >= 0) {
+        os << "#" << v.index;
         first = false;
       }
-      // Emit associated data fields (skip "index" metadata fields).
-      for (auto &f : info.variants[i].fields) {
+      if (!v.string_value.empty()) {
+        if (!first) os << ", ";
+        os << "=\"" << v.string_value << "\"";
+        first = false;
+      }
+      for (auto &f : v.fields) {
         if (f.name == "index") continue;
         if (!first) os << ", ";
         if (!f.name.empty()) os << f.name << " ";
@@ -1109,6 +1116,15 @@ struct SgiParser {
   SgiExport parse_enum_decl(const std::string &doc) {
     std::string name = read_word();
     skip_whitespace();
+    bool string_backed = false;
+    {
+      size_t saved = pos;
+      if (read_word() == "string")
+        string_backed = true;
+      else
+        pos = saved;
+    }
+    skip_whitespace();
     if (!at_end() && content[pos] == '{')
       ++pos;
   // (Enum does not currently support generic type parameters.)
@@ -1134,6 +1150,7 @@ struct SgiParser {
       }
 
       int64_t variant_index = -1;
+      std::string string_value;
       std::vector<FieldInfo> vfields;
       skip_whitespace();
       if (!at_end() && content[pos] == '(') {
@@ -1147,9 +1164,25 @@ struct SgiParser {
           while (!at_end() && std::isdigit(content[pos])) ++pos;
           variant_index = std::stoll(content.substr(start, pos - start));
           skip_whitespace();
-          // Skip comma after index if fields follow.
+          // Skip comma after index if more follows.
           if (!at_end() && content[pos] == ',')
             ++pos;
+        }
+        // Check for ="backing" string value.
+        skip_whitespace();
+        if (!at_end() && content[pos] == '=') {
+          ++pos;
+          skip_whitespace();
+          if (!at_end() && content[pos] == '"') {
+            ++pos;
+            size_t start = pos;
+            while (!at_end() && content[pos] != '"') ++pos;
+            string_value = content.substr(start, pos - start);
+            if (!at_end()) ++pos; // closing quote
+            skip_whitespace();
+            if (!at_end() && content[pos] == ',')
+              ++pos;
+          }
         }
         // Parse remaining field declarations.
         while (true) {
@@ -1177,10 +1210,11 @@ struct SgiParser {
           ++pos;
       }
 
-      variants.push_back({vname, std::move(vfields), variant_index});
+      variants.push_back(
+          {vname, std::move(vfields), variant_index, std::move(string_value)});
     }
 
-    auto t = make_enum_type(name, std::move(variants));
+    auto t = make_enum_type(name, std::move(variants), "", string_backed);
     return {doc, name, t};
   }
 

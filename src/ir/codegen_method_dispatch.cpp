@@ -1114,7 +1114,8 @@ llvm::Function *CodeGen::enum_string_fn(const TypePtr &enum_sem) {
     auto *bb = llvm::BasicBlock::Create(context, "v", fn);
     sw->addCase(llvm::ConstantInt::get(i64_ty, v.index), bb);
     builder.SetInsertPoint(bb);
-    builder.CreateRet(make_string_constant(v.name));
+    builder.CreateRet(make_string_constant(
+        v.string_value.empty() ? v.name : v.string_value));
   }
   builder.SetInsertPoint(dflt);
   builder.CreateRet(make_string_constant(""));
