@@ -1,0 +1,7 @@
+// Spec: `.Variant` needs a known target enum type; an array literal element has
+// no inferable target (`carr := [.Red]`).
+enum Color { Red Green Blue }
+
+pub fn Main() void {
+  carr := [.Red]
+}
