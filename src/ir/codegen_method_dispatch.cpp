@@ -374,6 +374,33 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     return emit_enum_from(node, obj_sem);
   }
 
+  // Enum user method: obj.M(args) → EnumName__M(obj, args) with value i64 self.
+  // Built-in Int/String/From returned above and are reserved from redefinition,
+  // so only genuine user methods reach here (same-package; symbol declared by
+  // declare_struct_method_symbols).
+  if (obj_sem && obj_sem->kind == TypeKind::Enum) {
+    auto &info = std::get<EnumTypeInfo>(obj_sem->detail);
+    std::string origin =
+        info.origin_package.empty() ? package_name : info.origin_package;
+    if (auto *callee =
+            module->getFunction(mangle(origin, info.name + "__" + method))) {
+      const FuncTypeInfo *m_fi = nullptr;
+      auto tm_it = analyzer.type_methods_.find(obj_sem.get());
+      if (tm_it != analyzer.type_methods_.end())
+        for (auto &m : tm_it->second)
+          if (m.name == method && m.signature &&
+              m.signature->kind == TypeKind::Func) {
+            m_fi = &std::get<FuncTypeInfo>(m.signature->detail);
+            break;
+          }
+      std::vector<llvm::Value *> arg_vals;
+      for (auto &arg_node : node.args)
+        if (auto *val = emit_expr(*arg_node))
+          arg_vals.push_back(val);
+      return emit_receiver_call(callee, obj_sem, obj, arg_vals, m_fi);
+    }
+  }
+
   // ── Task method calls ─────────────────────────────────────────────
   // Task is a semantic struct wrapping saga_runtime_actor*.  obj is the actor ptr.
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {

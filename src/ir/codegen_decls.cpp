@@ -591,7 +591,9 @@ void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
       auto sym = analyzer.package_scope_
                      ? analyzer.package_scope_->lookup(struct_name)
                      : std::optional<Symbol>{};
-      if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+      if (!sym || !sym->type ||
+          (sym->type->kind != TypeKind::Alias &&
+           sym->type->kind != TypeKind::Enum))
         continue;
     }
 
@@ -656,7 +658,9 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       auto sym = analyzer.package_scope_
                      ? analyzer.package_scope_->lookup(struct_name)
                      : std::optional<Symbol>{};
-      if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+      if (!sym || !sym->type ||
+          (sym->type->kind != TypeKind::Alias &&
+           sym->type->kind != TypeKind::Enum))
         continue;
     }
 
