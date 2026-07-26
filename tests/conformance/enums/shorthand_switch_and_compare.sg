@@ -1,0 +1,21 @@
+// Spec: `.Variant` resolves against a switch subject's type and against an
+// enum operand in `==`/`!=`.
+import "std/io"
+
+enum Color { Red Green Blue }
+
+fn hex(c Color) string {
+  switch c {
+    case .Red:   "#ff0000"
+    case .Green: "#00ff00"
+    else:        "#0000ff"
+  }
+}
+
+pub fn Main() void {
+  c Color = .Green
+  io.Println(hex(c))
+  io.Println(hex(.Blue))
+  io.Println(if c == .Green { "green" } else { "other" })
+  io.Println(if .Red != c { "not-red" } else { "red" })
+}

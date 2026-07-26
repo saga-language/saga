@@ -1,0 +1,13 @@
+// Spec: `.Variant` resolves against a parameter type and a struct field type.
+import "std/io"
+
+enum Color { Red Green Blue }
+struct Thing { name string  color Color }
+
+fn describe(c Color) string { c.String() }
+
+pub fn Main() void {
+  io.Println(describe(.Blue))
+  t := Thing{name: "box", color: .Green}
+  io.Println(t.color.String())
+}

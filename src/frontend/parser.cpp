@@ -3028,13 +3028,28 @@ NodePtr Parser::parse_if_expr() {
   NodePtr then_block = parse_block();
 
   // ── Optional else ────────────────────────────────────────────────────────
+  // Only consume the newline(s) after the then-block when an `else` actually
+  // follows.  Otherwise a leading-dot statement on the next line
+  // (`.Variant` shorthand) would glue onto the if-expression as a selector.
   std::optional<NodePtr> else_block;
+
+  auto saved_offset = lexer.offset;
+  auto saved_reading_offset = lexer.reading_offset;
+  auto saved_state = lexer.state;
+  Token saved_current = current;
+  Token saved_previous = previous;
 
   skip_terminators();
   if (check(Token::Kind::Else)) {
     advance(); // consume "else"
     skip_terminators();
     else_block = parse_block();
+  } else {
+    lexer.offset = saved_offset;
+    lexer.reading_offset = saved_reading_offset;
+    lexer.state = saved_state;
+    current = saved_current;
+    previous = saved_previous;
   }
 
   return make_node<IfExprNode>(span_from(start), std::move(condition),

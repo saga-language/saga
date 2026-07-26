@@ -2781,6 +2781,10 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
       std::get_if<ForExprNode>(&block.stmts.back()->data))
     tail_hint = current_scope->return_types[0];
 
+  bool tail_shorthand =
+      current_scope->return_types.size() == 1 && !block.stmts.empty() &&
+      std::get_if<EnumShorthandNode>(&block.stmts.back()->data);
+
   TypePtr body_type;
   if (tail_hint) {
     for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
@@ -2788,6 +2792,11 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
     auto &for_node = std::get<ForExprNode>(block.stmts.back()->data);
     body_type = check_for_expr(for_node, tail_hint);
     record_type(*block.stmts.back(), body_type);
+  } else if (tail_shorthand) {
+    for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
+      check_expr(*block.stmts[i]);
+    body_type = check_expr_expecting(*block.stmts.back(),
+                                     current_scope->return_types[0]);
   } else {
     body_type = check_block(block);
   }
@@ -3116,15 +3125,30 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
     return builtins.invalid_type;
   }
 
+  auto &raw_info = std::get<StructTypeInfo>(struct_type->detail);
+
+  // Pre-map field name → declared type for non-generic structs so a `.Variant`
+  // field value can resolve against it. Generic field types are TypeParams,
+  // which a shorthand can't resolve against, so it stays a plain check there.
+  std::unordered_map<std::string, TypePtr> field_type_by_name;
+  if (raw_info.type_params.empty()) {
+    std::vector<FieldInfo> decl_fields;
+    collect_promoted_fields(raw_info, decl_fields);
+    for (auto &fi : decl_fields)
+      if (fi.type)
+        field_type_by_name.emplace(fi.name, fi.type);
+  }
+
   // Check each field value first and collect types for generic inference.
   std::vector<std::pair<std::string, TypePtr>> field_vals;
   for (auto &fa : node.fields) {
-    auto val_type = check_expr(*fa.value);
+    auto it = field_type_by_name.find(std::string(fa.name.name));
+    TypePtr expected = it != field_type_by_name.end() ? it->second : nullptr;
+    auto val_type = check_expr_expecting(*fa.value, expected);
     field_vals.push_back({std::string(fa.name.name), val_type});
   }
 
   // If the struct is generic, instantiate it by inferring type params.
-  auto &raw_info = std::get<StructTypeInfo>(struct_type->detail);
   auto effective_type = struct_type;
   if (!raw_info.type_params.empty()) {
     effective_type =
@@ -3300,8 +3324,21 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
 
 TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
                                     const Node &parent) {
-  auto lhs = check_expr(*node.lhs);
-  auto rhs = check_expr(*node.rhs);
+  // A `.Variant` operand (an enum comparison, `c == .Red`) resolves against the
+  // other operand's enum type; the other side is checked first to supply it.
+  bool lhs_sh = std::get_if<EnumShorthandNode>(&node.lhs->data) != nullptr;
+  bool rhs_sh = std::get_if<EnumShorthandNode>(&node.rhs->data) != nullptr;
+  TypePtr lhs, rhs;
+  if (rhs_sh && !lhs_sh) {
+    lhs = check_expr(*node.lhs);
+    rhs = check_expr_expecting(*node.rhs, lhs);
+  } else if (lhs_sh && !rhs_sh) {
+    rhs = check_expr(*node.rhs);
+    lhs = check_expr_expecting(*node.lhs, rhs);
+  } else {
+    lhs = check_expr(*node.lhs);
+    rhs = check_expr(*node.rhs);
+  }
 
   if (is_invalid_type(lhs) || is_invalid_type(rhs))
     return builtins.invalid_type;
@@ -3516,10 +3553,16 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
   // underlying signature.
   callee_type = unwrap_alias(callee_type);
 
-  // Check arguments first to collect their types.
+  // Check arguments first to collect their types.  A `.Variant` shorthand arg
+  // resolves against the matching parameter's (concrete enum) type.
+  const std::vector<TypePtr> *params =
+      callee_type->kind == TypeKind::Func
+          ? &std::get<FuncTypeInfo>(callee_type->detail).params
+          : nullptr;
   std::vector<TypePtr> arg_types;
-  for (auto &arg : node.args) {
-    arg_types.push_back(check_expr(*arg));
+  for (size_t i = 0; i < node.args.size(); ++i) {
+    TypePtr expected = (params && i < params->size()) ? (*params)[i] : nullptr;
+    arg_types.push_back(check_expr_expecting(*node.args[i], expected));
   }
 
   // If the callee contains type parameters, attempt generic instantiation.
@@ -4207,7 +4250,11 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   for (auto &arm : node.arms) {
     TypePtr first_pattern_type;
     for (auto &pat : arm.patterns) {
-      auto pattern_type = check_type_or_value_expr(*pat);
+      TypePtr pattern_type;
+      if (auto *sh = std::get_if<EnumShorthandNode>(&pat->data))
+        pattern_type = check_enum_shorthand(*sh, *pat, subject_type);
+      else
+        pattern_type = check_type_or_value_expr(*pat);
       if (!first_pattern_type)
         first_pattern_type = pattern_type;
 
@@ -4981,7 +5028,7 @@ void Analyzer::check_return(const ReturnNode &node) {
     return;
   }
 
-  auto val_type = check_expr(*node.value);
+  auto val_type = check_expr_expecting(*node.value, expected[0]);
   expect_assignable(node.value->span, expected[0], val_type, "return value");
 }
 
