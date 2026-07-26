@@ -1,0 +1,11 @@
+// Spec: a type's own method set is unique — an enum cannot declare the same
+// method name twice.
+enum Color {
+  Red
+  Green
+}
+
+pub fn (c Color) Tag() int { 1 }
+pub fn (c Color) Tag() int { 2 }
+
+pub fn Main() void {}

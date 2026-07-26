@@ -220,6 +220,19 @@ concatenated with commas, followed by a Type, then more parameters.
 fn MultiParam(a, b Int, c String) Void {}
 ```
 
+### Method uniqueness
+
+A each method on a type must be unique. Re-defining, or rebinding, a method on
+a type is an error. This uniqueness rule is distinct from **shadowing**. A method
+on a type may shadow a method inherited from an embedded struct or inherited from 
+a nomiminal type's underlying type. This is because the shadowing method lives on
+a different type, thereby maintaining the uniqueness.
+
+Compiler-provided methods count as the type's own definitions. For instance, an 
+enum's `String`, `Int`, and `From` are synthesized for the enum itself, so 
+redefining one of these methods is a redefinition error. A nominal alias's 
+`String` is inherited from the underlying type and so may be shadowed.
+
 ### Return statement
 
 Methods support a `return` statement to exit at any time. A return statement

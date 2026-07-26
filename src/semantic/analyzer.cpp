@@ -684,6 +684,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
               [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
               [&](const StructDeclNode &s) { check_struct_decl(s); },
               [&](const EnumDeclNode &e) { check_enum_decl(e); },
+              [&](const TypeDeclNode &t) { check_type_decl(t); },
               [&](const ErrorDeclNode &e) { check_error_decl(e); },
               [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
               [&](const ConstDeclNode &c) { check_const_decl(c); },
@@ -738,6 +739,7 @@ void Analyzer::visit_source(const SourceNode &src) {
                    [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
                    [&](const StructDeclNode &s) { check_struct_decl(s); },
                    [&](const EnumDeclNode &e) { check_enum_decl(e); },
+                   [&](const TypeDeclNode &t) { check_type_decl(t); },
                    [&](const ErrorDeclNode &e) { check_error_decl(e); },
                    [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
                    [&](const ConstDeclNode &c) { check_const_decl(c); },
@@ -5282,10 +5284,42 @@ void Analyzer::check_enum_decl(const EnumDeclNode &e) {
                           vname, idx, it->second));
     }
   }
+
+  auto methods = type_methods_.find(sym->type.get());
+  if (methods != type_methods_.end())
+    check_method_uniqueness(methods->second, "enum", info.name, e.name.span,
+                            {"Int", "String", "From"});
+}
+
+void Analyzer::check_type_decl(const TypeDeclNode &t) {
+  auto sym = lookup(std::string(t.name.name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+    return;
+  auto &info = std::get<AliasTypeInfo>(sym->type->detail);
+  if (info.structural)
+    return;
+  check_method_uniqueness(info.methods, "type", info.name, t.name.span, {});
 }
 
 void Analyzer::check_func_decl(const FuncDeclNode &fn) {
   // The body is checked via check_func_decl_body.
+}
+
+void Analyzer::check_method_uniqueness(
+    const std::vector<MethodInfo> &methods, std::string_view kind,
+    std::string_view name, Span span,
+    const std::unordered_set<std::string> &reserved) {
+  std::unordered_set<std::string> seen;
+  for (auto &m : methods) {
+    if (reserved.count(m.name)) {
+      error(span, std::format("cannot redefine built-in method '{}' on {} '{}'",
+                              m.name, kind, name));
+      continue;
+    }
+    if (!seen.insert(m.name).second)
+      error(span, std::format("duplicate method '{}' in {} '{}'", m.name, kind,
+                              name));
+  }
 }
 
 void Analyzer::check_struct_decl(const StructDeclNode &s) {
@@ -5307,15 +5341,7 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
     seen_fields[f.name] = true;
   }
 
-  // Check duplicate methods.
-  std::unordered_map<std::string, bool> seen_methods;
-  for (auto &m : info.methods) {
-    if (seen_methods.count(m.name)) {
-      error(s.span, std::format("duplicate method '{}' in struct '{}'", m.name,
-                                info.name));
-    }
-    seen_methods[m.name] = true;
-  }
+  check_method_uniqueness(info.methods, "struct", info.name, s.span, {});
 
   check_field_defaults(s);
 }
@@ -5420,15 +5446,7 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
                       info.name));
   }
 
-  // Check duplicate methods.
-  std::unordered_map<std::string, bool> seen;
-  for (auto &m : info.methods) {
-    if (seen.count(m.name)) {
-      error(i.span, std::format("duplicate method '{}' in interface '{}'",
-                                m.name, info.name));
-    }
-    seen[m.name] = true;
-  }
+  check_method_uniqueness(info.methods, "interface", info.name, i.span, {});
 }
 
 void Analyzer::check_import_decl(const ImportDeclNode &node) {

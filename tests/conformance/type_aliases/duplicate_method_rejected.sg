@@ -1,0 +1,8 @@
+// Spec: a type's own method set is unique — redefining a method the type
+// already declares is an error (distinct from shadowing an inherited method).
+type UserID int
+
+pub fn (u UserID) Tag() int { 1 }
+pub fn (u UserID) Tag() int { 2 }
+
+pub fn Main() void {}

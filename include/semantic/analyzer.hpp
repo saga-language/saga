@@ -707,6 +707,15 @@ private:
                                     const Node &parent, const TypePtr &lhs,
                                     const TypePtr &rhs);
   void check_enum_decl(const EnumDeclNode &node);
+  void check_type_decl(const TypeDeclNode &node);
+  /// A type's own method set is unique: redefining a name it already declares
+  /// is an error, as is redefining a compiler-provided method (`reserved`).
+  /// Shadowing a method inherited from an embedded struct or a nominal alias's
+  /// underlying type is a separate, permitted operation and is not checked here.
+  void check_method_uniqueness(const std::vector<MethodInfo> &methods,
+                               std::string_view kind, std::string_view name,
+                               Span span,
+                               const std::unordered_set<std::string> &reserved);
   void check_error_decl(const ErrorDeclNode &node);
   void check_error_message_default(const StructTypeInfo &info,
                                    const Node &msg_default);
