@@ -300,86 +300,93 @@ void CodeGen::emit_function_body_inner(
   // If the block didn't already terminate, release locals and return.
   if (!builder.GetInsertBlock()->getTerminator()) {
     emit_release_locals();
-    auto *ret_type = func->getReturnType();
     if (is_main) {
       if (has_spawn)
         builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
       builder.CreateRet(
           llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
-    } else if (has_sret) {
-      // Struct return via sret.  tail_val is either a pointer to a struct
-      // alloca (struct literal, identifier, byval param) or a struct SSA
-      // value (loaded from an alloca).  Copy into the sret slot.  For a union
-      // return, a bare/error tail value is first wrapped into union memory.
-      auto *sret_arg = func->getArg(0);
-      llvm::Type *struct_ty =
-          resolve_type_node(*fn.signature.return_type);
-      llvm::Value *src = tail_val;
-      if (auto union_sem = union_sem_for_llvm(struct_ty)) {
-        TypePtr tail_sem = block.stmts.empty()
-                               ? nullptr
-                               : semantic_type(*block.stmts.back());
-        src = as_union_ptr(tail_val, tail_sem, union_sem);
-      }
-      if (src && struct_ty && struct_ty->isStructTy() &&
-          src->getType()->isPointerTy()) {
-        auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
-        auto al = module->getDataLayout().getABITypeAlign(struct_ty);
-        builder.CreateMemCpy(sret_arg, al, src, al, sz);
-      } else if (tail_val && struct_ty && tail_val->getType() == struct_ty) {
-        builder.CreateStore(tail_val, sret_arg);
-      }
-      builder.CreateRetVoid();
-    } else if (ret_type->isVoidTy()) {
-      builder.CreateRetVoid();
-    } else if (tail_val && tail_val->getType() == ret_type) {
-      builder.CreateRet(tail_val);
-    } else if (tail_val && ret_type->isIntegerTy() &&
-               tail_val->getType()->isIntegerTy() &&
-               tail_val->getType() != ret_type) {
-      // Integer width mismatch (e.g. runtime returns i64, function returns i1).
-      unsigned src_bits = tail_val->getType()->getIntegerBitWidth();
-      unsigned dst_bits = ret_type->getIntegerBitWidth();
-      llvm::Value *conv;
-      if (src_bits > dst_bits)
-        conv = builder.CreateTrunc(tail_val, ret_type, "ret.trunc");
-      else
-        conv = builder.CreateZExt(tail_val, ret_type, "ret.zext");
-      builder.CreateRet(conv);
-    } else if (tail_val && ret_type->isStructTy() &&
-               llvm::cast<llvm::StructType>(ret_type)->getNumElements() == 2 &&
-               llvm::cast<llvm::StructType>(ret_type)
-                   ->getElementType(0)
-                   ->isIntegerTy(8) &&
-               llvm::cast<llvm::StructType>(ret_type)
-                   ->getElementType(1)
-                   ->isArrayTy()) {
-      // Union tail. Either tail_val already points at this union alloca, or
-      // it's a concrete/error value that must be wrapped into the union
-      // (e.g. `fn f() int | error { NetworkError{...} }`).
-      llvm::Value *union_val = nullptr;
-      if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val))
-        if (ai->getAllocatedType() == ret_type)
-          union_val = builder.CreateLoad(ret_type, tail_val, "ret.union");
-      if (!union_val) {
-        TypePtr ret_sem = fn.signature.return_type
-                              ? semantic_type(*fn.signature.return_type)
-                              : nullptr;
-        TypePtr tail_sem = block.stmts.empty()
-                               ? nullptr
-                               : semantic_type(*block.stmts.back());
-        if (tail_sem && ret_sem && ret_sem->kind == TypeKind::Union)
-          if (auto *wrapped = emit_union_wrap(tail_val, tail_sem, ret_sem))
-            union_val = builder.CreateLoad(ret_type, wrapped, "ret.union");
-      }
-      builder.CreateRet(union_val ? union_val
-                                  : llvm::Constant::getNullValue(ret_type));
     } else {
-      builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+      emit_tail_return(fn, func, tail_val, block, has_sret);
     }
   }
 
   llvm::verifyFunction(*func);
+}
+
+void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
+                               llvm::Value *tail_val, const BlockNode &block,
+                               bool has_sret) {
+  auto *ret_type = func->getReturnType();
+  if (has_sret) {
+    // Struct return via sret.  tail_val is either a pointer to a struct
+    // alloca (struct literal, identifier, byval param, or an if/switch branch
+    // merge) or a struct SSA value.  Copy into the sret slot.  For a union
+    // return, a bare/error tail value is first wrapped into union memory.
+    auto *sret_arg = func->getArg(0);
+    llvm::Type *struct_ty = resolve_type_node(*fn.signature.return_type);
+    llvm::Value *src = tail_val;
+    if (auto union_sem = union_sem_for_llvm(struct_ty)) {
+      TypePtr tail_sem = block.stmts.empty()
+                             ? nullptr
+                             : semantic_type(*block.stmts.back());
+      src = as_union_ptr(tail_val, tail_sem, union_sem);
+    }
+    if (src && struct_ty && struct_ty->isStructTy() &&
+        src->getType()->isPointerTy()) {
+      auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
+      auto al = module->getDataLayout().getABITypeAlign(struct_ty);
+      builder.CreateMemCpy(sret_arg, al, src, al, sz);
+    } else if (tail_val && struct_ty && tail_val->getType() == struct_ty) {
+      builder.CreateStore(tail_val, sret_arg);
+    }
+    builder.CreateRetVoid();
+  } else if (ret_type->isVoidTy()) {
+    builder.CreateRetVoid();
+  } else if (tail_val && tail_val->getType() == ret_type) {
+    builder.CreateRet(tail_val);
+  } else if (tail_val && ret_type->isIntegerTy() &&
+             tail_val->getType()->isIntegerTy() &&
+             tail_val->getType() != ret_type) {
+    // Integer width mismatch (e.g. runtime returns i64, function returns i1).
+    unsigned src_bits = tail_val->getType()->getIntegerBitWidth();
+    unsigned dst_bits = ret_type->getIntegerBitWidth();
+    llvm::Value *conv;
+    if (src_bits > dst_bits)
+      conv = builder.CreateTrunc(tail_val, ret_type, "ret.trunc");
+    else
+      conv = builder.CreateZExt(tail_val, ret_type, "ret.zext");
+    builder.CreateRet(conv);
+  } else if (tail_val && ret_type->isStructTy() &&
+             llvm::cast<llvm::StructType>(ret_type)->getNumElements() == 2 &&
+             llvm::cast<llvm::StructType>(ret_type)
+                 ->getElementType(0)
+                 ->isIntegerTy(8) &&
+             llvm::cast<llvm::StructType>(ret_type)
+                 ->getElementType(1)
+                 ->isArrayTy()) {
+    // Union tail. Either tail_val already points at this union alloca, or
+    // it's a concrete/error value that must be wrapped into the union
+    // (e.g. `fn f() int | error { NetworkError{...} }`).
+    llvm::Value *union_val = nullptr;
+    if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val))
+      if (ai->getAllocatedType() == ret_type)
+        union_val = builder.CreateLoad(ret_type, tail_val, "ret.union");
+    if (!union_val) {
+      TypePtr ret_sem = fn.signature.return_type
+                            ? semantic_type(*fn.signature.return_type)
+                            : nullptr;
+      TypePtr tail_sem = block.stmts.empty()
+                             ? nullptr
+                             : semantic_type(*block.stmts.back());
+      if (tail_sem && ret_sem && ret_sem->kind == TypeKind::Union)
+        if (auto *wrapped = emit_union_wrap(tail_val, tail_sem, ret_sem))
+          union_val = builder.CreateLoad(ret_type, wrapped, "ret.union");
+    }
+    builder.CreateRet(union_val ? union_val
+                                : llvm::Constant::getNullValue(ret_type));
+  } else {
+    builder.CreateRet(llvm::Constant::getNullValue(ret_type));
+  }
 }
 
 // ===========================================================================

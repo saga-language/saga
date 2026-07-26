@@ -58,17 +58,16 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
       if (m.name != method) continue;
       std::string link_name = mangle(type_to_string(obj_sem) + "__" + method);
       if (auto *callee = module->getFunction(link_name)) {
-        std::vector<llvm::Value *> args;
-        args.push_back(emit_expr(*sel->object));
-        for (auto &arg_node : node.args) {
+        const FuncTypeInfo *m_fi =
+            m.signature && m.signature->kind == TypeKind::Func
+                ? &std::get<FuncTypeInfo>(m.signature->detail)
+                : nullptr;
+        auto *self = emit_expr(*sel->object);
+        std::vector<llvm::Value *> arg_vals;
+        for (auto &arg_node : node.args)
           if (auto *v = emit_expr(*arg_node))
-            args.push_back(v);
-        }
-        if (callee->getReturnType()->isVoidTy()) {
-          builder.CreateCall(callee, args);
-          return nullptr;
-        }
-        return builder.CreateCall(callee, args, "alias.mcall");
+            arg_vals.push_back(v);
+        return emit_receiver_call(callee, obj_sem, self, arg_vals, m_fi);
       }
       break;
     }

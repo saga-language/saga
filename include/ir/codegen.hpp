@@ -444,6 +444,14 @@ private:
                                  const std::vector<llvm::Type *> &param_ll,
                                  bool is_main);
 
+  /// Emit the return for a fallen-through function tail (no explicit return).
+  /// Shared by free functions and receiver methods so struct/sret, union
+  /// wrapping, and scalar returns lower identically regardless of receiver.
+  /// `has_sret` means the return is lowered through the sret pointer (arg 0).
+  void emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
+                        llvm::Value *tail_val, const BlockNode &block,
+                        bool has_sret);
+
   /// Emit one monomorphised specialisation of a generic free function.
   /// Creates (or returns) an LLVM Function with LinkOnceODR linkage whose
   /// signature is derived from `bindings`.  Runs the body under a fresh

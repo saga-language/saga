@@ -720,34 +720,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
 
     if (!builder.GetInsertBlock()->getTerminator()) {
       emit_release_locals();
-      auto *ret_type = func->getReturnType();
-      if (has_sret && tail_val && tail_val->getType()->isPointerTy()) {
-        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-          auto *st_ty = ai->getAllocatedType();
-          auto sz = module->getDataLayout().getTypeAllocSize(st_ty);
-          auto al = module->getDataLayout().getABITypeAlign(st_ty);
-          builder.CreateMemCpy(func->getArg(0), al, tail_val, al, sz);
-        }
-        builder.CreateRetVoid();
-      } else if (ret_type->isVoidTy()) {
-        builder.CreateRetVoid();
-      } else if (tail_val && tail_val->getType() == ret_type) {
-        builder.CreateRet(tail_val);
-      } else if (tail_val && ret_type->isStructTy() &&
-                 tail_val->getType()->isPointerTy()) {
-        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-          if (ai->getAllocatedType() == ret_type) {
-            auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
-            builder.CreateRet(loaded);
-          } else {
-            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-          }
-        } else {
-          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-        }
-      } else {
-        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-      }
+      emit_tail_return(*fn, func, tail_val, block, has_sret);
     }
 
     llvm::verifyFunction(*func);

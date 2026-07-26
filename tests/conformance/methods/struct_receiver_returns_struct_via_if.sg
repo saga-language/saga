@@ -1,0 +1,18 @@
+// Spec: a receiver method may return a struct whose value comes from a
+// branching tail (if/switch). The branch-merged pointer must be copied into
+// the sret slot — a regression guard: this previously dropped the value
+// because the merge is a PHI, not a direct alloca.
+import "std/io"
+
+struct Pt { x, y int }
+struct Chooser { pick int }
+
+fn (c Chooser) Make() Pt {
+  if c.pick == 0 { Pt{x: 10, y: 20} } else { Pt{x: 30, y: 40} }
+}
+
+pub fn Main() void {
+  p := Chooser{pick: 1}.Make()
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}
