@@ -652,17 +652,13 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    TypePtr alias_sem_type;
     if (!struct_types.count(mangle(package_name, struct_name))) {
       auto sym = analyzer.package_scope_
                      ? analyzer.package_scope_->lookup(struct_name)
                      : std::optional<Symbol>{};
-      if (sym && sym->type && sym->type->kind == TypeKind::Alias)
-        alias_sem_type = sym->type;
-      else
+      if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
         continue;
     }
-    bool is_alias_recv = static_cast<bool>(alias_sem_type);
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
@@ -688,12 +684,13 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       }
     }
 
+    // The self slot mirrors the declared ABI (build_method_signature): structs
+    // pass by pointer, scalar/alias receivers by value, so the arg's own type
+    // is the correct alloca type.
     std::string recv_name(fn->receiver->name.name);
-    llvm::Type *recv_alloc_ty = is_alias_recv
-        ? llvm_type(unwrap_alias(alias_sem_type))
-        : llvm::PointerType::getUnqual(context);
-    auto *recv_alloca = create_entry_alloca(func, recv_name, recv_alloc_ty);
-    builder.CreateStore(func->getArg(arg_idx++), recv_alloca);
+    auto *self_arg = func->getArg(arg_idx++);
+    auto *recv_alloca = create_entry_alloca(func, recv_name, self_arg->getType());
+    builder.CreateStore(self_arg, recv_alloca);
     locals[recv_name] = recv_alloca;
 
     for (auto &param : fn->signature.params) {
