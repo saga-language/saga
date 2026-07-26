@@ -364,10 +364,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     return obj;
   }
 
-  // Enum .String() — convert the enum's integer index to a string.
+  // Enum .String() — map the ordinal to its variant's display string.
   if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
-    return builder.CreateCall(
-        module->getFunction("saga_int_to_string"), {obj}, "str");
+    return builder.CreateCall(enum_string_fn(obj_sem), {obj}, "enum.str");
   }
 
   // ── Task method calls ─────────────────────────────────────────────
@@ -1087,6 +1086,42 @@ llvm::Value *CodeGen::emit_receiver_call(
   if (callee->getReturnType()->isVoidTy())
     return nullptr;
   return call;
+}
+
+llvm::Function *CodeGen::enum_string_fn(const TypePtr &enum_sem) {
+  auto &info = std::get<EnumTypeInfo>(enum_sem->detail);
+  std::string link =
+      mangle(info.origin_package.empty() ? package_name : info.origin_package,
+             info.name + "__EnumString");
+  if (auto *fn = module->getFunction(link))
+    return fn;
+
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto *ft = llvm::FunctionType::get(ptr_ty, {i64_type}, false);
+  auto *fn =
+      llvm::Function::Create(ft, llvm::Function::PrivateLinkage, link,
+                             module.get());
+
+  auto *saved_block = builder.GetInsertBlock();
+  auto saved_point = builder.GetInsertPoint();
+
+  auto *i64_ty = llvm::Type::getInt64Ty(context);
+  auto *entry = llvm::BasicBlock::Create(context, "entry", fn);
+  auto *dflt = llvm::BasicBlock::Create(context, "default", fn);
+  builder.SetInsertPoint(entry);
+  auto *sw = builder.CreateSwitch(fn->getArg(0), dflt, info.variants.size());
+  for (auto &v : info.variants) {
+    auto *bb = llvm::BasicBlock::Create(context, "v", fn);
+    sw->addCase(llvm::ConstantInt::get(i64_ty, v.index), bb);
+    builder.SetInsertPoint(bb);
+    builder.CreateRet(make_string_constant(v.name));
+  }
+  builder.SetInsertPoint(dflt);
+  builder.CreateRet(make_string_constant(""));
+
+  if (saved_block)
+    builder.SetInsertPoint(saved_block, saved_point);
+  return fn;
 }
 
 llvm::Function *CodeGen::resolve_member_method_callee(

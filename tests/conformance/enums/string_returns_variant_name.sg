@@ -1,0 +1,16 @@
+// Spec: `.String()` on an int-backed enum returns the variant's name (via a
+// rodata table), not the decimal ordinal — even when ordinals are explicit
+// and non-contiguous.
+import "std/io"
+
+enum Suit {
+  Clubs = 1
+  Diamonds
+  Hearts = 5
+  Spades
+}
+
+pub fn Main() void {
+  io.Println(Suit.Clubs.String())
+  io.Println(Suit.Spades.String())
+}

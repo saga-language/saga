@@ -635,6 +635,10 @@ private:
   llvm::Function *resolve_member_method_callee(const TypePtr &member_sem,
                                                const std::string &method,
                                                const FuncTypeInfo **out_sig);
+  /// Lazily emit (once per enum) a `(i64 ordinal) -> string` function mapping
+  /// each variant's ordinal to its display string as a rodata constant. Used
+  /// by enum `.String()`.
+  llvm::Function *enum_string_fn(const TypePtr &enum_sem);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   /// Promoted-field access (the field lives on an embedded struct) is
