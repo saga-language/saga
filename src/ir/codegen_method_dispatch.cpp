@@ -369,6 +369,11 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     return builder.CreateCall(enum_string_fn(obj_sem), {obj}, "enum.str");
   }
 
+  // Enum.From(value) — reverse-lookup constructor returning `Enum | error`.
+  if (method == "From" && obj_sem && obj_sem->kind == TypeKind::Enum) {
+    return emit_enum_from(node, obj_sem);
+  }
+
   // ── Task method calls ─────────────────────────────────────────────
   // Task is a semantic struct wrapping saga_runtime_actor*.  obj is the actor ptr.
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {
@@ -1123,6 +1128,77 @@ llvm::Function *CodeGen::enum_string_fn(const TypePtr &enum_sem) {
   if (saved_block)
     builder.SetInsertPoint(saved_block, saved_point);
   return fn;
+}
+
+llvm::Value *CodeGen::emit_enum_from(const CallExprNode &node,
+                                     const TypePtr &enum_sem) {
+  auto &info = std::get<EnumTypeInfo>(enum_sem->detail);
+  auto result_union =
+      make_union_type({enum_sem, analyzer.builtins.error_base});
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto *i64_ty = llvm::Type::getInt64Ty(context);
+
+  llvm::Value *arg = node.args.empty() ? nullptr : emit_expr(*node.args[0]);
+  if (!arg)
+    return nullptr;
+
+  auto *miss_bb = llvm::BasicBlock::Create(context, "from.miss", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "from.merge", func);
+  std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incomings;
+
+  if (info.string_backed) {
+    auto *cmp_fn = module->getFunction("saga_string_compare");
+    if (info.variants.empty())
+      builder.CreateBr(miss_bb);
+    for (size_t i = 0; i < info.variants.size(); ++i) {
+      auto &v = info.variants[i];
+      auto *hit_bb = llvm::BasicBlock::Create(context, "from.hit", func);
+      auto *next_bb = (i + 1 < info.variants.size())
+                          ? llvm::BasicBlock::Create(context, "from.test", func)
+                          : miss_bb;
+      auto *sv = make_string_constant(
+          v.string_value.empty() ? v.name : v.string_value);
+      auto *cmp = builder.CreateCall(cmp_fn, {arg, sv}, "from.cmp");
+      auto *eq = builder.CreateICmpEQ(cmp, llvm::ConstantInt::get(i64_ty, 0),
+                                      "from.eq");
+      builder.CreateCondBr(eq, hit_bb, next_bb);
+
+      builder.SetInsertPoint(hit_bb);
+      auto *wrapped = emit_union_wrap(
+          llvm::ConstantInt::get(i64_ty, v.index), enum_sem, result_union);
+      incomings.push_back({wrapped, builder.GetInsertBlock()});
+      builder.CreateBr(merge_bb);
+
+      builder.SetInsertPoint(next_bb);
+    }
+  } else {
+    auto *ok_bb = llvm::BasicBlock::Create(context, "from.ok", func);
+    auto *sw = builder.CreateSwitch(arg, miss_bb, info.variants.size());
+    for (auto &v : info.variants)
+      sw->addCase(llvm::ConstantInt::get(i64_ty, v.index), ok_bb);
+    builder.SetInsertPoint(ok_bb);
+    auto *wrapped = emit_union_wrap(arg, enum_sem, result_union);
+    incomings.push_back({wrapped, builder.GetInsertBlock()});
+    builder.CreateBr(merge_bb);
+  }
+
+  builder.SetInsertPoint(miss_bb);
+  llvm_type(analyzer.builtins.missing_type);
+  auto &missing_info =
+      std::get<StructTypeInfo>(analyzer.builtins.missing_type->detail);
+  auto *err_box =
+      emit_error_singleton(missing_info, "no matching enum variant");
+  auto *miss_wrapped =
+      emit_union_wrap(err_box, analyzer.builtins.error_base, result_union);
+  incomings.push_back({miss_wrapped, builder.GetInsertBlock()});
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(merge_bb);
+  auto *phi = builder.CreatePHI(ptr_ty, incomings.size(), "from.union");
+  for (auto &[val, bb] : incomings)
+    phi->addIncoming(val, bb);
+  return phi;
 }
 
 llvm::Function *CodeGen::resolve_member_method_callee(

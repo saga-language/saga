@@ -4081,6 +4081,15 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     for (auto &v : info.variants)
       if (v.name == field_name)
         return obj_type;
+    // `Enum.From(value)` reverse-lookup constructor: takes the backing value
+    // (string for a string-backed enum, int otherwise) and returns the enum
+    // or `Missing` when no variant matches.
+    if (field_name == "From") {
+      auto backing =
+          info.string_backed ? builtins.string_type : builtins.int_type;
+      return make_func_type(
+          {backing}, {make_union_type({obj_type, builtins.error_base})});
+    }
   }
 
   if (obj_type->kind == TypeKind::Alias) {

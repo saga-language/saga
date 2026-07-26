@@ -639,6 +639,11 @@ private:
   /// each variant's ordinal to its display string as a rodata constant. Used
   /// by enum `.String()`.
   llvm::Function *enum_string_fn(const TypePtr &enum_sem);
+  /// Lower `Enum.From(value)`: reverse-lookup the variant whose backing value
+  /// matches (ordinal for int enums, backing string for string enums) and
+  /// yield `Enum | error` — the enum on a hit, a `Missing` singleton on a miss.
+  llvm::Value *emit_enum_from(const CallExprNode &node,
+                              const TypePtr &enum_sem);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   /// Promoted-field access (the field lives on an embedded struct) is
