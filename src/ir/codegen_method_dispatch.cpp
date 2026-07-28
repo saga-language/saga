@@ -58,17 +58,16 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
       if (m.name != method) continue;
       std::string link_name = mangle(type_to_string(obj_sem) + "__" + method);
       if (auto *callee = module->getFunction(link_name)) {
-        std::vector<llvm::Value *> args;
-        args.push_back(emit_expr(*sel->object));
-        for (auto &arg_node : node.args) {
+        const FuncTypeInfo *m_fi =
+            m.signature && m.signature->kind == TypeKind::Func
+                ? &std::get<FuncTypeInfo>(m.signature->detail)
+                : nullptr;
+        auto *self = emit_expr(*sel->object);
+        std::vector<llvm::Value *> arg_vals;
+        for (auto &arg_node : node.args)
           if (auto *v = emit_expr(*arg_node))
-            args.push_back(v);
-        }
-        if (callee->getReturnType()->isVoidTy()) {
-          builder.CreateCall(callee, args);
-          return nullptr;
-        }
-        return builder.CreateCall(callee, args, "alias.mcall");
+            arg_vals.push_back(v);
+        return emit_receiver_call(callee, obj_sem, self, arg_vals, m_fi);
       }
       break;
     }
@@ -146,6 +145,11 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   auto *obj = emit_expr(*sel->object);
   if (!obj)
     return nullptr;
+
+  // Union receiver: dispatch `method` through the union tag, calling each
+  // member's implementation (the analyzer verified a shared interface).
+  if (obj_sem && obj_sem->kind == TypeKind::Union)
+    return emit_union_method_dispatch(node, method, obj_sem, obj);
 
   // Stdlib-defined receiver methods on generic intrinsic types (Array, Map).
   // These are compiled from stdlib source (e.g. std/array/array.sg) and use
@@ -359,10 +363,41 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     return obj;
   }
 
-  // Enum .String() — convert the enum's integer index to a string.
+  // Enum .String() — map the ordinal to its variant's display string.
   if (method == "String" && obj_sem && obj_sem->kind == TypeKind::Enum) {
-    return builder.CreateCall(
-        module->getFunction("saga_int_to_string"), {obj}, "str");
+    return builder.CreateCall(enum_string_fn(obj_sem), {obj}, "enum.str");
+  }
+
+  // Enum.From(value) — reverse-lookup constructor returning `Enum | error`.
+  if (method == "From" && obj_sem && obj_sem->kind == TypeKind::Enum) {
+    return emit_enum_from(node, obj_sem);
+  }
+
+  // Enum user method: obj.M(args) → EnumName__M(obj, args) with value i64 self.
+  // Built-in Int/String/From returned above and are reserved from redefinition,
+  // so only genuine user methods reach here (same-package; symbol declared by
+  // declare_struct_method_symbols).
+  if (obj_sem && obj_sem->kind == TypeKind::Enum) {
+    auto &info = std::get<EnumTypeInfo>(obj_sem->detail);
+    std::string origin =
+        info.origin_package.empty() ? package_name : info.origin_package;
+    if (auto *callee =
+            module->getFunction(mangle(origin, info.name + "__" + method))) {
+      const FuncTypeInfo *m_fi = nullptr;
+      auto tm_it = analyzer.type_methods_.find(obj_sem.get());
+      if (tm_it != analyzer.type_methods_.end())
+        for (auto &m : tm_it->second)
+          if (m.name == method && m.signature &&
+              m.signature->kind == TypeKind::Func) {
+            m_fi = &std::get<FuncTypeInfo>(m.signature->detail);
+            break;
+          }
+      std::vector<llvm::Value *> arg_vals;
+      for (auto &arg_node : node.args)
+        if (auto *val = emit_expr(*arg_node))
+          arg_vals.push_back(val);
+      return emit_receiver_call(callee, obj_sem, obj, arg_vals, m_fi);
+    }
   }
 
   // ── Task method calls ─────────────────────────────────────────────
@@ -402,8 +437,8 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
           // No concrete T — semantic analysis should have bound it.
           return nullptr;
         }
-        auto error_iface_sem_pre = analyzer.builtins.error_iface;
-        auto union_sem = make_union_type({t_sem, error_iface_sem_pre});
+        auto error_base_sem_pre = analyzer.builtins.error_base;
+        auto union_sem = make_union_type({t_sem, error_base_sem_pre});
         auto *union_st = get_union_llvm_type(union_sem);
 
         auto *status_alloca = create_entry_alloca(func, "wait.status",
@@ -445,16 +480,14 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         auto *bb_ok_end = builder.GetInsertBlock();
         builder.CreateBr(bb_merge);
 
-        // ── Error path: build TrapError fat pointer, wrap as Error. ──
+        // ── Error path: build the Trapped error box, wrap as error. ──
         func->insert(func->end(), bb_err);
         builder.SetInsertPoint(bb_err);
-        auto *err_fat = builder.CreateCall(
+        auto *err_box = builder.CreateCall(
             module->getFunction("saga_error_from_trap"),
-            {obj}, "wait.err.fat");
-        // error_iface has kind Interface; emit_union_wrap finds its tag
-        // via the interface-satisfaction path in union_tag_for_type.
-        auto error_iface_sem = analyzer.builtins.error_iface;
-        auto *wrapped_err = emit_union_wrap(err_fat, error_iface_sem,
+            {obj}, "wait.err.box");
+        auto error_base_sem = analyzer.builtins.error_base;
+        auto *wrapped_err = emit_union_wrap(err_box, error_base_sem,
                                              union_sem);
         if (!wrapped_err)
           wrapped_err = llvm::ConstantPointerNull::get(ptr_type);
@@ -628,18 +661,16 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
 
         if (callee) {
-          std::vector<llvm::Value *> args;
-          args.push_back(obj); // self (value, not pointer)
+          const FuncTypeInfo *m_fi =
+              m.signature && m.signature->kind == TypeKind::Func
+                  ? &std::get<FuncTypeInfo>(m.signature->detail)
+                  : nullptr;
+          std::vector<llvm::Value *> arg_vals;
           for (auto &arg_node : node.args) {
-            auto *val = emit_expr(*arg_node);
-            if (val)
-              args.push_back(val);
+            if (auto *val = emit_expr(*arg_node))
+              arg_vals.push_back(val);
           }
-          if (callee->getReturnType()->isVoidTy()) {
-            builder.CreateCall(callee, args);
-            return nullptr;
-          }
-          return builder.CreateCall(callee, args, "mcall");
+          return emit_receiver_call(callee, obj_sem, obj, arg_vals, m_fi);
         }
         break;
       }
@@ -800,23 +831,9 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     }
 
     if (callee) {
-      auto *parent_fn = builder.GetInsertBlock()->getParent();
-
-      // Sret lowering: if callee returns a struct via sret, alloca a
-      // result slot and pass it as the hidden first argument.
-      std::vector<llvm::Value *> args;
-      llvm::Value *sret_slot = nullptr;
-      llvm::Type *sret_struct_ty = nullptr;
-      if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
-        sret_struct_ty = callee->getParamStructRetType(0);
-        sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
-        args.push_back(sret_slot);
-      }
-
-      // For struct methods, self is a pointer to the struct.  Resolve
-      // through the parameterized cache key so a generic instantiation
-      // (e.g. `lib__Box<Int>`) matches its actual LLVM struct type, not
-      // the unparameterized base name.
+      // Self is a pointer to the struct.  Resolve through the parameterized
+      // cache key so a generic instantiation (e.g. `lib__Box<Int>`) matches
+      // its actual LLVM struct type, not the unparameterized base name.
       std::string self_struct_key = struct_cache_key(info);
       llvm::Value *self_ptr = obj;
       if (auto *id = std::get_if<IdentifierNode>(&sel->object->data)) {
@@ -833,18 +850,6 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
       }
 
-      // If self_ptr is a struct value (not a pointer/alloca), spill.
-      auto st_it2 = struct_types.find(self_struct_key);
-      if (st_it2 != struct_types.end() &&
-          self_ptr->getType() == st_it2->second) {
-        auto *tmp = create_entry_alloca(parent_fn, "self.tmp",
-                                         st_it2->second);
-        builder.CreateStore(self_ptr, tmp);
-        self_ptr = tmp;
-      }
-      args.push_back(self_ptr);
-
-      // Resolve the method signature for byval lowering of struct args.
       const FuncTypeInfo *m_fi = nullptr;
       for (auto &m : info.methods) {
         if (m.name == method && m.signature &&
@@ -854,61 +859,12 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
         }
       }
 
-      for (size_t ai = 0; ai < node.args.size(); ++ai) {
-        auto *val = emit_expr(*node.args[ai]);
-        if (!val)
-          continue;
-        if (m_fi && ai < m_fi->params.size() && m_fi->params[ai] &&
-            (m_fi->params[ai]->kind == TypeKind::Struct ||
-             m_fi->params[ai]->kind == TypeKind::Union)) {
-          auto *p_ll = llvm_type(m_fi->params[ai]);
-          if (p_ll && p_ll->isStructTy() && val->getType()->isStructTy()) {
-            auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-            builder.CreateStore(val, tmp);
-            val = tmp;
-          }
-        }
-        args.push_back(val);
+      std::vector<llvm::Value *> arg_vals;
+      for (auto &arg_node : node.args) {
+        if (auto *val = emit_expr(*arg_node))
+          arg_vals.push_back(val);
       }
-
-      std::string call_name =
-          callee->getReturnType()->isVoidTy() ? "" : "mcall";
-      auto *call = builder.CreateCall(callee, args, call_name);
-
-      // Mirror sret/byval attrs on the call site.
-      unsigned cidx = 0;
-      if (sret_slot) {
-        call->addParamAttr(cidx,
-            llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
-        call->addParamAttr(cidx,
-            llvm::Attribute::getWithAlignment(context,
-                module->getDataLayout().getABITypeAlign(sret_struct_ty)));
-        ++cidx;
-      }
-      ++cidx; // self
-      if (m_fi) {
-        for (size_t ai = 0; ai < m_fi->params.size(); ++ai) {
-          if (m_fi->params[ai] &&
-              (m_fi->params[ai]->kind == TypeKind::Struct ||
-               m_fi->params[ai]->kind == TypeKind::Union)) {
-            auto *p_ll = llvm_type(m_fi->params[ai]);
-            if (p_ll && p_ll->isStructTy()) {
-              call->addParamAttr(cidx,
-                  llvm::Attribute::getWithByValType(context, p_ll));
-              call->addParamAttr(cidx,
-                  llvm::Attribute::getWithAlignment(context,
-                      module->getDataLayout().getABITypeAlign(p_ll)));
-            }
-          }
-          ++cidx;
-        }
-      }
-
-      if (sret_slot)
-        return sret_slot;
-      if (callee->getReturnType()->isVoidTy())
-        return nullptr;
-      return call;
+      return emit_receiver_call(callee, obj_sem, self_ptr, arg_vals, m_fi);
     }
   }
 
@@ -1082,6 +1038,366 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
   if (callee->getReturnType()->isVoidTy())
     return nullptr;
   return call;
+}
+
+llvm::Value *CodeGen::emit_receiver_call(
+    llvm::Function *callee, const TypePtr &recv_sem, llvm::Value *recv_value,
+    const std::vector<llvm::Value *> &arg_vals, const FuncTypeInfo *method_fi) {
+  auto *parent_fn = builder.GetInsertBlock()->getParent();
+  std::vector<llvm::Value *> args;
+
+  llvm::Value *sret_slot = nullptr;
+  llvm::Type *sret_struct_ty = nullptr;
+  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
+    sret_struct_ty = callee->getParamStructRetType(0);
+    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
+    args.push_back(sret_slot);
+  }
+
+  llvm::Value *self = recv_value;
+  bool ptr_self = recv_sem && (recv_sem->kind == TypeKind::Struct ||
+                               recv_sem->kind == TypeKind::Alias);
+  if (ptr_self) {
+    auto *self_ll = llvm_type(recv_sem);
+    if (self_ll && self_ll->isStructTy() && self->getType() == self_ll) {
+      auto *tmp = create_entry_alloca(parent_fn, "self.tmp", self_ll);
+      builder.CreateStore(self, tmp);
+      self = tmp;
+    }
+  }
+  args.push_back(self);
+
+  auto is_byval_param = [&](size_t i) -> llvm::Type * {
+    if (!method_fi || i >= method_fi->params.size() || !method_fi->params[i])
+      return nullptr;
+    if (method_fi->params[i]->kind != TypeKind::Struct &&
+        method_fi->params[i]->kind != TypeKind::Union)
+      return nullptr;
+    auto *p_ll = llvm_type(method_fi->params[i]);
+    return (p_ll && p_ll->isStructTy()) ? p_ll : nullptr;
+  };
+
+  for (size_t i = 0; i < arg_vals.size(); ++i) {
+    auto *val = arg_vals[i];
+    if (!val)
+      continue;
+    if (auto *p_ll = is_byval_param(i);
+        p_ll && val->getType()->isStructTy()) {
+      auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+      builder.CreateStore(val, tmp);
+      val = tmp;
+    }
+    args.push_back(val);
+  }
+
+  std::string call_name = callee->getReturnType()->isVoidTy() ? "" : "mcall";
+  auto *call = builder.CreateCall(callee, args, call_name);
+
+  auto &dl = module->getDataLayout();
+  unsigned cidx = 0;
+  if (sret_slot) {
+    call->addParamAttr(cidx,
+        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
+    call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
+                                 context, dl.getABITypeAlign(sret_struct_ty)));
+    ++cidx;
+  }
+  ++cidx; // self
+  if (method_fi)
+    for (size_t i = 0; i < method_fi->params.size(); ++i, ++cidx)
+      if (auto *p_ll = is_byval_param(i)) {
+        call->addParamAttr(
+            cidx, llvm::Attribute::getWithByValType(context, p_ll));
+        call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
+                                     context, dl.getABITypeAlign(p_ll)));
+      }
+
+  if (sret_slot)
+    return sret_slot;
+  if (callee->getReturnType()->isVoidTy())
+    return nullptr;
+  return call;
+}
+
+llvm::Function *CodeGen::enum_string_fn(const TypePtr &enum_sem) {
+  auto &info = std::get<EnumTypeInfo>(enum_sem->detail);
+  std::string link =
+      mangle(info.origin_package.empty() ? package_name : info.origin_package,
+             info.name + "__EnumString");
+  if (auto *fn = module->getFunction(link))
+    return fn;
+
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto *ft = llvm::FunctionType::get(ptr_ty, {i64_type}, false);
+  auto *fn =
+      llvm::Function::Create(ft, llvm::Function::PrivateLinkage, link,
+                             module.get());
+
+  auto *saved_block = builder.GetInsertBlock();
+  auto saved_point = builder.GetInsertPoint();
+
+  auto *i64_ty = llvm::Type::getInt64Ty(context);
+  auto *entry = llvm::BasicBlock::Create(context, "entry", fn);
+  auto *dflt = llvm::BasicBlock::Create(context, "default", fn);
+  builder.SetInsertPoint(entry);
+  auto *sw = builder.CreateSwitch(fn->getArg(0), dflt, info.variants.size());
+  for (auto &v : info.variants) {
+    auto *bb = llvm::BasicBlock::Create(context, "v", fn);
+    sw->addCase(llvm::ConstantInt::get(i64_ty, v.index), bb);
+    builder.SetInsertPoint(bb);
+    builder.CreateRet(make_string_constant(
+        v.string_value.empty() ? v.name : v.string_value));
+  }
+  builder.SetInsertPoint(dflt);
+  builder.CreateRet(make_string_constant(""));
+
+  if (saved_block)
+    builder.SetInsertPoint(saved_block, saved_point);
+  return fn;
+}
+
+llvm::Value *CodeGen::emit_enum_from(const CallExprNode &node,
+                                     const TypePtr &enum_sem) {
+  auto &info = std::get<EnumTypeInfo>(enum_sem->detail);
+  auto result_union =
+      make_union_type({enum_sem, analyzer.builtins.error_base});
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto *i64_ty = llvm::Type::getInt64Ty(context);
+
+  llvm::Value *arg = node.args.empty() ? nullptr : emit_expr(*node.args[0]);
+  if (!arg)
+    return nullptr;
+
+  auto *miss_bb = llvm::BasicBlock::Create(context, "from.miss", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "from.merge", func);
+  std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incomings;
+
+  if (info.string_backed) {
+    auto *cmp_fn = module->getFunction("saga_string_compare");
+    if (info.variants.empty())
+      builder.CreateBr(miss_bb);
+    for (size_t i = 0; i < info.variants.size(); ++i) {
+      auto &v = info.variants[i];
+      auto *hit_bb = llvm::BasicBlock::Create(context, "from.hit", func);
+      auto *next_bb = (i + 1 < info.variants.size())
+                          ? llvm::BasicBlock::Create(context, "from.test", func)
+                          : miss_bb;
+      auto *sv = make_string_constant(
+          v.string_value.empty() ? v.name : v.string_value);
+      auto *cmp = builder.CreateCall(cmp_fn, {arg, sv}, "from.cmp");
+      auto *eq = builder.CreateICmpEQ(cmp, llvm::ConstantInt::get(i64_ty, 0),
+                                      "from.eq");
+      builder.CreateCondBr(eq, hit_bb, next_bb);
+
+      builder.SetInsertPoint(hit_bb);
+      auto *wrapped = emit_union_wrap(
+          llvm::ConstantInt::get(i64_ty, v.index), enum_sem, result_union);
+      incomings.push_back({wrapped, builder.GetInsertBlock()});
+      builder.CreateBr(merge_bb);
+
+      builder.SetInsertPoint(next_bb);
+    }
+  } else {
+    auto *ok_bb = llvm::BasicBlock::Create(context, "from.ok", func);
+    auto *sw = builder.CreateSwitch(arg, miss_bb, info.variants.size());
+    for (auto &v : info.variants)
+      sw->addCase(llvm::ConstantInt::get(i64_ty, v.index), ok_bb);
+    builder.SetInsertPoint(ok_bb);
+    auto *wrapped = emit_union_wrap(arg, enum_sem, result_union);
+    incomings.push_back({wrapped, builder.GetInsertBlock()});
+    builder.CreateBr(merge_bb);
+  }
+
+  builder.SetInsertPoint(miss_bb);
+  llvm_type(analyzer.builtins.missing_type);
+  auto &missing_info =
+      std::get<StructTypeInfo>(analyzer.builtins.missing_type->detail);
+  auto *err_box =
+      emit_error_singleton(missing_info, "no matching enum variant");
+  auto *miss_wrapped =
+      emit_union_wrap(err_box, analyzer.builtins.error_base, result_union);
+  incomings.push_back({miss_wrapped, builder.GetInsertBlock()});
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(merge_bb);
+  auto *phi = builder.CreatePHI(ptr_ty, incomings.size(), "from.union");
+  for (auto &[val, bb] : incomings)
+    phi->addIncoming(val, bb);
+  return phi;
+}
+
+llvm::Function *CodeGen::resolve_member_method_callee(
+    const TypePtr &member_sem, const std::string &method,
+    const FuncTypeInfo **out_sig) {
+  *out_sig = nullptr;
+  if (!member_sem)
+    return nullptr;
+
+  auto declare = [&](const std::string &link, llvm::Type *self_ll,
+                     const FuncTypeInfo &fi) -> llvm::Function * {
+    std::vector<llvm::Type *> params;
+    params.push_back(self_ll);
+    for (auto &p : fi.params)
+      params.push_back(llvm_type(p));
+    llvm::Type *ret =
+        fi.return_type ? llvm_type(fi.return_type) : void_ll_type;
+    auto *ft = llvm::FunctionType::get(ret, params, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, link,
+                                  module.get());
+  };
+
+  if (member_sem->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(member_sem->detail);
+    for (auto &m : info.methods) {
+      if (m.name != method || !m.signature ||
+          m.signature->kind != TypeKind::Func)
+        continue;
+      auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+      *out_sig = &fi;
+      std::string origin =
+          info.origin_package.empty() ? package_name : info.origin_package;
+      std::string link = mangle(origin, info.name + "__" + method);
+      if (auto *fn = module->getFunction(link))
+        return fn;
+      return declare(link, llvm::PointerType::getUnqual(context), fi);
+    }
+    return nullptr;
+  }
+
+  const Type *canonical = nullptr;
+  const char *pkg = nullptr;
+  switch (member_sem->kind) {
+  case TypeKind::Int: {
+    auto &ii = std::get<IntType>(member_sem->detail);
+    pkg = "int";
+    if (ii.bits == 0)
+      canonical = analyzer.builtins.int_type.get();
+    else if (ii.is_signed)
+      switch (ii.bits) {
+      case 8:  canonical = analyzer.builtins.int8_type.get();  break;
+      case 16: canonical = analyzer.builtins.int16_type.get(); break;
+      case 32: canonical = analyzer.builtins.int32_type.get(); break;
+      case 64: canonical = analyzer.builtins.int64_type.get(); break;
+      }
+    else
+      switch (ii.bits) {
+      case 8:  canonical = analyzer.builtins.uint8_type.get();  break;
+      case 16: canonical = analyzer.builtins.uint16_type.get(); break;
+      case 32: canonical = analyzer.builtins.uint32_type.get(); break;
+      case 64: canonical = analyzer.builtins.uint64_type.get(); break;
+      }
+    break;
+  }
+  case TypeKind::Float:  canonical = analyzer.builtins.float_type.get();  pkg = "float";  break;
+  case TypeKind::Bool:   canonical = analyzer.builtins.bool_type.get();   pkg = "bool";   break;
+  case TypeKind::String: canonical = analyzer.builtins.string_type.get(); pkg = "string"; break;
+  default: return nullptr;
+  }
+
+  auto tm_it = analyzer.type_methods_.find(member_sem.get());
+  if (tm_it == analyzer.type_methods_.end() && canonical &&
+      canonical != member_sem.get())
+    tm_it = analyzer.type_methods_.find(canonical);
+  if (tm_it == analyzer.type_methods_.end())
+    return nullptr;
+  for (auto &m : tm_it->second) {
+    if (m.name != method || !m.signature ||
+        m.signature->kind != TypeKind::Func)
+      continue;
+    auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
+    *out_sig = &fi;
+    std::string tn = scalar_intrinsic_mangle_name(member_sem);
+    if (auto *fn = module->getFunction(mangle(tn + "__" + method)))
+      return fn;
+    std::string cross = mangle(pkg, tn + "__" + method);
+    if (auto *fn = module->getFunction(cross))
+      return fn;
+    return declare(cross, llvm_type(member_sem), fi);
+  }
+  return nullptr;
+}
+
+llvm::Value *CodeGen::emit_union_method_dispatch(const CallExprNode &node,
+                                                 const std::string &method,
+                                                 const TypePtr &union_sem,
+                                                 llvm::Value *union_ptr) {
+  auto &alts = std::get<UnionTypeInfo>(union_sem->detail).alternatives;
+
+  // Emit call arguments once — they are identical for every arm and must not
+  // re-run their side effects per member.
+  std::vector<llvm::Value *> arg_vals;
+  for (auto &arg_node : node.args)
+    if (auto *v = emit_expr(*arg_node))
+      arg_vals.push_back(v);
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *union_st = get_union_llvm_type(union_sem);
+  auto *i8_ty = llvm::Type::getInt8Ty(context);
+
+  auto *tag_gep =
+      builder.CreateStructGEP(union_st, union_ptr, 0, "um.tag.ptr");
+  auto *tag_val = builder.CreateLoad(i8_ty, tag_gep, "um.tag");
+
+  auto *default_bb = llvm::BasicBlock::Create(context, "um.default");
+  auto *merge_bb = llvm::BasicBlock::Create(context, "um.merge");
+  auto *sw = builder.CreateSwitch(tag_val, default_bb, alts.size());
+
+  struct ArmResult {
+    llvm::Value *value;
+    llvm::BasicBlock *block;
+    bool terminated;
+  };
+  std::vector<ArmResult> results;
+
+  for (size_t i = 0; i < alts.size(); ++i) {
+    auto &alt = alts[i];
+    auto *case_bb = llvm::BasicBlock::Create(
+        context, "um.case." + std::to_string(i), func);
+    int tag = union_tag_for_type(alt, union_sem);
+    sw->addCase(llvm::ConstantInt::get(i8_ty, tag >= 0 ? tag : (int)i),
+                case_bb);
+
+    builder.SetInsertPoint(case_bb);
+    auto *recv = emit_union_extract(union_ptr, alt, union_sem);
+    const FuncTypeInfo *m_fi = nullptr;
+    auto *callee = resolve_member_method_callee(alt, method, &m_fi);
+    llvm::Value *result =
+        callee ? emit_receiver_call(callee, alt, recv, arg_vals, m_fi)
+               : nullptr;
+
+    bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
+    if (!terminated)
+      builder.CreateBr(merge_bb);
+    results.push_back({result, builder.GetInsertBlock(), terminated});
+  }
+
+  // The tag is always one of the members, so the default is unreachable.
+  func->insert(func->end(), default_bb);
+  builder.SetInsertPoint(default_bb);
+  builder.CreateUnreachable();
+
+  func->insert(func->end(), merge_bb);
+  builder.SetInsertPoint(merge_bb);
+
+  llvm::Type *phi_type = nullptr;
+  bool all_have_value = true;
+  for (auto &r : results) {
+    if (!r.value || r.terminated)
+      all_have_value = false;
+    else if (!phi_type)
+      phi_type = r.value->getType();
+    else if (r.value->getType() != phi_type)
+      all_have_value = false;
+  }
+  if (all_have_value && phi_type && !phi_type->isVoidTy()) {
+    auto *phi = builder.CreatePHI(phi_type, results.size(), "um.val");
+    for (auto &r : results)
+      if (!r.terminated && r.value)
+        phi->addIncoming(r.value, r.block);
+    return phi;
+  }
+  return nullptr;
 }
 
 llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,

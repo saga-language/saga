@@ -1,0 +1,18 @@
+// Spec: a nominal-type receiver method returning a struct via a branching tail
+// lowers through the same sret ABI as any other receiver. Regression guard for
+// the alias dispatch, which previously bypassed the sret slot.
+import "std/io"
+
+struct Pt { x, y int }
+type Sel int
+
+fn (s Sel) Make() Pt {
+  if s.Int() == 0 { Pt{x: 1, y: 2} } else { Pt{x: 3, y: 4} }
+}
+
+pub fn Main() void {
+  s Sel = 9
+  p := s.Make()
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}

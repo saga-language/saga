@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "runtime/error_ids.h"
 
 #include <charconv>
 
@@ -315,6 +316,18 @@ void CodeGen::init_types() {
   enum_variants[cmp_key + ".Greater"] = 2;
 }
 
+uint64_t CodeGen::error_type_id(const StructTypeInfo &info) const {
+  if (info.name == "Missing") return SAGA_ERR_ID_MISSING;
+  if (info.name == "Trapped") return SAGA_ERR_ID_TRAPPED;
+  // FNV-1a over the mangled name — stable across packages, distinct per type.
+  uint64_t h = 1469598103934665603ULL;
+  for (char c : struct_cache_key(info)) {
+    h ^= static_cast<unsigned char>(c);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
 std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
   std::string base = key_for(info.origin_package, info.name);
   if (info.type_args.empty())
@@ -360,13 +373,17 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return i64_type; // Enums are represented as i64 tags.
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
+    // Errors are boxed: a value is a pointer to the heap box. The box layout
+    // is still registered below so field access can GEP through the pointer.
+    bool boxed = info.is_error;
+    auto *ptr_rep = llvm::PointerType::getUnqual(context);
     std::string key = struct_cache_key(info);
     auto it = struct_types.find(key);
     llvm::StructType *st = nullptr;
     if (it != struct_types.end()) {
       st = it->second;
       if (!st->isOpaque())
-        return st;
+        return boxed ? static_cast<llvm::Type *>(ptr_rep) : st;
     } else {
       // Forward declare opaque first; insert before recursing into fields
       // so any self-reference resolves to this same opaque shell.
@@ -386,7 +403,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
       struct_fields[key] = std::move(fnames);
     if (named_sem_types.find(key) == named_sem_types.end())
       named_sem_types[key] = t;
-    return st;
+    return boxed ? static_cast<llvm::Type *>(ptr_rep) : st;
   }
   case TypeKind::Interface:
     // Interfaces are represented as a fat pointer struct.

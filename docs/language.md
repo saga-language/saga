@@ -220,6 +220,19 @@ concatenated with commas, followed by a Type, then more parameters.
 fn MultiParam(a, b Int, c String) Void {}
 ```
 
+### Method uniqueness
+
+A each method on a type must be unique. Re-defining, or rebinding, a method on
+a type is an error. This uniqueness rule is distinct from **shadowing**. A method
+on a type may shadow a method inherited from an embedded struct or inherited from 
+a nomiminal type's underlying type. This is because the shadowing method lives on
+a different type, thereby maintaining the uniqueness.
+
+Compiler-provided methods count as the type's own definitions. For instance, an 
+enum's `String`, `Int`, and `From` are synthesized for the enum itself, so 
+redefining one of these methods is a redefinition error. A nominal alias's 
+`String` is inherited from the underlying type and so may be shadowed.
+
 ### Return statement
 
 Methods support a `return` statement to exit at any time. A return statement
@@ -421,88 +434,87 @@ struct MyStruct {
 }
 ```
 
-### Pure union types
+A type union holds one of several **concrete** types, tagged so you can recover
+which one it is with `is` or `switch`. Its size is a small tag plus the largest
+alternative's payload.
 
-A pure union is one that contains any combinations of types that is not an 
-Error type. Example: `Bool | Int` is a union of a boolean and integer type.
-The size of this type is the size of the largest type.
+Rules:
 
-Including more than one of the same Type is an error: `Int | Int`. A type
-alias of another type is not the same type: `Int : MyInt`. They are treated
-as distinct types with different behaviours.
+- **Concrete types only.** An interface alternative is an error: `string | Reader`
+  does not compile. A union answers "which *type* is it"; an interface answers
+  "what *behaviour* does it have" — different axes. To accept any type with a
+  behaviour, take the interface itself and narrow with `is`; to require several
+  behaviours at once, embed interfaces (`interface RW { Reader, Writer }`).
+- **Unique set.** A repeated type is an error: `int | int`. A union of unions
+  flattens into the combined set — `float | (string | int)` becomes
+  `float | string | int` — and a duplicate that flattening exposes is likewise an
+  error. A **nominal** alias (`type ID int`) is a distinct type, so it is *not*
+  flattened into its underlying.
+- **Zero value is the leftmost alternative.** `string | int` zeroes to `""`,
+  `int | string` to `0`; an unset union reads as its leftmost type.
 
-### Impure union types
+### Optional values (`T | void`)
 
-Impure types are type unions that contain an Error type: `Int | Error`. Errors
-must be resolved with the `or` keyword before they can be narrowed, or 
-"purified". This strips the error from the type and returns the resulting
-type, union or not, without an `Error` type.
-
-### Error type and Missing
-
-The [Error](./language.md#error) type is an interface which expects a concrete
-type to implement a public method called `Message()` that returns the type `String`.
-The language also includes a type [Missing](./language.md#missing) that 
-implements this  interface. To require a specific error type, you can use that
-type directly or use Unions for a list of specific error types. Like any type,
-Errors can be narrowed with type matching.
-
-Creating your own error type can be as simple as creating a type that 
-implements the `Error` interface. This can be a powerful tool for adding extra
-metadata to your errors.
+`void` is assignable and holds a single value, `null`. A `T | void` union is an
+optional: the value, or its absence. Its main use is over-the-wire data (a JSON
+`null`); in Saga-only code an error union is usually preferable, since it carries
+context. Narrow with `is` (`or` does not apply — `void` is not an error).
 
 ```
-struct BasicError {
-  message String
-  
-  pub fn Message() String { message }
+fn lookup(key string) int | void {
+  // ... return an int, or:
+  return null
 }
 
-struct NetworkError < BasicError {
-  code Int
-  
-  pub fn Message() String { "Network error [{code}]: {message}" } 
+x := lookup("a")
+if x is int {
+  // present
+} else {
+  // x is void — absent
 }
 ```
 
-### Or clause
+### Error unions
 
-The or clause is used to resolve Error types. It's an incredibly powerful tool
-for "correctness" or provide default values. To capture the error itself, use 
-the pipe syntax prior to the block and give it a name. This is really useful 
-for logging and default values.
+Errors are **nominal** types (`error Name { ... }`), not an interface, so they
+compose in unions like any other concrete type: `int | error`. Base `error`
+accepts any error; a concrete error type accepts only itself. Comparing errors
+uses `is` (same error type) and `==` (same type and fields); the message is a
+plain `.message` field.
 
-While `err` is probably the most common name, you can call it whatever you like.
-The variable is locked to the following block's scope, so no need to worry if
-the outer block has a variable with the same name, it won't be an error.
+The `or` clause resolves the error before the value is used: it strips the error
+alternative(s) and yields the remaining type — a value, or a smaller union.
 
 ```
-value Int | Error = 0
-i := value or { 1 } // i is now an Int
+value int | error = 0
+i := value or { 1 } // i is int
 
-many_types Int | String | Error
-int_or_string := many_types or {} // strips Error, Int | String remains
+many int | string | error
+narrowed := many or {} // strips error, int | string remains
 
-// capturing the error
+// capturing the error with the pipe syntax; `err` is scoped to the block.
 json := http.Get("example.com/api/data") or |err| {
-  log.Error(err)
-  "{}" // return a valid (empty) JSON string
+  log.Error(err.message)
+  "{}" // a valid (empty) JSON string
 }
 ```
 
-By convension, the Error type should be the final type of a union. If code
-needs to return multiple error types, use `Error`. Including more than one
-Error type in a type union will result in an error.
+The pipe variable is typed as the union's error alternative(s), so a concrete
+error union exposes that error's own fields:
 
 ```
-data := http.Get(...) or |err| {
-    switch err {
-      case NetworkError: log.Error(err)
-      case ParseError: log.Warn(err)
-      else {}
-    }
+data := parse(raw) or |err| {
+  switch err {
+    case NetworkError: log.Error(err)
+    case ParseError:   log.Warn(err)
+    else {}
+  }
 }
 ```
+
+**Ordering convention.** Write a union as `T... | void | error` — the value
+types first, then an optional `void`, then the error. This is only a convention:
+errors are nominal and carry no positional requirement, so any order is legal.
 
 ### Generics
 
@@ -581,7 +593,7 @@ for node : list {} // Next() lets you iterate over the list.
 A generic type parameter can be constrained to a named built-in type set by
 writing the constraint immediately after the parameter name inside the pipe
 syntax. The constraint follows by adjacency, matching the patterns used
-elsewhere in the language (`enum Severity Int`, wire-name field slots):
+elsewhere in the language (`enum Color string`, wire-name field slots):
 
 ```
 fn |T Numeric| Add(a T, b T) T { a + b }
@@ -1117,38 +1129,118 @@ interface ReadWriteCloser {
 
 ## Enums
 
-Enumerations are types of values. Each value is of the defined type but is a
-unique value of that type. These values must be unique or an error is raised.
-
-The values of an enum are structs that have both an index and name. If a name
-or index is not explicitly provided, the compiler provides on based on its
-position and constant. These values can be overridden but must be unique or an
-error will be raised.
+An enum is a type whose values are a fixed set of named variants. Each variant
+is a distinct value of the enum type. By default an enum is backed by an `int`
+ordinal: the first variant is `0` and each following variant counts up by one.
+Variants are separated by newlines, not commas.
 
 ```
-enum Colors {
-  Red
-  Green
-  Blue
+enum Color {
+  Red    // 0
+  Green  // 1
+  Blue   // 2
 }
 
-fn SelectColor(c Colors) Void { ... }
+fn Paint(c Color) void { ... }
 
-SelectColor(Colors.Red)
-SelectColor(Colors.Purple) // error, invalid enumeration value
+Paint(Color.Red)
+Paint(Color.Purple) // error, no variant named Purple
+```
 
-enum States {
-  Stopped {name: "stop"} // names MUST be unique
-  Running {name: "run"}
-}
+### Backing values
 
-enum Suits {
-  Clubs {index: 1}
-  Diamonds // index is the previous value +1
-  Hearts {index: 5} // indexes 3 and 4 are skipped, counting starts from here
-  Spades // becomes 6
+A variant's ordinal can be set explicitly with `= Expression`. Later variants
+without an explicit value keep counting from the previous one. Ordinals must be
+unique.
+
+```
+enum Suit {
+  Clubs = 1
+  Diamonds  // 2
+  Hearts = 5
+  Spades    // 6
 }
 ```
+
+An enum may instead be backed by a string by writing `string` after its name.
+Each variant's backing string defaults to the variant's own name and can be
+overridden with `= "..."`.
+
+```
+enum Color string {
+  Red = "r"
+  Green      // "Green"
+  Blue = "b"
+}
+```
+
+### Accessors
+
+Every enum carries three synthesized methods:
+
+- `.Int()` returns the ordinal as an `int`.
+- `.String()` returns the variant name for an int-backed enum, or the backing
+  string for a string-backed enum.
+- `Enum.From(value)` is the inverse of the backing: it looks up the variant
+  whose backing value equals `value` (an ordinal, or a string for a
+  string-backed enum) and returns `Enum | error` — the variant on a match, a
+  `Missing` error on none.
+
+```
+Color.Red.Int()                    // 0
+Color.Red.String()                 // "r"
+Suit.From(5) or |e| { Suit.Clubs } // Suit.Hearts
+```
+
+`Int`, `String`, and `From` are reserved: a user method may not redefine them
+(see [Method uniqueness](#method-uniqueness)).
+
+### Methods
+
+Methods can be attached to an enum. The receiver is the enum value, passed by
+value.
+
+```
+enum Dir {
+  North
+  East
+  South
+  West
+}
+
+fn (d Dir) Opposite() Dir {
+  switch d {
+    case Dir.North: Dir.South
+    case Dir.East:  Dir.West
+    case Dir.South: Dir.North
+    else:           Dir.East
+  }
+}
+
+Dir.East.Opposite() // Dir.West
+```
+
+### Variant shorthand
+
+Where the enum type is already known from context — a typed declaration, a
+return, a call argument, a struct field, a switch case, or the other side of a
+`==`/`!=` — a variant can be written with a leading dot and no enum name.
+
+```
+c Color = .Red
+if c == .Red { ... }
+Paint(.Green)
+```
+
+The shorthand is only allowed where the target enum is unambiguous; a bare
+`.Red` with no expected type is an error.
+
+### Enums are identity types
+
+An enum names a choice, not a quantity. Enums support equality (`==`, `!=`) but
+no arithmetic: `+`, `-`, `*`, `/`, `%`, and unary `-` are rejected, and an enum
+cannot overload them. To compute with the ordinal, take it explicitly with
+`.Int()`.
 
 ## Method Calling
 
@@ -1506,6 +1598,11 @@ operator.
   `>>` (Right shift)
 **Logical**: `==` (Equal), `!=` (Not Equal), `>` (Greater), `<` (Less), 
   `>=` (Greater than or Equal), `<=` (Less than or Equal), `&&` (and), `||` (or)
+
+Arithmetic operators apply to numeric types (`+` also concatenates strings).
+Enums and errors are identity/data types: they support equality but no
+arithmetic, and they cannot overload it. Structs may overload the operators
+through methods (`Add`, `Sub`, `Mul`, `Div`, `Equals`, `Compare`).
 
 ### Division by zero
 

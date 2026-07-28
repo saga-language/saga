@@ -1,0 +1,6 @@
+// Spec: the old `Variant { index: N }` override form is gone; the backing
+// value is now `= Expression`.
+enum Suit {
+  Clubs {index: 1}
+}
+pub fn Main() void {}

@@ -313,6 +313,8 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::IntegerLiteral:
   case Token::Kind::FloatLiteral:
   case Token::Kind::BoolLiteral:
+  case Token::Kind::Null:            // null literal (the value of type void)
+  case Token::Kind::Dot:             // .Variant enum shorthand
   case Token::Kind::StringLiteral:
   case Token::Kind::StringStart:
   case Token::Kind::Not:             // unary !
@@ -1296,6 +1298,12 @@ NodePtr Parser::parse_prefix() {
   case Token::Kind::BoolLiteral:
     return parse_bool_literal();
 
+  case Token::Kind::Null:
+    return parse_null_literal();
+
+  case Token::Kind::Dot:
+    return parse_enum_shorthand();
+
   case Token::Kind::StringLiteral:
   case Token::Kind::StringStart:
     return parse_string_literal();
@@ -1624,6 +1632,12 @@ NodePtr Parser::parse_enum_decl(bool is_public) {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
+  bool string_backed = false;
+  if (check(Token::Kind::String)) {
+    advance();
+    string_backed = true;
+  }
+
   skip_terminators();
   expect(Token::Kind::LeftBrace);
   skip_terminators();
@@ -1637,13 +1651,67 @@ NodePtr Parser::parse_enum_decl(bool is_public) {
 
   expect(Token::Kind::RightBrace);
 
-  return make_node<EnumDeclNode>(span_from(start), is_public, std::move(name),
-                                 std::move(fields));
+  return make_node<EnumDeclNode>(span_from(start), is_public, string_backed,
+                                 std::move(name), std::move(fields));
 }
 
-// parse_enum_field — EnumField = Identifier [ EnumInitializer ]
-// EnumInitializer = "{" Identifier ":" Expression
-//                   [ "," Identifier ":" Expression ] "}"
+// parse_error_decl — ErrorDecl = "error" Identifier "{"
+//                                { terminal ErrorMember } "}"
+//
+// ErrorMember = "message" "=" Expression | [ "pub" ] FieldSpec
+//
+// `message = Expr` (a bare `message` immediately followed by `=`) sets the
+// comptime default of the mandatory message field; everything else is an extra
+// field, reusing parse_struct_field. Errors take no generic params and no
+// embeds.
+NodePtr Parser::parse_error_decl(bool is_public) {
+  auto start = mark();
+  expect(Token::Kind::Error);
+
+  auto name_start = mark();
+  Token name_tok = expect(Token::Kind::Identifier);
+  IdentifierNode name{span_from(name_start), name_tok.literal};
+
+  skip_terminators();
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  NodePtr message_default;
+  std::vector<StructMemberNode> members;
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    if (at_error_message())
+      message_default = parse_error_message();
+    else
+      members.push_back(parse_struct_field());
+
+    consume_stray_member_separator("error");
+    skip_terminators();
+  }
+
+  expect(Token::Kind::RightBrace);
+
+  return make_node<ErrorDeclNode>(span_from(start), is_public, std::move(name),
+                                  std::move(message_default),
+                                  std::move(members));
+}
+
+// A `message = Expr` member: a bare `message` identifier immediately followed
+// by `=`. A field named `message` with a type (`message string`) is a normal
+// field, not this form.
+bool Parser::at_error_message() const {
+  return check(Token::Kind::Identifier) && current.literal == "message" &&
+         peek().kind == Token::Kind::Assignment;
+}
+
+NodePtr Parser::parse_error_message() {
+  expect(Token::Kind::Identifier); // "message"
+  expect(Token::Kind::Assignment);
+  return parse_expression();
+}
+
+// parse_enum_field — EnumField = Identifier [ "=" Expression ]
+// The optional `= Expression` is the variant's explicit backing value: an
+// integer ordinal for an int-backed enum.
 EnumFieldNode Parser::parse_enum_field() {
   auto start = mark();
 
@@ -1651,38 +1719,13 @@ EnumFieldNode Parser::parse_enum_field() {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
-  std::vector<FieldAssignmentNode> initializer;
-
-  if (check(Token::Kind::LeftBrace)) {
+  NodePtr value;
+  if (check(Token::Kind::Assignment)) {
     advance();
-    skip_terminators();
-
-    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-      auto fa_start = mark();
-
-      auto fa_name_start = mark();
-      Token fa_name_tok = expect(Token::Kind::Identifier);
-      IdentifierNode fa_name{span_from(fa_name_start), fa_name_tok.literal};
-
-      expect(Token::Kind::Colon);
-
-      NodePtr value = parse_expression();
-
-      initializer.push_back(FieldAssignmentNode{
-          span_from(fa_start), std::move(fa_name), std::move(value)});
-
-      skip_terminators();
-      if (check(Token::Kind::Comma)) {
-        advance();
-        skip_terminators();
-      }
-    }
-
-    expect(Token::Kind::RightBrace);
+    value = parse_expression();
   }
 
-  return EnumFieldNode{span_from(start), std::move(name),
-                       std::move(initializer)};
+  return EnumFieldNode{span_from(start), std::move(name), std::move(value)};
 }
 
 // parse_func_decl — FuncDecl = "fn" [ Generic ] [ Receiver ] Identifier
@@ -2050,6 +2093,8 @@ NodePtr Parser::parse_declaration() {
     return parse_type_decl(is_public);
   case Token::Kind::Enum:
     return parse_enum_decl(is_public);
+  case Token::Kind::Error:
+    return parse_error_decl(is_public);
   case Token::Kind::Extern:
     if (is_public)
       error("'pub' cannot be applied to an 'extern' declaration");
@@ -2199,6 +2244,23 @@ NodePtr Parser::parse_number() {
 //
 // On mismatch, we report an error and return a BoolLiteralNode with an empty
 // literal so callers always receive a non-null node.
+NodePtr Parser::parse_null_literal() {
+  auto start = mark();
+  expect(Token::Kind::Null);
+  return make_node<NullLiteralNode>(span_from(start));
+}
+
+// EnumShorthand = "." Identifier — the enum type is resolved from context by
+// the analyzer.
+NodePtr Parser::parse_enum_shorthand() {
+  auto start = mark();
+  expect(Token::Kind::Dot);
+  auto var_start = mark();
+  Token var_tok = expect(Token::Kind::Identifier);
+  IdentifierNode variant{span_from(var_start), var_tok.literal};
+  return make_node<EnumShorthandNode>(span_from(start), std::move(variant));
+}
+
 NodePtr Parser::parse_bool_literal() {
   auto start = mark();
 
@@ -2966,13 +3028,28 @@ NodePtr Parser::parse_if_expr() {
   NodePtr then_block = parse_block();
 
   // ── Optional else ────────────────────────────────────────────────────────
+  // Only consume the newline(s) after the then-block when an `else` actually
+  // follows.  Otherwise a leading-dot statement on the next line
+  // (`.Variant` shorthand) would glue onto the if-expression as a selector.
   std::optional<NodePtr> else_block;
+
+  auto saved_offset = lexer.offset;
+  auto saved_reading_offset = lexer.reading_offset;
+  auto saved_state = lexer.state;
+  Token saved_current = current;
+  Token saved_previous = previous;
 
   skip_terminators();
   if (check(Token::Kind::Else)) {
     advance(); // consume "else"
     skip_terminators();
     else_block = parse_block();
+  } else {
+    lexer.offset = saved_offset;
+    lexer.reading_offset = saved_reading_offset;
+    lexer.state = saved_state;
+    current = saved_current;
+    previous = saved_previous;
   }
 
   return make_node<IfExprNode>(span_from(start), std::move(condition),

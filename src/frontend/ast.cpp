@@ -5,8 +5,54 @@
 
 #include <ostream>
 #include <string>
+#include <string_view>
 
 namespace saga {
+
+std::string unescape_string_fragment(std::string_view raw) {
+  // A fragment is either a fully-quoted StringLiteral ("..."), or one of the
+  // interpolation pieces (StringStart "..{, StringMiddle }..{, StringEnd }..").
+  // Only the partial pieces carry the unquoted `{`/`}` delimiters; stripping
+  // them from a fully-quoted literal would chew off escaped braces like `"\{"`.
+  bool is_literal =
+      raw.size() >= 2 && raw.front() == '"' && raw.back() == '"';
+  if (is_literal) {
+    raw = raw.substr(1, raw.size() - 2);
+  } else if (raw.size() >= 1 && raw.front() == '"') {
+    raw = raw.substr(1);
+    if (raw.size() >= 1 && raw.back() == '{')
+      raw = raw.substr(0, raw.size() - 1);
+  } else if (raw.size() >= 1 && raw.back() == '"') {
+    raw = raw.substr(0, raw.size() - 1);
+    if (raw.size() >= 1 && raw.front() == '}')
+      raw = raw.substr(1);
+  } else {
+    if (raw.size() >= 1 && raw.front() == '}')
+      raw = raw.substr(1);
+    if (raw.size() >= 1 && raw.back() == '{')
+      raw = raw.substr(0, raw.size() - 1);
+  }
+
+  std::string out;
+  out.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); ++i) {
+    if (raw[i] == '\\' && i + 1 < raw.size()) {
+      ++i;
+      switch (raw[i]) {
+      case 'n':  out += '\n'; break;
+      case 't':  out += '\t'; break;
+      case '\\': out += '\\'; break;
+      case '"':  out += '"';  break;
+      case '{':  out += '{';  break;
+      default:   out += '\\'; out += raw[i]; break;
+      }
+    } else {
+      out += raw[i];
+    }
+  }
+  return out;
+}
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -181,8 +227,8 @@ void dump_case_arm(const CaseArmNode &n, std::ostream &os, int indent) {
 
 void dump_enum_field(const EnumFieldNode &n, std::ostream &os, int indent) {
   os << pad(indent) << "EnumFieldNode \"" << n.name.name << "\"\n";
-  for (const auto &fa : n.initializer)
-    dump_field_assignment(fa, os, indent + 1);
+  if (n.value)
+    dump_ptr(n.value, os, indent + 1);
 }
 
 void dump_receiver(const ReceiverNode &n, std::ostream &os, int indent) {
@@ -228,6 +274,12 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           },
           [&](const BoolLiteralNode &n) {
             os << pad(indent) << "BoolLiteralNode " << n.literal << "\n";
+          },
+          [&](const NullLiteralNode &) {
+            os << pad(indent) << "NullLiteralNode\n";
+          },
+          [&](const EnumShorthandNode &n) {
+            os << pad(indent) << "EnumShorthandNode ." << n.variant.name << "\n";
           },
           [&](const IntegerLiteralNode &n) {
             os << pad(indent) << "IntegerLiteralNode " << n.literal << "\n";
@@ -518,6 +570,14 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_opt_generic(n.generic, os, c);
             for (const auto &e : n.embeds)
               dump_ptr(e, os, c);
+            for (const auto &m : n.members)
+              dump_struct_member(m, os, c);
+          },
+          [&](const ErrorDeclNode &n) {
+            os << pad(indent) << "ErrorDeclNode" << (n.is_public ? " pub" : "")
+               << " \"" << n.name.name << "\"\n";
+            if (n.message_default)
+              dump_ptr(n.message_default, os, c);
             for (const auto &m : n.members)
               dump_struct_member(m, os, c);
           },

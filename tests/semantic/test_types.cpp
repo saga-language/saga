@@ -17,14 +17,14 @@ TEST(Types, PrimitiveFactories) {
   auto i = make_int_type();
   auto f = make_float_type();
   auto s = make_string_type();
-  auto e = make_error_type();
+  auto e = make_invalid_type();
 
   EXPECT_EQ(v->kind, TypeKind::Void);
   EXPECT_EQ(b->kind, TypeKind::Bool);
   EXPECT_EQ(i->kind, TypeKind::Int);
   EXPECT_EQ(f->kind, TypeKind::Float);
   EXPECT_EQ(s->kind, TypeKind::String);
-  EXPECT_EQ(e->kind, TypeKind::Error);
+  EXPECT_EQ(e->kind, TypeKind::Invalid);
 }
 
 TEST(Types, ArrayFactory) {
@@ -72,8 +72,8 @@ TEST(Types, TypeParamFactory) {
 // ===========================================================================
 
 TEST(Types, IsErrorType) {
-  EXPECT_TRUE(is_error_type(make_error_type()));
-  EXPECT_FALSE(is_error_type(make_int_type()));
+  EXPECT_TRUE(is_invalid_type(make_invalid_type()));
+  EXPECT_FALSE(is_invalid_type(make_int_type()));
 }
 
 TEST(Types, IsNumeric) {
@@ -169,7 +169,7 @@ TEST(Types, EqualityArrays) {
 }
 
 TEST(Types, EqualityErrorPropagates) {
-  EXPECT_TRUE(types_equal(make_error_type(), make_error_type()));
+  EXPECT_TRUE(types_equal(make_invalid_type(), make_invalid_type()));
 }
 
 TEST(Types, EqualityUnionOrderIndependent) {
@@ -199,8 +199,8 @@ TEST(Types, AssignableToUnion) {
 }
 
 TEST(Types, AssignableErrorPropagates) {
-  EXPECT_TRUE(is_assignable_to(make_error_type(), make_int_type()));
-  EXPECT_TRUE(is_assignable_to(make_int_type(), make_error_type()));
+  EXPECT_TRUE(is_assignable_to(make_invalid_type(), make_int_type()));
+  EXPECT_TRUE(is_assignable_to(make_int_type(), make_invalid_type()));
 }
 
 // Platform-default Float (bits=0) and explicit Float64 (bits=64) lower to

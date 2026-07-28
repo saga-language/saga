@@ -1,0 +1,18 @@
+// Spec: `Enum.From(value)` reverse-looks-up the variant whose backing value
+// matches (ordinal for int enums, backing string for string enums) and
+// returns `Enum | error` — the enum on a hit, `Missing` on a miss.
+import "std/io"
+
+enum Suit { Clubs = 1  Diamonds  Hearts = 5  Spades }
+enum Color string { Red = "r"  Green  Blue = "b" }
+
+pub fn Main() void {
+  hit := Suit.From(5) or |e| { Suit.Clubs }
+  io.Println(hit.String())
+  miss := Suit.From(99) or |e| { Suit.Diamonds }
+  io.Println(miss.String())
+  shit := Color.From("b") or |e| { Color.Red }
+  io.Println(shit.String())
+  smiss := Color.From("zzz") or |e| { Color.Green }
+  io.Println(smiss.String())
+}

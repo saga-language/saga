@@ -399,24 +399,42 @@ std::optional<Symbol> Analyzer::lookup(const std::string &name) const {
 
 uint32_t Analyzer::fresh_type_param_id() { return next_type_param_id++; }
 
+TypePtr Analyzer::resolve_constraint_bound(const IdentifierNode &constraint) {
+  if (auto sym = lookup(std::string(constraint.name))) {
+    if (sym->type && sym->type->kind == TypeKind::Interface)
+      return sym->type;
+    error(constraint.span,
+          std::format("'{}' is not an interface — a constraint must be an "
+                      "interface or one of integer, float, numeric",
+                      constraint.name));
+    return nullptr;
+  }
+  if (constraint.name == "Stringable" && builtins.stringable_iface)
+    return builtins.stringable_iface;
+  if (constraint.name == "Hashable" && builtins.hashable_iface)
+    return builtins.hashable_iface;
+  error(constraint.span,
+        std::format("unknown type constraint '{}' — expected an interface or "
+                    "one of integer, float, numeric",
+                    constraint.name));
+  return nullptr;
+}
+
 std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
   std::vector<TypeParam> params;
   for (auto &tp_node : generic.type_params) {
     std::string_view name;
     Span span = tp_node->span;
     TypeConstraint constraint = TypeConstraint::None;
+    TypePtr bound;
 
     if (auto *tp = std::get_if<TypeParamNode>(&tp_node->data)) {
       name = tp->name.name;
       span = tp->name.span;
       if (tp->constraint) {
         constraint = constraint_from_name(tp->constraint->name);
-        if (constraint == TypeConstraint::None) {
-          error(tp->constraint->span,
-                std::format("unknown type constraint '{}' — expected one of "
-                            "integer, float, numeric",
-                            tp->constraint->name));
-        }
+        if (constraint == TypeConstraint::None)
+          bound = resolve_constraint_bound(*tp->constraint);
       }
     } else if (auto *ident = std::get_if<IdentifierNode>(&tp_node->data)) {
       // Legacy / instantiation-position shape; no constraint slot.
@@ -428,7 +446,8 @@ std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
 
     uint32_t id = fresh_type_param_id();
     TypeParam tp{id, std::string(name), constraint};
-    auto tp_type = make_type_param(id, tp.name);
+    auto tp_type = make_type_param(
+        id, tp.name, bound ? std::optional<TypePtr>(bound) : std::nullopt);
     if (tp_type) {
       auto &info = std::get<TypeParamInfo>(tp_type->detail);
       info.param.constraint = constraint;
@@ -535,7 +554,7 @@ bool Analyzer::has_error_containing(const std::string &substr) const {
 void Analyzer::expect_assignable(Span span, const TypePtr &target_type,
                                  const TypePtr &value_type,
                                  const std::string &context) {
-  if (is_error_type(target_type) || is_error_type(value_type))
+  if (is_invalid_type(target_type) || is_invalid_type(value_type))
     return;
   if (is_assignable_to(value_type, target_type))
     return;
@@ -551,7 +570,7 @@ void Analyzer::expect_assignable(Span span, const TypePtr &target_type,
 
 void Analyzer::expect_type(Span span, const TypePtr &type, TypeKind expected,
                            const std::string &context) {
-  if (is_error_type(type))
+  if (is_invalid_type(type))
     return;
   if (type->kind != expected) {
     error(span, std::format("{}: expected {}, got {}", context,
@@ -601,6 +620,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
       std::visit(overloaded{
                      [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                      [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
+                     [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
                      [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
                      [&](const TypeDeclNode &t) { resolve_type_decl(t); },
                      [&](const auto &) { /* handled in phase 2b */ },
@@ -632,6 +652,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
                      [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                      [&](const StructDeclNode &) { /* done in phase 2a */ },
                      [&](const EnumDeclNode &) { /* done in phase 2a */ },
+                     [&](const ErrorDeclNode &) { /* done in phase 2a */ },
                      [&](const InterfaceDeclNode &) { /* done in phase 2a */ },
                      [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
                      [&](const auto &) { /* already reported in collect */ },
@@ -663,6 +684,8 @@ void Analyzer::visit_package(const PackageNode &pkg) {
               [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
               [&](const StructDeclNode &s) { check_struct_decl(s); },
               [&](const EnumDeclNode &e) { check_enum_decl(e); },
+              [&](const TypeDeclNode &t) { check_type_decl(t); },
+              [&](const ErrorDeclNode &e) { check_error_decl(e); },
               [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
               [&](const ConstDeclNode &c) { check_const_decl(c); },
               [&](const ImportDeclNode &imp) { check_import_decl(imp); },
@@ -716,6 +739,8 @@ void Analyzer::visit_source(const SourceNode &src) {
                    [&](const FuncDeclNode &fn) { check_func_decl_body(fn); },
                    [&](const StructDeclNode &s) { check_struct_decl(s); },
                    [&](const EnumDeclNode &e) { check_enum_decl(e); },
+                   [&](const TypeDeclNode &t) { check_type_decl(t); },
+                   [&](const ErrorDeclNode &e) { check_error_decl(e); },
                    [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
                    [&](const ConstDeclNode &c) { check_const_decl(c); },
                    [&](const ImportDeclNode &imp) { check_import_decl(imp); },
@@ -747,6 +772,10 @@ void Analyzer::collect_declaration(const Node &node) {
                                             s.name.span, s.is_public));
                  },
                  [&](const EnumDeclNode &e) {
+                   declare(Symbol::type_sym(std::string(e.name.name), nullptr,
+                                            e.name.span, e.is_public));
+                 },
+                 [&](const ErrorDeclNode &e) {
                    declare(Symbol::type_sym(std::string(e.name.name), nullptr,
                                             e.name.span, e.is_public));
                  },
@@ -865,7 +894,7 @@ Analyzer::resolve_import_cached(const std::string &import_path, Span span) {
 
   if (package_resolver->in_progress.count(import_path)) {
     error(span, std::format("circular import detected: '{}'", import_path));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   return std::nullopt;
@@ -1019,7 +1048,7 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
   if (!package_resolver) {
     error(span, std::format("cannot resolve import '{}': no package resolver",
                             import_path));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   std::string pkg_dir;
@@ -1037,14 +1066,14 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
 
   if (pkg_dir.empty()) {
     error(span, std::format("cannot find package '{}'", import_path));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   auto source_files = package_resolver->list_source_files(pkg_dir);
   if (source_files.empty()) {
     error(span,
           std::format("package '{}' contains no source files", import_path));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   package_resolver->in_progress.insert(import_path);
@@ -1060,7 +1089,7 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
     error(span, std::format("failed to read source files for package '{}'",
                             import_path));
     package_resolver->in_progress.erase(import_path);
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   Parser sub_parser(sub_fileset);
@@ -1069,7 +1098,7 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
     error(span,
           std::format("parse errors in imported package '{}'", import_path));
     package_resolver->in_progress.erase(import_path);
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   auto pkg_last_slash = import_path.rfind('/');
@@ -1087,7 +1116,7 @@ Analyzer::compile_import_from_source(const std::string &import_path, Span span) 
     for (auto &e : sub_analyzer.errors.errors)
       errors.errors.push_back(e);
     package_resolver->in_progress.erase(import_path);
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   merge_sub_analyzer_receiver_methods(sub_analyzer);
@@ -1122,7 +1151,7 @@ TypePtr Analyzer::resolve_import(const std::string &import_path, Span span) {
   // source compilation — surface the diagnostic instead of silently masking
   // a malformed .sgi with a fresh source build.
   if (errors.errors.size() > err_count_before)
-    return builtins.error_type;
+    return builtins.invalid_type;
   return compile_import_from_source(import_path, span);
 }
 
@@ -1301,7 +1330,7 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           },
           [&](const auto &) -> TypePtr {
             error(node.span, "expected type expression");
-            return builtins.error_type;
+            return builtins.invalid_type;
           },
       },
       node.data);
@@ -1311,27 +1340,27 @@ TypePtr Analyzer::resolve_identifier_type(const IdentifierNode &node) {
   auto sym = lookup(std::string(node.name));
   if (!sym) {
     undefined_error(node.span, std::string(node.name));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
   if (sym->kind != SymbolKind::Type && sym->kind != SymbolKind::TypeParam) {
     error(node.span, std::format("'{}' is not a type", std::string(node.name)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
-  return sym->type ? sym->type : builtins.error_type;
+  return sym->type ? sym->type : builtins.invalid_type;
 }
 
 TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
   auto *obj_ident = std::get_if<IdentifierNode>(&node.object->data);
   if (!obj_ident) {
     error(node.span, "expected package name in qualified type");
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
   auto mod_sym = lookup(std::string(obj_ident->name));
   if (!mod_sym || !mod_sym->type ||
       mod_sym->type->kind != TypeKind::Module) {
     error(obj_ident->span,
           std::format("'{}' is not a package", obj_ident->name));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
   auto &mod = std::get<ModuleTypeInfo>(mod_sym->type->detail);
   std::string type_name(node.field.name);
@@ -1342,7 +1371,7 @@ TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
   error(node.field.span,
         std::format("package '{}' has no exported type '{}'",
                     mod.name, type_name));
-  return builtins.error_type;
+  return builtins.invalid_type;
 }
 
 TypePtr Analyzer::resolve_array_type(const ArrayTypeNode &node) {
@@ -1379,16 +1408,42 @@ TypePtr Analyzer::resolve_struct_type(const StructTypeNode &node) {
 
 TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
   std::vector<TypePtr> alts;
-  for (auto &t : node.types)
-    alts.push_back(resolve_type(*t));
+  std::vector<TypePtr> seen; // flattened members, for duplicate detection
+  for (auto &t : node.types) {
+    auto rt = resolve_type(*t);
+    alts.push_back(rt);
+
+    // Rule 1 — concrete types only. A TypeParam is allowed (concrete after
+    // instantiation); an interface (by any alias) is not.
+    if (auto u = unwrap_alias(rt); u && u->kind == TypeKind::Interface) {
+      error(t->span,
+            std::format("a type union may only contain concrete types; "
+                        "'{}' is an interface",
+                        type_to_string(rt)));
+      continue;
+    }
+
+    // Rule 2 — the composed set must be unique. A union alternative is spliced,
+    // so `T | (T | U)` and `T | T` both report the repeat.
+    for (auto &m : flatten_union_alternatives({rt})) {
+      bool dup = false;
+      for (auto &s : seen)
+        if (types_equal(s, m)) { dup = true; break; }
+      if (dup)
+        error(t->span, std::format("duplicate type '{}' in union",
+                                   type_to_string(m)));
+      else
+        seen.push_back(m);
+    }
+  }
   return make_union_type(std::move(alts));
 }
 
 TypePtr
 Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   auto base = resolve_type(*node.base_type);
-  if (is_error_type(base))
-    return builtins.error_type;
+  if (is_invalid_type(base))
+    return builtins.invalid_type;
 
   // Resolve concrete type arguments.
   std::vector<TypePtr> args;
@@ -1399,21 +1454,21 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   if (base->kind != TypeKind::Struct) {
     error(node.span,
           std::format("type {} is not generic", type_to_string(base)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   auto &info = std::get<StructTypeInfo>(base->detail);
   if (info.type_params.empty()) {
     error(node.span,
           std::format("type {} is not generic", type_to_string(base)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   if (args.size() != info.type_params.size()) {
     error(node.span,
           std::format("expected {} type argument(s), got {}",
                       info.type_params.size(), args.size()));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   // Build bindings and instantiate.
@@ -1465,6 +1520,11 @@ TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
     }
   }
   TypePtr ret = sig.return_type ? resolve_type(*sig.return_type) : nullptr;
+  // Record the resolved return type so codegen can recover it without
+  // re-resolving the AST against a scope where package-local names (a user
+  // error `E` in `int | E`) aren't reachable.
+  if (sig.return_type && ret)
+    record_type(*sig.return_type, ret);
   return make_func_type(std::move(params), std::move(ret));
 }
 
@@ -1484,6 +1544,7 @@ void Analyzer::resolve_declaration(const Node &node) {
                  [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
                  [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                  [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
+                 [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
                  [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
                  [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                  [&](const TypeDeclNode &t) { resolve_type_decl(t); },
@@ -1593,10 +1654,16 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
       if (recv_sym && recv_sym->type) {
         if (recv_sym->type->kind == TypeKind::Struct) {
           auto &struct_info = std::get<StructTypeInfo>(recv_sym->type->detail);
-          if (check_recv_origin(struct_info.origin_package, struct_info.name))
+          if (struct_info.is_error) {
+            error(recv_type_node->span,
+                  std::format("methods cannot be attached to error type '{}'",
+                              struct_info.name));
+          } else if (check_recv_origin(struct_info.origin_package,
+                                       struct_info.name)) {
             struct_info.methods.push_back(
                 {std::string(fn.name.name), fn_type, fn.is_public,
                  current_package_name()});
+          }
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
           if (alias_info.structural) {
@@ -1757,6 +1824,12 @@ void Analyzer::attach_type_method(const FuncDeclNode &fn,
     return;
   }
   auto &sinfo = std::get<StructTypeInfo>(type_sym->type->detail);
+  if (sinfo.is_error) {
+    error(fn.type_name->span,
+          std::format("methods cannot be attached to error type '{}'",
+                      fn.type_name->name));
+    return;
+  }
   if (!sinfo.origin_package.empty() &&
       sinfo.origin_package != current_package_name()) {
     error(fn.type_name->span,
@@ -1821,7 +1894,7 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   std::vector<TypePtr> embeds;
   for (auto &embed_node : s.embeds) {
     auto et = resolve_type(*embed_node);
-    if (!et || et->kind == TypeKind::Error) continue;
+    if (!et || et->kind == TypeKind::Invalid) continue;
     if (et->kind != TypeKind::Struct) {
       error(embed_node->span, "embedded type must be a struct");
       continue;
@@ -1851,35 +1924,78 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   }
 }
 
+// resolve_error_decl — a nominal error is struct-backed with the `is_error`
+// marker, boxed at runtime as a pointer to { type_id, message, ...fields }.
+// Field 0 is the hidden `type_id`; field 1 the mandatory `message` string
+// (auto-injected; the body supplies only its optional `message = Expr`
+// default); extra fields follow.
+void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
+  std::vector<FieldInfo> fields;
+  fields.push_back({"type_id", builtins.int64_type, /*is_public=*/false,
+                    nullptr});
+  fields.push_back({"message", builtins.string_type, /*is_public=*/true,
+                    e.message_default.get()});
+
+  for (auto &member : e.members) {
+    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
+    if (!fs)
+      continue;
+    auto ft = resolve_type(*fs->type);
+    for (auto &ident : fs->names.identifiers)
+      fields.push_back({std::string(ident.name), ft, member.is_public,
+                        fs->default_value.get()});
+  }
+
+  auto err_type =
+      make_struct_type(std::string(e.name.name), std::move(fields),
+                       /*methods=*/{}, /*type_params=*/{},
+                       current_package_name());
+  std::get<StructTypeInfo>(err_type->detail).is_error = true;
+
+  auto sym_it = current_scope->symbols.find(std::string(e.name.name));
+  if (sym_it != current_scope->symbols.end())
+    sym_it->second.type = err_type;
+}
+
+// A plain (non-interpolated) string literal's text, else nullopt.
+static std::optional<std::string> plain_string_literal(const NodePtr &n) {
+  if (!n)
+    return std::nullopt;
+  auto *sl = std::get_if<StringLiteralNode>(&n->data);
+  if (!sl || sl->fragments.size() != 1)
+    return std::nullopt;
+  auto *frag = std::get_if<StringFragmentNode>(&sl->fragments[0]->data);
+  if (!frag)
+    return std::nullopt;
+  return unescape_string_fragment(frag->text);
+}
+
 void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
   std::vector<EnumVariant> variants;
   int64_t next_index = 0;
   for (auto &field : e.fields) {
-    std::vector<FieldInfo> variant_fields;
-    int64_t explicit_index = -1;
-    for (auto &fa : field.initializer) {
-      auto field_type = check_expr(*fa.value);
-      variant_fields.push_back({std::string(fa.name.name), field_type, false});
-      // Extract explicit index value.
-      if (std::string(fa.name.name) == "index") {
-        if (auto *lit = std::get_if<IntegerLiteralNode>(&fa.value->data)) {
-          std::string clean;
-          for (char c : lit->literal)
-            if (c != '_') clean += c;
-          explicit_index = std::stoll(clean);
-        }
+    int64_t index = next_index;
+    std::string string_value;
+    if (e.string_backed) {
+      string_value = std::string(field.name.name);
+      if (auto s = plain_string_literal(field.value))
+        string_value = *s;
+    } else if (field.value) {
+      if (auto *lit = std::get_if<IntegerLiteralNode>(&field.value->data)) {
+        std::string clean;
+        for (char c : lit->literal)
+          if (c != '_') clean += c;
+        index = std::stoll(clean);
       }
     }
-    if (explicit_index >= 0)
-      next_index = explicit_index;
     variants.push_back(
-        {std::string(field.name.name), std::move(variant_fields), next_index});
-    next_index++;
+        {std::string(field.name.name), index, std::move(string_value)});
+    next_index = index + 1;
   }
 
   auto enum_type =
       make_enum_type(std::string(e.name.name), std::move(variants),
-                     current_package_name());
+                     current_package_name(), e.string_backed);
 
   auto sym_it = current_scope->symbols.find(std::string(e.name.name));
   if (sym_it != current_scope->symbols.end()) {
@@ -1978,7 +2094,7 @@ void Analyzer::merge_embed(
   }
 
   TypePtr embedded = resolve_type(embed_node);
-  if (!embedded || is_error_type(embedded))
+  if (!embedded || is_invalid_type(embedded))
     return;
   if (embedded->kind != TypeKind::Interface) {
     error(embed_node.span,
@@ -2100,6 +2216,8 @@ void Analyzer::resolve_expr(const Node &node) {
       overloaded{
           [&](const IdentifierNode &n) { resolve_identifier(n, node); },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
+          [&](const NullLiteralNode &) { /* leaf — nothing to resolve */ },
+          [&](const EnumShorthandNode &) { /* leaf — resolved in check */ },
           [&](const IntegerLiteralNode &) { /* leaf */ },
           [&](const FloatLiteralNode &) { /* leaf */ },
           [&](const StringLiteralNode &n) { resolve_string_literal(n); },
@@ -2498,7 +2616,7 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   // Declare the error pipe if present.
   if (node.pipe) {
     declare_local(Symbol::variable(std::string(node.pipe->name),
-                                   builtins.error_iface, node.pipe->span));
+                                   builtins.error_base, node.pipe->span));
   }
 
   auto &block = std::get<BlockNode>(node.fallback->data);
@@ -2663,6 +2781,10 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
       std::get_if<ForExprNode>(&block.stmts.back()->data))
     tail_hint = current_scope->return_types[0];
 
+  bool tail_shorthand =
+      current_scope->return_types.size() == 1 && !block.stmts.empty() &&
+      std::get_if<EnumShorthandNode>(&block.stmts.back()->data);
+
   TypePtr body_type;
   if (tail_hint) {
     for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
@@ -2670,6 +2792,11 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
     auto &for_node = std::get<ForExprNode>(block.stmts.back()->data);
     body_type = check_for_expr(for_node, tail_hint);
     record_type(*block.stmts.back(), body_type);
+  } else if (tail_shorthand) {
+    for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
+      check_expr(*block.stmts[i]);
+    body_type = check_expr_expecting(*block.stmts.back(),
+                                     current_scope->return_types[0]);
   } else {
     body_type = check_block(block);
   }
@@ -2681,7 +2808,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
     bool tail_is_return = always_returns(*block.stmts.back());
     if (!tail_is_return) {
       auto &expected = current_scope->return_types;
-      if (expected.size() == 1 && !is_error_type(body_type)) {
+      if (expected.size() == 1 && !is_invalid_type(body_type)) {
         if (!types_equal(expected[0], builtins.void_type)) {
           expect_assignable(fn.body->span, expected[0], body_type,
                             "return type");
@@ -2706,6 +2833,16 @@ TypePtr Analyzer::check_expr(const Node &node) {
           },
           [&](const BoolLiteralNode &n) -> TypePtr {
             return check_bool_literal(n);
+          },
+          [&](const NullLiteralNode &) -> TypePtr {
+            return builtins.void_type;
+          },
+          [&](const EnumShorthandNode &n) -> TypePtr {
+            error(n.span,
+                  std::format("cannot infer enum type for '.{}' here; name the "
+                              "enum (Type.{}) or supply a target type",
+                              n.variant.name, n.variant.name));
+            return builtins.invalid_type;
           },
           [&](const IntegerLiteralNode &n) -> TypePtr {
             return check_int_literal(n);
@@ -2816,7 +2953,7 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const GenericTypeAppNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
-          [&](const auto &) -> TypePtr { return builtins.error_type; },
+          [&](const auto &) -> TypePtr { return builtins.invalid_type; },
       },
       node.data);
 
@@ -2845,7 +2982,7 @@ TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
     auto sym = lookup(std::string(id->name));
     if (sym && sym->kind == SymbolKind::Type) {
       record_symbol(node, *sym);
-      auto type = sym->type ? sym->type : builtins.error_type;
+      auto type = sym->type ? sym->type : builtins.invalid_type;
       record_type(node, type);
       return type;
     }
@@ -2862,7 +2999,7 @@ TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
 TypePtr Analyzer::reject_type_as_value(const Node &node) {
   error(node.span, std::format("cannot use type '{}' as a value",
                                type_to_string(resolve_type(node))));
-  return builtins.error_type;
+  return builtins.invalid_type;
 }
 
 TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
@@ -2875,13 +3012,13 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
   if (!name.empty() && name[0] == '_') {
     error(ident.span,
           std::format("cannot access ignored variable '{}'", name));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   auto sym = lookup(name);
   if (!sym) {
     // Already reported during name resolution.
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
   record_symbol(parent, *sym);
 
@@ -2890,7 +3027,7 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
       return sym->type;
     error(ident.span,
           std::format("cannot use type '{}' as a value", name));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   // For module symbols, return the module type directly.
@@ -2905,10 +3042,10 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
   if (sym->kind == SymbolKind::Constant && !sym->type) {
     error(ident.span,
           std::format("constant '{}' read before its own declaration", name));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
-  return sym->type ? sym->type : builtins.error_type;
+  return sym->type ? sym->type : builtins.invalid_type;
 }
 
 TypePtr Analyzer::check_bool_literal(const BoolLiteralNode &) {
@@ -2939,12 +3076,12 @@ TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
   if (node.elements.empty()) {
     // Empty array — type must be inferred from context.  Return a
     // placeholder; the assignment checker will fill it in.
-    return make_array_type(builtins.error_type);
+    return make_array_type(builtins.invalid_type);
   }
   auto elem_type = check_expr(*node.elements[0]);
   for (size_t i = 1; i < node.elements.size(); ++i) {
     auto t = check_expr(*node.elements[i]);
-    if (!is_error_type(t) && !is_error_type(elem_type)) {
+    if (!is_invalid_type(t) && !is_invalid_type(elem_type)) {
       expect_assignable(node.elements[i]->span, elem_type, t, "array element");
     }
   }
@@ -2953,16 +3090,16 @@ TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
 
 TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
   if (node.entries.empty()) {
-    return make_map_type(builtins.error_type, builtins.error_type);
+    return make_map_type(builtins.invalid_type, builtins.invalid_type);
   }
   auto key_type = check_expr(*node.entries[0].key);
   auto val_type = check_expr(*node.entries[0].value);
   for (size_t i = 1; i < node.entries.size(); ++i) {
     auto kt = check_expr(*node.entries[i].key);
     auto vt = check_expr(*node.entries[i].value);
-    if (!is_error_type(kt))
+    if (!is_invalid_type(kt))
       expect_assignable(node.entries[i].key->span, key_type, kt, "map key");
-    if (!is_error_type(vt))
+    if (!is_invalid_type(vt))
       expect_assignable(node.entries[i].value->span, val_type, vt, "map value");
   }
   check_satisfies_protocol(key_type, ProtocolKind::Hashable,
@@ -2972,8 +3109,8 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
 
 TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   auto type_expr_type = check_type_or_value_expr(*node.type_expr);
-  if (is_error_type(type_expr_type))
-    return builtins.error_type;
+  if (is_invalid_type(type_expr_type))
+    return builtins.invalid_type;
 
   // For alias types, unwrap to get the underlying struct type for validation,
   // but return the alias type so the variable retains its alias identity.
@@ -2985,24 +3122,39 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   if (!struct_type || struct_type->kind != TypeKind::Struct) {
     error(node.type_expr->span, std::format("'{}' is not a struct type",
                                             type_to_string(type_expr_type)));
-    return builtins.error_type;
+    return builtins.invalid_type;
+  }
+
+  auto &raw_info = std::get<StructTypeInfo>(struct_type->detail);
+
+  // Pre-map field name → declared type for non-generic structs so a `.Variant`
+  // field value can resolve against it. Generic field types are TypeParams,
+  // which a shorthand can't resolve against, so it stays a plain check there.
+  std::unordered_map<std::string, TypePtr> field_type_by_name;
+  if (raw_info.type_params.empty()) {
+    std::vector<FieldInfo> decl_fields;
+    collect_promoted_fields(raw_info, decl_fields);
+    for (auto &fi : decl_fields)
+      if (fi.type)
+        field_type_by_name.emplace(fi.name, fi.type);
   }
 
   // Check each field value first and collect types for generic inference.
   std::vector<std::pair<std::string, TypePtr>> field_vals;
   for (auto &fa : node.fields) {
-    auto val_type = check_expr(*fa.value);
+    auto it = field_type_by_name.find(std::string(fa.name.name));
+    TypePtr expected = it != field_type_by_name.end() ? it->second : nullptr;
+    auto val_type = check_expr_expecting(*fa.value, expected);
     field_vals.push_back({std::string(fa.name.name), val_type});
   }
 
   // If the struct is generic, instantiate it by inferring type params.
-  auto &raw_info = std::get<StructTypeInfo>(struct_type->detail);
   auto effective_type = struct_type;
   if (!raw_info.type_params.empty()) {
     effective_type =
         instantiate_generic_struct(struct_type, field_vals, node.span);
-    if (is_error_type(effective_type))
-      return builtins.error_type;
+    if (is_invalid_type(effective_type))
+      return builtins.invalid_type;
   }
 
   auto &info = std::get<StructTypeInfo>(effective_type->detail);
@@ -3020,7 +3172,7 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
     for (auto &fi : all_fields) {
       if (fi.name == fname) {
         found = true;
-        if (fi.type && !is_error_type(val_type)) {
+        if (fi.type && !is_invalid_type(val_type)) {
           expect_assignable(node.span, fi.type, val_type,
                             std::format("field '{}'", fname));
         }
@@ -3089,7 +3241,7 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
     error(node.span,
           std::format("type {} does not implement Adder (no Add method)",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   case K::Sub:
     if (has_method("Sub")) {
@@ -3099,7 +3251,7 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
     error(node.span,
           std::format("type {} does not implement Subber (no Sub method)",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   // ── Multiplicative ───────────────────────────────────────────────────────
   case K::Multiply:
@@ -3110,18 +3262,18 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
     error(node.span,
           std::format("type {} does not implement Multiplier (no Mul method)",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   case K::Divide:
     if (has_method("Div")) {
       expect_assignable(node.rhs->span, lhs, rhs, "Div argument");
       // Divisable returns T | Error (can fail, e.g. divide by zero).
-      return resolve("Div", make_union_type({lhs, builtins.error_iface}));
+      return resolve("Div", make_union_type({lhs, builtins.error_base}));
     }
     error(node.span,
           std::format("type {} does not implement Divisable (no Div method)",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   // ── Equality ──────────────────────────────────────────────────────────────
   case K::Equal:
@@ -3145,7 +3297,7 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
           std::format("type {} does not support equality (no Equals, Equal, "
                       "or Compare method)",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   // ── Ordering ──────────────────────────────────────────────────────────────
   case K::LessThan:
@@ -3160,23 +3312,75 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
           std::format("type {} does not implement Comparable (no Compare "
                       "method)",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   default:
     error(node.span,
           std::format("operator not supported for type {}",
                       type_to_string(lhs)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 }
 
 TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
                                     const Node &parent) {
-  auto lhs = check_expr(*node.lhs);
-  auto rhs = check_expr(*node.rhs);
+  // A `.Variant` operand (an enum comparison, `c == .Red`) resolves against the
+  // other operand's enum type; the other side is checked first to supply it.
+  bool lhs_sh = std::get_if<EnumShorthandNode>(&node.lhs->data) != nullptr;
+  bool rhs_sh = std::get_if<EnumShorthandNode>(&node.rhs->data) != nullptr;
+  TypePtr lhs, rhs;
+  if (rhs_sh && !lhs_sh) {
+    lhs = check_expr(*node.lhs);
+    rhs = check_expr_expecting(*node.rhs, lhs);
+  } else if (lhs_sh && !rhs_sh) {
+    rhs = check_expr(*node.rhs);
+    lhs = check_expr_expecting(*node.lhs, rhs);
+  } else {
+    lhs = check_expr(*node.lhs);
+    rhs = check_expr(*node.rhs);
+  }
 
-  if (is_error_type(lhs) || is_error_type(rhs))
-    return builtins.error_type;
+  if (is_invalid_type(lhs) || is_invalid_type(rhs))
+    return builtins.invalid_type;
+
+  // Errors compare by value: `==`/`!=` on two errors is structural (same type
+  // and equal fields). Errors have no methods, so they never reach the struct
+  // operator-overload path below. Structural comparison needs a concrete layout,
+  // so at least one side must have a concrete error type — comparing two base
+  // `error` values can't see their extra fields and is rejected.
+  using EK = Token::Kind;
+  if ((node.op == EK::Equal || node.op == EK::NotEqual) &&
+      is_error_valued(lhs) && is_error_valued(rhs)) {
+    if (is_abstract_error(lhs) && is_abstract_error(rhs))
+      error(node.span,
+            "cannot compare two base `error` values; at least one side must "
+            "have a concrete error type (narrow with `is` first)");
+    return builtins.bool_type;
+  }
+
+  // Enums and errors are identity types: they carry no arithmetic and cannot
+  // overload it. Reject arithmetic here — errors would otherwise reach the
+  // struct operator-overload path and be told they lack an `Add` method they
+  // can never define (methods cannot be attached to error types).
+  switch (node.op) {
+  case EK::Add:
+  case EK::Sub:
+  case EK::Multiply:
+  case EK::Divide:
+  case EK::Pow:
+  case EK::Modulo:
+    for (auto &operand : {lhs, rhs}) {
+      if (is_enum_valued(operand) || is_error_valued(operand)) {
+        error(node.span,
+              std::format("type {} does not support arithmetic operators",
+                          type_to_string(operand)));
+        return builtins.invalid_type;
+      }
+    }
+    break;
+  default:
+    break;
+  }
 
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
@@ -3202,13 +3406,13 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       error(node.lhs->span,
             std::format("arithmetic operator requires numeric type, got {}",
                         type_to_string(lhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     if (!is_numeric(rhs)) {
       error(node.rhs->span,
             std::format("arithmetic operator requires numeric type, got {}",
                         type_to_string(rhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     return common_type(lhs, rhs);
   }
@@ -3219,10 +3423,10 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       error(node.span,
             std::format("division requires numeric types, got {} and {}",
                         type_to_string(lhs), type_to_string(rhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     auto result = common_type(lhs, rhs);
-    return make_union_type({result, builtins.error_iface});
+    return make_union_type({result, builtins.error_base});
   }
 
   // Comparison: == != > < >= <=
@@ -3232,7 +3436,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     if (!is_equatable(lhs)) {
       error(node.lhs->span, std::format("type {} does not support equality",
                                         type_to_string(lhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     expect_assignable(node.rhs->span, lhs, rhs, "comparison");
     return builtins.bool_type;
@@ -3244,7 +3448,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     if (!is_ordered(lhs)) {
       error(node.lhs->span, std::format("type {} does not support ordering",
                                         type_to_string(lhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     expect_assignable(node.rhs->span, lhs, rhs, "comparison");
     return builtins.bool_type;
@@ -3268,38 +3472,44 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       error(node.lhs->span,
             std::format("bitwise operator requires integer type, got {}",
                         type_to_string(lhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     if (rhs->kind != TypeKind::Int) {
       error(node.rhs->span,
             std::format("bitwise operator requires integer type, got {}",
                         type_to_string(rhs)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     return common_type(lhs, rhs);
   }
 
   default:
     error(node.span, "unsupported binary operator");
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 }
 
 TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
   auto operand = check_expr(*node.operand);
-  if (is_error_type(operand))
-    return builtins.error_type;
+  if (is_invalid_type(operand))
+    return builtins.invalid_type;
 
   if (node.op == Token::Kind::Not) {
     expect_bool(node.operand->span, operand, "logical not");
     return builtins.bool_type;
   }
   if (node.op == Token::Kind::Sub) {
+    if (is_enum_valued(operand) || is_error_valued(operand)) {
+      error(node.operand->span,
+            std::format("type {} does not support arithmetic operators",
+                        type_to_string(operand)));
+      return builtins.invalid_type;
+    }
     if (!is_numeric(operand)) {
       error(node.operand->span,
             std::format("negation requires numeric type, got {}",
                         type_to_string(operand)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     return operand;
   }
@@ -3308,13 +3518,13 @@ TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
       error(node.operand->span,
             std::format("bitwise NOT requires integer type, got {}",
                         type_to_string(operand)));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     return operand;
   }
 
   error(node.span, "unsupported unary operator");
-  return builtins.error_type;
+  return builtins.invalid_type;
 }
 
 TypePtr Analyzer::check_is_expr(const IsExpr &node) {
@@ -3322,7 +3532,7 @@ TypePtr Analyzer::check_is_expr(const IsExpr &node) {
   auto test_type = resolve_type(*node.type);
   record_type(*node.type, test_type);
 
-  if (is_error_type(value_type) || is_error_type(test_type))
+  if (is_invalid_type(value_type) || is_invalid_type(test_type))
     return builtins.bool_type;
 
   if (value_type->kind == TypeKind::Union) {
@@ -3355,28 +3565,34 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       error(node.callee->span,
             std::format("'{}' can only be called from stdlib packages",
                         ident->name));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
   }
 
   auto callee_type = check_expr(*node.callee);
-  if (is_error_type(callee_type))
-    return builtins.error_type;
+  if (is_invalid_type(callee_type))
+    return builtins.invalid_type;
 
   if (!is_callable(callee_type)) {
     error(node.callee->span,
           std::format("'{}' is not callable", type_to_string(callee_type)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   // A function-typed alias (`type Op = fn(...) ...`) is callable through its
   // underlying signature.
   callee_type = unwrap_alias(callee_type);
 
-  // Check arguments first to collect their types.
+  // Check arguments first to collect their types.  A `.Variant` shorthand arg
+  // resolves against the matching parameter's (concrete enum) type.
+  const std::vector<TypePtr> *params =
+      callee_type->kind == TypeKind::Func
+          ? &std::get<FuncTypeInfo>(callee_type->detail).params
+          : nullptr;
   std::vector<TypePtr> arg_types;
-  for (auto &arg : node.args) {
-    arg_types.push_back(check_expr(*arg));
+  for (size_t i = 0; i < node.args.size(); ++i) {
+    TypePtr expected = (params && i < params->size()) ? (*params)[i] : nullptr;
+    arg_types.push_back(check_expr_expecting(*node.args[i], expected));
   }
 
   // If the callee contains type parameters, attempt generic instantiation.
@@ -3385,7 +3601,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     std::unordered_map<uint32_t, TypePtr> bindings;
     auto instantiated =
         instantiate_generic_call(callee_type, arg_types, node.span, &bindings);
-    if (!is_error_type(instantiated))
+    if (!is_invalid_type(instantiated))
       effective_type = instantiated;
 
     // For generic free functions, analyse the body with these concrete
@@ -3492,7 +3708,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
     if (arg_types.size() != fn_info.params.size()) {
       error(node.span, std::format("expected {} argument(s), got {}",
                                    fn_info.params.size(), arg_types.size()));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
   } else {
     if (fn_info.params.size() > 0 &&
@@ -3500,7 +3716,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       error(node.span,
             std::format("expected at least {} argument(s), got {}",
                         fn_info.params.size() - 1, arg_types.size()));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
   }
 
@@ -3544,8 +3760,8 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
 
 TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
   auto obj_type = check_expr(*node.object);
-  if (is_error_type(obj_type))
-    return builtins.error_type;
+  if (is_invalid_type(obj_type))
+    return builtins.invalid_type;
 
   // Check for slice.
   if (std::holds_alternative<SliceNode>(node.index->data)) {
@@ -3563,7 +3779,7 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
 
     error(node.span,
           std::format("cannot slice type {}", type_to_string(obj_type)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
   auto index_type = check_expr(*node.index);
@@ -3571,22 +3787,22 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
   switch (obj_type->kind) {
   case TypeKind::Array: {
     auto &arr = std::get<ArrayTypeInfo>(obj_type->detail);
-    if (!is_error_type(index_type) && index_type->kind != TypeKind::Int) {
+    if (!is_invalid_type(index_type) && index_type->kind != TypeKind::Int) {
       error(node.index->span, "array index must be an integer");
     }
     // Indexing returns T | Error (out of bounds).
-    return make_union_type({arr.element, builtins.error_iface});
+    return make_union_type({arr.element, builtins.error_base});
   }
   case TypeKind::Map: {
     auto &map_info = std::get<MapTypeInfo>(obj_type->detail);
-    if (!is_error_type(index_type)) {
+    if (!is_invalid_type(index_type)) {
       expect_assignable(node.index->span, map_info.key, index_type, "map key");
     }
     // Map access returns V | Error (missing key).
-    return make_union_type({map_info.value, builtins.error_iface});
+    return make_union_type({map_info.value, builtins.error_base});
   }
   case TypeKind::String: {
-    if (!is_error_type(index_type) && index_type->kind != TypeKind::Int) {
+    if (!is_invalid_type(index_type) && index_type->kind != TypeKind::Int) {
       error(node.index->span, "string index must be an integer");
     }
     return builtins.string_type;
@@ -3594,7 +3810,7 @@ TypePtr Analyzer::check_index_expr(const IndexExprNode &node) {
   default:
     error(node.span, std::format("type {} does not support indexing",
                                  type_to_string(obj_type)));
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 }
 
@@ -3603,11 +3819,11 @@ TypePtr Analyzer::resolve_module_selector(const ModuleTypeInfo &mod,
                                           Span field_span) {
   for (auto &exp : mod.exports)
     if (exp.name == field_name)
-      return exp.type ? exp.type : builtins.error_type;
+      return exp.type ? exp.type : builtins.invalid_type;
   error(field_span,
         std::format("package '{}' has no exported member '{}'", mod.name,
                     field_name));
-  return builtins.error_type;
+  return builtins.invalid_type;
 }
 
 namespace {
@@ -3639,12 +3855,12 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
   auto &info = std::get<StructTypeInfo>(owner_type->detail);
   for (auto &f : info.fields)
     if (f.name == field_name)
-      return f.type ? f.type : builtins.error_type;
+      return f.type ? f.type : builtins.invalid_type;
 
   for (auto &m : info.methods) {
     if (m.name != field_name)
       continue;
-    auto sig = m.signature ? m.signature : builtins.error_type;
+    auto sig = m.signature ? m.signature : builtins.invalid_type;
     if (!info.origin_package.empty() &&
         info.origin_package != current_package_name() &&
         has_type_params(sig)) {
@@ -3653,7 +3869,7 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
                         "(D3: generic method bodies are not cross-package "
                         "in this version)",
                         field_name));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
     return sig;
   }
@@ -3734,7 +3950,7 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
   if (auto *vec = find_user_methods())
     for (auto &m : *vec)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
+        return m.signature ? m.signature : builtins.invalid_type;
 
   auto effective_kind = underlying_kind(obj_type);
   auto effective_type = unwrap_alias(obj_type);
@@ -3745,7 +3961,7 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
       if (m.name != field_name)
         continue;
       if (!m.signature)
-        return builtins.error_type;
+        return builtins.invalid_type;
       if (has_type_params(m.signature))
         return substitute_kind_method(effective_kind, effective_type,
                                       m.signature);
@@ -3757,7 +3973,7 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     if (m.name != field_name)
       continue;
     if (!m.signature)
-      return builtins.error_type;
+      return builtins.invalid_type;
     if (has_type_params(m.signature))
       return substitute_kind_method(effective_kind, effective_type,
                                     m.signature);
@@ -3805,6 +4021,14 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
         kind_method_uses_typeparam_dispatch_.insert(
             current_eager_kind_method_decl_);
     };
+    auto &tpinfo = std::get<TypeParamInfo>(obj_type->detail);
+    if (tpinfo.bound) {
+      if (auto t = try_protocol(*tpinfo.bound)) {
+        record_dispatch();
+        return t;
+      }
+      return nullptr;
+    }
     if (auto t = try_protocol(builtins.stringable_iface)) {
       record_dispatch();
       return t;
@@ -3815,14 +4039,91 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     }
   }
 
+  if (auto u = unwrap_structural_alias(obj_type);
+      u && u->kind == TypeKind::Union)
+    return resolve_union_method(u, field_name);
+
+  return nullptr;
+}
+
+TypePtr Analyzer::resolve_union_method(const TypePtr &union_type,
+                                       const std::string &field_name) {
+  auto &alts = std::get<UnionTypeInfo>(union_type->detail).alternatives;
+  if (alts.empty())
+    return nullptr;
+
+  // Codegen dispatches per member through a struct- or scalar-receiver call;
+  // other member kinds (array/map/alias/enum) have no receiver-call lowering
+  // yet, so restrict eligibility to avoid accepting a call codegen can't emit.
+  auto dispatchable = [](const TypePtr &t) {
+    switch (t->kind) {
+    case TypeKind::Struct:
+    case TypeKind::Int:
+    case TypeKind::Float:
+    case TypeKind::Bool:
+    case TypeKind::String:
+      return true;
+    default:
+      return false;
+    }
+  };
+  for (auto &alt : alts)
+    if (!dispatchable(alt))
+      return nullptr;
+
+  auto self_free = [](const TypePtr &sig, const TypePtr &iface) -> bool {
+    if (!sig || sig->kind != TypeKind::Func)
+      return false;
+    auto &fi = std::get<FuncTypeInfo>(sig->detail);
+    auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+    auto refs_self = [&](const TypePtr &t) {
+      if (!t || t->kind != TypeKind::Interface)
+        return false;
+      auto &ti = std::get<InterfaceTypeInfo>(t->detail);
+      return ti.name == ii.name && ti.origin_package == ii.origin_package;
+    };
+    for (auto &p : fi.params)
+      if (refs_self(p))
+        return false;
+    return !(fi.return_type && refs_self(fi.return_type));
+  };
+
+  auto try_iface = [&](const TypePtr &iface) -> TypePtr {
+    if (!iface || iface->kind != TypeKind::Interface)
+      return nullptr;
+    auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+    const MethodInfo *m = nullptr;
+    for (auto &im : ii.methods)
+      if (im.name == field_name) {
+        m = &im;
+        break;
+      }
+    if (!m || !self_free(m->signature, iface))
+      return nullptr;
+    for (auto &alt : alts)
+      if (!satisfies_interface(alt, iface))
+        return nullptr;
+    return m->signature;
+  };
+
+  if (auto s = try_iface(builtins.stringable_iface))
+    return s;
+  if (auto s = try_iface(builtins.hashable_iface))
+    return s;
+  if (package_scope_)
+    for (auto &[name, sym] : package_scope_->symbols)
+      if (sym.kind == SymbolKind::Type && sym.type &&
+          sym.type->kind == TypeKind::Interface)
+        if (auto s = try_iface(sym.type))
+          return s;
   return nullptr;
 }
 
 TypePtr Analyzer::check_selector(const SelectorNode &node,
                                  const Node & /*parent*/) {
   auto obj_type = check_type_or_value_expr(*node.object);
-  if (is_error_type(obj_type))
-    return builtins.error_type;
+  if (is_invalid_type(obj_type))
+    return builtins.invalid_type;
 
   std::string field_name(node.field.name);
 
@@ -3838,7 +4139,7 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
       error(node.field.span,
             std::format("type {} has no type method '{}'",
                         type_to_string(obj_type), field_name));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
   }
 
@@ -3855,7 +4156,7 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
     for (auto &m : info.methods)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
+        return m.signature ? m.signature : builtins.invalid_type;
   }
 
   if (obj_type->kind == TypeKind::Enum) {
@@ -3863,13 +4164,22 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     for (auto &v : info.variants)
       if (v.name == field_name)
         return obj_type;
+    // `Enum.From(value)` reverse-lookup constructor: takes the backing value
+    // (string for a string-backed enum, int otherwise) and returns the enum
+    // or `Missing` when no variant matches.
+    if (field_name == "From") {
+      auto backing =
+          info.string_backed ? builtins.string_type : builtins.int_type;
+      return make_func_type(
+          {backing}, {make_union_type({obj_type, builtins.error_base})});
+    }
   }
 
   if (obj_type->kind == TypeKind::Alias) {
     auto &alias_info = std::get<AliasTypeInfo>(obj_type->detail);
     for (auto &m : alias_info.methods)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.error_type;
+        return m.signature ? m.signature : builtins.invalid_type;
     auto underlying = unwrap_alias(obj_type);
     if (underlying && underlying->kind == TypeKind::Struct)
       if (auto t =
@@ -3882,7 +4192,7 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
 
   error(node.field.span, std::format("type {} has no member '{}'",
                                      type_to_string(obj_type), field_name));
-  return builtins.error_type;
+  return builtins.invalid_type;
 }
 
 TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
@@ -3901,7 +4211,7 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
       auto matched = resolve_type(*is_expr->type);
       if (lhs_sym && lhs_sym->type &&
           lhs_sym->type->kind == TypeKind::Union && matched &&
-          !is_error_type(matched)) {
+          !is_invalid_type(matched)) {
         narrowed_var = std::string(val_id->name);
         narrowed_type = matched;
         // Compute the else narrowed type (union minus matched type).
@@ -3970,13 +4280,17 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   for (auto &arm : node.arms) {
     TypePtr first_pattern_type;
     for (auto &pat : arm.patterns) {
-      auto pattern_type = check_type_or_value_expr(*pat);
+      TypePtr pattern_type;
+      if (auto *sh = std::get_if<EnumShorthandNode>(&pat->data))
+        pattern_type = check_enum_shorthand(*sh, *pat, subject_type);
+      else
+        pattern_type = check_type_or_value_expr(*pat);
       if (!first_pattern_type)
         first_pattern_type = pattern_type;
 
       if (is_type_match) {
         // Type matching: verify the pattern type is an alternative of the union.
-        if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+        if (!is_invalid_type(pattern_type) && !is_invalid_type(subject_type)) {
           auto &info = std::get<UnionTypeInfo>(subject_type->detail);
           bool found = false;
           for (auto &alt : info.alternatives) {
@@ -3993,7 +4307,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
         }
       } else {
         // Value matching: pattern must be same type as subject.
-        if (!is_error_type(pattern_type) && !is_error_type(subject_type)) {
+        if (!is_invalid_type(pattern_type) && !is_invalid_type(subject_type)) {
           expect_assignable(pat->span, subject_type, pattern_type,
                             "case pattern");
         }
@@ -4007,7 +4321,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
     // this, `case Int: x.String()` saw x as the unnarrowed union.
     bool narrowed = is_type_match && !subject_var.empty() &&
                     arm.patterns.size() == 1 &&
-                    !is_error_type(first_pattern_type);
+                    !is_invalid_type(first_pattern_type);
     push_scope(ScopeKind::Block);
     if (narrowed) {
       current_scope->symbols[subject_var] = Symbol::variable(
@@ -4040,7 +4354,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       result_type = else_type;
     else
       result_type = common_type(result_type, else_type);
-  } else if (is_type_match && !is_error_type(subject_type)) {
+  } else if (is_type_match && !is_invalid_type(subject_type)) {
     // Spec: type-matching without `else` must be exhaustive.
     // (docs/language.md:1174-1177)
     auto &info = std::get<UnionTypeInfo>(subject_type->detail);
@@ -4050,7 +4364,7 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
       for (auto &arm : node.arms) {
         for (auto &pat : arm.patterns) {
           auto pat_t = check_type_or_value_expr(*pat);
-          if (is_error_type(pat_t)) continue;
+          if (is_invalid_type(pat_t)) continue;
           if (types_equal(alt, pat_t) || is_assignable_to(pat_t, alt)) {
             covered = true;
             break;
@@ -4085,10 +4399,10 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                    [&](const ForRangeClauseNode &range) {
                      auto iter_type = check_expr(*range.iterable);
                      // Infer loop variable types from the iterable.
-                     TypePtr elem_type = builtins.error_type;
+                     TypePtr elem_type = builtins.invalid_type;
                      TypePtr key_type = builtins.int_type;
 
-                     if (!is_error_type(iter_type)) {
+                     if (!is_invalid_type(iter_type)) {
                        switch (iter_type->kind) {
                        case TypeKind::Array: {
                          auto &arr = std::get<ArrayTypeInfo>(iter_type->detail);
@@ -4143,7 +4457,7 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                              }
                            }
                            if (!found)
-                             elem_type = builtins.error_type;
+                             elem_type = builtins.invalid_type;
                          } else {
                            // Not a Task — check for the Iterable protocol:
                            // a Next() method returning T | Error.
@@ -4261,7 +4575,7 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
         if (types_equal(existing, bt)) { seen = true; break; }
       if (!seen) alts.push_back(bt);
     }
-    alts.push_back(builtins.error_iface);
+    alts.push_back(builtins.error_base);
     return make_union_type(std::move(alts));
   }
 
@@ -4329,7 +4643,7 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
   TypePtr chan_type = builtins.void_type;
   if (node.generic && !node.generic->type_params.empty()) {
     auto explicit_t = resolve_type(*node.generic->type_params[0]);
-    if (explicit_t && !is_error_type(explicit_t))
+    if (explicit_t && !is_invalid_type(explicit_t))
       chan_type = explicit_t;
   }
   return instantiate_task_type(chan_type);
@@ -4358,53 +4672,53 @@ TypePtr Analyzer::instantiate_task_type(const TypePtr &chan_type) {
   return result;
 }
 
+// The type bound to an `or |err|` pipe: the union's error alternative(s). A base
+// `error` slot (or a mix that includes it) widens to base `error`; otherwise the
+// concrete error type, or a union of the concrete errors.
+TypePtr Analyzer::or_error_type(const TypePtr &union_type) {
+  if (!union_type || union_type->kind != TypeKind::Union)
+    return builtins.error_base;
+  auto &info = std::get<UnionTypeInfo>(union_type->detail);
+  std::vector<TypePtr> errs;
+  for (auto &alt : info.alternatives) {
+    if (is_abstract_error(alt))
+      return builtins.error_base;
+    if (is_error_valued(alt))
+      errs.push_back(alt);
+  }
+  if (errs.size() == 1)
+    return errs[0];
+  if (errs.empty())
+    return builtins.error_base;
+  return make_union_type(std::move(errs));
+}
+
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   auto expr_type = check_expr(*node.expr);
 
-  if (is_error_type(expr_type)) {
+  if (is_invalid_type(expr_type)) {
     // Still check the fallback block for internal errors.
     push_scope(ScopeKind::Block);
     if (node.pipe) {
       current_scope->symbols.emplace(
           std::string(node.pipe->name),
-          Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
+          Symbol::variable(std::string(node.pipe->name), builtins.error_base,
                            node.pipe->span));
     }
     auto &block = std::get<BlockNode>(node.fallback->data);
     check_block(block);
     pop_scope();
-    return builtins.error_type;
+    return builtins.invalid_type;
   }
 
-  // Check that the expression is an impure type (contains Error).
-  bool has_error = false;
-  if (expr_type->kind == TypeKind::Union) {
-    auto &info = std::get<UnionTypeInfo>(expr_type->detail);
-    for (auto &alt : info.alternatives) {
-      if (alt->kind == TypeKind::Interface &&
-          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
-        has_error = true;
-        break;
-      }
-      // Also check for concrete types that satisfy Error (e.g. Missing).
-      if (satisfies_interface(alt, builtins.error_iface)) {
-        has_error = true;
-        break;
-      }
-    }
-  }
-  if (!has_error && expr_type->kind != TypeKind::Union) {
-    // Non-union, non-error type — or is a no-op. Allow but pass through.
-  }
-
-  // The or-clause strips the Error from the union.
+  // The or-clause strips the error from the union.
   push_scope(ScopeKind::Block);
 
   if (node.pipe) {
     current_scope->symbols.emplace(
         std::string(node.pipe->name),
-        Symbol::variable(std::string(node.pipe->name), builtins.error_iface,
-                         node.pipe->span));
+        Symbol::variable(std::string(node.pipe->name),
+                         or_error_type(expr_type), node.pipe->span));
   }
 
   auto &block = std::get<BlockNode>(node.fallback->data);
@@ -4412,28 +4726,19 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
 
   pop_scope();
 
-  // Strip Error/Missing from the union to get the purified type.
+  // Strip error members from the union to get the purified type.
   if (expr_type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(expr_type->detail);
     std::vector<TypePtr> purified;
     for (auto &alt : info.alternatives) {
-      // Strip the Error interface.
-      if (alt->kind == TypeKind::Interface &&
-          std::get<InterfaceTypeInfo>(alt->detail).name == "Error") {
-        continue;
-      }
-      // Strip concrete types that satisfy Error (e.g. Missing).
-      if (alt->kind == TypeKind::Struct &&
-          satisfies_interface(alt, builtins.error_iface)) {
-        continue;
-      }
-      purified.push_back(alt);
+      if (!is_error_valued(alt))
+        purified.push_back(alt);
     }
     if (purified.empty())
       return fallback_type ? fallback_type : builtins.void_type;
     if (purified.size() == 1) {
       // Validate fallback type matches the purified type (if non-empty block).
-      if (fallback_type && !is_error_type(fallback_type) &&
+      if (fallback_type && !is_invalid_type(fallback_type) &&
           !types_equal(fallback_type, builtins.void_type) &&
           !block.stmts.empty()) {
         expect_assignable(node.fallback->span, purified[0], fallback_type,
@@ -4479,7 +4784,7 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
   bool tail_is_return =
       !block.stmts.empty() && always_returns(*block.stmts.back());
   if (!tail_is_return && fn_info.return_type &&
-      !is_error_type(body_type)) {
+      !is_invalid_type(body_type)) {
     if (!types_equal(fn_info.return_type, builtins.void_type)) {
       expect_assignable(node.body->span, fn_info.return_type, body_type,
                         "return type");
@@ -4523,7 +4828,7 @@ TypePtr Analyzer::check_import_expr(const ImportExprNode &node) {
     }
   }
   // If not found, the import was already reported as an error.
-  return builtins.error_type;
+  return builtins.invalid_type;
 }
 
 // ===========================================================================
@@ -4563,7 +4868,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
       init_type = check_for_expr(*for_node, declared_type);
       record_type(**var.init, init_type);
     } else {
-      init_type = check_expr(**var.init);
+      init_type = check_expr_expecting(**var.init, declared_type);
     }
     // An empty `[]` / `{}` literal under a typed declaration adopts the
     // declared element type; without this, the array-of-error placeholder
@@ -4580,7 +4885,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
           (empty_map && underlying->kind == TypeKind::Map))
         init_type = declared_type;
     }
-    if (declared_type && !is_error_type(init_type)) {
+    if (declared_type && !is_invalid_type(init_type)) {
       expect_assignable((*var.init)->span, declared_type, init_type,
                         "variable initializer");
     }
@@ -4633,6 +4938,15 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   }
 }
 
+// Errors are immutable pure data: reject writing a field via `=`, a compound
+// assignment, or `++`/`--`.
+void Analyzer::reject_error_field_mutation(const Node &target) {
+  if (auto *sel = std::get_if<SelectorNode>(&target.data))
+    if (is_error_valued(check_expr(*sel->object)))
+      error(target.span,
+            "cannot assign to a field of an error (errors are immutable)");
+}
+
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
@@ -4646,6 +4960,8 @@ void Analyzer::check_assign(const AssignNode &node) {
               std::format("cannot assign to constant '{}'", id->name));
       }
     }
+
+    reject_error_field_mutation(*node.targets[i]);
 
     auto target_type = check_expr(*node.targets[i]);
     if (i < node.values.size()) {
@@ -4667,7 +4983,7 @@ void Analyzer::check_assign(const AssignNode &node) {
                 std::format("/= requires numeric type, got {}",
                             type_to_string(target_type)));
         }
-        if (!is_error_type(val_type)) {
+        if (!is_invalid_type(val_type)) {
           expect_assignable(node.values[i]->span, target_type, val_type,
                             "division assignment");
         }
@@ -4680,7 +4996,7 @@ void Analyzer::check_assign(const AssignNode &node) {
                             "got {}",
                             type_to_string(target_type)));
         }
-        if (!is_error_type(val_type)) {
+        if (!is_invalid_type(val_type)) {
           expect_assignable(node.values[i]->span, target_type, val_type,
                             "compound assignment");
         }
@@ -4697,8 +5013,9 @@ void Analyzer::check_increment(const IncrementNode &node) {
             std::format("cannot increment constant '{}'", id->name));
     }
   }
+  reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
-  if (!is_error_type(t) && t->kind != TypeKind::Int) {
+  if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("increment requires integer type, got {}",
                                  type_to_string(t)));
   }
@@ -4712,8 +5029,9 @@ void Analyzer::check_decrement(const DecrementNode &node) {
             std::format("cannot decrement constant '{}'", id->name));
     }
   }
+  reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
-  if (!is_error_type(t) && t->kind != TypeKind::Int) {
+  if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
     error(node.span, std::format("decrement requires integer type, got {}",
                                  type_to_string(t)));
   }
@@ -4740,7 +5058,7 @@ void Analyzer::check_return(const ReturnNode &node) {
     return;
   }
 
-  auto val_type = check_expr(*node.value);
+  auto val_type = check_expr_expecting(*node.value, expected[0]);
   expect_assignable(node.value->span, expected[0], val_type, "return value");
 }
 
@@ -4836,11 +5154,11 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
 
   if (!require_const_expr(*c.value)) {
     if (sym_it != current_scope->symbols.end())
-      sym_it->second.type = builtins.error_type;
+      sym_it->second.type = builtins.invalid_type;
     return;
   }
 
-  if (declared_type && !is_error_type(init_type))
+  if (declared_type && !is_invalid_type(init_type))
     expect_assignable(c.value->span, declared_type, init_type,
                       "constant initializer");
 
@@ -4849,7 +5167,7 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
   // diagnostic.  Fall back to Int so downstream method dispatch
   // (`A.String()`) and codegen find the right ABI.
   TypePtr const_type = declared_type             ? declared_type
-                       : is_error_type(init_type) ? builtins.int_type
+                       : is_invalid_type(init_type) ? builtins.int_type
                                                   : init_type;
 
   if (sym_it != current_scope->symbols.end())
@@ -4912,6 +5230,7 @@ bool Analyzer::require_const_expr(const Node &expr) {
   return std::visit(
       overloaded{
           [](const BoolLiteralNode &) { return true; },
+          [](const NullLiteralNode &) { return true; },
           [](const IntegerLiteralNode &) { return true; },
           [](const FloatLiteralNode &) { return true; },
           [&](const StringLiteralNode &s) {
@@ -5004,19 +5323,117 @@ bool Analyzer::require_const_expr(const Node &expr) {
 
 void Analyzer::check_enum_decl(const EnumDeclNode &e) {
   auto sym = lookup(std::string(e.name.name));
-  if (!sym || !sym->type)
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Enum)
     return;
+  auto &info = std::get<EnumTypeInfo>(sym->type->detail);
 
-  // Check enum field initializer expressions.
-  for (auto &field : e.fields) {
-    for (auto &fa : field.initializer) {
-      check_expr(*fa.value);
+  std::unordered_set<std::string> seen_names;
+  std::unordered_map<int64_t, std::string> seen_index;
+  std::unordered_map<std::string, std::string> seen_string;
+  for (size_t i = 0; i < e.fields.size(); ++i) {
+    auto &field = e.fields[i];
+    std::string vname(field.name.name);
+    if (!seen_names.insert(vname).second)
+      error(field.name.span, std::format("duplicate enum variant '{}'", vname));
+
+    if (e.string_backed) {
+      if (field.value && !plain_string_literal(field.value))
+        error(field.value->span,
+              std::format("string-backed enum variant '{}' backing value must "
+                          "be a string literal",
+                          vname));
+      if (i < info.variants.size()) {
+        auto &sv = info.variants[i].string_value;
+        auto [it, inserted] = seen_string.try_emplace(sv, vname);
+        if (!inserted)
+          error(field.name.span,
+                std::format("enum variant '{}' backing string \"{}\" already "
+                            "used by '{}'",
+                            vname, sv, it->second));
+      }
+      continue;
+    }
+
+    if (field.value && !std::get_if<IntegerLiteralNode>(&field.value->data))
+      error(field.value->span,
+            std::format("enum variant '{}' backing value must be an integer "
+                        "literal",
+                        vname));
+
+    if (i < info.variants.size()) {
+      int64_t idx = info.variants[i].index;
+      auto [it, inserted] = seen_index.try_emplace(idx, vname);
+      if (!inserted)
+        error(field.name.span,
+              std::format("enum variant '{}' has index {} already used by '{}'",
+                          vname, idx, it->second));
     }
   }
+
+  auto methods = type_methods_.find(sym->type.get());
+  if (methods != type_methods_.end())
+    check_method_uniqueness(methods->second, "enum", info.name, e.name.span,
+                            {"Int", "String", "From"});
+}
+
+TypePtr Analyzer::check_enum_shorthand(const EnumShorthandNode &sh,
+                                       const Node &node,
+                                       const TypePtr &expected) {
+  TypePtr enum_type = expected ? unwrap_alias(expected) : nullptr;
+  if (!enum_type || enum_type->kind != TypeKind::Enum) {
+    error(sh.span,
+          std::format("'.{}' shorthand needs a known enum type here",
+                      sh.variant.name));
+    return builtins.invalid_type;
+  }
+  auto &info = std::get<EnumTypeInfo>(enum_type->detail);
+  for (auto &v : info.variants)
+    if (v.name == sh.variant.name) {
+      record_type(node, enum_type);
+      return enum_type;
+    }
+  error(sh.variant.span,
+        std::format("enum '{}' has no variant '{}'", info.name,
+                    sh.variant.name));
+  return builtins.invalid_type;
+}
+
+TypePtr Analyzer::check_expr_expecting(const Node &expr,
+                                       const TypePtr &expected) {
+  if (auto *sh = std::get_if<EnumShorthandNode>(&expr.data))
+    return check_enum_shorthand(*sh, expr, expected);
+  return check_expr(expr);
+}
+
+void Analyzer::check_type_decl(const TypeDeclNode &t) {
+  auto sym = lookup(std::string(t.name.name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+    return;
+  auto &info = std::get<AliasTypeInfo>(sym->type->detail);
+  if (info.structural)
+    return;
+  check_method_uniqueness(info.methods, "type", info.name, t.name.span, {});
 }
 
 void Analyzer::check_func_decl(const FuncDeclNode &fn) {
   // The body is checked via check_func_decl_body.
+}
+
+void Analyzer::check_method_uniqueness(
+    const std::vector<MethodInfo> &methods, std::string_view kind,
+    std::string_view name, Span span,
+    const std::unordered_set<std::string> &reserved) {
+  std::unordered_set<std::string> seen;
+  for (auto &m : methods) {
+    if (reserved.count(m.name)) {
+      error(span, std::format("cannot redefine built-in method '{}' on {} '{}'",
+                              m.name, kind, name));
+      continue;
+    }
+    if (!seen.insert(m.name).second)
+      error(span, std::format("duplicate method '{}' in {} '{}'", m.name, kind,
+                              name));
+  }
 }
 
 void Analyzer::check_struct_decl(const StructDeclNode &s) {
@@ -5038,39 +5455,95 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
     seen_fields[f.name] = true;
   }
 
-  // Check duplicate methods.
-  std::unordered_map<std::string, bool> seen_methods;
-  for (auto &m : info.methods) {
-    if (seen_methods.count(m.name)) {
-      error(s.span, std::format("duplicate method '{}' in struct '{}'", m.name,
-                                info.name));
-    }
-    seen_methods[m.name] = true;
-  }
+  check_method_uniqueness(info.methods, "struct", info.name, s.span, {});
 
   check_field_defaults(s);
 }
 
-// A field default must be a comptime expression assignable to the field type.
 void Analyzer::check_field_defaults(const StructDeclNode &s) {
   for (auto &member : s.members) {
-    auto *fs = std::get_if<FieldSpecNode>(&member.member->data);
-    if (!fs || !fs->default_value)
-      continue;
-
-    auto field_type = resolve_type(*fs->type);
-    auto def_type = check_expr(*fs->default_value);
-    if (!require_const_expr(*fs->default_value))
-      continue;
-    if (!field_type || is_error_type(def_type))
-      continue;
-
-    std::string fname = fs->names.identifiers.empty()
-                            ? "field"
-                            : std::string(fs->names.identifiers.front().name);
-    expect_assignable(fs->default_value->span, field_type, def_type,
-                      std::format("default for field '{}'", fname));
+    if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data))
+      check_field_default(*fs);
   }
+}
+
+// A field default must be a comptime expression assignable to the field type.
+void Analyzer::check_field_default(const FieldSpecNode &fs) {
+  if (!fs.default_value)
+    return;
+
+  auto field_type = resolve_type(*fs.type);
+  auto def_type = check_expr(*fs.default_value);
+  if (!require_const_expr(*fs.default_value))
+    return;
+  if (!field_type || is_invalid_type(def_type))
+    return;
+
+  std::string fname = fs.names.identifiers.empty()
+                          ? "field"
+                          : std::string(fs.names.identifiers.front().name);
+  expect_assignable(fs.default_value->span, field_type, def_type,
+                    std::format("default for field '{}'", fname));
+}
+
+void Analyzer::check_error_decl(const ErrorDeclNode &e) {
+  auto sym = lookup(std::string(e.name.name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Struct)
+    return;
+  auto &info = std::get<StructTypeInfo>(sym->type->detail);
+
+  // `Missing` and `Trapped` are built-in errors with reserved type_ids; a
+  // user redeclaration would alias them (breaking `is`/`==` identity).
+  if (info.name == "Missing" || info.name == "Trapped")
+    error(e.name.span,
+          std::format("'{}' is a reserved built-in error type", info.name));
+
+  std::unordered_map<std::string, bool> seen;
+  for (auto &f : info.fields) {
+    if (seen.count(f.name))
+      error(e.span, std::format("duplicate field '{}' in error '{}'", f.name,
+                                info.name));
+    seen[f.name] = true;
+  }
+
+  if (e.message_default)
+    check_error_message_default(info, *e.message_default);
+
+  for (auto &member : e.members) {
+    if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data))
+      check_field_default(*fs);
+  }
+}
+
+// The message default is checked with the error's own fields in scope, so a
+// `message = "code {code}"` default can interpolate them. It must be a string
+// literal (which may interpolate self-fields) or a comptime constant — not an
+// arbitrary runtime expression.
+void Analyzer::check_error_message_default(const StructTypeInfo &info,
+                                           const Node &msg_default) {
+  push_scope(ScopeKind::Block);
+  for (auto &f : info.fields) {
+    if (f.name == "type_id" || f.name == "message")
+      continue;
+    current_scope->symbols[f.name] =
+        Symbol::variable(f.name, f.type, msg_default.span);
+  }
+  // The message default isn't reached by the normal resolve pass (its scope is
+  // the error's fields, not a lexical scope), so resolve it here to report
+  // undefined names before the interpolation silently drops them.
+  resolve_expr(msg_default);
+  auto def_type = check_expr(msg_default);
+  pop_scope();
+
+  // A self-interpolating string literal isn't a compile-time constant but is
+  // allowed; any other non-constant expression (e.g. a call) is rejected.
+  if (!std::holds_alternative<StringLiteralNode>(msg_default.data) &&
+      !require_const_expr(msg_default))
+    return;
+
+  if (!is_invalid_type(def_type))
+    expect_assignable(msg_default.span, builtins.string_type, def_type,
+                      "error message default");
 }
 
 void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
@@ -5087,15 +5560,7 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
                       info.name));
   }
 
-  // Check duplicate methods.
-  std::unordered_map<std::string, bool> seen;
-  for (auto &m : info.methods) {
-    if (seen.count(m.name)) {
-      error(i.span, std::format("duplicate method '{}' in interface '{}'",
-                                m.name, info.name));
-    }
-    seen[m.name] = true;
-  }
+  check_method_uniqueness(info.methods, "interface", info.name, i.span, {});
 }
 
 void Analyzer::check_import_decl(const ImportDeclNode &node) {
@@ -5106,7 +5571,7 @@ void Analyzer::check_import_decl(const ImportDeclNode &node) {
   std::string name =
       (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
   auto sym = lookup(name);
-  if (sym && sym->type && is_error_type(sym->type)) {
+  if (sym && sym->type && is_invalid_type(sym->type)) {
     // Error was already reported during resolve_import.
   }
 }
@@ -5120,7 +5585,7 @@ Analyzer::instantiate_generic_call(
     const TypePtr &callee_type, const std::vector<TypePtr> &arg_types,
     Span call_span, std::unordered_map<uint32_t, TypePtr> *out_bindings) {
   if (!callee_type || callee_type->kind != TypeKind::Func)
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   auto &fn_info = std::get<FuncTypeInfo>(callee_type->detail);
   std::unordered_map<uint32_t, TypePtr> bindings;
@@ -5131,7 +5596,7 @@ Analyzer::instantiate_generic_call(
     if (!unify(fn_info.params[i], arg_types[i], bindings)) {
       error(call_span,
             std::format("cannot infer type parameter from argument {}", i + 1));
-      return builtins.error_type;
+      return builtins.invalid_type;
     }
   }
 
@@ -5139,12 +5604,15 @@ Analyzer::instantiate_generic_call(
   // Constraints are carried on the TypeParam nodes embedded in the function's
   // parameter/return types — walk the type tree to recover them.
   std::unordered_map<uint32_t, TypeConstraint> constraints;
+  std::unordered_map<uint32_t, TypePtr> bounds;
   auto collect = [&](auto &self, const TypePtr &t) -> void {
     if (!t) return;
     if (t->kind == TypeKind::TypeParam) {
       auto &info = std::get<TypeParamInfo>(t->detail);
       if (info.param.constraint != TypeConstraint::None)
         constraints[info.param.id] = info.param.constraint;
+      if (info.bound)
+        bounds[info.param.id] = *info.bound;
       return;
     }
     switch (t->kind) {
@@ -5186,8 +5654,19 @@ Analyzer::instantiate_generic_call(
       constraint_violation = true;
     }
   }
+  for (auto &[id, concrete] : bindings) {
+    auto it = bounds.find(id);
+    if (it == bounds.end()) continue;
+    if (!concrete || is_invalid_type(concrete) ||
+        concrete->kind == TypeKind::TypeParam)
+      continue;
+    auto &ii = std::get<InterfaceTypeInfo>(it->second->detail);
+    if (!report_interface_unsatisfied(concrete, it->second, ii.name, call_span,
+                                      ""))
+      constraint_violation = true;
+  }
   if (constraint_violation)
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   if (out_bindings)
     *out_bindings = bindings;
@@ -5313,7 +5792,7 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
     bool tail_is_return = always_returns(*block.stmts.back());
     if (!tail_is_return) {
       auto &expected = current_scope->return_types;
-      if (expected.size() == 1 && !is_error_type(body_type)) {
+      if (expected.size() == 1 && !is_invalid_type(body_type)) {
         if (!types_equal(expected[0], builtins.void_type)) {
           expect_assignable(fn.body->span, expected[0], body_type,
                             "return type");
@@ -5338,7 +5817,7 @@ TypePtr Analyzer::instantiate_generic_struct(
     const std::vector<std::pair<std::string, TypePtr>> &field_types,
     Span span) {
   if (!struct_type || struct_type->kind != TypeKind::Struct)
-    return builtins.error_type;
+    return builtins.invalid_type;
 
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   if (info.type_params.empty())
@@ -5353,7 +5832,7 @@ TypePtr Analyzer::instantiate_generic_struct(
         if (!unify(fi.type, ftype, bindings)) {
           error(span, std::format("cannot infer type parameter from field '{}'",
                                   fname));
-          return builtins.error_type;
+          return builtins.invalid_type;
         }
         break;
       }
@@ -5576,7 +6055,7 @@ static std::string format_protocol_method(const std::string &name,
 bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
                                          ProtocolKind p, Span at,
                                          const std::string &context) {
-  if (!concrete || is_error_type(concrete))
+  if (!concrete || is_invalid_type(concrete))
     return true;
   // Inside a generic body the binding isn't known yet — the concrete check
   // happens at every monomorphisation site.
@@ -5611,6 +6090,14 @@ bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
     return false;
   }
 
+  return report_interface_unsatisfied(concrete, iface, proto_name, at, context);
+}
+
+bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
+                                            const TypePtr &iface,
+                                            const std::string &iface_name,
+                                            Span at,
+                                            const std::string &context) {
   if (satisfies_interface(concrete, iface))
     return true;
 
@@ -5646,13 +6133,13 @@ bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
   std::string ctx = context.empty() ? "" : (" (" + context + ")");
   error(at, std::format(
                 "type {} does not satisfy {}{}: missing {}",
-                type_to_string(concrete), proto_name, ctx, list));
+                type_to_string(concrete), iface_name, ctx, list));
   return false;
 }
 
 bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
                                           const std::string &context) {
-  if (!t || is_error_type(t))
+  if (!t || is_invalid_type(t))
     return true;
   if (t->kind == TypeKind::Array) {
     auto &ai = std::get<ArrayTypeInfo>(t->detail);

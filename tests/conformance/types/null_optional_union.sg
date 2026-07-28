@@ -1,0 +1,28 @@
+// `void` is assignable and holds one value, `null`; a `T | void` union models an
+// optional. `null` takes the void slot, and `is` narrowing recovers which it is.
+import "std/io"
+
+fn lookup(present bool) int | void {
+  if present {
+    return 42
+  }
+  return null
+}
+
+pub fn Main() void {
+  a := lookup(true)
+  if a is int {
+    io.Println("a present")
+  }
+  if a is void {
+    io.Println("a missing")
+  }
+
+  b := lookup(false)
+  if b is int {
+    io.Println("b present")
+  }
+  if b is void {
+    io.Println("b missing")
+  }
+}

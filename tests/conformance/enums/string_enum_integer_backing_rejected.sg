@@ -1,0 +1,5 @@
+// Spec: a string-backed enum variant's `= value` must be a string literal.
+enum Color string {
+  Red = 1
+}
+pub fn Main() void {}

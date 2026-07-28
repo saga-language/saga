@@ -1,0 +1,12 @@
+// A message supplied in the literal overrides the comptime default.
+import "std/io"
+
+error NetworkError {
+  code int
+  message = "default"
+}
+
+pub fn Main() void {
+  e := NetworkError{code: 1, message: "custom"}
+  io.Println(e.message)
+}

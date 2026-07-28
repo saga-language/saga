@@ -1085,17 +1085,15 @@ TEST(TypeCheck, SwitchTypeMatch) {
 
 // A structural alias (`type X = A | B`) is transparent to the union, so a
 // value satisfying any member is assignable through it.
-TEST(TypeCheck, TypeDecl_StructuralUnionOfInterfaces) {
+TEST(TypeCheck, TypeDecl_InterfaceInUnionRejected) {
+  // Unions are concrete-only: an interface alternative (even all-interface,
+  // which used to mean "implements both") is a compile error. The "implements
+  // both" use case is interface block-embedding instead.
   auto r = TC::from(
       "interface Reader { Read() string }\n"
       "interface Writer { Write(s string) void }\n"
-      "type ReadWriter = Reader | Writer\n"
-      "struct Buffer {}\n"
-      "pub fn (b Buffer) Read() string { \"\" }\n"
-      "pub fn (b Buffer) Write(s string) void {}\n"
-      "fn use(rw ReadWriter) void {}\n"
-      "fn f() void { use(Buffer{}) }");
-  EXPECT_TRUE(r.ok());
+      "type ReadWriter = Reader | Writer\n");
+  EXPECT_FALSE(r.ok());
 }
 
 // Spec: arrays of the same element type pass directly into a variadic.
@@ -1561,6 +1559,40 @@ TEST(TypeCheck, ExternFunction_ReturnTypeFlowsThrough) {
       "extern fn saga_label(i int) string\n"
       "fn Use() int { saga_label(1) }");
   EXPECT_FALSE(r.ok());
+}
+
+TEST(TypeCheck, UnionMethodDispatchSharedInterface) {
+  auto r = TC::from(
+      "interface HasArea { Area() int }\n"
+      "struct Circle { r int }\n"
+      "pub fn (c Circle) Area() int { c.r }\n"
+      "struct Square { s int }\n"
+      "pub fn (sq Square) Area() int { sq.s }\n"
+      "fn total(shape Circle | Square) int { shape.Area() }");
+  EXPECT_TRUE(r.ok()) << r.error_count() << " errors";
+}
+
+TEST(TypeCheck, UnionMethodDispatchRejectsMemberMissingMethod) {
+  auto r = TC::from(
+      "interface HasArea { Area() int }\n"
+      "struct Circle { r int }\n"
+      "pub fn (c Circle) Area() int { c.r }\n"
+      "struct Point {}\n"
+      "fn total(shape Circle | Point) int { shape.Area() }");
+  EXPECT_TRUE(r.has_err("has no member"));
+}
+
+TEST(TypeCheck, UnionMethodDispatchRejectsSelfDependentMethod) {
+  // A Self-returning method has no fixed signature across members, so it is
+  // not callable on the union without narrowing first.
+  auto r = TC::from(
+      "interface Dup { Dup() Dup }\n"
+      "struct A {}\n"
+      "pub fn (a A) Dup() A { a }\n"
+      "struct B {}\n"
+      "pub fn (b B) Dup() B { b }\n"
+      "fn f(x A | B) void { _ := x.Dup() }");
+  EXPECT_TRUE(r.has_err("has no member"));
 }
 
 } // namespace saga

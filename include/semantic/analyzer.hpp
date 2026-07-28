@@ -97,7 +97,7 @@ struct PackageResolver {
 //
 // Performs name resolution, type checking, and generic instantiation.
 // Errors are accumulated into an ErrorList; analysis continues as far as
-// possible (error-recovery via ErrorType propagation).
+// possible (error-recovery via InvalidType propagation).
 //
 // Usage:
 //   Analyzer analyzer(fileset);
@@ -428,7 +428,7 @@ struct Analyzer {
 private:
   /// Return a cached/mock TypePtr for `import_path` if present, or nullopt
   /// to signal the caller to continue with sgi/source resolution. Returns
-  /// builtins.error_type wrapped in optional on cycle detection.
+  /// builtins.invalid_type wrapped in optional on cycle detection.
   std::optional<TypePtr> resolve_import_cached(const std::string &import_path,
                                                Span span);
 
@@ -440,7 +440,7 @@ private:
                                                Span span);
 
   /// Parse and analyze the import's source files. Returns the constructed
-  /// module TypePtr on success, builtins.error_type on failure.
+  /// module TypePtr on success, builtins.invalid_type on failure.
   TypePtr compile_import_from_source(const std::string &import_path,
                                      Span span);
 
@@ -552,6 +552,7 @@ private:
   void attach_type_method(const FuncDeclNode &fn, const TypePtr &fn_type);
   void resolve_struct_decl(const StructDeclNode &node);
   void resolve_enum_decl(const EnumDeclNode &node);
+  void resolve_error_decl(const ErrorDeclNode &node);
   void resolve_interface_decl(const InterfaceDeclNode &node);
   void flatten_all_interfaces(
       const std::vector<const InterfaceDeclNode *> &ifaces);
@@ -650,6 +651,12 @@ private:
                                std::vector<FieldInfo> &out);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
                                    const std::string &field_name);
+  /// Resolve a method callable on a union value without narrowing: the
+  /// union satisfies some interface declaring `field_name` (every member
+  /// satisfies it) and that method is Self-free (no interface-self in its
+  /// params/return).  Returns the interface method's signature, else null.
+  TypePtr resolve_union_method(const TypePtr &union_type,
+                               const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,
@@ -657,6 +664,7 @@ private:
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);
+  TypePtr or_error_type(const TypePtr &union_type);
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
@@ -666,6 +674,7 @@ private:
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
   void check_assign(const AssignNode &node);
+  void reject_error_field_mutation(const Node &target);
   void check_increment(const IncrementNode &node);
   void check_decrement(const DecrementNode &node);
   void check_return(const ReturnNode &node);
@@ -698,9 +707,31 @@ private:
                                     const Node &parent, const TypePtr &lhs,
                                     const TypePtr &rhs);
   void check_enum_decl(const EnumDeclNode &node);
+  /// Resolve a `.Variant` shorthand against the target enum type known at the
+  /// use site. `expected` may be a nominal alias over an enum. Records the enum
+  /// type on `node` for codegen and returns it (or invalid on mismatch).
+  TypePtr check_enum_shorthand(const EnumShorthandNode &sh, const Node &node,
+                               const TypePtr &expected);
+  /// check_expr, but a bare `.Variant` shorthand resolves against `expected`
+  /// (the type known at this use site) instead of erroring. Use at every
+  /// context that supplies a target type (decl, return, arg, field, case).
+  TypePtr check_expr_expecting(const Node &expr, const TypePtr &expected);
+  void check_type_decl(const TypeDeclNode &node);
+  /// A type's own method set is unique: redefining a name it already declares
+  /// is an error, as is redefining a compiler-provided method (`reserved`).
+  /// Shadowing a method inherited from an embedded struct or a nominal alias's
+  /// underlying type is a separate, permitted operation and is not checked here.
+  void check_method_uniqueness(const std::vector<MethodInfo> &methods,
+                               std::string_view kind, std::string_view name,
+                               Span span,
+                               const std::unordered_set<std::string> &reserved);
+  void check_error_decl(const ErrorDeclNode &node);
+  void check_error_message_default(const StructTypeInfo &info,
+                                   const Node &msg_default);
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
   void check_field_defaults(const StructDeclNode &node);
+  void check_field_default(const FieldSpecNode &fs);
   void check_interface_decl(const InterfaceDeclNode &node);
   void check_import_decl(const ImportDeclNode &node);
 
@@ -738,6 +769,22 @@ private:
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
 
+  /// Resolve a `<T C>` constraint name that is not a built-in type-set
+  /// (integer/float/numeric) to its interface bound.  A same-scope
+  /// interface wins; the compiler-known protocols Stringable/Hashable are
+  /// reachable by their bare names.  Emits a diagnostic and returns null
+  /// when the name is not an interface.
+  TypePtr resolve_constraint_bound(const IdentifierNode &constraint);
+
+  /// Report `concrete` failing to satisfy `iface`, listing the missing
+  /// methods.  `iface_name` is the name printed in the diagnostic.  Returns
+  /// true (no error) when satisfied.  Shared by `check_satisfies_protocol`
+  /// and generic interface-bound validation.
+  bool report_interface_unsatisfied(const TypePtr &concrete,
+                                    const TypePtr &iface,
+                                    const std::string &iface_name, Span at,
+                                    const std::string &context);
+
   /// Named protocols the compiler dispatches through.  Used by
   /// `check_satisfies_protocol` to pick the relevant interface from
   /// `builtins.*_iface` and to render the protocol name in diagnostics.
@@ -745,7 +792,7 @@ private:
 
   /// Verify `concrete` satisfies the named protocol `p`; emit a named
   /// diagnostic at `at` if not.  Skips silently when `concrete` is a
-  /// TypeParam (deferred to the monomorphisation site), an ErrorType,
+  /// TypeParam (deferred to the monomorphisation site), an InvalidType,
   /// or when the protocol interface hasn't been loaded yet (e.g. during
   /// std/proto's own bootstrap or in tests without a package resolver).
   /// `context` describes where the requirement comes from

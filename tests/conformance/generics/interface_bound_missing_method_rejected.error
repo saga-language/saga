@@ -1,0 +1,1 @@
+type Dog does not satisfy Named: missing Name() string

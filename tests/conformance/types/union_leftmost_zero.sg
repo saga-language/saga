@@ -1,0 +1,16 @@
+// The zero value of a union is its leftmost alternative, materialized properly:
+// a leftmost string zeroes to "" (not a null pointer that would crash), a
+// leftmost int to 0.
+import "std/io"
+
+pub fn Main() void {
+  s string | int
+  if s is string {
+    io.Println("[{s}]")
+  }
+
+  n int | string
+  if n is int {
+    io.Println(n.String())
+  }
+}

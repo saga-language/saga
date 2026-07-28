@@ -2,3 +2,5 @@ stopped
 running
 true
 false
+stop
+run

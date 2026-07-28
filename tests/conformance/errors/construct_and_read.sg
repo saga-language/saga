@@ -1,0 +1,15 @@
+// A nominal error is struct-backed: `error Name {...}` declares fields, the
+// mandatory `message` is auto-injected, and a value is built with a struct
+// literal. Omitted `message` falls back to the comptime default.
+import "std/io"
+
+error NetworkError {
+  code int
+  message = "network down"
+}
+
+pub fn Main() void {
+  e := NetworkError{code: 42}
+  io.Println(e.message)
+  io.Println(e.code.String())
+}

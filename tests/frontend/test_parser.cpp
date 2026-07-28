@@ -435,15 +435,15 @@ TEST(ParserDeclaration, Dispatch_Enum) {
   EXPECT_EQ(e->fields[0].name.name, "Red");
   EXPECT_EQ(e->fields[1].name.name, "Green");
   EXPECT_EQ(e->fields[2].name.name, "Blue");
-  EXPECT_TRUE(e->fields[0].initializer.empty());
+  EXPECT_EQ(e->fields[0].value, nullptr);
 }
 
-TEST(ParserDeclaration, Enum_WithInitializer) {
+TEST(ParserDeclaration, Enum_WithBackingValue) {
   auto r = ParseResult::from(
       "pub enum Suits {\n"
-      "  Clubs {index: 1}\n"
+      "  Clubs = 1\n"
       "  Diamonds\n"
-      "  Hearts {index: 5, name: \"hearts\"}\n"
+      "  Hearts = 5\n"
       "}\n");
   EXPECT_TRUE(r.errors.empty());
   ASSERT_EQ(r.source_node().declarations.size(), 1);
@@ -454,12 +454,11 @@ TEST(ParserDeclaration, Enum_WithInitializer) {
   EXPECT_EQ(e->name.name, "Suits");
   ASSERT_EQ(e->fields.size(), 3);
   EXPECT_EQ(e->fields[0].name.name, "Clubs");
-  ASSERT_EQ(e->fields[0].initializer.size(), 1);
-  EXPECT_EQ(e->fields[0].initializer[0].name.name, "index");
-  EXPECT_TRUE(e->fields[1].initializer.empty());
-  ASSERT_EQ(e->fields[2].initializer.size(), 2);
-  EXPECT_EQ(e->fields[2].initializer[0].name.name, "index");
-  EXPECT_EQ(e->fields[2].initializer[1].name.name, "name");
+  ASSERT_NE(e->fields[0].value, nullptr);
+  EXPECT_NE(std::get_if<saga::IntegerLiteralNode>(&e->fields[0].value->data),
+            nullptr);
+  EXPECT_EQ(e->fields[1].value, nullptr);
+  ASSERT_NE(e->fields[2].value, nullptr);
 }
 
 TEST(ParserDeclaration, Dispatch_Interface) {
@@ -2485,6 +2484,41 @@ TEST_F(ParserDeclCoverageTest, StructDecl_EmptyBody) {
   EXPECT_EQ(s->name.name, "Empty");
   EXPECT_TRUE(s->members.empty());
   EXPECT_TRUE(s->embeds.empty());
+}
+
+TEST_F(ParserDeclCoverageTest, ErrorDecl_EmptyBody) {
+  auto r = ParseResult::from("error NetworkError {}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *e = r.decl_as<ErrorDeclNode>(0);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(e->name.name, "NetworkError");
+  EXPECT_EQ(e->message_default, nullptr);
+  EXPECT_TRUE(e->members.empty());
+}
+
+TEST_F(ParserDeclCoverageTest, ErrorDecl_MessageDefault) {
+  auto r = ParseResult::from(
+      "error NetworkError {\n  message = \"a network error occurred\"\n}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *e = r.decl_as<ErrorDeclNode>(0);
+  ASSERT_NE(e, nullptr);
+  EXPECT_NE(e->message_default, nullptr);
+  EXPECT_TRUE(e->members.empty());
+}
+
+TEST_F(ParserDeclCoverageTest, ErrorDecl_FieldsAndMessage) {
+  auto r = ParseResult::from(
+      "error NetworkError {\n  pub code int\n  message = \"boom\"\n}\n");
+  EXPECT_TRUE(r.errors.empty());
+  auto *e = r.decl_as<ErrorDeclNode>(0);
+  ASSERT_NE(e, nullptr);
+  EXPECT_NE(e->message_default, nullptr);
+  ASSERT_EQ(e->members.size(), 1u);
+  EXPECT_TRUE(e->members[0].is_public);
+  auto *f0 = std::get_if<saga::FieldSpecNode>(&e->members[0].member->data);
+  ASSERT_NE(f0, nullptr);
+  ASSERT_FALSE(f0->names.identifiers.empty());
+  EXPECT_EQ(f0->names.identifiers[0].name, "code");
 }
 
 TEST_F(ParserDeclCoverageTest, StructDecl_EmbedsOnly) {

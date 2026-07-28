@@ -1,0 +1,15 @@
+// Spec: an enum receiver method may return a struct built in a branching tail.
+import "std/io"
+
+struct Pt { x, y int }
+enum Kind { Origin Unit }
+
+fn (k Kind) Point() Pt {
+  if k.Int() == 0 { Pt{x: 0, y: 0} } else { Pt{x: 1, y: 1} }
+}
+
+pub fn Main() void {
+  p := Kind.Unit.Point()
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}

@@ -1,0 +1,28 @@
+// Rule: structural `==` needs a concrete layout, so two base-`error` values
+// (both captured by `or`) cannot be compared — narrow with `is` first.
+import "std/io"
+
+error A {
+  code int
+  message = "a {code}"
+}
+
+error B {
+  code int
+  message = "b {code}"
+}
+
+fn ea() int | error { return A{code: 1} }
+fn eb() int | error { return B{code: 2} }
+
+pub fn Main() void {
+  ea() or |e1| {
+    eb() or |e2| {
+      if e1 == e2 {
+        io.Println("eq")
+      }
+      0
+    }
+    0
+  }
+}

@@ -66,6 +66,19 @@ struct BoolLiteralNode {
   std::string_view literal; // "true" or "false"
 };
 
+// NullLiteral = "null" — the single value of type `void`.
+struct NullLiteralNode {
+  Span span;
+};
+
+// EnumShorthand = "." Identifier — an enum variant with the enum type inferred
+// from context (`c Color = .Red`, `case .Red`). It is an error where no target
+// enum type is known (`c := .Red`).
+struct EnumShorthandNode {
+  Span span;
+  IdentifierNode variant;
+};
+
 // IntegerLiteral = decimal | "0b" binary | "0x" hex | "0o" octal
 struct IntegerLiteralNode {
   Span span;
@@ -85,6 +98,10 @@ struct StringFragmentNode {
   Span span;
   std::string_view text;
 };
+
+// Strip the delimiters from a raw string-fragment token (a full `"..."`
+// literal or an interpolation piece) and resolve its escape sequences.
+std::string unescape_string_fragment(std::string_view raw);
 
 // StringLiteral = fragments of StringFragmentNode and interpolated expressions.
 // A plain string with no interpolation has a single StringFragmentNode child.
@@ -467,8 +484,7 @@ struct TypeDeclNode {
 struct EnumFieldNode {
   Span span;
   IdentifierNode name;
-  std::vector<FieldAssignmentNode>
-      initializer; // {name: expr, ...}; empty if none
+  NodePtr value; // optional `= Expression` backing value; null if none
 };
 
 // EnumDecl = [ "pub" ] "enum" Identifier "{" EnumField { terminal EnumField }
@@ -476,6 +492,7 @@ struct EnumFieldNode {
 struct EnumDeclNode {
   Span span;
   bool is_public;
+  bool string_backed; // `enum Name string { ... }`
   IdentifierNode name;
   std::vector<EnumFieldNode> fields;
 };
@@ -549,6 +566,21 @@ struct StructDeclNode {
   std::vector<StructMemberNode> members;
 };
 
+// ErrorDecl   = [ "pub" ] "error" Identifier "{" { terminal ErrorMember } "}"
+// ErrorMember = "message" "=" Expression | [ "pub" ] FieldSpec
+//
+// `message` is the mandatory string field; the analyzer auto-injects it when a
+// body omits it. message_default carries its optional comptime default
+// expression (`message = "..."`). members holds the extra fields, reusing
+// StructMemberNode for the `pub` flag + FieldSpec.
+struct ErrorDeclNode {
+  Span span;
+  bool is_public;
+  IdentifierNode name;
+  NodePtr message_default;               // `message = Expr`; nullptr if omitted
+  std::vector<StructMemberNode> members; // extra fields
+};
+
 // ===========================================================================
 // Section 7: Structural nodes
 // ===========================================================================
@@ -586,7 +618,8 @@ struct Node {
   using Variant = std::variant<
     // --- Leaves / atoms ---
     IdentifierNode,     IdentifierListNode,
-    BoolLiteralNode,    IntegerLiteralNode,  FloatLiteralNode,
+    BoolLiteralNode,    NullLiteralNode,     EnumShorthandNode,
+    IntegerLiteralNode,  FloatLiteralNode,
     StringLiteralNode,  StringFragmentNode,
     ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,
     StructLiteralNode,  FieldAssignmentNode,
@@ -614,7 +647,7 @@ struct Node {
 
     // --- Declarations ---
     ConstDeclNode,       TypeDeclNode,
-    EnumDeclNode,        EnumFieldNode,
+    EnumDeclNode,        EnumFieldNode,       ErrorDeclNode,
     FuncDeclNode,        ReceiverNode,        SignatureNode,
     ImportDeclNode,
     InterfaceDeclNode,   InterfaceFieldNode,

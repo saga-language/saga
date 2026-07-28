@@ -1,6 +1,6 @@
-pub enum State {
-  Stopped {name: "stop"}
-  Running {name: "run"}
+pub enum State string {
+  Stopped = "stop"
+  Running = "run"
 }
 
 pub fn StateName(s State) string {

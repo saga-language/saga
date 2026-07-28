@@ -1,0 +1,31 @@
+// A nominal error flows through a `T | error` return, is caught by `or`, and
+// the captured base-error value exposes `.message`. The union comes from an
+// if-expression whose branches are `NetworkError` and `int`.
+import "std/io"
+
+error NetworkError {
+  code int
+  message = "network down"
+}
+
+fn fetch(fail bool) int | error {
+  if fail {
+    NetworkError{code: 42}
+  } else {
+    200
+  }
+}
+
+pub fn Main() void {
+  a := fetch(true) or |err| {
+    io.Println(err.message)
+    -1
+  }
+  io.Println(a.String())
+
+  b := fetch(false) or |err| {
+    io.Println(err.message)
+    -1
+  }
+  io.Println(b.String())
+}

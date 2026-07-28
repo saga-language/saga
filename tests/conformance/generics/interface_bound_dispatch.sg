@@ -1,0 +1,21 @@
+// Spec: an interface names a `<T Iface>` generic constraint; a method of
+// the bound is callable on the type parameter and dispatches to each
+// concrete type it is instantiated with.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+pub fn (c Cat) Name() string { "cat" }
+
+struct Dog {}
+pub fn (d Dog) Name() string { "dog" }
+
+fn Describe<T Named>(x T) string { x.Name() }
+
+pub fn Main() void {
+  io.Println(Describe(Cat{}))
+  io.Println(Describe(Dog{}))
+}

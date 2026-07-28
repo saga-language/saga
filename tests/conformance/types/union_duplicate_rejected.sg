@@ -1,0 +1,4 @@
+// Rule: a union's alternatives must be unique; a repeated type is an error.
+type Bad = string | string
+
+pub fn Main() void {}

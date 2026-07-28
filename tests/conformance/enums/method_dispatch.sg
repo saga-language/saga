@@ -1,0 +1,29 @@
+// Spec: methods can be attached to enums (docs/language.md Enums). A receiver
+// method on an enum takes the enum value (an i64 ordinal) by value, may take
+// parameters, may return the enum's own type, and may call the built-in
+// accessors (.Int(), .String()).
+import "std/io"
+
+enum Dir {
+  North
+  East
+  South
+  West
+}
+
+fn (d Dir) Opposite() Dir {
+  switch d {
+    case Dir.North: Dir.South
+    case Dir.East:  Dir.West
+    case Dir.South: Dir.North
+    else:           Dir.East
+  }
+}
+
+fn (d Dir) StepsFrom(base int) int { base + d.Int() }
+
+pub fn Main() void {
+  d := Dir.East
+  io.Println(d.Opposite().String())   // West
+  io.Println(d.StepsFrom(100).String()) // 101
+}

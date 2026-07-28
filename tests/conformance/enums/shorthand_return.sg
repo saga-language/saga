@@ -1,0 +1,18 @@
+// Spec: `.Variant` resolves against the function's return type — in tail
+// position and in an explicit `return`.
+import "std/io"
+
+enum Color { Red Green Blue }
+
+fn tail() Color { .Blue }
+
+fn guarded(warm bool) Color {
+  if warm { return .Red }
+  .Green
+}
+
+pub fn Main() void {
+  io.Println(tail().String())
+  io.Println(guarded(true).String())
+  io.Println(guarded(false).String())
+}

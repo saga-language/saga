@@ -1,0 +1,11 @@
+// Spec: the compiler-provided enum methods (String, Int, From) are the enum's
+// own methods; redefining one is an error (unlike shadowing a method inherited
+// from a nominal alias's underlying type).
+enum Color {
+  Red
+  Green
+}
+
+pub fn (c Color) String() string { "custom" }
+
+pub fn Main() void {}

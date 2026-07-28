@@ -1,0 +1,31 @@
+// An error bound to a local before it enters a `T | error` union is boxed as
+// a pointer, not copied by value — regression guard for the union-payload
+// overflow (a by-value copy would smash the 8-byte payload slot).
+import "std/io"
+
+error DiskError {
+  path string
+  message = "disk full"
+}
+
+fn write(ok bool) int | error {
+  e := DiskError{path: "/tmp"}
+  if ok {
+    return 1
+  }
+  return e
+}
+
+pub fn Main() void {
+  a := write(false) or |err| {
+    io.Println(err.message)
+    -1
+  }
+  io.Println(a.String())
+
+  b := write(true) or |err| {
+    io.Println(err.message)
+    -1
+  }
+  io.Println(b.String())
+}

@@ -3,131 +3,131 @@
 
 pub enum Number {
   // File I/O
-  Read            {index: 0}
-  Write           {index: 1}
-  Open            {index: 2}
-  Close           {index: 3}
-  Lseek           {index: 8}
-  Pread64         {index: 17}
-  Pwrite64        {index: 18}
-  Readv           {index: 19}
-  Writev          {index: 20}
+  Read            = 0
+  Write           = 1
+  Open            = 2
+  Close           = 3
+  Lseek           = 8
+  Pread64         = 17
+  Pwrite64        = 18
+  Readv           = 19
+  Writev          = 20
 
   // File metadata
-  Stat            {index: 4}
-  Fstat           {index: 5}
-  Lstat           {index: 6}
-  Access          {index: 21}
-  Chmod           {index: 90}
-  Fchmod          {index: 91}
-  Chown           {index: 92}
-  Fchown          {index: 93}
-  Lchown          {index: 94}
-  Umask           {index: 95}
+  Stat            = 4
+  Fstat           = 5
+  Lstat           = 6
+  Access          = 21
+  Chmod           = 90
+  Fchmod          = 91
+  Chown           = 92
+  Fchown          = 93
+  Lchown          = 94
+  Umask           = 95
 
   // File system
-  Link            {index: 86}
-  Unlink          {index: 87}
-  Symlink         {index: 88}
-  Readlink        {index: 89}
-  Rename          {index: 82}
-  Mkdir           {index: 83}
-  Rmdir           {index: 84}
-  Truncate        {index: 76}
-  Ftruncate       {index: 77}
+  Link            = 86
+  Unlink          = 87
+  Symlink         = 88
+  Readlink        = 89
+  Rename          = 82
+  Mkdir           = 83
+  Rmdir           = 84
+  Truncate        = 76
+  Ftruncate       = 77
 
   // Directory-relative operations (*at family)
-  Openat          {index: 257}
-  Mkdirat         {index: 258}
-  Fchownat        {index: 260}
-  Fstatat         {index: 262}
-  Unlinkat        {index: 263}
-  Renameat        {index: 264}
-  Linkat          {index: 265}
-  Symlinkat       {index: 266}
-  Readlinkat      {index: 267}
-  Fchmodat        {index: 268}
+  Openat          = 257
+  Mkdirat         = 258
+  Fchownat        = 260
+  Fstatat         = 262
+  Unlinkat        = 263
+  Renameat        = 264
+  Linkat          = 265
+  Symlinkat       = 266
+  Readlinkat      = 267
+  Fchmodat        = 268
 
   // Directory
-  Getcwd          {index: 79}
-  Chdir           {index: 80}
-  Fchdir          {index: 81}
-  Getdents        {index: 217}
+  Getcwd          = 79
+  Chdir           = 80
+  Fchdir          = 81
+  Getdents        = 217
 
   // File descriptor
-  Dup             {index: 32}
-  Dup2            {index: 33}
-  Dup3            {index: 292}
-  Pipe            {index: 22}
-  Pipe2           {index: 293}
-  Fcntl           {index: 72}
-  Flock           {index: 73}
-  Fsync           {index: 74}
-  Fdatasync       {index: 75}
-  Ioctl           {index: 16}
+  Dup             = 32
+  Dup2            = 33
+  Dup3            = 292
+  Pipe            = 22
+  Pipe2           = 293
+  Fcntl           = 72
+  Flock           = 73
+  Fsync           = 74
+  Fdatasync       = 75
+  Ioctl           = 16
 
   // Memory
-  Mmap            {index: 9}
-  Mprotect        {index: 10}
-  Munmap          {index: 11}
-  Brk             {index: 12}
-  Mremap          {index: 25}
-  Madvise         {index: 28}
+  Mmap            = 9
+  Mprotect        = 10
+  Munmap          = 11
+  Brk             = 12
+  Mremap          = 25
+  Madvise         = 28
 
   // Process
-  Fork            {index: 57}
-  Vfork           {index: 58}
-  Clone           {index: 56}
-  Execve          {index: 59}
-  Exit            {index: 60}
-  Exit_group      {index: 231}
-  Getpid          {index: 39}
-  Getppid         {index: 110}
-  Getuid          {index: 102}
-  Geteuid         {index: 107}
-  Getgid          {index: 104}
-  Getegid         {index: 108}
-  Wait4           {index: 61}
+  Fork            = 57
+  Vfork           = 58
+  Clone           = 56
+  Execve          = 59
+  Exit            = 60
+  Exit_group      = 231
+  Getpid          = 39
+  Getppid         = 110
+  Getuid          = 102
+  Geteuid         = 107
+  Getgid          = 104
+  Getegid         = 108
+  Wait4           = 61
 
   // Signals
-  Kill            {index: 62}
-  Sigaction       {index: 13}
-  Sigprocmask     {index: 14}
-  Sigreturn       {index: 15}
+  Kill            = 62
+  Sigaction       = 13
+  Sigprocmask     = 14
+  Sigreturn       = 15
 
   // Network
-  Socket          {index: 41}
-  Connect         {index: 42}
-  Accept          {index: 43}
-  Accept4         {index: 288}
-  Bind            {index: 49}
-  Listen          {index: 50}
-  Sendto          {index: 44}
-  Recvfrom        {index: 45}
-  Sendmsg         {index: 46}
-  Recvmsg         {index: 47}
-  Shutdown        {index: 48}
-  Setsockopt      {index: 54}
-  Getsockopt      {index: 55}
-  Getsockname     {index: 51}
-  Getpeername     {index: 52}
+  Socket          = 41
+  Connect         = 42
+  Accept          = 43
+  Accept4         = 288
+  Bind            = 49
+  Listen          = 50
+  Sendto          = 44
+  Recvfrom        = 45
+  Sendmsg         = 46
+  Recvmsg         = 47
+  Shutdown        = 48
+  Setsockopt      = 54
+  Getsockopt      = 55
+  Getsockname     = 51
+  Getpeername     = 52
 
   // I/O multiplexing
-  Poll            {index: 7}
-  Select          {index: 23}
-  Epoll_create1   {index: 291}
-  Epoll_ctl       {index: 233}
-  Epoll_wait      {index: 232}
+  Poll            = 7
+  Select          = 23
+  Epoll_create1   = 291
+  Epoll_ctl       = 233
+  Epoll_wait      = 232
 
   // Time
-  Clock_gettime   {index: 228}
-  Clock_nanosleep {index: 230}
-  Gettimeofday    {index: 96}
-  Nanosleep       {index: 35}
+  Clock_gettime   = 228
+  Clock_nanosleep = 230
+  Gettimeofday    = 96
+  Nanosleep       = 35
 
   // Misc
-  Getrandom       {index: 318}
-  Prlimit64       {index: 302}
+  Getrandom       = 318
+  Prlimit64       = 302
 }
 
 // Linux errno messages (errno-base.h, errno.h)

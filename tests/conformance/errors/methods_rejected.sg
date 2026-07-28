@@ -1,0 +1,8 @@
+// Rule: methods cannot be attached to error types (they are pure data).
+error NetworkError {
+  code int
+}
+
+fn (e NetworkError) Tag() int { e.code }
+
+pub fn Main() void {}

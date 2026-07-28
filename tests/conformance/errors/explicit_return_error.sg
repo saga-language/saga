@@ -1,0 +1,29 @@
+// An explicit `return` of a nominal error through `T | error`, with an
+// explicit message override, is caught by `or` and read via `.message`.
+import "std/io"
+
+error ParseError {
+  line int
+  message = "parse failed"
+}
+
+fn parse(ok bool) int | error {
+  if ok {
+    return 7
+  }
+  return ParseError{line: 3, message: "unexpected token"}
+}
+
+pub fn Main() void {
+  a := parse(false) or |err| {
+    io.Println(err.message)
+    -1
+  }
+  io.Println(a.String())
+
+  b := parse(true) or |err| {
+    io.Println("unreachable")
+    -1
+  }
+  io.Println(b.String())
+}

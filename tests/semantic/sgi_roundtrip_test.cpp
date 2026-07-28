@@ -209,20 +209,6 @@ TEST(SgiRoundtrip, FuncVariadic) {
   EXPECT_TRUE(fi.is_variadic);
 }
 
-TEST(SgiRoundtrip, EnumWithFields) {
-  auto e = make_enum_type(
-      "Shape",
-      {EnumVariant{"Circle", {FieldInfo{"r", make_float_type(), false}}},
-       EnumVariant{"Rect",
-                   {FieldInfo{"w", make_float_type(), false},
-                    FieldInfo{"h", make_float_type(), false}}}});
-  auto parsed = roundtrip("geo", {{"", "Shape", e, true}});
-  auto &info = std::get<EnumTypeInfo>(parsed.exports[0].type->detail);
-  ASSERT_EQ(info.variants.size(), 2u);
-  EXPECT_EQ(info.variants[0].fields.size(), 1u);
-  EXPECT_EQ(info.variants[1].fields.size(), 2u);
-}
-
 TEST(SgiRoundtrip, ConstScalarAndComposite) {
   auto map_t = make_map_type(make_string_type(), make_int_type());
   auto arr_t = make_array_type(make_float_type());

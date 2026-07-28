@@ -46,7 +46,7 @@ enum class TypeKind : uint8_t {
   TypeParam,   // unresolved generic parameter, e.g. T
   Alias,       // type alias (const MyType = Int)
   Module,      // package/module (from import)
-  Error,       // sentinel for error-recovery (propagates silently)
+  Invalid,     // sentinel for a type-check failure (propagates silently)
 };
 
 // ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ struct FloatType {
 };
 
 struct StringType {};
-struct ErrorType {};      // error-recovery sentinel
+struct InvalidType {};      // type-check-failure sentinel
 
 struct ArrayTypeInfo {
   TypePtr element;
@@ -156,18 +156,20 @@ struct StructTypeInfo {
   std::vector<TypePtr> embeds;                 // mixin / embedded types
   std::vector<TypeParam> type_params;          // generic parameters
   std::vector<TypePtr> type_args;              // concrete arguments (instantiated)
+  bool is_error = false; // `error Name {...}` — a nominal error, struct-backed
 };
 
 struct EnumVariant {
   std::string name;
-  std::vector<FieldInfo> fields;               // associated data
   int64_t index = -1;                          // discriminant value (-1 = auto)
+  std::string string_value;                    // backing string; empty ⇒ use name
 };
 
 struct EnumTypeInfo {
   std::string name;
   std::string origin_package;
   std::vector<EnumVariant> variants;
+  bool string_backed = false;                  // `enum Name string { ... }`
 };
 
 struct InterfaceTypeInfo {
@@ -232,7 +234,7 @@ struct Type {
     TypeParamInfo,
     AliasTypeInfo,
     ModuleTypeInfo,
-    ErrorType
+    InvalidType
   >;
   // clang-format on
 
@@ -265,7 +267,7 @@ TypePtr make_float_type(uint8_t bits = 0);
 /// literal before context-driven materialization.
 TypePtr make_untyped_float_type();
 TypePtr make_string_type();
-TypePtr make_error_type();
+TypePtr make_invalid_type();
 
 TypePtr make_array_type(TypePtr element);
 TypePtr make_map_type(TypePtr key, TypePtr value);
@@ -279,7 +281,8 @@ TypePtr make_struct_type(const std::string &name,
                          std::string origin_package = "");
 TypePtr make_enum_type(const std::string &name,
                        std::vector<EnumVariant> variants = {},
-                       std::string origin_package = "");
+                       std::string origin_package = "",
+                       bool string_backed = false);
 TypePtr make_interface_type(const std::string &name,
                             std::vector<MethodInfo> methods = {},
                             std::vector<TypeParam> type_params = {},
@@ -300,7 +303,21 @@ TypePtr make_module_type(const std::string &name,
 // ---------------------------------------------------------------------------
 
 /// True if `t` is the error-recovery sentinel.
-bool is_error_type(const TypePtr &t);
+bool is_invalid_type(const TypePtr &t);
+
+/// True if a value of `t` is an error handled by `or` — any struct carrying
+/// the `is_error` marker (the abstract base `error`, the built-in `Missing`
+/// and `Trapped`, and every user `error Name {}`). Not the same as
+/// `is_invalid_type` (the unresolved-type sentinel).
+bool is_error_valued(const TypePtr &t);
+
+/// True if `t` is the abstract base `error` — the widening target every
+/// concrete error value assigns into. Distinguished from concrete errors by
+/// its reserved name.
+bool is_abstract_error(const TypePtr &t);
+
+/// True if a value of `t` is an enum (after peeling nominal aliases).
+bool is_enum_valued(const TypePtr &t);
 
 /// True if `t` is a numeric type (Int or Float).
 bool is_numeric(const TypePtr &t);
@@ -323,6 +340,9 @@ std::string type_to_string(const TypePtr &t);
 /// Unwrap alias types to get the underlying concrete type.
 /// Returns the input if it is not an alias.
 TypePtr unwrap_alias(const TypePtr &t);
+
+/// Unwrap only structural (transparent) aliases; a nominal alias stays as-is.
+TypePtr unwrap_structural_alias(const TypePtr &t);
 
 /// Get the TypeKind of the underlying type, unwrapping aliases.
 TypeKind underlying_kind(const TypePtr &t);
@@ -351,6 +371,11 @@ inline std::string origin_of(const TypePtr &t) {
 
 /// Structural type equality (recursive).
 bool types_equal(const TypePtr &a, const TypePtr &b);
+
+/// Flatten a union's alternatives: splice the members of any alternative that is
+/// (through structural aliases) itself a union, preserving order. No dedupe.
+std::vector<TypePtr>
+flatten_union_alternatives(const std::vector<TypePtr> &alts);
 
 /// True if `source` can be assigned to a location of type `target`.
 /// Handles union widening, interface satisfaction, etc.

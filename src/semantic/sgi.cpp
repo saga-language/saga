@@ -122,7 +122,7 @@ std::string type_to_sgi(const TypePtr &t) {
   }
   case TypeKind::String:
     return "String";
-  case TypeKind::Error:
+  case TypeKind::Invalid:
     return "Void"; // error types shouldn't appear in .sgi
 
   case TypeKind::Array: {
@@ -304,32 +304,23 @@ static void write_enum_export(std::ostringstream &os, const std::string &name,
                                const TypePtr &t, const std::string &doc) {
   write_doc(os, doc);
   auto &info = std::get<EnumTypeInfo>(t->detail);
-  os << "enum " << name << " {";
+  os << "enum " << name;
+  if (info.string_backed)
+    os << " string";
+  os << " {";
 
   for (size_t i = 0; i < info.variants.size(); ++i) {
+    auto &v = info.variants[i];
     if (i > 0)
       os << ";";
-    os << " " << info.variants[i].name;
-    // Emit variant data: index and/or associated fields.
-    bool has_data_fields = false;
-    for (auto &f : info.variants[i].fields) {
-      if (f.name != "index") { has_data_fields = true; break; }
-    }
-    if (has_data_fields || info.variants[i].index >= 0) {
+    os << " " << v.name;
+    if (v.index >= 0 || !v.string_value.empty()) {
       os << "(";
-      bool first = true;
-      // Emit explicit index if present.
-      if (info.variants[i].index >= 0) {
-        os << "#" << info.variants[i].index;
-        first = false;
-      }
-      // Emit associated data fields (skip "index" metadata fields).
-      for (auto &f : info.variants[i].fields) {
-        if (f.name == "index") continue;
-        if (!first) os << ", ";
-        if (!f.name.empty()) os << f.name << " ";
-        os << type_to_sgi(f.type);
-        first = false;
+      if (v.index >= 0)
+        os << "#" << v.index;
+      if (!v.string_value.empty()) {
+        if (v.index >= 0) os << ", ";
+        os << "=\"" << v.string_value << "\"";
       }
       os << ")";
     }
@@ -850,13 +841,17 @@ struct SgiParser {
     if (name == "Comparison")
       return make_enum_type(
           "Comparison",
-          {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
-           EnumVariant{"Greater", {}}});
-    if (name == "Error")
-      return make_interface_type(
-          "Error",
-          {MethodInfo{"Message", make_func_type({}, {make_string_type()}),
-                      true}});
+          {EnumVariant{"Less"}, EnumVariant{"Equal"}, EnumVariant{"Greater"}});
+    if (name == "error") {
+      // The abstract base error: struct-backed with the is_error marker so
+      // is_error_valued() strips it from unions (matches builtins.error_base).
+      auto t = make_struct_type(
+          "error",
+          {FieldInfo{"type_id", make_int_type(64, true), false, nullptr},
+           FieldInfo{"message", make_string_type(), true, nullptr}});
+      std::get<StructTypeInfo>(t->detail).is_error = true;
+      return t;
+    }
 
     // Bare identifier matching a type-param in scope → TypeParam.
     if (auto tp = lookup_type_param(name))
@@ -1104,6 +1099,15 @@ struct SgiParser {
   SgiExport parse_enum_decl(const std::string &doc) {
     std::string name = read_word();
     skip_whitespace();
+    bool string_backed = false;
+    {
+      size_t saved = pos;
+      if (read_word() == "string")
+        string_backed = true;
+      else
+        pos = saved;
+    }
+    skip_whitespace();
     if (!at_end() && content[pos] == '{')
       ++pos;
   // (Enum does not currently support generic type parameters.)
@@ -1129,7 +1133,7 @@ struct SgiParser {
       }
 
       int64_t variant_index = -1;
-      std::vector<FieldInfo> vfields;
+      std::string string_value;
       skip_whitespace();
       if (!at_end() && content[pos] == '(') {
         ++pos;
@@ -1142,40 +1146,31 @@ struct SgiParser {
           while (!at_end() && std::isdigit(content[pos])) ++pos;
           variant_index = std::stoll(content.substr(start, pos - start));
           skip_whitespace();
-          // Skip comma after index if fields follow.
+          // Skip comma after index if more follows.
           if (!at_end() && content[pos] == ',')
             ++pos;
         }
-        // Parse remaining field declarations.
-        while (true) {
+        // Check for ="backing" string value.
+        skip_whitespace();
+        if (!at_end() && content[pos] == '=') {
+          ++pos;
           skip_whitespace();
-          if (at_end() || content[pos] == ')')
-            break;
-          size_t saved = pos;
-          std::string maybe_name = read_word();
-          skip_whitespace();
-          if (!at_end() && content[pos] != ')' && content[pos] != ',' &&
-              !maybe_name.empty() && std::isupper(maybe_name[0]) == false) {
-            auto ft = parse_type();
-            vfields.push_back({maybe_name, ft, false});
-          } else {
-            pos = saved;
-            auto ft = parse_type();
-            vfields.push_back({"", ft, false});
+          if (!at_end() && content[pos] == '"') {
+            ++pos;
+            size_t start = pos;
+            while (!at_end() && content[pos] != '"') ++pos;
+            string_value = content.substr(start, pos - start);
+            if (!at_end()) ++pos; // closing quote
           }
-          skip_whitespace();
-          if (at_end() || content[pos] != ',')
-            break;
-          ++pos;
         }
-        if (!at_end() && content[pos] == ')')
-          ++pos;
+        while (!at_end() && content[pos] != ')') ++pos;
+        if (!at_end()) ++pos;
       }
 
-      variants.push_back({vname, std::move(vfields), variant_index});
+      variants.push_back({vname, variant_index, std::move(string_value)});
     }
 
-    auto t = make_enum_type(name, std::move(variants));
+    auto t = make_enum_type(name, std::move(variants), "", string_backed);
     return {doc, name, t};
   }
 

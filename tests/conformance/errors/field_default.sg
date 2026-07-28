@@ -1,0 +1,14 @@
+// Extra fields carry comptime defaults like struct fields; an all-defaulted
+// error can be built with an empty literal.
+import "std/io"
+
+error RateLimited {
+  retries int = 3
+  message = "slow down"
+}
+
+pub fn Main() void {
+  e := RateLimited{}
+  io.Println(e.message)
+  io.Println(e.retries.String())
+}

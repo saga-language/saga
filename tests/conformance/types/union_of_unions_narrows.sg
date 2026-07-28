@@ -1,0 +1,21 @@
+// A union composed through structural aliases flattens into a unique set and
+// works at runtime — each flattened alternative narrows with `is`.
+import "std/io"
+
+type Num = int | float
+type Val = string | Num
+
+pub fn Main() void {
+  a Val = 7
+  if a is int {
+    io.Println("a int")
+  }
+  b Val = "hi"
+  if b is string {
+    io.Println("b string")
+  }
+  c Val = 2.5
+  if c is float {
+    io.Println("c float")
+  }
+}

@@ -1,0 +1,16 @@
+// Spec: a nominal type "inherits the underlying's methods ... and you can add
+// or shadow methods of your own" (docs/language.md). Shadowing a method
+// inherited from the underlying type is permitted (it lives on a different
+// type); this is distinct from redefining the alias's own method. Here the
+// alias's String() shadows int's inherited String() — a plain int would print
+// "7", the shadow prints "uid".
+import "std/io"
+
+type UserID int
+
+pub fn (u UserID) String() string { "uid" }
+
+pub fn Main() void {
+  uid UserID = 7
+  io.Println(uid.String())
+}

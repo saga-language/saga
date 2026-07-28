@@ -1,0 +1,11 @@
+// Spec: `.Variant` shorthand — when the target enum type is known (here from the
+// LHS annotation), the enum name may be omitted (docs/language.md Enums).
+import "std/io"
+
+enum Color { Red Green Blue }
+
+pub fn Main() void {
+  c Color = .Green
+  io.Println(c.String())
+  io.Println(c.Int().String())
+}

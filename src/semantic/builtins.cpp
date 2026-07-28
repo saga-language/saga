@@ -34,12 +34,23 @@ void BuiltinTypes::init() {
   float32_type = make_float_type(32);
   float64_type = make_float_type(64);
 
-  // -- Error interface: Error { Message() String } -------------------------
-  error_iface = make_interface_type(
-      "Error",
-      {MethodInfo{"Message", make_func_type({}, {string_type}), true}});
+  // -- Errors: struct-backed, marked, boxed at runtime ---------------------
+  // Every error carries the { type_id, message } prefix; concrete errors
+  // append their own fields. `error` is the abstract base every error widens
+  // to; `Missing`/`Trapped` are the built-in errors.
+  auto make_error_struct = [&](const std::string &name) {
+    auto t = make_struct_type(
+        name,
+        {FieldInfo{"type_id", int64_type, /*is_public=*/false, nullptr},
+         FieldInfo{"message", string_type, /*is_public=*/true, nullptr}});
+    std::get<StructTypeInfo>(t->detail).is_error = true;
+    return t;
+  };
+  error_base = make_error_struct("error");
+  missing_type = make_error_struct("Missing");
+  trapped_type = make_error_struct("Trapped");
 
-  // -- Iterable interface: |T| Iterable { Next() T | Error } --------------
+  // -- Iterable interface: |T| Iterable { Next() T | error } --------------
   // Registered with a single type parameter; concrete instantiations are
   // produced by substitution during generic resolution.
   iterable_iface = make_interface_type(
@@ -48,20 +59,14 @@ void BuiltinTypes::init() {
                   make_func_type(
                       {},
                       {make_union_type(
-                          {make_type_param(0, "T"), error_iface})}),
+                          {make_type_param(0, "T"), error_base})}),
                   true}},
       {TypeParam{0, "T"}});
-
-  // -- Missing struct (implements Error) -----------------------------------
-  missing_type = make_struct_type(
-      "Missing", /*fields=*/{},
-      {MethodInfo{"Message", make_func_type({}, {string_type}), true}});
 
   // -- Comparison enum { Less, Equal, Greater } ----------------------------
   comparison_type = make_enum_type(
       "Comparison",
-      {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
-       EnumVariant{"Greater", {}}});
+      {EnumVariant{"Less"}, EnumVariant{"Equal"}, EnumVariant{"Greater"}});
 
   // -- Task (returned from spawn) ------------------------------------------
   task_type = make_struct_type(
@@ -72,7 +77,7 @@ void BuiltinTypes::init() {
        MethodInfo{"Wait",
                   make_func_type(
                       {}, {make_union_type(
-                              {make_type_param(0, "T"), error_iface})}),
+                              {make_type_param(0, "T"), error_base})}),
                   true}},
       {TypeParam{0, "T"}});
 
@@ -89,7 +94,7 @@ void BuiltinTypes::init() {
       {TypeParam{0, "T"}});
 
   // -- Error-recovery sentinel (compiler internal) -------------------------
-  error_type = make_error_type();
+  invalid_type = make_invalid_type();
 }
 
 // ===========================================================================
@@ -159,7 +164,7 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   reg_type("float64", types.float64_type);
 
   // -- Internal interfaces -------------------------------------------------
-  reg_type("error", types.error_iface);
+  reg_type("error", types.error_base);
   reg_type("Iterable", types.iterable_iface);
 
   // -- Internal structs ----------------------------------------------------
@@ -197,12 +202,12 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_trap", SymbolKind::Function,
       make_func_type({types.string_type}, {types.void_type})));
 
-  // intrinsic_syscall(num: Int, args: [Int]) -> Int | Error
+  // intrinsic_syscall(num: Int, args: [Int]) -> Int | error
   // Raw syscall invocation used by std/sys.
   global_scope->declare(Symbol::builtin(
       "intrinsic_syscall", SymbolKind::Function,
       make_func_type({types.int_type, make_array_type(types.int_type)},
-                     {make_union_type({types.int_type, types.error_iface})})));
+                     {make_union_type({types.int_type, types.error_base})})));
 
   // intrinsic_ptr(value: String | [Byte]) -> Int
   // Returns the raw memory address of the backing buffer.

@@ -12,6 +12,7 @@
 #include <llvm/IR/Module.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -103,9 +104,17 @@ struct CodeGen {
   /// Maps canonical union type string → LLVM struct type { i8 tag, [N x i8] }.
   std::unordered_map<std::string, llvm::StructType *> union_llvm_types;
 
+  /// Reverse of union_llvm_types: LLVM struct → semantic union type, so the
+  /// sret return paths can recover a union's alternatives from its layout.
+  std::unordered_map<llvm::Type *, TypePtr> union_sem_by_llvm;
+
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
+
+  // Field-less, const-message error boxes lower to one shared rodata global
+  // (keyed by type_id + message), so `E{}` / a `Missing` miss costs 0 allocs.
+  std::unordered_map<std::string, llvm::GlobalVariable *> error_singletons;
 
   // ── Local variable storage (per-function) ────────────────────────────
 
@@ -281,6 +290,10 @@ private:
   /// store.
   std::string struct_cache_key(const StructTypeInfo &info) const;
 
+  /// Stable per-error-type id stamped into a box's field 0. Built-in errors
+  /// use reserved ids; user errors use an FNV-1a hash of the mangled name.
+  uint64_t error_type_id(const StructTypeInfo &info) const;
+
   /// Saga key-kind tags matching the runtime's saga_runtime_key_kind enum.
   /// Encoded as the i64 third argument to saga_map_new.  USER means the
   /// runtime dispatches through the ops callback table; every other value
@@ -431,6 +444,14 @@ private:
                                  const std::vector<llvm::Type *> &param_ll,
                                  bool is_main);
 
+  /// Emit the return for a fallen-through function tail (no explicit return).
+  /// Shared by free functions and receiver methods so struct/sret, union
+  /// wrapping, and scalar returns lower identically regardless of receiver.
+  /// `has_sret` means the return is lowered through the sret pointer (arg 0).
+  void emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
+                        llvm::Value *tail_val, const BlockNode &block,
+                        bool has_sret);
+
   /// Emit one monomorphised specialisation of a generic free function.
   /// Creates (or returns) an LLVM Function with LinkOnceODR linkage whose
   /// signature is derived from `bindings`.  Runs the body under a fresh
@@ -449,6 +470,9 @@ private:
   // ── Statement emitters ───────────────────────────────────────────────
 
   void emit_var_decl(const VarDeclNode &node);
+  llvm::Value *emit_empty_array(const TypePtr &array_sem);
+  llvm::Value *emit_empty_map(const TypePtr &map_sem);
+  void emit_union_leftmost_zero(llvm::Value *alloca, const TypePtr &union_sem);
   void emit_decl_assign(const DeclAssignNode &node);
   void emit_assign(const AssignNode &node);
   void emit_return(const ReturnNode &node);
@@ -461,6 +485,9 @@ private:
   llvm::Value *emit_int_literal(const IntegerLiteralNode &node);
   llvm::Value *emit_float_literal(const FloatLiteralNode &node);
   llvm::Value *emit_bool_literal(const BoolLiteralNode &node);
+  llvm::Value *emit_null_literal(const NullLiteralNode &node);
+  llvm::Value *emit_enum_shorthand(const EnumShorthandNode &node,
+                                   const Node &outer);
   llvm::Value *emit_string_literal(const StringLiteralNode &node);
   llvm::Value *emit_call_expr(const CallExprNode &node, const Node &parent);
   llvm::Value *emit_identifier(const IdentifierNode &node);
@@ -477,8 +504,22 @@ private:
                                      const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_is_expr(const IsExpr &node);
+  llvm::Value *emit_error_is(const IsExpr &node, const TypePtr &value_sem,
+                             const TypePtr &test_sem);
+  llvm::Value *emit_union_is(const IsExpr &node, const TypePtr &value_sem,
+                             const TypePtr &test_sem);
+  llvm::Value *emit_error_equality(const BinaryExprNode &node,
+                                   const TypePtr &lhs_sem,
+                                   const TypePtr &rhs_sem);
+  llvm::Value *emit_error_fields_eq(llvm::Value *a, llvm::Value *b,
+                                    const TypePtr &layout);
+  llvm::Value *emit_struct_fields_eq(llvm::Value *a, llvm::Value *b,
+                                     const TypePtr &struct_sem, size_t start);
+  llvm::Value *emit_value_eq(const TypePtr &field_type, llvm::Type *field_ll,
+                             llvm::Value *a_gep, llvm::Value *b_gep);
+  llvm::Function *get_or_declare_memcmp();
   llvm::Value *emit_group_expr(const GroupExprNode &node);
-  llvm::Value *emit_if_expr(const IfExprNode &node);
+  llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
 
   // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
@@ -525,6 +566,17 @@ private:
   /// explicit literal fields, which override.
   void apply_struct_field_defaults(llvm::Value *struct_ptr,
                                    const TypePtr &struct_sem);
+  void emit_error_message_default(llvm::Value *box, const TypePtr &sem,
+                                  const StructTypeInfo &info);
+  /// A field-less error with a compile-time-constant message lowers to one
+  /// shared rodata global {type_id, message} — no heap allocation. Returns the
+  /// cached global pointer.
+  llvm::Value *emit_error_singleton(const StructTypeInfo &info,
+                                    const std::string &message);
+  /// The constant message text of an error literal (explicit or default), or
+  /// nullopt when the message is a runtime expression / interpolation.
+  std::optional<std::string> const_error_message(const StructLiteralNode &node,
+                                                 const StructTypeInfo &info);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
@@ -563,11 +615,45 @@ private:
   llvm::Value *emit_resolved_call(llvm::Function *callee,
                                   const TypePtr &func_type,
                                   const CallExprNode &node);
+  /// Emit a receiver-method call `callee(self, args...)`. `recv_sem` selects
+  /// the self ABI — struct/alias receivers pass a pointer (an SSA struct
+  /// value is spilled to an alloca), scalar receivers pass the value. Handles
+  /// sret return slots and byval struct/union arg attrs (from `method_fi`).
+  /// Shared by the struct, intrinsic, and union-dispatch receiver paths.
+  llvm::Value *emit_receiver_call(llvm::Function *callee,
+                                  const TypePtr &recv_sem,
+                                  llvm::Value *recv_value,
+                                  const std::vector<llvm::Value *> &arg_vals,
+                                  const FuncTypeInfo *method_fi);
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,
                                        const TypePtr &obj_sem,
                                        llvm::Value *obj);
+  /// Dispatch a method call on a union receiver without narrowing: switch on
+  /// the union tag and, per member, extract the payload and call that
+  /// member's `method` (via emit_receiver_call), PHI-ing the common result.
+  /// The analyzer has already verified every member satisfies a shared
+  /// interface declaring `method`.
+  llvm::Value *emit_union_method_dispatch(const CallExprNode &node,
+                                          const std::string &method,
+                                          const TypePtr &union_sem,
+                                          llvm::Value *union_ptr);
+  /// Resolve (forward-declaring if needed) the callee for a concrete union
+  /// member's `method` and report its signature via `out_sig`. Handles struct
+  /// members (pointer self) and scalar members (value self); null otherwise.
+  llvm::Function *resolve_member_method_callee(const TypePtr &member_sem,
+                                               const std::string &method,
+                                               const FuncTypeInfo **out_sig);
+  /// Lazily emit (once per enum) a `(i64 ordinal) -> string` function mapping
+  /// each variant's ordinal to its display string as a rodata constant. Used
+  /// by enum `.String()`.
+  llvm::Function *enum_string_fn(const TypePtr &enum_sem);
+  /// Lower `Enum.From(value)`: reverse-lookup the variant whose backing value
+  /// matches (ordinal for int enums, backing string for string enums) and
+  /// yield `Enum | error` — the enum on a hit, a `Missing` singleton on a miss.
+  llvm::Value *emit_enum_from(const CallExprNode &node,
+                              const TypePtr &enum_sem);
 
   /// Get a GEP to a struct field. Returns {ptr to field, field LLVM type}.
   /// Promoted-field access (the field lives on an embedded struct) is
@@ -651,10 +737,24 @@ private:
   llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
                                 const TypePtr &union_type);
 
-  /// Build a Missing-as-Error iface fat pointer carrying `message`.  Returns
-  /// the i8* result of `saga_missing_new`, suitable for use as the err
-  /// payload of a `T | Error` union.
-  llvm::Value *emit_missing_fat_ptr(const std::string &message);
+  /// Produce a pointer to union memory holding `val`: an already-union pointer
+  /// passes through (converting if its layout differs); a concrete/error member
+  /// value is wrapped. Returns null if it can't place the value.
+  llvm::Value *as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
+                            const TypePtr &union_sem);
+
+  /// Convert a union value to a different union type, remapping each
+  /// alternative's tag and copying its payload. Returns a fresh dst union ptr.
+  llvm::Value *emit_union_convert(llvm::Value *src_ptr, const TypePtr &src_sem,
+                                  const TypePtr &dst_sem);
+
+  /// Recover the semantic union type from its cached LLVM struct (populated by
+  /// get_union_llvm_type), or null if unknown.
+  TypePtr union_sem_for_llvm(llvm::Type *st) const;
+
+  /// Build a Missing error box carrying `message`. Returns the pointer from
+  /// `saga_missing_new`, suitable for use as the err payload of a
+  /// `T | error` union.
 
   /// Extract a concrete value from a union alloca given the expected alt type.
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,

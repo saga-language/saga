@@ -1,0 +1,21 @@
+// A union that holds a struct member stores it inline; narrowing the union
+// in a type switch and reading a field of the narrowed struct returns the
+// struct's own data (not a stray pointer).
+import "std/io"
+
+struct Circle { r int }
+struct Square { s int }
+
+fn side(x Circle | Square) int {
+  switch x {
+    case Circle: x.r
+    case Square: x.s
+  }
+}
+
+pub fn Main() void {
+  a Circle | Square = Circle{r: 7}
+  b Circle | Square = Square{s: 42}
+  io.Println("{side(a)}")
+  io.Println("{side(b)}")
+}

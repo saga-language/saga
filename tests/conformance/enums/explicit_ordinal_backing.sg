@@ -1,0 +1,26 @@
+// Spec: an int-backed enum variant may set its ordinal with `= N`; later
+// variants without an explicit value continue counting from it.
+// (docs/grammar.md EnumField = Identifier [ "=" Expression ])
+import "std/io"
+
+enum Suit {
+  Clubs = 1
+  Diamonds
+  Hearts = 5
+  Spades
+}
+
+fn name(s Suit) string {
+  switch s {
+    case Suit.Clubs:    "clubs"
+    case Suit.Diamonds: "diamonds"
+    case Suit.Hearts:   "hearts"
+    case Suit.Spades:   "spades"
+    else: "?"
+  }
+}
+
+pub fn Main() void {
+  io.Println(name(Suit.Diamonds))
+  io.Println(name(Suit.Spades))
+}

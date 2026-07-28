@@ -58,8 +58,8 @@ TypePtr make_string_type() {
   return std::make_shared<Type>(TypeKind::String, StringType{});
 }
 
-TypePtr make_error_type() {
-  return std::make_shared<Type>(TypeKind::Error, ErrorType{});
+TypePtr make_invalid_type() {
+  return std::make_shared<Type>(TypeKind::Invalid, InvalidType{});
 }
 
 TypePtr make_array_type(TypePtr element) {
@@ -92,10 +92,10 @@ TypePtr make_struct_type(const std::string &name,
 
 TypePtr make_enum_type(const std::string &name,
                        std::vector<EnumVariant> variants,
-                       std::string origin_package) {
+                       std::string origin_package, bool string_backed) {
   return std::make_shared<Type>(
-      TypeKind::Enum,
-      EnumTypeInfo{name, std::move(origin_package), std::move(variants)});
+      TypeKind::Enum, EnumTypeInfo{name, std::move(origin_package),
+                                   std::move(variants), string_backed});
 }
 
 TypePtr make_interface_type(const std::string &name,
@@ -108,9 +108,41 @@ TypePtr make_interface_type(const std::string &name,
                         std::move(type_params), {}});
 }
 
+static void flatten_union_into(const TypePtr &alt, std::vector<TypePtr> &out) {
+  // A nominal alias is a distinct type and stays a member; only a structural
+  // alias to a union has its members spliced.
+  auto s = unwrap_structural_alias(alt);
+  if (s && s->kind == TypeKind::Union) {
+    for (auto &m : std::get<UnionTypeInfo>(s->detail).alternatives)
+      flatten_union_into(m, out);
+  } else {
+    out.push_back(alt);
+  }
+}
+
+std::vector<TypePtr>
+flatten_union_alternatives(const std::vector<TypePtr> &alts) {
+  std::vector<TypePtr> flat;
+  for (auto &a : alts)
+    flatten_union_into(a, flat);
+  return flat;
+}
+
 TypePtr make_union_type(std::vector<TypePtr> alternatives) {
+  // Canonicalize every union: splice nested unions and drop duplicates,
+  // preserving first-seen order (the leftmost type is the zero value). User
+  // duplicates are diagnosed in resolve_union_type; here dedupe is silent so
+  // internal composition (e.g. `(T|error) | error` after substitution) is clean.
+  std::vector<TypePtr> uniq;
+  for (auto &a : flatten_union_alternatives(alternatives)) {
+    bool dup = false;
+    for (auto &e : uniq)
+      if (types_equal(e, a)) { dup = true; break; }
+    if (!dup)
+      uniq.push_back(a);
+  }
   return std::make_shared<Type>(TypeKind::Union,
-                                UnionTypeInfo{std::move(alternatives)});
+                                UnionTypeInfo{std::move(uniq)});
 }
 
 TypePtr make_type_param(uint32_t id, const std::string &name,
@@ -151,13 +183,42 @@ TypePtr unwrap_alias(const TypePtr &t) {
   return curr;
 }
 
-TypeKind underlying_kind(const TypePtr &t) {
-  auto unwrapped = unwrap_alias(t);
-  return unwrapped ? unwrapped->kind : TypeKind::Error;
+// Unwrap only transparent (structural) aliases, which carry no methods and no
+// distinct identity. A nominal alias (`type X T`) is a real type and stays.
+TypePtr unwrap_structural_alias(const TypePtr &t) {
+  auto curr = t;
+  while (curr && curr->kind == TypeKind::Alias &&
+         std::get<AliasTypeInfo>(curr->detail).structural) {
+    curr = std::get<AliasTypeInfo>(curr->detail).underlying;
+  }
+  return curr;
 }
 
-bool is_error_type(const TypePtr &t) {
-  return t && t->kind == TypeKind::Error;
+TypeKind underlying_kind(const TypePtr &t) {
+  auto unwrapped = unwrap_alias(t);
+  return unwrapped ? unwrapped->kind : TypeKind::Invalid;
+}
+
+bool is_invalid_type(const TypePtr &t) {
+  return t && t->kind == TypeKind::Invalid;
+}
+
+bool is_error_valued(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Struct &&
+         std::get<StructTypeInfo>(u->detail).is_error;
+}
+
+bool is_abstract_error(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Struct &&
+         std::get<StructTypeInfo>(u->detail).is_error &&
+         std::get<StructTypeInfo>(u->detail).name == "error";
+}
+
+bool is_enum_valued(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Enum;
 }
 
 bool is_numeric(const TypePtr &t) {
@@ -267,7 +328,7 @@ std::string type_to_string(const TypePtr &t) {
   }
   case TypeKind::String:
     return "string";
-  case TypeKind::Error:
+  case TypeKind::Invalid:
     return "<error>";
 
   case TypeKind::Array: {
@@ -356,7 +417,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     return false;
 
   // Error types propagate silently — treat as equal to anything.
-  if (a->kind == TypeKind::Error)
+  if (a->kind == TypeKind::Invalid)
     return true;
 
   switch (a->kind) {
@@ -465,7 +526,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
     return ai.import_path == bi.import_path;
   }
 
-  case TypeKind::Error:
+  case TypeKind::Invalid:
     return true;
   }
 
@@ -481,7 +542,7 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     return false;
 
   // Error types propagate silently.
-  if (is_error_type(source) || is_error_type(target))
+  if (is_invalid_type(source) || is_invalid_type(target))
     return true;
 
   // Alias assignability.  A structural alias (`type X = T`) is transparent:
@@ -513,6 +574,10 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 
   // Exact match.
   if (types_equal(source, target))
+    return true;
+
+  // Any error value widens to the abstract base `error`.
+  if (is_error_valued(source) && is_abstract_error(target))
     return true;
 
   // Int → Float promotion.
@@ -564,26 +629,11 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
     }
   }
 
-  // Union source: when every alternative is an interface, the union is
-  // conjunctive (interface widening — spec language.md:951-953).  A
-  // value of `Reader | Writer` implements *both* sets of methods, so
-  // assignment to either Reader or Writer is fine.  For other unions
-  // (e.g. `Int | String`), the union is disjunctive and every alternative
-  // must independently be assignable to the target.
+  // Union source is disjunctive: a `A | B` value is assignable to the target
+  // only if every alternative independently is. (Unions are concrete-only, so
+  // there is no interface-widening case.)
   if (source->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(source->detail);
-    bool all_ifaces = !info.alternatives.empty();
-    for (auto &alt : info.alternatives)
-      if (!alt || alt->kind != TypeKind::Interface) {
-        all_ifaces = false;
-        break;
-      }
-    if (all_ifaces) {
-      for (auto &alt : info.alternatives)
-        if (is_assignable_to(alt, target))
-          return true;
-      return false;
-    }
     for (auto &alt : info.alternatives)
       if (!is_assignable_to(alt, target))
         return false;
@@ -638,9 +688,9 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 TypePtr common_type(const TypePtr &a, const TypePtr &b) {
   if (!a || !b)
     return nullptr;
-  if (is_error_type(a))
+  if (is_invalid_type(a))
     return b;
-  if (is_error_type(b))
+  if (is_invalid_type(b))
     return a;
   if (types_equal(a, b))
     return a;

@@ -195,13 +195,17 @@ void CodeGen::declare_runtime() {
       llvm::Function::ExternalLinkage, "saga_string_slice", module.get());
 
   // void* saga_missing_new(const char* msg, i64 len)
-  // Returns a heap-allocated saga_runtime_iface_fat_ptr (data = Missing
-  // instance carrying `msg`, vtable = Missing-as-Error vtable).  Callers
-  // wrap the returned pointer into a `T | Error` union's err payload so
-  // user code can dispatch `err.Message()` through the Error interface.
+  // Returns a heap-allocated Missing error box { type_id, message }. Callers
+  // wrap the returned pointer into a `T | error` union's err payload.
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_missing_new", module.get());
+
+  // void* saga_error_alloc(i64 size)
+  // Zero-initialised heap block for a user error box laid out by codegen.
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_error_alloc", module.get());
 
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
@@ -391,18 +395,6 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_error_from_trap", module.get());
-
-  // Seed the Error interface's codegen registration.  Error is a builtin
-  // interface with a single method (Message() String); unlike Saga-declared
-  // interfaces it has no InterfaceDeclNode to drive declare_interfaces.
-  // Use the current package as the key so key_for("", "Error") resolves it.
-  std::string error_key = mangle(package_name, "Error");
-  if (!iface_vtable_types.count(error_key)) {
-    auto *vtable_st = llvm::StructType::create(
-        context, {ptr_type}, "saga.vtable." + error_key);
-    iface_vtable_types[error_key] = vtable_st;
-    iface_method_names[error_key] = {"Message"};
-  }
 }
 // ===========================================================================
 // Vtable generation
@@ -524,7 +516,83 @@ llvm::StructType *CodeGen::get_union_llvm_type(const TypePtr &union_sem) {
       {llvm::Type::getInt8Ty(context), payload_ty},
       "saga.union." + key);
   union_llvm_types[key] = st;
+  union_sem_by_llvm[st] = union_sem;
   return st;
+}
+
+TypePtr CodeGen::union_sem_for_llvm(llvm::Type *st) const {
+  auto it = union_sem_by_llvm.find(st);
+  return it == union_sem_by_llvm.end() ? nullptr : it->second;
+}
+
+llvm::Value *CodeGen::as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
+                                   const TypePtr &union_sem) {
+  auto *union_ll = get_union_llvm_type(union_sem);
+  if (!val || !union_ll)
+    return nullptr;
+  // Already union memory. If the layouts differ (e.g. an if's branch union
+  // `NetworkError | int` flowing into a declared `int | error`), remap tags.
+  if (val->getType()->isPointerTy() && val_sem &&
+      val_sem->kind == TypeKind::Union) {
+    if (types_equal(val_sem, union_sem))
+      return val;
+    return emit_union_convert(val, val_sem, union_sem);
+  }
+  // A concrete/error member value — wrap it at the correct tag.
+  return emit_union_wrap(val, materialize_untyped(val_sem), union_sem);
+}
+
+llvm::Value *CodeGen::emit_union_convert(llvm::Value *src_ptr,
+                                         const TypePtr &src_sem,
+                                         const TypePtr &dst_sem) {
+  auto *src_st = get_union_llvm_type(src_sem);
+  auto *dst_st = get_union_llvm_type(dst_sem);
+  if (!src_ptr || !src_st || !dst_st)
+    return src_ptr;
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *dst = create_entry_alloca(func, "union.cvt", dst_st);
+  builder.CreateStore(llvm::Constant::getNullValue(dst_st), dst);
+
+  auto *i8 = llvm::Type::getInt8Ty(context);
+  auto *tag = builder.CreateLoad(
+      i8, builder.CreateStructGEP(src_st, src_ptr, 0, "cvt.tag.ptr"),
+      "cvt.tag");
+
+  uint64_t ps = union_payload_size(src_sem);
+  uint64_t pd = union_payload_size(dst_sem);
+  uint64_t pay = ps < pd ? ps : pd;
+
+  auto &src_info = std::get<UnionTypeInfo>(src_sem->detail);
+  auto *done = llvm::BasicBlock::Create(context, "cvt.done");
+  auto *deflt = llvm::BasicBlock::Create(context, "cvt.def");
+  auto *sw = builder.CreateSwitch(tag, deflt, src_info.alternatives.size());
+
+  for (size_t i = 0; i < src_info.alternatives.size(); ++i) {
+    // union_tag_for_type also matches same-representation assignable members
+    // (e.g. a source int64 into a dst word-int slot).
+    int dst_tag = union_tag_for_type(src_info.alternatives[i], dst_sem);
+    if (dst_tag < 0)
+      continue;
+    auto *cbb =
+        llvm::BasicBlock::Create(context, "cvt.c" + std::to_string(i), func);
+    sw->addCase(llvm::ConstantInt::get(i8, i), cbb);
+    builder.SetInsertPoint(cbb);
+    builder.CreateStore(llvm::ConstantInt::get(i8, dst_tag),
+                        builder.CreateStructGEP(dst_st, dst, 0, "cvt.dtag"));
+    builder.CreateMemCpy(builder.CreateStructGEP(dst_st, dst, 1, "cvt.dp"),
+                         llvm::Align(1),
+                         builder.CreateStructGEP(src_st, src_ptr, 1, "cvt.sp"),
+                         llvm::Align(1), pay);
+    builder.CreateBr(done);
+  }
+
+  func->insert(func->end(), deflt);
+  builder.SetInsertPoint(deflt);
+  builder.CreateBr(done);
+  func->insert(func->end(), done);
+  builder.SetInsertPoint(done);
+  return dst;
 }
 
 uint64_t CodeGen::union_payload_size(const TypePtr &union_sem) {
@@ -552,31 +620,22 @@ int CodeGen::union_tag_for_type(const TypePtr &alt_type,
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
     if (types_equal(info.alternatives[i], alt_type))
       return static_cast<int>(i);
-    // Also check interface satisfaction (e.g. Missing satisfies Error).
-    if (info.alternatives[i]->kind == TypeKind::Interface &&
+    // A concrete error widening into the base `error` slot (e.g. Missing / a
+    // user error into `T | error`). Unions are concrete-only — no interfaces.
+    if (is_abstract_error(info.alternatives[i]) &&
+        is_assignable_to(alt_type, info.alternatives[i]))
+      return static_cast<int>(i);
+  }
+  // Fallback: a member with the same runtime representation the value is
+  // assignable to (e.g. a word `int` value into an `int64` slot). The payload
+  // bytes carry over unchanged, so the stored/loaded value stays correct.
+  auto *alt_ll = llvm_type(alt_type);
+  for (size_t i = 0; i < info.alternatives.size(); ++i) {
+    if (llvm_type(info.alternatives[i]) == alt_ll &&
         is_assignable_to(alt_type, info.alternatives[i]))
       return static_cast<int>(i);
   }
   return -1;
-}
-
-llvm::Value *CodeGen::emit_missing_fat_ptr(const std::string &message) {
-  auto *char_array = llvm::ConstantDataArray::getString(
-      context, message, /*AddNull=*/false);
-  auto *raw_global = new llvm::GlobalVariable(
-      *module, char_array->getType(), /*isConstant=*/true,
-      llvm::GlobalValue::PrivateLinkage, char_array, ".missing.msg");
-  raw_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  raw_global->setAlignment(llvm::Align(1));
-  auto *data_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
-      char_array->getType(), raw_global,
-      llvm::ArrayRef<llvm::Constant *>{
-          llvm::ConstantInt::get(i64_type, 0),
-          llvm::ConstantInt::get(i64_type, 0)});
-  auto *len = llvm::ConstantInt::get(i64_type,
-                                     static_cast<int64_t>(message.size()));
-  return builder.CreateCall(module->getFunction("saga_missing_new"),
-                            {data_ptr, len}, "missing.fat");
 }
 
 llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
@@ -604,13 +663,25 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
   builder.CreateStore(
       llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), tag), tag_gep);
 
-  // Store the value into the payload.
+  // Store the value into the payload.  A struct member is stored inline
+  // (the payload is sized to hold it), so when `val` is a pointer to the
+  // struct copy its bytes rather than storing the pointer — `emit_union_extract`
+  // loads the struct by value.  Scalars, strings, arrays, and boxed errors are
+  // value- or pointer-represented and round-trip through a plain store.
   if (!val->getType()->isVoidTy()) {
     auto *payload_gep = builder.CreateStructGEP(union_st, alloca, 1,
                                                  "union.payload");
     auto *cast = builder.CreateBitOrPointerCast(
         payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
-    builder.CreateStore(val, cast);
+    auto *ll_alt = llvm_type(val_type);
+    if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
+      auto &dl = module->getDataLayout();
+      builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
+                           dl.getABITypeAlign(ll_alt),
+                           dl.getTypeAllocSize(ll_alt));
+    } else {
+      builder.CreateStore(val, cast);
+    }
   }
 
   return alloca;
@@ -642,18 +713,8 @@ bool CodeGen::is_impure_union(const TypePtr &t) const {
     return false;
   auto &info = std::get<UnionTypeInfo>(t->detail);
   for (auto &alt : info.alternatives) {
-    if (alt->kind == TypeKind::Interface) {
-      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error")
-        return true;
-    }
-    // Concrete types that satisfy Error (e.g. Missing) also make the
-    // union impure for or-clause purposes — `String | Missing` reads
-    // the same way as `String | Error` to user code.
-    if (alt && alt->kind == TypeKind::Struct) {
-      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
-      if (sinfo.name == "Missing") return true;
-    }
+    if (is_error_valued(alt))
+      return true;
   }
   return false;
 }
@@ -664,15 +725,8 @@ TypePtr CodeGen::strip_error_from_union(const TypePtr &t) const {
   auto &info = std::get<UnionTypeInfo>(t->detail);
   std::vector<TypePtr> purified;
   for (auto &alt : info.alternatives) {
-    if (alt && alt->kind == TypeKind::Interface) {
-      auto &iface = std::get<InterfaceTypeInfo>(alt->detail);
-      if (iface.name == "Error") continue;
-    }
-    if (alt && alt->kind == TypeKind::Struct) {
-      auto &sinfo = std::get<StructTypeInfo>(alt->detail);
-      if (sinfo.name == "Missing") continue;
-    }
-    purified.push_back(alt);
+    if (!is_error_valued(alt))
+      purified.push_back(alt);
   }
   if (purified.empty())
     return nullptr;

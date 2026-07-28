@@ -1831,9 +1831,9 @@ TEST(CodeGen, EnumComparison) {
 TEST(CodeGen, EnumCustomIndex) {
   auto r = CG::from(
       "enum Suits {\n"
-      "  Clubs {index: 1}\n"
+      "  Clubs = 1\n"
       "  Diamonds\n"
-      "  Hearts {index: 5}\n"
+      "  Hearts = 5\n"
       "  Spades\n"
       "}\n"
       "pub fn Main() void {\n"

@@ -1,0 +1,5 @@
+// Spec: an int-backed enum variant's `= value` must be an integer literal.
+enum Bad {
+  A = "one"
+}
+pub fn Main() void {}

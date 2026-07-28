@@ -1,0 +1,39 @@
+// `is` on an error compares the runtime type_id: a base-`error` value (captured
+// by `or`) distinguishes concrete error types, and `is error` matches any.
+import "std/io"
+
+error NetworkError {
+  code int
+  message = "net {code}"
+}
+
+error DiskError {
+  message = "disk"
+}
+
+fn fetch(which int) int | error {
+  if which == 0 {
+    return NetworkError{code: 7}
+  }
+  return DiskError{}
+}
+
+fn classify(which int) void {
+  fetch(which) or |err| {
+    if err is NetworkError {
+      io.Println("network")
+    }
+    if err is DiskError {
+      io.Println("disk")
+    }
+    if err is error {
+      io.Println("any")
+    }
+    return
+  }
+}
+
+pub fn Main() void {
+  classify(0)
+  classify(1)
+}

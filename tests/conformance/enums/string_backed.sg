@@ -1,0 +1,16 @@
+// Spec: `enum Name string { ... }` is string-backed. Each variant's backing
+// string defaults to its name and may be overridden with `= "..."`;
+// `.String()` returns the backing string.
+import "std/io"
+
+enum Color string {
+  Red = "r"
+  Green
+  Blue = "b"
+}
+
+pub fn Main() void {
+  io.Println(Color.Red.String())
+  io.Println(Color.Green.String())
+  io.Println(Color.Blue.String())
+}

@@ -230,7 +230,7 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // diagnostic" (docs/language.md:120-122).  Without an inferred type
   // the safest fallback is Int — the spec's primary numeric type and
   // the common case for compile-time arithmetic.
-  if (is_error_type(sem_type))
+  if (is_invalid_type(sem_type))
     sem_type = analyzer.builtins.int_type;
 
   auto *ll_type = llvm_type(sem_type);
@@ -404,17 +404,12 @@ void CodeGen::emit_enum_decl(const EnumDeclNode &node) {
   for (auto &field : node.fields) {
     std::string variant_name(field.name.name);
 
-    // Check for explicit {index: N} override.
-    for (auto &init : field.initializer) {
-      std::string init_key(init.name.name);
-      if (init_key == "index") {
-        if (auto *lit =
-                std::get_if<IntegerLiteralNode>(&init.value->data)) {
-          std::string clean;
-          for (char c : lit->literal)
-            if (c != '_') clean += c;
-          next_index = std::stoll(clean);
-        }
+    if (field.value) {
+      if (auto *lit = std::get_if<IntegerLiteralNode>(&field.value->data)) {
+        std::string clean;
+        for (char c : lit->literal)
+          if (c != '_') clean += c;
+        next_index = std::stoll(clean);
       }
     }
 
@@ -596,7 +591,9 @@ void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
       auto sym = analyzer.package_scope_
                      ? analyzer.package_scope_->lookup(struct_name)
                      : std::optional<Symbol>{};
-      if (!sym || !sym->type || sym->type->kind != TypeKind::Alias)
+      if (!sym || !sym->type ||
+          (sym->type->kind != TypeKind::Alias &&
+           sym->type->kind != TypeKind::Enum))
         continue;
     }
 
@@ -657,17 +654,15 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     std::string struct_name(recv_ident->name);
-    TypePtr alias_sem_type;
     if (!struct_types.count(mangle(package_name, struct_name))) {
       auto sym = analyzer.package_scope_
                      ? analyzer.package_scope_->lookup(struct_name)
                      : std::optional<Symbol>{};
-      if (sym && sym->type && sym->type->kind == TypeKind::Alias)
-        alias_sem_type = sym->type;
-      else
+      if (!sym || !sym->type ||
+          (sym->type->kind != TypeKind::Alias &&
+           sym->type->kind != TypeKind::Enum))
         continue;
     }
-    bool is_alias_recv = static_cast<bool>(alias_sem_type);
 
     std::string method_name(fn->name.name);
     std::string link_name = mangle(struct_name + "__" + method_name);
@@ -693,12 +688,13 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       }
     }
 
+    // The self slot mirrors the declared ABI (build_method_signature): structs
+    // pass by pointer, scalar/alias receivers by value, so the arg's own type
+    // is the correct alloca type.
     std::string recv_name(fn->receiver->name.name);
-    llvm::Type *recv_alloc_ty = is_alias_recv
-        ? llvm_type(unwrap_alias(alias_sem_type))
-        : llvm::PointerType::getUnqual(context);
-    auto *recv_alloca = create_entry_alloca(func, recv_name, recv_alloc_ty);
-    builder.CreateStore(func->getArg(arg_idx++), recv_alloca);
+    auto *self_arg = func->getArg(arg_idx++);
+    auto *recv_alloca = create_entry_alloca(func, recv_name, self_arg->getType());
+    builder.CreateStore(self_arg, recv_alloca);
     locals[recv_name] = recv_alloca;
 
     for (auto &param : fn->signature.params) {
@@ -724,34 +720,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
 
     if (!builder.GetInsertBlock()->getTerminator()) {
       emit_release_locals();
-      auto *ret_type = func->getReturnType();
-      if (has_sret && tail_val && tail_val->getType()->isPointerTy()) {
-        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-          auto *st_ty = ai->getAllocatedType();
-          auto sz = module->getDataLayout().getTypeAllocSize(st_ty);
-          auto al = module->getDataLayout().getABITypeAlign(st_ty);
-          builder.CreateMemCpy(func->getArg(0), al, tail_val, al, sz);
-        }
-        builder.CreateRetVoid();
-      } else if (ret_type->isVoidTy()) {
-        builder.CreateRetVoid();
-      } else if (tail_val && tail_val->getType() == ret_type) {
-        builder.CreateRet(tail_val);
-      } else if (tail_val && ret_type->isStructTy() &&
-                 tail_val->getType()->isPointerTy()) {
-        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val)) {
-          if (ai->getAllocatedType() == ret_type) {
-            auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
-            builder.CreateRet(loaded);
-          } else {
-            builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-          }
-        } else {
-          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-        }
-      } else {
-        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-      }
+      emit_tail_return(*fn, func, tail_val, block, has_sret);
     }
 
     llvm::verifyFunction(*func);

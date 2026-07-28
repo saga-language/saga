@@ -1,0 +1,12 @@
+// Spec: union method dispatch also works over scalar members through the
+// built-in protocols — (int | float).String() dispatches per member.
+import "std/io"
+
+fn show(x int | float) string { x.String() }
+
+pub fn Main() void {
+  a int | float = 42
+  b int | float = 3.5
+  io.Println(show(a))
+  io.Println(show(b))
+}

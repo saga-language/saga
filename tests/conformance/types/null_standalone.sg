@@ -1,0 +1,9 @@
+// `void` is assignable — a void variable holds only null. Standalone use is rare
+// (its real use is `T | void`), but it must compile and run.
+import "std/io"
+
+pub fn Main() void {
+  x void = null
+  y := null
+  io.Println("ok")
+}

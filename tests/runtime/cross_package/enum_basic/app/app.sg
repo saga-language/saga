@@ -7,4 +7,9 @@ pub fn Main() void {
   io.Println(lib.ColorName(lib.Color.Blue))
   io.Println((lib.Color.Red == lib.Color.Red).String())
   io.Println((lib.Color.Red == lib.Color.Blue).String())
+
+  // `.Variant` shorthand resolves against a cross-package enum target.
+  c lib.Color = .Green
+  io.Println(lib.ColorName(c))
+  io.Println((c == .Green).String())
 }

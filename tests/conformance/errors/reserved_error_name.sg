@@ -1,0 +1,7 @@
+// Rule: `Missing` and `Trapped` are built-in errors with reserved type_ids; a
+// user error may not redeclare them (it would alias the builtin).
+error Missing {
+  message = "mine"
+}
+
+pub fn Main() void {}
