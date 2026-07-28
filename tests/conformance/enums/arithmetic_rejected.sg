@@ -1,0 +1,11 @@
+// Enums are identity types: they carry no arithmetic and cannot overload it.
+// `+` on two enum operands is rejected (so is `- * / % **` and unary `-`).
+enum Color {
+  Red
+  Green
+  Blue
+}
+
+pub fn Main() void {
+  x := Color.Red + Color.Green
+}

@@ -1,0 +1,9 @@
+// Unary `-` is arithmetic; enums do not support it.
+enum Color {
+  Red
+  Green
+}
+
+pub fn Main() void {
+  x := -Color.Red
+}

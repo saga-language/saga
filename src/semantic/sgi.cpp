@@ -314,29 +314,13 @@ static void write_enum_export(std::ostringstream &os, const std::string &name,
     if (i > 0)
       os << ";";
     os << " " << v.name;
-    // Emit variant data: index, backing string, and/or associated fields.
-    bool has_data_fields = false;
-    for (auto &f : v.fields) {
-      if (f.name != "index") { has_data_fields = true; break; }
-    }
-    if (has_data_fields || v.index >= 0 || !v.string_value.empty()) {
+    if (v.index >= 0 || !v.string_value.empty()) {
       os << "(";
-      bool first = true;
-      if (v.index >= 0) {
+      if (v.index >= 0)
         os << "#" << v.index;
-        first = false;
-      }
       if (!v.string_value.empty()) {
-        if (!first) os << ", ";
+        if (v.index >= 0) os << ", ";
         os << "=\"" << v.string_value << "\"";
-        first = false;
-      }
-      for (auto &f : v.fields) {
-        if (f.name == "index") continue;
-        if (!first) os << ", ";
-        if (!f.name.empty()) os << f.name << " ";
-        os << type_to_sgi(f.type);
-        first = false;
       }
       os << ")";
     }
@@ -857,8 +841,7 @@ struct SgiParser {
     if (name == "Comparison")
       return make_enum_type(
           "Comparison",
-          {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
-           EnumVariant{"Greater", {}}});
+          {EnumVariant{"Less"}, EnumVariant{"Equal"}, EnumVariant{"Greater"}});
     if (name == "error") {
       // The abstract base error: struct-backed with the is_error marker so
       // is_error_valued() strips it from unions (matches builtins.error_base).
@@ -1151,7 +1134,6 @@ struct SgiParser {
 
       int64_t variant_index = -1;
       std::string string_value;
-      std::vector<FieldInfo> vfields;
       skip_whitespace();
       if (!at_end() && content[pos] == '(') {
         ++pos;
@@ -1179,39 +1161,13 @@ struct SgiParser {
             while (!at_end() && content[pos] != '"') ++pos;
             string_value = content.substr(start, pos - start);
             if (!at_end()) ++pos; // closing quote
-            skip_whitespace();
-            if (!at_end() && content[pos] == ',')
-              ++pos;
           }
         }
-        // Parse remaining field declarations.
-        while (true) {
-          skip_whitespace();
-          if (at_end() || content[pos] == ')')
-            break;
-          size_t saved = pos;
-          std::string maybe_name = read_word();
-          skip_whitespace();
-          if (!at_end() && content[pos] != ')' && content[pos] != ',' &&
-              !maybe_name.empty() && std::isupper(maybe_name[0]) == false) {
-            auto ft = parse_type();
-            vfields.push_back({maybe_name, ft, false});
-          } else {
-            pos = saved;
-            auto ft = parse_type();
-            vfields.push_back({"", ft, false});
-          }
-          skip_whitespace();
-          if (at_end() || content[pos] != ',')
-            break;
-          ++pos;
-        }
-        if (!at_end() && content[pos] == ')')
-          ++pos;
+        while (!at_end() && content[pos] != ')') ++pos;
+        if (!at_end()) ++pos;
       }
 
-      variants.push_back(
-          {vname, std::move(vfields), variant_index, std::move(string_value)});
+      variants.push_back({vname, variant_index, std::move(string_value)});
     }
 
     auto t = make_enum_type(name, std::move(variants), "", string_backed);

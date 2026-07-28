@@ -203,25 +203,6 @@ TEST(Sgi, GenerateAndParseEnumExport) {
   EXPECT_EQ(et.variants[2].name, "Blue");
 }
 
-TEST(Sgi, GenerateAndParseEnumWithFields) {
-  auto shape_type = make_enum_type("Shape", {
-      EnumVariant{"Circle", {FieldInfo{"radius", make_float_type(), false}}},
-      EnumVariant{"Rect", {FieldInfo{"w", make_float_type(), false},
-                           FieldInfo{"h", make_float_type(), false}}},
-  });
-
-  std::vector<SgiExport> exports = {{"", "Shape", shape_type, true}};
-  std::string sgi = generate_sgi("geo", {}, exports);
-
-  auto parsed = parse_sgi(sgi);
-  ASSERT_TRUE(parsed.has_value());
-  auto &et = std::get<EnumTypeInfo>(parsed->exports[0].type->detail);
-  EXPECT_EQ(et.variants[0].name, "Circle");
-  EXPECT_EQ(et.variants[0].fields.size(), 1u);
-  EXPECT_EQ(et.variants[1].name, "Rect");
-  EXPECT_EQ(et.variants[1].fields.size(), 2u);
-}
-
 TEST(Sgi, GenerateAndParseInterfaceExport) {
   auto iface = make_interface_type("Readable", {
       MethodInfo{"Read", make_func_type({make_array_type(make_int_type(0, false))},

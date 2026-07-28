@@ -216,6 +216,11 @@ bool is_abstract_error(const TypePtr &t) {
          std::get<StructTypeInfo>(u->detail).name == "error";
 }
 
+bool is_enum_valued(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  return u && u->kind == TypeKind::Enum;
+}
+
 bool is_numeric(const TypePtr &t) {
   auto u = unwrap_alias(t);
   return u && (u->kind == TypeKind::Int || u->kind == TypeKind::Float);

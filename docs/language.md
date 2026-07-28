@@ -593,7 +593,7 @@ for node : list {} // Next() lets you iterate over the list.
 A generic type parameter can be constrained to a named built-in type set by
 writing the constraint immediately after the parameter name inside the pipe
 syntax. The constraint follows by adjacency, matching the patterns used
-elsewhere in the language (`enum Severity Int`, wire-name field slots):
+elsewhere in the language (`enum Color string`, wire-name field slots):
 
 ```
 fn |T Numeric| Add(a T, b T) T { a + b }
@@ -1129,38 +1129,118 @@ interface ReadWriteCloser {
 
 ## Enums
 
-Enumerations are types of values. Each value is of the defined type but is a
-unique value of that type. These values must be unique or an error is raised.
-
-The values of an enum are structs that have both an index and name. If a name
-or index is not explicitly provided, the compiler provides on based on its
-position and constant. These values can be overridden but must be unique or an
-error will be raised.
+An enum is a type whose values are a fixed set of named variants. Each variant
+is a distinct value of the enum type. By default an enum is backed by an `int`
+ordinal: the first variant is `0` and each following variant counts up by one.
+Variants are separated by newlines, not commas.
 
 ```
-enum Colors {
-  Red
-  Green
-  Blue
+enum Color {
+  Red    // 0
+  Green  // 1
+  Blue   // 2
 }
 
-fn SelectColor(c Colors) Void { ... }
+fn Paint(c Color) void { ... }
 
-SelectColor(Colors.Red)
-SelectColor(Colors.Purple) // error, invalid enumeration value
+Paint(Color.Red)
+Paint(Color.Purple) // error, no variant named Purple
+```
 
-enum States {
-  Stopped {name: "stop"} // names MUST be unique
-  Running {name: "run"}
-}
+### Backing values
 
-enum Suits {
-  Clubs {index: 1}
-  Diamonds // index is the previous value +1
-  Hearts {index: 5} // indexes 3 and 4 are skipped, counting starts from here
-  Spades // becomes 6
+A variant's ordinal can be set explicitly with `= Expression`. Later variants
+without an explicit value keep counting from the previous one. Ordinals must be
+unique.
+
+```
+enum Suit {
+  Clubs = 1
+  Diamonds  // 2
+  Hearts = 5
+  Spades    // 6
 }
 ```
+
+An enum may instead be backed by a string by writing `string` after its name.
+Each variant's backing string defaults to the variant's own name and can be
+overridden with `= "..."`.
+
+```
+enum Color string {
+  Red = "r"
+  Green      // "Green"
+  Blue = "b"
+}
+```
+
+### Accessors
+
+Every enum carries three synthesized methods:
+
+- `.Int()` returns the ordinal as an `int`.
+- `.String()` returns the variant name for an int-backed enum, or the backing
+  string for a string-backed enum.
+- `Enum.From(value)` is the inverse of the backing: it looks up the variant
+  whose backing value equals `value` (an ordinal, or a string for a
+  string-backed enum) and returns `Enum | error` — the variant on a match, a
+  `Missing` error on none.
+
+```
+Color.Red.Int()                    // 0
+Color.Red.String()                 // "r"
+Suit.From(5) or |e| { Suit.Clubs } // Suit.Hearts
+```
+
+`Int`, `String`, and `From` are reserved: a user method may not redefine them
+(see [Method uniqueness](#method-uniqueness)).
+
+### Methods
+
+Methods can be attached to an enum. The receiver is the enum value, passed by
+value.
+
+```
+enum Dir {
+  North
+  East
+  South
+  West
+}
+
+fn (d Dir) Opposite() Dir {
+  switch d {
+    case Dir.North: Dir.South
+    case Dir.East:  Dir.West
+    case Dir.South: Dir.North
+    else:           Dir.East
+  }
+}
+
+Dir.East.Opposite() // Dir.West
+```
+
+### Variant shorthand
+
+Where the enum type is already known from context — a typed declaration, a
+return, a call argument, a struct field, a switch case, or the other side of a
+`==`/`!=` — a variant can be written with a leading dot and no enum name.
+
+```
+c Color = .Red
+if c == .Red { ... }
+Paint(.Green)
+```
+
+The shorthand is only allowed where the target enum is unambiguous; a bare
+`.Red` with no expected type is an error.
+
+### Enums are identity types
+
+An enum names a choice, not a quantity. Enums support equality (`==`, `!=`) but
+no arithmetic: `+`, `-`, `*`, `/`, `%`, and unary `-` are rejected, and an enum
+cannot overload them. To compute with the ordinal, take it explicitly with
+`.Int()`.
 
 ## Method Calling
 
@@ -1518,6 +1598,11 @@ operator.
   `>>` (Right shift)
 **Logical**: `==` (Equal), `!=` (Not Equal), `>` (Greater), `<` (Less), 
   `>=` (Greater than or Equal), `<=` (Less than or Equal), `&&` (and), `||` (or)
+
+Arithmetic operators apply to numeric types (`+` also concatenates strings).
+Enums and errors are identity/data types: they support equality but no
+arithmetic, and they cannot overload it. Structs may overload the operators
+through methods (`Add`, `Sub`, `Mul`, `Div`, `Equals`, `Compare`).
 
 ### Division by zero
 

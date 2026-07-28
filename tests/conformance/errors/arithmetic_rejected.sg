@@ -1,0 +1,12 @@
+// Errors are pure data: they support `==`/`!=` but no arithmetic. `+` on two
+// errors is rejected here rather than routed to the struct operator-overload
+// path, which would demand an `Add` method that can never be attached.
+error NetworkError {
+  code int
+}
+
+pub fn Main() void {
+  a := NetworkError{code: 1}
+  b := NetworkError{code: 2}
+  x := a + b
+}

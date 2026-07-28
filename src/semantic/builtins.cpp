@@ -66,8 +66,7 @@ void BuiltinTypes::init() {
   // -- Comparison enum { Less, Equal, Greater } ----------------------------
   comparison_type = make_enum_type(
       "Comparison",
-      {EnumVariant{"Less", {}}, EnumVariant{"Equal", {}},
-       EnumVariant{"Greater", {}}});
+      {EnumVariant{"Less"}, EnumVariant{"Equal"}, EnumVariant{"Greater"}});
 
   // -- Task (returned from spawn) ------------------------------------------
   task_type = make_struct_type(

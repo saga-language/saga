@@ -1989,7 +1989,7 @@ void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
       }
     }
     variants.push_back(
-        {std::string(field.name.name), {}, index, std::move(string_value)});
+        {std::string(field.name.name), index, std::move(string_value)});
     next_index = index + 1;
   }
 
@@ -3358,6 +3358,30 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     return builtins.bool_type;
   }
 
+  // Enums and errors are identity types: they carry no arithmetic and cannot
+  // overload it. Reject arithmetic here — errors would otherwise reach the
+  // struct operator-overload path and be told they lack an `Add` method they
+  // can never define (methods cannot be attached to error types).
+  switch (node.op) {
+  case EK::Add:
+  case EK::Sub:
+  case EK::Multiply:
+  case EK::Divide:
+  case EK::Pow:
+  case EK::Modulo:
+    for (auto &operand : {lhs, rhs}) {
+      if (is_enum_valued(operand) || is_error_valued(operand)) {
+        error(node.span,
+              std::format("type {} does not support arithmetic operators",
+                          type_to_string(operand)));
+        return builtins.invalid_type;
+      }
+    }
+    break;
+  default:
+    break;
+  }
+
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
@@ -3475,6 +3499,12 @@ TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
     return builtins.bool_type;
   }
   if (node.op == Token::Kind::Sub) {
+    if (is_enum_valued(operand) || is_error_valued(operand)) {
+      error(node.operand->span,
+            std::format("type {} does not support arithmetic operators",
+                        type_to_string(operand)));
+      return builtins.invalid_type;
+    }
     if (!is_numeric(operand)) {
       error(node.operand->span,
             std::format("negation requires numeric type, got {}",

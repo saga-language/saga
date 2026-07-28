@@ -161,7 +161,6 @@ struct StructTypeInfo {
 
 struct EnumVariant {
   std::string name;
-  std::vector<FieldInfo> fields;               // dead: no source form produces it
   int64_t index = -1;                          // discriminant value (-1 = auto)
   std::string string_value;                    // backing string; empty ⇒ use name
 };
@@ -316,6 +315,9 @@ bool is_error_valued(const TypePtr &t);
 /// concrete error value assigns into. Distinguished from concrete errors by
 /// its reserved name.
 bool is_abstract_error(const TypePtr &t);
+
+/// True if a value of `t` is an enum (after peeling nominal aliases).
+bool is_enum_valued(const TypePtr &t);
 
 /// True if `t` is a numeric type (Int or Float).
 bool is_numeric(const TypePtr &t);
