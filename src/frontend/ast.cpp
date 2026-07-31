@@ -342,11 +342,6 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
               dump_ptr(n.return_type, os, c);
           },
           [&](const FieldSpecNode &n) { dump_field_spec(n, os, indent); },
-          [&](const StructTypeNode &n) {
-            os << pad(indent) << "StructTypeNode\n";
-            for (const auto &f : n.fields)
-              dump_field_spec(f, os, c);
-          },
           [&](const GenericTypeAppNode &n) {
             os << pad(indent) << "GenericTypeAppNode\n";
             for (auto &ta : n.type_args)

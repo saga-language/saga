@@ -129,9 +129,6 @@ private:
   /// FuncType = "fn" Signature
   NodePtr parse_func_type();
 
-  /// StructType = "struct" "{" FieldSpec { "," FieldSpec } "}"
-  NodePtr parse_struct_type();
-
   /// Generic = "<" TypeList ">"  (instantiation position — types only; spawn<T>)
   std::optional<GenericNode> parse_generic();
 

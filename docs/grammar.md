@@ -69,19 +69,17 @@ Constraint = "integer" | "float" | "numeric" | Identifier | Selector ;
 
 Type        = UnionType ;
 UnionType   = SingleType { "|" SingleType } ;
-SingleType  = basic_type | ArrayType | MapType | StructType | EnumType
-            | ErrorType | FuncType | GenericApp | Selector | Identifier ;
+SingleType  = basic_type | ArrayType | MapType | FuncType | GenericApp
+            | Selector | Identifier ;
 
-basic_type  = "bool" | "byte" | "string" | "void"
+// `error` is the abstract error base type: any error value satisfies it.
+basic_type  = "bool" | "byte" | "string" | "void" | "error"
             | "int" | "int8" | "int16" | "int32" | "int64"
             | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
             | "float" | "float32" | "float64" ;
 
 ArrayType   = "array" "{" Type [ ";" Expression ] "}" ;
 MapType     = "map" "{" Type ":" Type [ ";" Expression ] "}" ;
-StructType  = "struct" [ "{" [ FieldSpec { "," FieldSpec } ] "}" ] ;
-EnumType    = "enum" [ "{" Identifier { "," Identifier } "}" ] ;
-ErrorType   = "error" [ "{" [ ErrorMember { "," ErrorMember } ] "}" ] ;
 FuncType    = "fn" "(" [ TypeList ] ")" [ Type ] ;
 GenericApp  = ( Identifier | Selector ) "<" Type { "," Type } ">" ; // e.g. Box<int>
 TypeList    = Type { "," Type } ;
@@ -205,7 +203,7 @@ ArrayLiteral = "[" ( [ ExpressionList ] | Expression ".." Expression ) "]" ;
 MapLiteral   = "{" [ KeyValuePair { "," KeyValuePair } ] "}" ;
 KeyValuePair = Expression ":" Expression ; // key is always an expression
 
-StructLiteral     = ( Identifier | Selector | StructType ) [ StructInitializer ] ;
+StructLiteral     = ( Identifier | Selector ) [ StructInitializer ] ;
 StructInitializer = "{" [ FieldAssignment { ( "," | terminal ) FieldAssignment } ] "}" ;
 FieldAssignment   = Identifier ":" Expression ;
 

@@ -540,7 +540,6 @@ private:
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
   TypePtr resolve_func_type(const FuncTypeNode &node);
-  TypePtr resolve_struct_type(const StructTypeNode &node);
   TypePtr resolve_union_type(const UnionTypeNode &node);
   TypePtr resolve_generic_type_app(const GenericTypeAppNode &node);
 

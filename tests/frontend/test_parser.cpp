@@ -2280,47 +2280,38 @@ TEST_F(ParserMapLiteralTest, BlockFallback) {
 }
 
 // =============================================================================
-// Phase — Anonymous struct literal
+// Phase — Anonymous structs are not a form
+//
+// `struct` names a declaration and nothing else. There is no bespoke
+// diagnostic: the token has no meaning in type or expression position, so it
+// falls through to the ordinary syntax error.
 // =============================================================================
 
-class ParserAnonStructLiteralTest : public ::testing::Test {};
+class ParserAnonStructRejectedTest : public ::testing::Test {};
 
-TEST_F(ParserAnonStructLiteralTest, Simple) {
+TEST_F(ParserAnonStructRejectedTest, Literal) {
   auto r = ExprResult::from("struct{x int}{x: 1}");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<StructLiteralNode>();
-  ASSERT_NE(n, nullptr);
-  auto *ty = std::get_if<StructTypeNode>(&n->type_expr->data);
-  ASSERT_NE(ty, nullptr);
-  ASSERT_EQ(ty->fields.size(), 1);
-  EXPECT_EQ(ty->fields[0].names.identifiers[0].name, "x");
-  ASSERT_EQ(n->fields.size(), 1);
-  EXPECT_EQ(n->fields[0].name.name, "x");
+  EXPECT_FALSE(r.errors.empty());
 }
 
-TEST_F(ParserAnonStructLiteralTest, MultipleFields) {
-  auto r =
-      ExprResult::from("struct{name string, age int}{name: \"Jane\", age: 30}");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<StructLiteralNode>();
-  ASSERT_NE(n, nullptr);
-  auto *ty = std::get_if<StructTypeNode>(&n->type_expr->data);
-  ASSERT_NE(ty, nullptr);
-  ASSERT_EQ(ty->fields.size(), 2);
-  ASSERT_EQ(n->fields.size(), 2);
-  EXPECT_EQ(n->fields[0].name.name, "name");
-  EXPECT_EQ(n->fields[1].name.name, "age");
+TEST_F(ParserAnonStructRejectedTest, EmptyLiteral) {
+  auto r = ExprResult::from("struct{}{}");
+  EXPECT_FALSE(r.errors.empty());
 }
 
-TEST_F(ParserAnonStructLiteralTest, Empty) {
-  auto r = ExprResult::from("struct{}{}");;
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<StructLiteralNode>();
-  ASSERT_NE(n, nullptr);
-  auto *ty = std::get_if<StructTypeNode>(&n->type_expr->data);
-  ASSERT_NE(ty, nullptr);
-  EXPECT_TRUE(ty->fields.empty());
-  EXPECT_TRUE(n->fields.empty());
+TEST_F(ParserAnonStructRejectedTest, TypeAnnotation) {
+  auto r = ExprResult::from("{ x struct{a int} }");
+  EXPECT_FALSE(r.errors.empty());
+}
+
+TEST_F(ParserAnonStructRejectedTest, BareStructAsType) {
+  auto r = ExprResult::from("{ x struct }");
+  EXPECT_FALSE(r.errors.empty());
+}
+
+TEST_F(ParserAnonStructRejectedTest, BareEnumAsType) {
+  auto r = ExprResult::from("{ x enum }");
+  EXPECT_FALSE(r.errors.empty());
 }
 
 // =============================================================================
@@ -2720,21 +2711,6 @@ TEST_F(ParserStmtCoverageTest, Assignment_IndexTarget) {
 }
 
 
-TEST_F(ParserStmtCoverageTest, VarDecl_StructType) {
-  auto r = ExprResult::from("{ x struct{a int} }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
-  ASSERT_NE(blk, nullptr);
-  ASSERT_EQ(blk->stmts.size(), 1);
-  auto *vd = std::get_if<VarDeclNode>(&blk->stmts[0]->data);
-  ASSERT_NE(vd, nullptr);
-  EXPECT_EQ(vd->name.name, "x");
-  ASSERT_TRUE(vd->type.has_value());
-  auto *sty = std::get_if<StructTypeNode>(&(*vd->type)->data);
-  ASSERT_NE(sty, nullptr);
-  ASSERT_EQ(sty->fields.size(), 1);
-}
-
 // =============================================================================
 // Missing coverage — Types (parser-level)
 // =============================================================================
@@ -2807,22 +2783,6 @@ TEST_F(ParserTypeCoverageTest, FuncType) {
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->params.size(), 1);
   ASSERT_NE(ft->return_type, nullptr);
-}
-
-TEST_F(ParserTypeCoverageTest, StructType_AsAnnotation) {
-  auto r = ExprResult::from("{ x struct{a int, b string} }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
-  ASSERT_NE(blk, nullptr);
-  ASSERT_EQ(blk->stmts.size(), 1);
-  auto *vd = std::get_if<VarDeclNode>(&blk->stmts[0]->data);
-  ASSERT_NE(vd, nullptr);
-  ASSERT_TRUE(vd->type.has_value());
-  auto *sty = std::get_if<StructTypeNode>(&(*vd->type)->data);
-  ASSERT_NE(sty, nullptr);
-  ASSERT_EQ(sty->fields.size(), 2);
-  EXPECT_EQ(sty->fields[0].names.identifiers[0].name, "a");
-  EXPECT_EQ(sty->fields[1].names.identifiers[0].name, "b");
 }
 
 TEST_F(ParserTypeCoverageTest, SelectorType) {

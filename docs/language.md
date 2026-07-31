@@ -856,16 +856,9 @@ pub fn (u User) Email() String {
 }
 ```
 
-Structs can also be bound to local variables or passed to methods by using an
-anonymous struct. Methods can not be bound to anonymous structs.
-
-```
-pub fn Foo() String {
-  s := struct{id Int, name String}
-  user := net.Get("User", s)
-  "{s.id}: {s.name}"
-}
-```
+There is no anonymous struct form. A shape is spelled once, as a declaration,
+and referred to by name — so there is only one way to write it and a method can
+always be bound to it.
 
 Instead of `this` or `self`, you name the receiver. Field access always goes
 through the receiver name — struct fields are never injected as bare locals.
@@ -956,18 +949,16 @@ Config{timeout: 5}       // timeout 5,  name "anon", active true, retries 0
 
 ### Struct literals
 
-To initialize a struct, its literal form must be used. The structs Identifier,
-or an anonymous struct, must proceed the literal.
+To initialize a struct, its literal form must be used. The struct's identifier,
+or a `pkg.Type` selector, must precede the literal.
 
 ```
 struct Point {
   x, y Int
 }
 
-// named struct
 p := Point{x: 2, y: 4}
-
-tmp := struct{name, email String}{name: "Jane", email: "jane@example.com"}
+q := geom.Point{x: 2, y: 4} // from another package
 ```
 
 ### Struct access
@@ -976,7 +967,15 @@ Since the structs of a field are stronly typed, they can be accessed with dot
 access, called a selector.
 
 ```
-data := struct{a struct {b Int}}{a: {b: 0}}
+struct Inner {
+  b int
+}
+
+struct Outer {
+  a Inner
+}
+
+data := Outer{a: Inner{b: 0}}
 b := data.a.b
 ```
 

@@ -136,10 +136,10 @@ struct FieldAssignmentNode {
   NodePtr value;
 };
 
-// StructLiteral = ( Identifier | Selector | StructType ) StructInitializer
+// StructLiteral = ( Identifier | Selector ) StructInitializer
 struct StructLiteralNode {
   Span span;
-  NodePtr type_expr; // IdentifierNode, SelectorNode, or StructTypeNode
+  NodePtr type_expr; // IdentifierNode or SelectorNode
   std::vector<FieldAssignmentNode> fields;
 };
 
@@ -147,7 +147,6 @@ struct StructLiteralNode {
 // Section 2: Type nodes
 //
 // FieldSpecNode depends on IdentifierListNode (defined above).
-// StructTypeNode depends on FieldSpecNode.
 // ===========================================================================
 
 // UnionType = SingleType { "|" SingleType }   (2 or more alternatives)
@@ -186,12 +185,6 @@ struct FieldSpecNode {
   IdentifierListNode names;
   NodePtr type;
   NodePtr default_value; // nullptr when no `= Expression` is present
-};
-
-// StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
-struct StructTypeNode {
-  Span span;
-  std::vector<FieldSpecNode> fields;
 };
 
 // GenericTypeApp = "|" TypeList "|" Identifier
@@ -626,7 +619,7 @@ struct Node {
 
     // --- Types ---
     UnionTypeNode,  ArrayTypeNode,  MapTypeNode,   FuncTypeNode,
-    StructTypeNode, GenericTypeAppNode, GenericNode,
+    GenericTypeAppNode, GenericNode,
     TypeParamNode,
 
     // --- Shared sub-nodes ---

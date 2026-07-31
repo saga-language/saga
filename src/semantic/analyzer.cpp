@@ -1316,9 +1316,6 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const FuncTypeNode &n) -> TypePtr {
             return resolve_func_type(n);
           },
-          [&](const StructTypeNode &n) -> TypePtr {
-            return resolve_struct_type(n);
-          },
           [&](const UnionTypeNode &n) -> TypePtr {
             return resolve_union_type(n);
           },
@@ -1393,17 +1390,6 @@ TypePtr Analyzer::resolve_func_type(const FuncTypeNode &node) {
     params.push_back(resolve_type(*p));
   TypePtr ret = node.return_type ? resolve_type(*node.return_type) : nullptr;
   return make_func_type(std::move(params), std::move(ret));
-}
-
-TypePtr Analyzer::resolve_struct_type(const StructTypeNode &node) {
-  std::vector<FieldInfo> fields;
-  for (auto &fs : node.fields) {
-    auto ft = resolve_type(*fs.type);
-    for (auto &ident : fs.names.identifiers) {
-      fields.push_back({std::string(ident.name), ft, false});
-    }
-  }
-  return make_struct_type("<anonymous>", std::move(fields));
 }
 
 TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
@@ -2942,9 +2928,6 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const MapTypeNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
-          [&](const StructTypeNode &) -> TypePtr {
-            return reject_type_as_value(node);
-          },
           [&](const UnionTypeNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
@@ -2972,7 +2955,6 @@ static bool is_empty_struct_shape(const TypePtr &t) {
 static bool is_type_expr_node(const Node &node) {
   return std::holds_alternative<ArrayTypeNode>(node.data) ||
          std::holds_alternative<MapTypeNode>(node.data) ||
-         std::holds_alternative<StructTypeNode>(node.data) ||
          std::holds_alternative<UnionTypeNode>(node.data) ||
          std::holds_alternative<FuncTypeNode>(node.data) ||
          std::holds_alternative<GenericTypeAppNode>(node.data);

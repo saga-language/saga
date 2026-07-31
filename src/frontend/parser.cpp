@@ -244,7 +244,6 @@ constexpr bool is_type_start(Token::Kind kind) {
   case Token::Kind::Array:      // array{T}
   case Token::Kind::Map:        // map{K:V}
   case Token::Kind::Fn:         // fn(...) T
-  case Token::Kind::Struct:     // struct{...}
   case Token::Kind::BitwiseOr:  // |T| generic app (until 1b-2)
   // Basic type keywords.
   case Token::Kind::Bool:
@@ -330,7 +329,6 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::BitwiseOr: // |T| generic prefix for spawn / fn
   case Token::Kind::Fn:
   case Token::Kind::Import:
-  case Token::Kind::Struct:          // anonymous struct literal
   case Token::Kind::Array:           // array{T}{...} typed literal
   case Token::Kind::Map:             // map{K:V}{...} typed literal
     return true;
@@ -714,7 +712,6 @@ NodePtr Parser::parse_union_type() {
 //   "array"          → ArrayType   array{T [; N]}
 //   "map"            → MapType     map{K:V [; N]}
 //   "fn"             → FuncType    fn(...) T
-//   "struct"         → StructType  struct{...}
 //   basic_type kw    → IdentifierNode carrying the keyword text (int, string…)
 //   Identifier       → IdentifierNode / SelectorNode, optional <…> application
 //
@@ -731,8 +728,6 @@ NodePtr Parser::parse_single_type() {
     return parse_map_type();
   case Token::Kind::Fn:
     return parse_func_type();
-  case Token::Kind::Struct:
-    return parse_struct_type();
 
   // ── Basic type keywords ──────────────────────────────────────────────
   // Lowered to an IdentifierNode carrying the keyword text, resolved against
@@ -800,12 +795,12 @@ NodePtr Parser::parse_single_type() {
 // ============================================================================
 //
 // These helpers are declared under "Declaration sub-helpers" in the header but
-// are implemented here because parse_func_type and parse_struct_type (both type
-// parsers) call them directly.
+// are implemented here because parse_func_type (a type parser) calls them
+// directly.
 
 // parse_field_spec — FieldSpec = IdentifierList Type
 //
-// Used for inline StructType fields.  The IdentifierList collects all
+// Used for struct and error declaration fields.  The IdentifierList collects all
 // comma-separated names; the type follows WITHOUT a preceding comma.
 //
 //   x, y Int      →  names=[x, y]  type=Int
@@ -1077,34 +1072,6 @@ NodePtr Parser::parse_map_type() {
                                 std::move(value), std::move(size));
 }
 
-// parse_struct_type — StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ]
-// "}"
-//
-// Fields are comma-separated (not newline-separated; that convention is
-// reserved for StructDecl).  Trailing commas are tolerated.
-NodePtr Parser::parse_struct_type() {
-  auto start = mark();
-  expect(Token::Kind::Struct);    // "struct"
-  expect(Token::Kind::LeftBrace); // "{"
-  skip_terminators();
-
-  std::vector<FieldSpecNode> fields;
-  if (!check(Token::Kind::RightBrace)) {
-    fields.push_back(parse_field_spec());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      skip_terminators();
-      if (check(Token::Kind::RightBrace))
-        break; // trailing comma
-      fields.push_back(parse_field_spec());
-    }
-    skip_terminators_before(Token::Kind::RightBrace);
-  }
-
-  expect(Token::Kind::RightBrace); // "}"
-  return make_node<StructTypeNode>(span_from(start), std::move(fields));
-}
-
 // parse_func_type — FuncType = "fn" "(" [ TypeList ] ")" Type
 //
 // FuncTypeNode stores type nodes only (no parameter names).
@@ -1204,14 +1171,12 @@ NodePtr Parser::parse_func_type() {
 NodePtr Parser::parse_expression() { return parse_expr_bp(0); }
 
 // A "{" begins a struct initialiser only after a type expression that can name
-// a struct: an Identifier, a Selector (`pkg.Type`), or an anonymous struct type
-// (`struct{...}`) — grammar.md:208.  After a container type (`array{T}`,
-// `map{K:V}`) it is not an infix, so the stray "{" surfaces as a natural syntax
-// error rather than a malformed struct literal.
+// a struct: an Identifier or a Selector (`pkg.Type`).  After a container type
+// (`array{T}`, `map{K:V}`) it is not an infix, so the stray "{" surfaces as a
+// natural syntax error rather than a malformed struct literal.
 static bool begins_struct_initializer(const Node &lhs) {
   return std::holds_alternative<IdentifierNode>(lhs.data) ||
-         std::holds_alternative<SelectorNode>(lhs.data) ||
-         std::holds_alternative<StructTypeNode>(lhs.data);
+         std::holds_alternative<SelectorNode>(lhs.data);
 }
 
 // parse_expr_bp — Pratt core loop.
@@ -1363,17 +1328,6 @@ NodePtr Parser::parse_prefix() {
   // spawn (optional typed channel after the keyword: spawn<int> { })
   case Token::Kind::Spawn:
     return parse_spawn_expr();
-
-  // ── Anonymous struct type (prefix for struct literal) ──────────────────────
-  //
-  // Grammar: StructLiteral = StructType StructInitializer
-  //          StructType    = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
-  //
-  // parse_struct_type() produces a StructTypeNode.  The Pratt loop then sees
-  // the following "{" as an infix LeftBrace (bp = 1) and dispatches to
-  // parse_struct_literal(), which consumes the StructInitializer.
-  case Token::Kind::Struct:
-    return parse_struct_type();
 
   // ── Container type prefix (typed composite literal) ────────────────────────
   //
@@ -3397,7 +3351,7 @@ NodePtr Parser::parse_spawn_expr() {
 //                        FieldAssignment = Identifier ":" Expression
 //
 // Called from parse_infix when the current token is "{" and the LHS is the
-// type expression (an IdentifierNode, SelectorNode, or StructTypeNode).
+// type expression (an IdentifierNode or SelectorNode).
 //
 // Field separators
 // ────────────────
