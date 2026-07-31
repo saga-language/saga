@@ -1899,6 +1899,7 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
       error(embed_node->span, "embedded type must be a struct");
       continue;
     }
+    if (embed_name_taken(*embed_node, et, fields, embeds)) continue;
     embeds.push_back(et);
   }
 
@@ -3187,10 +3188,23 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
         break;
       }
     }
-    if (!found) {
-      error(node.span,
-            std::format("struct '{}' has no field '{}'", info.name, fname));
+    if (found)
+      continue;
+
+    // A key may also name an embed, which initialises the embedded value as a
+    // whole — the only way to set storage a child field shadows.
+    if (auto embed = embed_by_name(info, fname)) {
+      if (!is_invalid_type(val_type))
+        expect_assignable(node.span, embed, val_type,
+                          std::format("embedded '{}'", fname));
+      auto &st = current_instantiation_ ? current_instantiation_->span_types
+                                        : span_types;
+      st.push_back({node.fields[i].name.span, embed});
+      continue;
     }
+
+    error(node.span,
+          std::format("struct '{}' has no field '{}'", info.name, fname));
   }
 
   // If the original type was an alias, return the alias type so the
@@ -3874,6 +3888,12 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
     return sig;
   }
 
+  // An embed answers to its own type name, which reaches the embedded value
+  // itself. This is the only way to read storage a child field shadows, so it
+  // is checked before the promoted-member recursion.
+  if (auto embed = embed_by_name(info, field_name))
+    return embed;
+
   // Promoted members: recurse through embeds so a member declared several
   // levels deep is still found. Own members are checked above first, so a
   // child member shadows an embedded one of the same name.
@@ -3882,6 +3902,48 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
       continue;
     if (auto t = resolve_struct_member(embed, field_name, field_span))
       return t;
+  }
+  return nullptr;
+}
+
+// An embed answers to its bare type name, so anything else claiming that name
+// would leave the embedded value unreachable. Two embeds of the same name from
+// different packages collide for the same reason.
+bool Analyzer::embed_name_taken(const Node &embed_node, const TypePtr &embed,
+                                const std::vector<FieldInfo> &fields,
+                                const std::vector<TypePtr> &seen) {
+  auto &einfo = std::get<StructTypeInfo>(embed->detail);
+
+  for (auto &f : fields) {
+    if (f.name != einfo.name)
+      continue;
+    error(embed_node.span,
+          std::format("embedded type '{}' collides with a field of the same "
+                      "name",
+                      einfo.name));
+    return true;
+  }
+
+  for (auto &other : seen) {
+    if (std::get<StructTypeInfo>(other->detail).name != einfo.name)
+      continue;
+    error(embed_node.span,
+          std::format("embedded type '{}' collides with another embed of the "
+                      "same name",
+                      einfo.name));
+    return true;
+  }
+
+  return false;
+}
+
+TypePtr Analyzer::embed_by_name(const StructTypeInfo &info,
+                                const std::string &name) {
+  for (auto &embed : info.embeds) {
+    if (!embed || embed->kind != TypeKind::Struct)
+      continue;
+    if (std::get<StructTypeInfo>(embed->detail).name == name)
+      return embed;
   }
   return nullptr;
 }

@@ -1,0 +1,26 @@
+// Spec: qualified access yields the embedded value, so a method called on it
+// runs against *that* value's fields — plain field access then ordinary
+// dispatch, not a `super`-style call re-entered on the child. If it were the
+// latter, Doubled() would read the child's n and print 6.
+// (docs/language.md §Struct embedding)
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+fn (c Counter) Doubled() int {
+  c.n * 2
+}
+
+struct Widget {
+  Counter
+  n int
+}
+
+pub fn Main() void {
+  w := Widget{Counter: Counter{n: 21}, n: 3}
+  io.Println(w.n.String())
+  io.Println(w.Counter.n.String())
+  io.Println(w.Counter.Doubled().String())
+}

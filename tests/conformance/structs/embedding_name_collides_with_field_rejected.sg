@@ -1,0 +1,18 @@
+// Spec: an embed answers to its bare type name, so a declared field of that
+// name would leave the embedded value unreachable. Reject the declaration
+// rather than silently hiding storage.
+// (docs/language.md §Struct embedding)
+import "std/io"
+
+struct Timestamps {
+  created int
+}
+
+struct User {
+  Timestamps
+  Timestamps string
+}
+
+pub fn Main() void {
+  io.Println("unreachable")
+}

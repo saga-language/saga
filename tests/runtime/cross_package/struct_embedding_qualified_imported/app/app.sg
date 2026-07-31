@@ -1,0 +1,9 @@
+import "std/io"
+import "lib"
+
+pub fn Main() void {
+  u := lib.User{Timestamps: lib.Timestamps{created: 100}, created: 5}
+  io.Println("{u.created}")
+  io.Println("{u.Timestamps.created}")
+  io.Println("{u.Timestamps.Created()}")
+}

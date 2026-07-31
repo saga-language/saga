@@ -998,9 +998,9 @@ value := data.optional or { "unknown" }
 
 ### Struct embedding (mix-ins)
 
-A struct may be embedding inside another struct. Unlike class inheritance, a
-struct that is embedded passes is members and methods on to the child struct
-but does not create a parent-child hierarchial inheritance.
+A struct may be embedded inside another struct. Unlike class inheritance, a
+struct that is embedded passes its members and methods on to the child struct
+but does not create a parent-child hierarchical inheritance.
 
 The "child" struct, the one receiving the embedding, gains all the fields and
 methods of the embedded struct as if they were its own. The embedded struct
@@ -1052,6 +1052,51 @@ pub fn (c Child) Kind() string { "child" }
 
 c := Child{}
 c.Kind() // returns "child" because the child's method shadows the embedded one
+```
+
+#### Reaching the embedded value
+
+Shadowing hides a name, not the storage behind it. The embedded struct keeps
+its own memory inside the child, and it answers to its bare type name — so
+`u.Timestamps` reaches that value directly, for reading, writing, and
+initialising:
+
+```
+struct User {
+  Timestamps
+  created int // shadows the embedded `created`
+}
+
+u := User{Timestamps: Timestamps{created: 100}, created: 5}
+u.created            // 5   — the child's
+u.Timestamps.created // 100 — the embedded one
+u.Timestamps.Age()   // the method, run against the embedded value
+
+u.Timestamps.created = 77 // writes the embedded field; u.created stays 5
+```
+
+Without this, a child field would make the embedded field it shadows
+unreachable in both directions, and a promoted method reading that field would
+quietly see a zero.
+
+This is **not** `super`. `u.Timestamps.Age()` is ordinary field access followed
+by ordinary dispatch: it finds the embedded value and calls the method on
+*that*. There is no chain to walk up and no way to re-enter the child, which
+is the same onion rule as above — the inside can't see out.
+
+Qualified access composes one name at a time, so a struct embedded two levels
+down is reached as `u.Base.Timestamps.created`.
+
+An embedded type is always named by its **unqualified** name, even when it
+comes from another package: `lib.Timestamps` is declared with the package
+qualifier but reached as `u.Timestamps`. Because that name has to stay
+unambiguous, it is an error for a declared field or a second embed to claim it.
+
+```
+struct Bad {
+  Timestamps
+  Timestamps string // Error: collides with the embedded type's name
+}
 ```
 
 ```

@@ -649,6 +649,18 @@ private:
                                 Span field_span);
   void collect_promoted_fields(const StructTypeInfo &info,
                                std::vector<FieldInfo> &out);
+
+  /// The embed of `info` whose type name is `name`, or null. An embed is
+  /// addressable by its bare type name — `u.Timestamps` reaches the embedded
+  /// value itself, which is the only way to get at storage a child field
+  /// shadows. Direct embeds only; deeper ones are reached a step at a time.
+  TypePtr embed_by_name(const StructTypeInfo &info, const std::string &name);
+
+  /// Report and return true when an embed's type name is already claimed by a
+  /// declared field or an earlier embed.
+  bool embed_name_taken(const Node &embed_node, const TypePtr &embed,
+                        const std::vector<FieldInfo> &fields,
+                        const std::vector<TypePtr> &seen);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
                                    const std::string &field_name);
   /// Resolve a method callable on a union value without narrowing: the
