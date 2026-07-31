@@ -1,0 +1,16 @@
+// Spec: `++` and `--` write to their target, so they take the same targets
+// as assignment — a constant's field is not one. (docs/language.md:50)
+import "std/io"
+
+struct P {
+  x int
+  y int
+}
+
+const Origin = P{x: 3, y: 4}
+
+pub fn Main() void {
+  Origin.x++
+  Origin.y--
+  io.Println("unreachable")
+}

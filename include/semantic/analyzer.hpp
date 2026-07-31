@@ -675,6 +675,16 @@ private:
   void check_decl_assign(const DeclAssignNode &node);
   void check_assign(const AssignNode &node);
   void reject_error_field_mutation(const Node &target);
+
+  /// The identifier a write target is rooted at, walking selector and index
+  /// chains. Null when the target bottoms out in something with no storage,
+  /// such as a call result or a literal.
+  const IdentifierNode *target_root(const Node &target);
+
+  /// Reject a write target that names no writable storage. `verb` completes
+  /// the message ("assign to", "increment", "decrement").
+  void reject_immutable_target(const Node &target, std::string_view verb);
+
   void check_increment(const IncrementNode &node);
   void check_decrement(const DecrementNode &node);
   void check_return(const ReturnNode &node);

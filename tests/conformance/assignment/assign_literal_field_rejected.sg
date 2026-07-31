@@ -1,0 +1,12 @@
+// Spec: an assignment target must name storage. A struct literal is a
+// temporary, so the write would be discarded.
+import "std/io"
+
+struct P {
+  x int
+}
+
+pub fn Main() void {
+  P{x: 1}.x = 3
+  io.Println("unreachable")
+}

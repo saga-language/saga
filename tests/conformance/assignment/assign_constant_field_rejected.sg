@@ -1,0 +1,14 @@
+// Spec: "All top level constants are immutable." (docs/language.md:50)
+// Immutability covers the constant's fields, not just rebinding the name.
+import "std/io"
+
+struct P {
+  x int
+}
+
+const Origin = P{x: 3}
+
+pub fn Main() void {
+  Origin.x = 5
+  io.Println("unreachable")
+}

@@ -1,0 +1,17 @@
+// Spec: an assignment target must name storage. A call result is a
+// temporary, so the write would be discarded — reject it rather than
+// compiling a statement that does nothing.
+import "std/io"
+
+struct P {
+  x int
+}
+
+fn make() P {
+  P{x: 1}
+}
+
+pub fn Main() void {
+  make().x = 3
+  io.Println("unreachable")
+}

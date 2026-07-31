@@ -4938,6 +4938,44 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   }
 }
 
+const IdentifierNode *Analyzer::target_root(const Node &target) {
+  if (auto *id = std::get_if<IdentifierNode>(&target.data))
+    return id;
+  if (auto *sel = std::get_if<SelectorNode>(&target.data))
+    return target_root(*sel->object);
+  if (auto *idx = std::get_if<IndexExprNode>(&target.data))
+    return target_root(*idx->object);
+  return nullptr;
+}
+
+// A write needs somewhere to land. Without this the store is emitted against a
+// temporary and silently discarded, so the statement compiles and does nothing.
+void Analyzer::reject_immutable_target(const Node &target,
+                                       std::string_view verb) {
+  auto *root = target_root(target);
+  if (!root) {
+    error(target.span,
+          std::format("cannot {} a temporary value: the write would be "
+                      "discarded",
+                      verb));
+    return;
+  }
+
+  auto sym = lookup(std::string(root->name));
+  if (!sym)
+    return;
+
+  if (sym->kind == SymbolKind::Constant) {
+    error(target.span,
+          std::format("cannot {} constant '{}'", verb, root->name));
+    return;
+  }
+
+  if (sym->kind != SymbolKind::Variable && sym->kind != SymbolKind::Parameter)
+    error(target.span,
+          std::format("cannot {} '{}': not a variable", verb, root->name));
+}
+
 // Errors are immutable pure data: reject writing a field via `=`, a compound
 // assignment, or `++`/`--`.
 void Analyzer::reject_error_field_mutation(const Node &target) {
@@ -4950,17 +4988,7 @@ void Analyzer::reject_error_field_mutation(const Node &target) {
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
-    // Reject assignment to a top-level constant.  Spec: "All top level
-    // constants are immutable" (docs/language.md:50).  Catches
-    // `Pi = 4`, `Pi += 1`, etc. for any compound assignment too.
-    if (auto *id = std::get_if<IdentifierNode>(&node.targets[i]->data)) {
-      auto sym = lookup(std::string(id->name));
-      if (sym && sym->kind == SymbolKind::Constant) {
-        error(node.targets[i]->span,
-              std::format("cannot assign to constant '{}'", id->name));
-      }
-    }
-
+    reject_immutable_target(*node.targets[i], "assign to");
     reject_error_field_mutation(*node.targets[i]);
 
     auto target_type = check_expr(*node.targets[i]);
@@ -5006,13 +5034,7 @@ void Analyzer::check_assign(const AssignNode &node) {
 }
 
 void Analyzer::check_increment(const IncrementNode &node) {
-  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
-    auto sym = lookup(std::string(id->name));
-    if (sym && sym->kind == SymbolKind::Constant) {
-      error(node.operand->span,
-            std::format("cannot increment constant '{}'", id->name));
-    }
-  }
+  reject_immutable_target(*node.operand, "increment");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
   if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
@@ -5022,13 +5044,7 @@ void Analyzer::check_increment(const IncrementNode &node) {
 }
 
 void Analyzer::check_decrement(const DecrementNode &node) {
-  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
-    auto sym = lookup(std::string(id->name));
-    if (sym && sym->kind == SymbolKind::Constant) {
-      error(node.operand->span,
-            std::format("cannot decrement constant '{}'", id->name));
-    }
-  }
+  reject_immutable_target(*node.operand, "decrement");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
   if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
