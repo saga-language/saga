@@ -872,16 +872,38 @@ through the receiver name — struct fields are never injected as bare locals.
 
 ```
 struct Foo {
-  name String // private
+  name string // private
 }
 
-fn (f Foo) SetName(value String) Void {
-  f.name = value
+fn (f Foo) Named(value string) Foo {
+  Foo{name: value}
 }
 ```
 
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
+
+The receiver is a value, exactly like a parameter, so the rules under
+[Mutability](#mutability-memory-model) apply to it. Assigning to one of its
+fields rewrites the method's own copy and the caller never sees it:
+
+```
+fn (c Counter) Bump() int {
+  c.n += 1 // scratch: local to this call
+  c.n
+}
+```
+
+A method that changes a struct therefore returns the new value rather than
+mutating in place — there is no by-reference receiver.
+
+```
+fn (c Counter) Incremented() Counter {
+  Counter{n: c.n + 1}
+}
+
+c = c.Incremented()
+```
 
 ### Type bound methods
 

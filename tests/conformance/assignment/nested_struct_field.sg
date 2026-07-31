@@ -1,0 +1,17 @@
+// Spec: assignment addresses the whole selector chain, so a field of a
+// nested struct is written in place. (docs/language.md §Mutability)
+import "std/io"
+
+struct Inner {
+  b int
+}
+
+struct Outer {
+  a Inner
+}
+
+pub fn Main() void {
+  o := Outer{a: Inner{b: 1}}
+  o.a.b = 9
+  io.Println(o.a.b.String())
+}

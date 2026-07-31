@@ -437,6 +437,22 @@ llvm::AllocaInst *CodeGen::create_entry_alloca(llvm::Function *fn,
   return tmp_builder.CreateAlloca(type, nullptr, name);
 }
 
+llvm::AllocaInst *CodeGen::bind_value_slot(llvm::Function *fn,
+                                           const std::string &name,
+                                           llvm::Value *arg,
+                                           llvm::Type *slot_type) {
+  auto *slot = create_entry_alloca(fn, name, slot_type);
+  if (slot_type->isStructTy()) {
+    auto &dl = module->getDataLayout();
+    auto align = dl.getABITypeAlign(slot_type);
+    builder.CreateMemCpy(slot, align, arg, align,
+                         dl.getTypeAllocSize(slot_type));
+  } else {
+    builder.CreateStore(arg, slot);
+  }
+  return slot;
+}
+
 // ===========================================================================
 // Entry point
 // ===========================================================================

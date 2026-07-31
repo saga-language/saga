@@ -1,0 +1,21 @@
+// Spec: selector chains of arbitrary depth are assignable, not just one
+// level. (docs/language.md §Mutability)
+import "std/io"
+
+struct C {
+  d int
+}
+
+struct B {
+  c C
+}
+
+struct A {
+  b B
+}
+
+pub fn Main() void {
+  a := A{b: B{c: C{d: 1}}}
+  a.b.c.d = 5
+  io.Println(a.b.c.d.String())
+}

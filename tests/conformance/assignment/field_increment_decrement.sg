@@ -1,0 +1,21 @@
+// Spec: `++` and `--` address the same targets as assignment, so they apply
+// to struct fields and nested chains, not just plain locals.
+// (docs/language.md §Mutability)
+import "std/io"
+
+struct Inner {
+  b int
+}
+
+struct Outer {
+  a Inner
+  n int
+}
+
+pub fn Main() void {
+  o := Outer{a: Inner{b: 5}, n: 1}
+  o.n++
+  o.a.b--
+  io.Println(o.n.String())
+  io.Println(o.a.b.String())
+}

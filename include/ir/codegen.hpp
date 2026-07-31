@@ -339,6 +339,12 @@ private:
                                         const std::string &name,
                                         llvm::Type *type);
 
+  /// Bind an incoming argument to a local slot by value: structs (which arrive
+  /// by pointer) are copied, everything else is stored. Receivers and
+  /// parameters share this so neither can drift away from value semantics.
+  llvm::AllocaInst *bind_value_slot(llvm::Function *fn, const std::string &name,
+                                    llvm::Value *arg, llvm::Type *slot_type);
+
   // ── Visitors ─────────────────────────────────────────────────────────
 
   void emit_source(const SourceNode &node);
@@ -475,6 +481,25 @@ private:
   void emit_union_leftmost_zero(llvm::Value *alloca, const TypePtr &union_sem);
   void emit_decl_assign(const DeclAssignNode &node);
   void emit_assign(const AssignNode &node);
+
+  /// Address the storage an assignment target names, with the LLVM type held
+  /// there. Covers plain locals and selector chains of any depth; yields
+  /// {nullptr, nullptr} for targets with no stable address. Every emitter that
+  /// writes to a target goes through this so none can drift.
+  std::pair<llvm::Value *, llvm::Type *>
+  assign_target_address(const Node &target);
+
+  /// Store `rhs` into the field named by the selector `target`.
+  void emit_field_assign(const Node &target, Token::Kind op, llvm::Value *rhs);
+
+  /// Step the integer target by one in place, shared by `++` and `--`.
+  void emit_step(const Node &target, bool increment);
+
+  /// Combine `cur` and `rhs` for a compound assignment, dispatching on the
+  /// target's type so floats get FP arithmetic and strings concatenate.
+  llvm::Value *emit_compound_op(Token::Kind op, llvm::Value *cur,
+                                llvm::Value *rhs, const TypePtr &target_sem);
+
   void emit_return(const ReturnNode &node);
   void emit_increment(const IncrementNode &node);
   void emit_decrement(const DecrementNode &node);
@@ -662,6 +687,19 @@ private:
   std::pair<llvm::Value *, llvm::Type *>
   struct_field_gep(llvm::Value *struct_ptr, const TypePtr &struct_sem_type,
                    const std::string &field_name);
+
+  /// Address of the struct `node` denotes, with its semantic type — the one
+  /// resolution shared by field reads and field assignment. Handles identifier
+  /// roots and nested selector chains. Yields {nullptr, nullptr} for anything
+  /// without a stable address (call results, literals, package constants), so
+  /// callers fall back to a by-value path.
+  std::pair<llvm::Value *, TypePtr> struct_lvalue(const Node &node);
+
+  /// Narrow a local slot to the struct address it denotes: the slot itself
+  /// when it holds the struct, or the pointer loaded from it when it holds a
+  /// pointer to one.
+  llvm::Value *struct_slot_address(llvm::AllocaInst *slot, const TypePtr &sem,
+                                   const std::string &name);
 
   /// Walk `__embed_<Name>` slots from `struct_ptr` (a pointer to a
   /// `struct_sem` value) down to the embedded struct that *directly* declares

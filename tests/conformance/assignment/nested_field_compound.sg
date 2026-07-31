@@ -1,0 +1,18 @@
+// Spec: compound assignment resolves the same selector chain as `=`.
+// (docs/language.md §Mutability)
+import "std/io"
+
+struct Inner {
+  b int
+}
+
+struct Outer {
+  a Inner
+}
+
+pub fn Main() void {
+  o := Outer{a: Inner{b: 10}}
+  o.a.b += 5
+  o.a.b -= 3
+  io.Println(o.a.b.String())
+}

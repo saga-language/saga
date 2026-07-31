@@ -688,29 +688,24 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       }
     }
 
-    // The self slot mirrors the declared ABI (build_method_signature): structs
-    // pass by pointer, scalar/alias receivers by value, so the arg's own type
-    // is the correct alloca type.
+    // A struct receiver arrives by pointer (build_method_signature) but is a
+    // value like any parameter, so it is copied into the frame: writes stay
+    // local to the method (docs/language.md §Mutability).
     std::string recv_name(fn->receiver->name.name);
     auto *self_arg = func->getArg(arg_idx++);
-    auto *recv_alloca = create_entry_alloca(func, recv_name, self_arg->getType());
-    builder.CreateStore(self_arg, recv_alloca);
-    locals[recv_name] = recv_alloca;
+    auto recv_st = struct_types.find(mangle(package_name, struct_name));
+    auto *recv_slot_type = self_arg->getType();
+    if (recv_st != struct_types.end() && self_arg->getType()->isPointerTy())
+      recv_slot_type = recv_st->second;
+    locals[recv_name] =
+        bind_value_slot(func, recv_name, self_arg, recv_slot_type);
 
     for (auto &param : fn->signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
       for (auto &ident : param.names.identifiers) {
         std::string pname(ident.name);
-        auto *alloca = create_entry_alloca(func, pname, ll_type);
-        auto *arg = func->getArg(arg_idx++);
-        if (ll_type && ll_type->isStructTy()) {
-          auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
-          auto al = module->getDataLayout().getABITypeAlign(ll_type);
-          builder.CreateMemCpy(alloca, al, arg, al, sz);
-        } else {
-          builder.CreateStore(arg, alloca);
-        }
-        locals[pname] = alloca;
+        locals[pname] =
+            bind_value_slot(func, pname, func->getArg(arg_idx++), ll_type);
       }
     }
 

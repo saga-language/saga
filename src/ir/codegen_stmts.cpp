@@ -814,36 +814,8 @@ void CodeGen::emit_assign(const AssignNode &node) {
       continue;
     }
 
-    if (auto *sel = std::get_if<SelectorNode>(&node.targets[i]->data)) {
-      // Field assignment: obj.field = rhs
-      std::string field_name(sel->field.name);
-      if (auto *ident = std::get_if<IdentifierNode>(&sel->object->data)) {
-        auto local_it = locals.find(std::string(ident->name));
-        if (local_it != locals.end()) {
-          auto sem = semantic_type(*sel->object);
-          if (sem && sem->kind == TypeKind::Struct) {
-            auto [gep, ftype] =
-                struct_field_gep(local_it->second, sem, field_name);
-            if (gep) {
-              if (node.op == Token::Kind::Assignment) {
-                builder.CreateStore(rhs, gep);
-              } else {
-                auto *cur = builder.CreateLoad(ftype, gep);
-                llvm::Value *result = nullptr;
-                using K = Token::Kind;
-                switch (node.op) {
-                case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
-                case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
-                case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
-                case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
-                default: result = rhs; break;
-                }
-                builder.CreateStore(result, gep);
-              }
-            }
-          }
-        }
-      }
+    if (std::holds_alternative<SelectorNode>(node.targets[i]->data)) {
+      emit_field_assign(*node.targets[i], node.op, rhs);
       continue;
     }
 
@@ -886,29 +858,80 @@ void CodeGen::emit_assign(const AssignNode &node) {
       }
       builder.CreateStore(rhs, alloca);
     } else {
-      // Compound assignment: load current, apply op, store.
       auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-      llvm::Value *result = nullptr;
-
-      // Check if this is a string compound assignment.
-      bool is_str = target_sem && target_sem->kind == TypeKind::String;
-
-      if (is_str && node.op == K::AddAssignment) {
-        auto *concat_fn = module->getFunction("saga_string_concat");
-        result = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
-        // Release the old string since concat created a new one.
-        emit_release(cur, target_sem);
-      } else {
-        switch (node.op) {
-        case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
-        case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
-        case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
-        case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
-        default: result = rhs; break;
-        }
-      }
-      builder.CreateStore(result, alloca);
+      builder.CreateStore(emit_compound_op(node.op, cur, rhs, target_sem),
+                          alloca);
     }
+  }
+}
+
+std::pair<llvm::Value *, llvm::Type *>
+CodeGen::assign_target_address(const Node &target) {
+  if (auto *ident = std::get_if<IdentifierNode>(&target.data)) {
+    auto local_it = locals.find(std::string(ident->name));
+    if (local_it == locals.end())
+      return {nullptr, nullptr};
+    return {local_it->second, local_it->second->getAllocatedType()};
+  }
+
+  if (auto *sel = std::get_if<SelectorNode>(&target.data)) {
+    auto [obj_addr, obj_sem] = struct_lvalue(*sel->object);
+    if (!obj_addr)
+      return {nullptr, nullptr};
+    return struct_field_gep(obj_addr, obj_sem, std::string(sel->field.name));
+  }
+
+  return {nullptr, nullptr};
+}
+
+void CodeGen::emit_field_assign(const Node &target, Token::Kind op,
+                                llvm::Value *rhs) {
+  auto [addr, ftype] = assign_target_address(target);
+  if (!addr)
+    return;
+
+  if (op == Token::Kind::Assignment) {
+    builder.CreateStore(rhs, addr);
+    return;
+  }
+
+  auto *cur = builder.CreateLoad(ftype, addr);
+  builder.CreateStore(emit_compound_op(op, cur, rhs, semantic_type(target)),
+                      addr);
+}
+
+llvm::Value *CodeGen::emit_compound_op(Token::Kind op, llvm::Value *cur,
+                                       llvm::Value *rhs,
+                                       const TypePtr &target_sem) {
+  using K = Token::Kind;
+
+  if (target_sem && target_sem->kind == TypeKind::String) {
+    if (op != K::AddAssignment)
+      return rhs;
+    auto *concat_fn = module->getFunction("saga_string_concat");
+    auto *joined = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
+    emit_release(cur, target_sem);
+    return joined;
+  }
+
+  if (cur->getType()->isDoubleTy()) {
+    if (rhs->getType()->isIntegerTy(64))
+      rhs = builder.CreateSIToFP(rhs, f64_type, "itof");
+    switch (op) {
+    case K::AddAssignment: return builder.CreateFAdd(cur, rhs, "fadd");
+    case K::SubAssignment: return builder.CreateFSub(cur, rhs, "fsub");
+    case K::MulAssignment: return builder.CreateFMul(cur, rhs, "fmul");
+    case K::DivAssignment: return builder.CreateFDiv(cur, rhs, "fdiv");
+    default: return rhs;
+    }
+  }
+
+  switch (op) {
+  case K::AddAssignment: return builder.CreateAdd(cur, rhs, "add");
+  case K::SubAssignment: return builder.CreateSub(cur, rhs, "sub");
+  case K::MulAssignment: return builder.CreateMul(cur, rhs, "mul");
+  case K::DivAssignment: return builder.CreateSDiv(cur, rhs, "div");
+  default: return rhs;
   }
 }
 
@@ -1012,30 +1035,24 @@ void CodeGen::emit_return(const ReturnNode &node) {
   }
 }
 
-void CodeGen::emit_increment(const IncrementNode &node) {
-  auto *ident = std::get_if<IdentifierNode>(&node.operand->data);
-  if (!ident) return;
-  auto it = locals.find(std::string(ident->name));
-  if (it == locals.end()) return;
+void CodeGen::emit_step(const Node &target, bool increment) {
+  auto [addr, type] = assign_target_address(target);
+  if (!addr)
+    return;
 
-  auto *alloca = it->second;
-  auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
+  auto *cur = builder.CreateLoad(type, addr);
   auto *one = llvm::ConstantInt::get(i64_type, 1);
-  auto *inc = builder.CreateAdd(cur, one, "inc");
-  builder.CreateStore(inc, alloca);
+  builder.CreateStore(increment ? builder.CreateAdd(cur, one, "inc")
+                                : builder.CreateSub(cur, one, "dec"),
+                      addr);
+}
+
+void CodeGen::emit_increment(const IncrementNode &node) {
+  emit_step(*node.operand, /*increment=*/true);
 }
 
 void CodeGen::emit_decrement(const DecrementNode &node) {
-  auto *ident = std::get_if<IdentifierNode>(&node.operand->data);
-  if (!ident) return;
-  auto it = locals.find(std::string(ident->name));
-  if (it == locals.end()) return;
-
-  auto *alloca = it->second;
-  auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-  auto *one = llvm::ConstantInt::get(i64_type, 1);
-  auto *dec = builder.CreateSub(cur, one, "dec");
-  builder.CreateStore(dec, alloca);
+  emit_step(*node.operand, /*increment=*/false);
 }
 
 

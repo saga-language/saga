@@ -1,0 +1,18 @@
+// Spec: compound assignment applies to receiver fields too.
+// (docs/language.md §Methods)
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+fn (c Counter) Advance(step int) int {
+  c.n += step
+  c.n *= 2
+  c.n
+}
+
+pub fn Main() void {
+  c := Counter{n: 4}
+  io.Println(c.Advance(6).String())
+}
