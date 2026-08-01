@@ -525,6 +525,21 @@ public:
     bool saved_;
   };
 
+  /// Resolves names against the package scope for as long as it is alive.
+  /// Analysis leaves current_scope wherever it finished, so a caller running
+  /// afterwards — codegen — cannot otherwise see a package-level type.
+  struct AtPackageScope {
+    explicit AtPackageScope(Analyzer &a) : a_(a), saved_(a.current_scope) {
+      if (a.package_scope_)
+        a.current_scope = a.package_scope_;
+    }
+    ~AtPackageScope() { a_.current_scope = saved_; }
+
+  private:
+    Analyzer &a_;
+    Scope::Ptr saved_;
+  };
+
   /// Report a type-mismatch error with expected/actual formatting.
   void type_error(Span span, const TypePtr &expected, const TypePtr &actual,
                   const std::string &context = "");

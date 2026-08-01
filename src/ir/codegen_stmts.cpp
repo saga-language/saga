@@ -15,19 +15,19 @@ namespace saga {
 // Function type building
 // ===========================================================================
 
-// Codegen's current_scope is no longer the package scope, so a name the
-// analyzer resolved fine — a package-local type, a receiver's type parameter —
-// may not resolve here. Checking is over by now, so a miss is a failed lookup,
-// not a program error, and must not reach the user.
+// Resolve a type node the way the analyzer would have at declaration time:
+// from the package scope, since analysis left current_scope elsewhere. A miss
+// is a failed lookup rather than a program error — checking is over — so it
+// must not reach the user.
 TypePtr CodeGen::lookup_sem_type(const Node &type_node) {
   Analyzer::Silence quiet(analyzer);
+  Analyzer::AtPackageScope scope(analyzer);
   return analyzer.resolve_type(type_node);
 }
 
-// analyzer.resolve_type() can't resolve a bare identifier or selector at
-// codegen time — current_scope is no longer the package scope. Resolve named
-// and qualified types here against the stable package scope; everything else
-// (builtins, composite type nodes) falls through to the analyzer.
+// Named and qualified types resolve straight out of the package scope; every
+// other node shape — including a generic application like `Box<int>` — goes
+// through the analyzer.
 llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
   // Prefer the type the analyzer already resolved for this node (recorded with
   // the package scope active). Codegen's current_scope can't resolve a
