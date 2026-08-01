@@ -256,16 +256,15 @@ void CodeGen::emit_function_body_inner(
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
-  // Skip the hidden sret arg if present.
+  // Skip the hidden sret arg if present. The function is the authority, not
+  // the annotation: a monomorphised specialisation returns a struct by
+  // pointer, and re-resolving `fn`'s declared return type cannot tell that
+  // apart from a declared function's sret lowering.
   size_t arg_idx = 0;
-  bool has_sret = false;
-  if (!is_main && fn.signature.return_type) {
-    auto *r_ll = resolve_type_node(*fn.signature.return_type);
-    if (r_ll && r_ll->isStructTy()) {
-      has_sret = true;
-      ++arg_idx; // arg 0 is the sret pointer
-    }
-  }
+  bool has_sret =
+      !is_main && func->hasParamAttribute(0, llvm::Attribute::StructRet);
+  if (has_sret)
+    ++arg_idx;
 
   // Create allocas for parameters and store the incoming argument values.
   // param_ll has one entry per flattened parameter name so variadic /

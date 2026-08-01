@@ -3564,6 +3564,14 @@ TypePtr Analyzer::check_group_expr(const GroupExprNode &node) {
   return check_expr(*node.inner);
 }
 
+static std::string callee_display_name(const Node &callee) {
+  if (auto *id = std::get_if<IdentifierNode>(&callee.data))
+    return std::string(id->name);
+  if (auto *sel = std::get_if<SelectorNode>(&callee.data))
+    return std::string(sel->field.name);
+  return "function";
+}
+
 TypePtr Analyzer::check_call_expr(const CallExprNode &node,
                                   const Node &parent) {
   // Gate all intrinsic_* calls to stdlib packages only.
@@ -3621,6 +3629,20 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       if (fd_it != func_decl_by_type_.end() &&
           !fd_it->second->is_extern &&
           generic_templates_.find(fd_it->second) != generic_templates_.end()) {
+        // Substitution stops at a struct boundary, so a generic struct named
+        // in the signature keeps its own type parameters however the call
+        // binds them. Lowering that reads the value through the wrong layout,
+        // so refuse the call rather than answer wrongly. Only a specialisable
+        // function is checked: elsewhere a leftover parameter means a template
+        // body being checked generically, where nothing is concrete yet.
+        if (!is_invalid_type(effective_type) &&
+            has_type_params(effective_type)) {
+          error(node.span,
+                std::format("cannot call '{}': its signature names a generic "
+                            "struct that inference does not substitute",
+                            callee_display_name(*node.callee)));
+          return builtins.invalid_type;
+        }
         instantiate_generic_body(*fd_it->second, bindings, parent);
         if (current_instantiation_) {
           current_instantiation_->node_type_args[&parent] = bindings;

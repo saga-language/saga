@@ -1,0 +1,17 @@
+// Spec: a generic function may return a struct. The specialisation and the
+// body emitter have to agree on how that return is lowered.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+fn Pick<T>(v T) Point { Point{x: 1, y: 2} }
+
+pub fn Main() void {
+  p := Pick(9)
+  q := Pick("nine")
+  io.Println("{p.x}")
+  io.Println("{q.y}")
+}
