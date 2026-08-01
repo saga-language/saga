@@ -518,127 +518,159 @@ errors are nominal and carry no positional requirement, so any order is legal.
 
 ### Generics
 
-Generics are not tacked; types flow through pipes. Generics are available to
-only structs and functions. When used appropriately, in combination with
-interfaces and union types, they can be a powerful tool.
-
-When a generic is instantiated, if it's type can be inferred, the generic type
-can be omitted.
-
-Generics are monomorphic. The type must be known at compile time since the
-compiler must generate a typed copy of the data or expression.
+A generic parameterises a declaration over a type. Structs and functions take
+type parameters; they are named in `<>` after the declaration's name and used
+like any other type within it.
 
 ```
-// declare a generic struct
-struct |T| Box { value T }
-
-// instantiate a generic struct
-box := |Int| Box{ value: 0 } // explicit type, piped into the Generic box type
-box := Box{ value: 0 } // Int is inferred.
-```
-
-Here's an example of mapping a Generiic List of type T to a List of type U:
-```
-// A generic function that takes a list of T and returns a list of U
-fn |T, U| Map(list |T| List, transform fn(T) U) |U| List {
-    return for item : list |acc| {
-        acc.Push(transform(item))
-    }
-}
-```
-
-Putting it all together using an example of a Linked List:
-
-```
-struct |T| Node {
+struct Box<T> {
   value T
-  next  |T| Node | Missing
 }
 
-struct |T| List {
-  head |T| Node | Missing
-  curr |T| Node | Missing
+fn Identity<T>(x T) T { x }
+```
 
-  pub fn Push(val T) Void {
-    new_node := |T| Node{value: val, next: head}
-    head = new_node
-  }
+Generics are monomorphic. The compiler emits one copy per concrete type
+argument, so every argument must be known at compile time.
 
-  pub fn Peek() T | Error {
-    node := head or { return Error{"Empty"} }
-    return node.value
-  }
-  
-  pub fn Next() T | Missing {
-    // If curr is Missing, start at head. Otherwise, move to next.
-    node := curr or { head } or { return Missing }
-      
-    curr = node.next
-    return node.value
-  }
+A type argument is inferred from the values at the use site and is never
+written there — there is no `Box<int>{...}` form:
 
-  pub fn Reset() { curr = Missing }
+```
+n := Box{value: 21}      // Box<int>
+s := Box{value: "saga"}  // Box<string>
+```
+
+Used with interfaces and union types, generics let one declaration serve many
+concrete types without giving up static checking.
+
+#### Methods on a generic struct
+
+A method on a generic struct is declared at top level with a receiver, like
+any other method. The receiver repeats the struct's type parameters, which the
+signature and body may then use:
+
+```
+struct Box<T> {
+  value T
 }
 
-// Usage
-list := |Int| List{}
-list.Push(42)
-val := list.Peek() or { 0 }
+pub fn (b Box<T>) Get() T { b.value }
+pub fn (b Box<T>) Fallback(other T) T { b.value }
 
-for node : list {} // Next() lets you iterate over the list.
+b := Box{value: 21}
+b.Get()   // 21
+```
+
+The call site binds the type parameters from the receiver's type arguments,
+and each binding gets its own specialisation. Two instantiations in one
+program are separate functions, not one shared symbol:
+
+```
+n := Box{value: 21}
+s := Box{value: "saga"}
+n.Get()   // 21
+s.Get()   // saga
+```
+
+A struct with several type parameters binds them positionally:
+
+```
+struct Pair<A, B> {
+  first  A
+  second B
+}
+
+pub fn (p Pair<A, B>) First() A { p.first }
+pub fn (p Pair<A, B>) Second() B { p.second }
+
+p := Pair{first: 1, second: "two"}
+```
+
+Every type parameter a method uses must come from its receiver — that is the
+only place a call site has anything to bind one from. A method that declares
+its own is rejected:
+
+```
+pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: U is unbound
+```
+
+The same rule rejects a signature naming a generic struct the receiver's
+arguments do not reach. In `Same` below, the `T` in `Box<T>` is the
+declaration's own parameter rather than the caller's `int`, so there is
+nothing to bind it to:
+
+```
+pub fn (b Box<T>) Same() Box<T> { b }  // error: T is unbound
 ```
 
 ### Bounded generics
 
-A generic type parameter can be constrained to a named built-in type set by
-writing the constraint immediately after the parameter name inside the pipe
-syntax. The constraint follows by adjacency, matching the patterns used
-elsewhere in the language (`enum Color string`, wire-name field slots):
+A type parameter can be constrained by naming the constraint immediately after
+it. The constraint follows by adjacency, matching the patterns used elsewhere
+in the language (`enum Color string`, receiver declarations):
 
 ```
-fn |T Numeric| Add(a T, b T) T { a + b }
+fn Add<T numeric>(a T, b T) T { a + b }
 
-Add(1, 2)       // T = Int
-Add(1.0, 2.0)   // T = Float
-Add("a", "b")   // compile error: String is not Numeric
+Add(1, 2)       // T = int
+Add(1.0, 2.0)   // T = float
+Add("a", "b")   // compile error: type string does not satisfy constraint numeric
 ```
 
-The constraint slot is optional — bare `|T|` still means "any type":
+The constraint slot is optional — bare `<T>` still means "any type":
 
 ```
-fn |T| Identity(x T) T { x }
+fn Identity<T>(x T) T { x }
 ```
 
 Multiple type parameters each carry their own optional constraint:
 
 ```
-fn |T Integer, U Numeric| Mix(a T, b U) U { ... }
+fn Pick<T integer, U numeric>(a T, b U) U { b }
 ```
 
-Three named constraints are built into the compiler. They are
-compiler-only identifiers and cannot appear as the type of a variable,
-parameter, or return value — only in a constraint slot.
+Three named constraints are built into the compiler. They are compiler-only
+identifiers and cannot appear as the type of a variable, parameter, or return
+value — only in a constraint slot.
 
 | Constraint | Members |
 |---|---|
-| `Integer` | `Int`, `Int8`, `Int16`, `Int32`, `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Byte` |
-| `Float`   | `Float`, `Float32`, `Float64` |
-| `Numeric` | All members of `Integer` and `Float` |
+| `integer` | `int`, `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `byte` |
+| `float`   | `float`, `float32`, `float64` |
+| `numeric` | All members of `integer` and `float` |
 
-Each constraint implicitly permits the operators that are valid across
-every member of its set:
+Each constraint implicitly permits the operators that are valid across every
+member of its set:
 
-- `Integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
+- `integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
   `==`, `!=`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
-- `Float`: `+`, `-`, `*`, `/`, comparison
-- `Numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
+- `float`: `+`, `-`, `*`, `/`, comparison
+- `numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
   valid on floats)
 
-Inside a function with a constrained generic, the listed operators are
-usable on the constrained type without further declaration. The compiler
-validates at instantiation that the actual type belongs to the constraint
-set; if not, the call fails with an error naming both the constraint and
-the offending type.
+Inside a function with a constrained generic, the listed operators are usable
+on the constrained type without further declaration. The compiler validates at
+instantiation that the actual type belongs to the constraint set; if not, the
+call fails with an error naming both the constraint and the offending type.
+
+An interface is also nameable as a constraint, which is how a generic requires
+behaviour rather than a built-in type set. The bound's methods are callable on
+the type parameter and dispatch to whichever concrete type it was instantiated
+with:
+
+```
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+pub fn (c Cat) Name() string { "cat" }
+
+fn Describe<T Named>(x T) string { x.Name() }
+
+Describe(Cat{})  // cat
+```
 
 ## Type Aliases
 
