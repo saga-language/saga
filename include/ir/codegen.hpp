@@ -467,6 +467,10 @@ private:
                       const std::unordered_map<uint32_t, TypePtr> &bindings,
                       const Analyzer::BodyInstantiation *inst);
 
+  /// Resolve a type node for lowering only, discarding any diagnostic — a
+  /// name that codegen's scope cannot see is a failed lookup, not an error.
+  TypePtr lookup_sem_type(const Node &type_node);
+
   /// Specialise `method` for a concrete instantiation of a generic struct,
   /// resolving the template decl from `origin` — this package or an imported
   /// one, whose compiled .o holds no symbol for our type arguments.

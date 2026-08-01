@@ -105,6 +105,7 @@ int cmd_run(const char *prog, int argc, char **argv) {
 
   saga::CodeGen codegen(module_name, analyzer);
   codegen.emit(*ast);
+  if (report_emission_errors(analyzer, codegen)) return 1;
 
   // Write a temp object file.
   auto tmp_obj = fs::temp_directory_path() /

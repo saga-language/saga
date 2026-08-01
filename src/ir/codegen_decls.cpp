@@ -146,7 +146,7 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
   } else {
     for (auto &member : node.members) {
       if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data)) {
-        auto sem_type = analyzer.resolve_type(*fs->type);
+        auto sem_type = lookup_sem_type(*fs->type);
         auto *ll = llvm_type(sem_type);
         for (auto &ident : fs->names.identifiers) {
           field_types.push_back(ll);
@@ -220,7 +220,7 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // Determine the semantic type.
   auto sem_type = semantic_type(*node.value);
   if (!sem_type && node.type)
-    sem_type = analyzer.resolve_type(**node.type);
+    sem_type = lookup_sem_type(**node.type);
   if (!sem_type)
     return;
 
@@ -468,12 +468,12 @@ CodeGen::ast_interface_methods(const InterfaceDeclNode &node) {
   for (auto &m : node.methods) {
     std::vector<TypePtr> params;
     for (auto &p : m.signature.params) {
-      auto pt = analyzer.resolve_type(*p.type);
+      auto pt = lookup_sem_type(*p.type);
       for (size_t i = 0; i < p.names.identifiers.size(); ++i)
         params.push_back(pt);
     }
     TypePtr ret = m.signature.return_type
-                      ? analyzer.resolve_type(*m.signature.return_type)
+                      ? lookup_sem_type(*m.signature.return_type)
                       : nullptr;
     methods.push_back({std::string(m.name.name),
                        make_func_type(std::move(params), std::move(ret)),

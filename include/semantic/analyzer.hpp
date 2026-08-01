@@ -353,6 +353,9 @@ struct Analyzer {
   /// Analyzer::error() reads this to append "...instantiated from" frames.
   std::vector<const Node *> instantiation_stack_;
 
+  /// Set by Analyzer::Silence; makes error() a no-op.
+  bool silenced_ = false;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
 
@@ -507,6 +510,20 @@ public:
 
   /// Report a semantic error at the given span.
   void error(Span span, const std::string &message);
+
+  /// Drops every diagnostic raised while it is alive. For a caller that
+  /// resolves a type node purely to look something up — codegen, after
+  /// checking is finished — where a failure is not a program error.
+  struct Silence {
+    explicit Silence(Analyzer &a) : a_(a), saved_(a.silenced_) {
+      a.silenced_ = true;
+    }
+    ~Silence() { a_.silenced_ = saved_; }
+
+  private:
+    Analyzer &a_;
+    bool saved_;
+  };
 
   /// Report a type-mismatch error with expected/actual formatting.
   void type_error(Span span, const TypePtr &expected, const TypePtr &actual,

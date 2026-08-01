@@ -146,6 +146,7 @@ static bool compile_package(const std::string &source_dir,
 
   saga::CodeGen codegen(pkg_name, analyzer);
   codegen.emit(*ast);
+  if (report_emission_errors(analyzer, codegen)) return false;
 
   std::string obj_path = output_dir + "/" + pkg_name + ".o";
   if (!codegen.write_object(obj_path)) {
@@ -410,6 +411,7 @@ int cmd_build(const char *prog, int argc, char **argv) {
 
   saga::CodeGen codegen(module_name, analyzer);
   codegen.emit(*ast);
+  if (report_emission_errors(analyzer, codegen)) return 1;
 
   if (dump_ir) codegen.dump();
 

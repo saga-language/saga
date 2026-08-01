@@ -15,6 +15,15 @@ namespace saga {
 // Function type building
 // ===========================================================================
 
+// Codegen's current_scope is no longer the package scope, so a name the
+// analyzer resolved fine — a package-local type, a receiver's type parameter —
+// may not resolve here. Checking is over by now, so a miss is a failed lookup,
+// not a program error, and must not reach the user.
+TypePtr CodeGen::lookup_sem_type(const Node &type_node) {
+  Analyzer::Silence quiet(analyzer);
+  return analyzer.resolve_type(type_node);
+}
+
 // analyzer.resolve_type() can't resolve a bare identifier or selector at
 // codegen time — current_scope is no longer the package scope. Resolve named
 // and qualified types here against the stable package scope; everything else
@@ -39,7 +48,7 @@ llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
     if (ll)
       return ll;
   }
-  return llvm_type(analyzer.resolve_type(type_node));
+  return llvm_type(lookup_sem_type(type_node));
 }
 
 std::optional<Symbol> CodeGen::package_symbol(std::string_view name) {
@@ -500,7 +509,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     if (auto recorded = semantic_type(**node.type)) {
       var_type = llvm_type(recorded);
     } else {
-      auto sem_type = analyzer.resolve_type(**node.type);
+      auto sem_type = lookup_sem_type(**node.type);
       var_type = llvm_type(sem_type);
     }
   } else if (node.init) {
@@ -521,7 +530,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     sem_type_ptr = semantic_type(**node.type);
     if (!sem_type_ptr) {
       // Fall back to resolve_type (works for builtins).
-      sem_type_ptr = analyzer.resolve_type(**node.type);
+      sem_type_ptr = lookup_sem_type(**node.type);
     }
   } else if (node.init) {
     sem_type_ptr = semantic_type(**node.init);

@@ -490,6 +490,9 @@ void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
 // ===========================================================================
 
 void Analyzer::error(Span span, const std::string &message) {
+  if (silenced_)
+    return;
+
   Position pos{};
   if (!fileset.files.empty()) {
     pos = fileset.files[0]->position_at(span.start);
