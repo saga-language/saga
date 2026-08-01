@@ -5496,6 +5496,20 @@ TypePtr Analyzer::check_expr_expecting(const Node &expr,
                                        const TypePtr &expected) {
   if (auto *sh = std::get_if<EnumShorthandNode>(&expr.data))
     return check_enum_shorthand(*sh, expr, expected);
+  // An empty collection literal carries no element type of its own, so it
+  // takes the one being asked for.
+  if (auto exp = unwrap_alias(expected)) {
+    if (auto *arr = std::get_if<ArrayLiteralNode>(&expr.data);
+        arr && arr->elements.empty() && exp->kind == TypeKind::Array) {
+      record_type(expr, exp);
+      return exp;
+    }
+    if (auto *map = std::get_if<MapLiteralNode>(&expr.data);
+        map && map->entries.empty() && exp->kind == TypeKind::Map) {
+      record_type(expr, exp);
+      return exp;
+    }
+  }
   return check_expr(expr);
 }
 
