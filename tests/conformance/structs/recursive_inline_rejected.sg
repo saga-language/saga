@@ -1,0 +1,13 @@
+// A struct holds its fields inline, so one that reaches itself that way has
+// no finite size and no base case to stop at.
+import "std/io"
+
+struct Node {
+  value int
+  tail Node
+}
+
+pub fn Main() void {
+  n := Node{value: 1}
+  io.Println("{n.value}")
+}

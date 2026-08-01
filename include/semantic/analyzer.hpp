@@ -790,6 +790,10 @@ private:
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
   void check_field_defaults(const StructDeclNode &node);
+
+  /// Reject a struct that reaches itself through inline storage: it would
+  /// have no finite size. A cycle through an array or a map is fine.
+  void check_no_infinite_size(const TypePtr &struct_type, Span span);
   void check_field_default(const FieldSpecNode &fs);
   void check_interface_decl(const InterfaceDeclNode &node);
   void check_import_decl(const ImportDeclNode &node);

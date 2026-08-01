@@ -1872,6 +1872,19 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
     type_params = enter_generics(*s.generic);
   }
 
+  std::string struct_name(s.name.name);
+  auto &target_scope = has_generics ? current_scope->parent : current_scope;
+
+  // Publish the type before resolving fields, so a mention of the struct
+  // inside its own body resolves to this very type rather than the Invalid
+  // sentinel. The remaining detail is filled in below; every holder shares
+  // the one TypePtr and sees it complete.
+  auto struct_type = make_struct_type(struct_name, {}, std::move(methods),
+                                      type_params, current_package_name());
+  auto sym_it = target_scope->symbols.find(struct_name);
+  if (sym_it != target_scope->symbols.end())
+    sym_it->second.type = struct_type;
+
   // Resolve fields.  Methods are bound externally (`fn (x T) M()`) and
   // registered onto the struct type by resolve_func_decl.
   for (auto &member : s.members) {
@@ -1900,22 +1913,9 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
     embeds.push_back(et);
   }
 
-  auto struct_type =
-      make_struct_type(std::string(s.name.name), std::move(fields),
-                       std::move(methods), std::move(type_params),
-                       current_package_name());
-  // Set embeds on the created type.
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  info.fields = std::move(fields);
   info.embeds = std::move(embeds);
-
-  // Update the symbol.
-  auto sym_it = current_scope->symbols.find(std::string(s.name.name));
-  // If we pushed a scope for generics, the symbol is in the parent.
-  auto &target_scope = has_generics ? current_scope->parent : current_scope;
-  sym_it = target_scope->symbols.find(std::string(s.name.name));
-  if (sym_it != target_scope->symbols.end()) {
-    sym_it->second.type = struct_type;
-  }
 
   if (has_generics) {
     pop_scope();
@@ -5565,7 +5565,70 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
 
   check_method_uniqueness(info.methods, "struct", info.name, s.span, {});
 
+  check_no_infinite_size(sym->type, s.span);
   check_field_defaults(s);
+}
+
+// A struct holds its fields inline, so one that reaches itself that way has no
+// finite size and no base case to stop at. An array or a map holds its
+// elements on the heap, which is where a recursive shape gets its footing.
+static bool same_struct(const TypePtr &a, const TypePtr &b) {
+  if (a.get() == b.get())
+    return true;
+  if (!a || !b || a->kind != TypeKind::Struct || b->kind != TypeKind::Struct)
+    return false;
+  // A generic instantiation is a fresh type each time it is resolved, so
+  // identity here is the declaration it came from, not the pointer.
+  auto &ai = std::get<StructTypeInfo>(a->detail);
+  auto &bi = std::get<StructTypeInfo>(b->detail);
+  return ai.name == bi.name && ai.origin_package == bi.origin_package;
+}
+
+static bool reaches_by_value(const TypePtr &origin, const TypePtr &t,
+                             std::unordered_set<const Type *> &visiting) {
+  auto u = unwrap_alias(t);
+  if (!u)
+    return false;
+  if (same_struct(u, origin))
+    return true;
+  if (u->kind == TypeKind::Union) {
+    for (auto &alt : std::get<UnionTypeInfo>(u->detail).alternatives)
+      if (reaches_by_value(origin, alt, visiting))
+        return true;
+    return false;
+  }
+  if (u->kind != TypeKind::Struct)
+    return false;
+  if (!visiting.insert(u.get()).second)
+    return false;
+  auto &si = std::get<StructTypeInfo>(u->detail);
+  for (auto &f : si.fields)
+    if (reaches_by_value(origin, f.type, visiting))
+      return true;
+  for (auto &e : si.embeds)
+    if (reaches_by_value(origin, e, visiting))
+      return true;
+  return false;
+}
+
+void Analyzer::check_no_infinite_size(const TypePtr &struct_type, Span span) {
+  auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  auto blame = [&](const std::string &member) {
+    error(span,
+          std::format("'{}' contains itself through '{}', so it has no finite "
+                      "size; hold it in an array or a map instead",
+                      info.name, member));
+  };
+  for (auto &f : info.fields) {
+    std::unordered_set<const Type *> visiting{struct_type.get()};
+    if (reaches_by_value(struct_type, f.type, visiting))
+      return blame(f.name);
+  }
+  for (auto &e : info.embeds) {
+    std::unordered_set<const Type *> visiting{struct_type.get()};
+    if (reaches_by_value(struct_type, e, visiting))
+      return blame(type_to_string(e));
+  }
 }
 
 void Analyzer::check_field_defaults(const StructDeclNode &s) {
