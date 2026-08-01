@@ -3857,14 +3857,15 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
     if (m.name != field_name)
       continue;
     auto sig = m.signature ? m.signature : builtins.invalid_type;
-    if (!info.origin_package.empty() &&
-        info.origin_package != current_package_name() &&
-        has_type_params(sig)) {
+    // A method is monomorphised from the receiver's type arguments alone, so
+    // on a concrete instantiation nothing generic may be left in its
+    // signature — neither a method-own type parameter nor a generic struct
+    // the receiver's arguments do not reach.
+    if (!info.type_args.empty() && has_type_params(sig)) {
       error(field_span,
-            std::format("cannot call generic method '{}' across packages "
-                        "(D3: generic method bodies are not cross-package "
-                        "in this version)",
-                        field_name));
+            std::format("cannot call '{}' on '{}': its signature has type "
+                        "parameters that the receiver does not bind",
+                        field_name, type_to_string(owner_type)));
       return builtins.invalid_type;
     }
     return sig;

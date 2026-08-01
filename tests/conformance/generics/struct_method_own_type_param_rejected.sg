@@ -1,0 +1,17 @@
+// A method is monomorphised from the receiver's type arguments alone, so a
+// type parameter of its own has nothing to bind it — rejected in the
+// declaring package exactly as it is across one.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }
+
+fn show(x int) string { x.String() }
+
+pub fn Main() void {
+  b := Box{value: 21}
+  io.Println(b.Map(show))
+}

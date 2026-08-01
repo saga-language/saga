@@ -1,0 +1,15 @@
+// The receiver's type arguments do not reach a generic struct named in the
+// signature — `Box<T>` here is the declaration's `T`, not the caller's
+// `int` — so the method cannot be specialised.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Same() Box<T> { b }
+
+pub fn Main() void {
+  b := Box{value: 5}
+  io.Println("{b.Same().value}")
+}

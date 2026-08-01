@@ -361,7 +361,14 @@ std::string type_to_string(const TypePtr &t) {
 
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
-    return info.name;
+    if (info.type_args.empty())
+      return info.name;
+    std::string out = info.name + "<";
+    for (size_t i = 0; i < info.type_args.size(); ++i) {
+      if (i) out += ", ";
+      out += type_to_string(info.type_args[i]);
+    }
+    return out + ">";
   }
 
   case TypeKind::Enum: {
@@ -834,6 +841,16 @@ bool has_type_params(const TypePtr &t) {
   case TypeKind::Union: {
     auto &u = std::get<UnionTypeInfo>(t->detail);
     for (auto &a : u.alternatives)
+      if (has_type_params(a))
+        return true;
+    return false;
+  }
+  // Only the arguments — descending into fields would not terminate on a
+  // self-referential struct (`Node<T> { tail Node<T> }`), and an argument
+  // is the only place a caller can leave a struct partly generic.
+  case TypeKind::Struct: {
+    auto &s = std::get<StructTypeInfo>(t->detail);
+    for (auto &a : s.type_args)
       if (has_type_params(a))
         return true;
     return false;
