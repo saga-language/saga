@@ -1,0 +1,17 @@
+// Spec: a parameter may take the receiver's type parameter, and the
+// receiver itself may be a temporary rather than a named local.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Fallback(other T) T { b.value }
+pub fn (b Box<T>) Get() T { b.value }
+
+pub fn Main() void {
+  b := Box{value: 4}
+  temp := Box{value: 9}.Get()
+  io.Println("{b.Fallback(7)}")
+  io.Println("{temp}")
+}

@@ -1247,25 +1247,23 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   return sub_ptr;
 }
 
-Analyzer::ImportedMethodDecl
-Analyzer::load_imported_method_decl(const std::string &origin,
-                                     const std::string &struct_name,
-                                     const std::string &method_name,
-                                     const std::vector<TypePtr> &type_args) {
-  ImportedMethodDecl result;
-  auto *sub = ensure_source_loaded(origin);
-  if (!sub || !sub->package_scope_) return result;
+Analyzer::GenericMethodDecl
+Analyzer::generic_method_decl(const std::string &struct_name,
+                              const std::string &method_name,
+                              const std::vector<TypePtr> &type_args) {
+  GenericMethodDecl result;
+  if (!package_scope_) return result;
 
-  auto sym_it = sub->package_scope_->symbols.find(struct_name);
-  if (sym_it == sub->package_scope_->symbols.end()) return result;
+  auto sym_it = package_scope_->symbols.find(struct_name);
+  if (sym_it == package_scope_->symbols.end()) return result;
   auto struct_type = sym_it->second.type;
   if (!struct_type || struct_type->kind != TypeKind::Struct) return result;
 
   auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
   for (auto &m : sinfo.methods) {
     if (m.name != method_name || !m.signature) continue;
-    auto fd_it = sub->func_decl_by_type_.find(m.signature.get());
-    if (fd_it == sub->func_decl_by_type_.end()) return result;
+    auto fd_it = func_decl_by_type_.find(m.signature.get());
+    if (fd_it == func_decl_by_type_.end()) return result;
     result.decl = fd_it->second;
     result.template_signature = m.signature;
     result.struct_type_params = sinfo.type_params;
@@ -1277,8 +1275,8 @@ Analyzer::load_imported_method_decl(const std::string &origin,
   // read concrete TypePtrs out of the resulting BodyInstantiation. Bind by
   // the function's GenericTemplate IDs (which P5's receiver remap aligned
   // with the struct's type-param IDs).
-  auto tpl_it = sub->generic_templates_.find(result.decl);
-  if (tpl_it != sub->generic_templates_.end()) {
+  auto tpl_it = generic_templates_.find(result.decl);
+  if (tpl_it != generic_templates_.end()) {
     auto &tpl_params = tpl_it->second.type_params;
     size_t n = std::min(tpl_params.size(), type_args.size());
     for (size_t i = 0; i < n; ++i)
@@ -1293,10 +1291,20 @@ Analyzer::load_imported_method_decl(const std::string &origin,
   }
   if (!result.bindings.empty() && result.decl->body) {
     result.instantiation =
-        sub->instantiate_generic_body(*result.decl, result.bindings,
-                                       *result.decl->body);
+        instantiate_generic_body(*result.decl, result.bindings,
+                                 *result.decl->body);
   }
   return result;
+}
+
+Analyzer::GenericMethodDecl
+Analyzer::load_imported_method_decl(const std::string &origin,
+                                     const std::string &struct_name,
+                                     const std::string &method_name,
+                                     const std::vector<TypePtr> &type_args) {
+  auto *sub = ensure_source_loaded(origin);
+  if (!sub) return {};
+  return sub->generic_method_decl(struct_name, method_name, type_args);
 }
 
 // ===========================================================================

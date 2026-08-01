@@ -1,0 +1,17 @@
+// Spec: every type parameter of the receiver is bound from its type
+// arguments, positionally.
+import "std/io"
+
+struct Pair<A, B> {
+  first A
+  second B
+}
+
+pub fn (p Pair<A, B>) First() A { p.first }
+pub fn (p Pair<A, B>) Second() B { p.second }
+
+pub fn Main() void {
+  p := Pair{first: 1, second: "two"}
+  io.Println("{p.First()}")
+  io.Println(p.Second())
+}

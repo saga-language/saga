@@ -1,0 +1,16 @@
+// Spec: a constraint on the receiver's type parameter is honoured per
+// instantiation — `numeric` admits both int and float.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Twice<T numeric>() T { b.value + b.value }
+
+pub fn Main() void {
+  n := Box{value: 21}
+  f := Box{value: 0.25}
+  io.Println("{n.Twice()}")
+  io.Println("{f.Twice()}")
+}

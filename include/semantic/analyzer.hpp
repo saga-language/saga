@@ -396,15 +396,14 @@ struct Analyzer {
   /// Process all import declarations in a source after names are collected.
   void process_imports(const std::vector<NodePtr> &declarations);
 
-  // ── Cross-package generic method body loading (D8) ────────────────────
+  // ── Generic method body loading (D8) ──────────────────────────────────
 
-  /// Result of `load_imported_method_decl`: enough information for codegen
-  /// to emit a per-importer specialisation of a generic method whose body
-  /// lives in another package. The instantiation pointer drives body
+  /// Enough information for codegen to emit a specialisation of a method
+  /// declared on a generic struct. The instantiation pointer drives body
   /// codegen via current_instantiation_; the bindings are keyed by the
-  /// origin package's TypeParam IDs (struct-aligned) so emit_specialisation
+  /// declaring package's TypeParam IDs (struct-aligned) so emit_specialisation
   /// can substitute and mangle correctly.
-  struct ImportedMethodDecl {
+  struct GenericMethodDecl {
     const FuncDeclNode *decl = nullptr;
     TypePtr template_signature;
     std::vector<TypeParam> struct_type_params;
@@ -412,14 +411,21 @@ struct Analyzer {
     BodyInstantiation *instantiation = nullptr;
   };
 
-  /// Lazily load and analyse the origin package's source so codegen can
-  /// emit a generic method body that the origin's compiled .o does not
-  /// contain. The caller supplies the concrete type arguments (positionally
-  /// aligned with the struct's type parameters) so this method can drive
-  /// per-binding body type-checking in the sub-analyzer. Returns
-  /// `decl == nullptr` if the source cannot be located or the requested
-  /// method cannot be found.
-  ImportedMethodDecl
+  /// Find a method on a generic struct declared in *this* package and bind
+  /// its type parameters to `type_args` (positionally aligned with the
+  /// struct's). Returns `decl == nullptr` if the struct or method is absent.
+  /// A generic struct has no single concrete signature to declare eagerly,
+  /// so its methods reach codegen only through here.
+  GenericMethodDecl
+  generic_method_decl(const std::string &struct_name,
+                      const std::string &method_name,
+                      const std::vector<TypePtr> &type_args);
+
+  /// Same, for a struct owned by `origin`: lazily loads and analyses that
+  /// package's source, because the origin's compiled .o has no symbol for
+  /// the importer's type arguments. Returns `decl == nullptr` if the source
+  /// cannot be located.
+  GenericMethodDecl
   load_imported_method_decl(const std::string &origin,
                              const std::string &struct_name,
                              const std::string &method_name,

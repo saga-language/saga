@@ -1,0 +1,21 @@
+// Spec: a type argument may be an aggregate; the specialisation carries the
+// whole type, not just scalars.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn (b Box<T>) Get() T { b.value }
+
+pub fn Main() void {
+  arr := Box{value: [1, 2, 3]}
+  pt := Box{value: Point{x: 3, y: 4}}
+  io.Println("{arr.Get().Size()}")
+  io.Println("{pt.Get().y}")
+}

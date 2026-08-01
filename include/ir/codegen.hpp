@@ -467,6 +467,13 @@ private:
                       const std::unordered_map<uint32_t, TypePtr> &bindings,
                       const Analyzer::BodyInstantiation *inst);
 
+  /// Specialise `method` for a concrete instantiation of a generic struct,
+  /// resolving the template decl from `origin` — this package or an imported
+  /// one, whose compiled .o holds no symbol for our type arguments.
+  llvm::Function *emit_generic_method(const StructTypeInfo &info,
+                                      const std::string &origin,
+                                      const std::string &method);
+
   // ── Block / statement emission ───────────────────────────────────────
 
   /// Emit a block, returning the value of the last expression (or nullptr).
