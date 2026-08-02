@@ -1,0 +1,10 @@
+// Spec: a package name is introduced by an import binding, not copied by
+// assignment. `const Name = import "..."` is the way to bind another name
+// (docs/language.md:174-176), and `const Out = io` is already rejected as
+// not a compile-time constant.
+import "std/io"
+
+pub fn Main() void {
+  x := io
+  io.Println("unreachable")
+}

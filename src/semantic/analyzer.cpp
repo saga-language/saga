@@ -3042,7 +3042,11 @@ static bool is_type_expr_node(const Node &node) {
 TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
   if (auto *id = std::get_if<IdentifierNode>(&node.data)) {
     auto sym = lookup(std::string(id->name));
-    if (sym && sym->kind == SymbolKind::Type) {
+    // A type name and a package name are both legal here and nowhere else a
+    // value is expected, which is why this path exists separately from
+    // check_expr.
+    if (sym && (sym->kind == SymbolKind::Type ||
+                sym->kind == SymbolKind::Module)) {
       record_symbol(node, *sym);
       auto type = sym->type ? sym->type : builtins.invalid_type;
       record_type(node, type);
@@ -3092,9 +3096,16 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
     return builtins.invalid_type;
   }
 
-  // For module symbols, return the module type directly.
-  if (sym->kind == SymbolKind::Module && sym->type)
-    return sym->type;
+  // A package is introduced by an import binding, never copied by assignment;
+  // reaching here means it was used where a value belongs. Selector objects go
+  // through check_type_or_value_expr instead.
+  if (sym->kind == SymbolKind::Module) {
+    error(ident.span,
+          std::format("cannot use package '{}' as a value; to bind it to "
+                      "another name use `const Name = import \"...\"`",
+                      name));
+    return builtins.invalid_type;
+  }
 
   // Forward reference inside a constant initialiser.  check_const_decl
   // runs in textual order and assigns each Constant's type as it goes,

@@ -342,9 +342,20 @@ std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
   return base;
 }
 
+// Codegen only runs once the analyzer has reported zero errors, so a type that
+// cannot be lowered means the analyzer produced poison and stayed quiet. Say so
+// instead of substituting void, which defers the failure to an unrelated place
+// (an alloca of void) with none of the context that would explain it.
+[[noreturn]] static void ice_unlowerable_type(const std::string &desc) {
+  llvm::report_fatal_error(llvm::Twine("internal compiler error: ") + desc +
+                           " reached code generation. The analyzer accepted "
+                           "this program, so this is a bug in the compiler, "
+                           "not an error in your code.");
+}
+
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   if (!t)
-    return void_ll_type;
+    ice_unlowerable_type("a null type");
 
   // Aliases are transparent at the LLVM ABI level — `const MyInt = Int`
   // lowers to whatever Int lowers to.  Unwrap before dispatching.
@@ -410,9 +421,9 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_iface
   case TypeKind::Union: {
     auto *st = get_union_llvm_type(t);
-    if (st)
-      return st;
-    return void_ll_type;
+    if (!st)
+      ice_unlowerable_type("union '" + type_to_string(t) + "'");
+    return st;
   }
   case TypeKind::Array:
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_array
@@ -425,7 +436,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     // At runtime, generic values are passed as opaque pointers.
     return llvm::PointerType::getUnqual(context);
   default:
-    return void_ll_type;
+    ice_unlowerable_type("type '" + type_to_string(t) + "'");
   }
 }
 

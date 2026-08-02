@@ -224,15 +224,6 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   if (!sem_type)
     return;
 
-  // Forward references in const initializers (e.g. `const A = B * 2`
-  // where B is declared later) leave the semantic type unresolved
-  // (Error).  Spec: "the read will see the type's zero value with no
-  // diagnostic" (docs/language.md:120-122).  Without an inferred type
-  // the safest fallback is Int — the spec's primary numeric type and
-  // the common case for compile-time arithmetic.
-  if (is_invalid_type(sem_type))
-    sem_type = analyzer.builtins.int_type;
-
   auto *ll_type = llvm_type(sem_type);
   if (!ll_type || ll_type->isVoidTy())
     return;
