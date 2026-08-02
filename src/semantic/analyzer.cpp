@@ -592,10 +592,13 @@ void Analyzer::expect_bool(Span span, const TypePtr &type,
 // Phase 1 — Declaration collection (top-level names)
 // ===========================================================================
 
+static std::optional<std::string> type_decl_name(const Node &node);
+
 void Analyzer::visit_package(const PackageNode &pkg) {
   // Load stdlib type packages' receiver methods before analyzing user code.
   load_prelude();
 
+  pending_type_decls_.clear();
   push_scope(ScopeKind::Module);
 
   // Save the package scope so import resolution can extract exports later.
@@ -620,15 +623,8 @@ void Analyzer::visit_package(const PackageNode &pkg) {
   for (auto &src : pkg.sources) {
     auto &src_node = std::get<SourceNode>(src->data);
     for (auto &decl : src_node.declarations) {
-      std::visit(overloaded{
-                     [&](const StructDeclNode &s) { resolve_struct_decl(s); },
-                     [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
-                     [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
-                     [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
-                     [&](const TypeDeclNode &t) { resolve_type_decl(t); },
-                     [&](const auto &) { /* handled in phase 2b */ },
-                 },
-                 decl->data);
+      if (auto name = type_decl_name(*decl))
+        ensure_type_resolved(*name);
     }
   }
 
@@ -654,6 +650,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
                      [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
                      [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                      [&](const StructDeclNode &) { /* done in phase 2a */ },
+                     [&](const TypeDeclNode &) { /* done in phase 2a */ },
                      [&](const EnumDeclNode &) { /* done in phase 2a */ },
                      [&](const ErrorDeclNode &) { /* done in phase 2a */ },
                      [&](const InterfaceDeclNode &) { /* done in phase 2a */ },
@@ -702,6 +699,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
 }
 
 void Analyzer::visit_source(const SourceNode &src) {
+  pending_type_decls_.clear();
   push_scope(ScopeKind::Module);
   package_scope_ = current_scope;
 
@@ -773,18 +771,22 @@ void Analyzer::collect_declaration(const Node &node) {
                  [&](const StructDeclNode &s) {
                    declare(Symbol::type_sym(std::string(s.name.name), nullptr,
                                             s.name.span, s.is_public));
+                   pending_type_decls_[std::string(s.name.name)] = &node;
                  },
                  [&](const EnumDeclNode &e) {
                    declare(Symbol::type_sym(std::string(e.name.name), nullptr,
                                             e.name.span, e.is_public));
+                   pending_type_decls_[std::string(e.name.name)] = &node;
                  },
                  [&](const ErrorDeclNode &e) {
                    declare(Symbol::type_sym(std::string(e.name.name), nullptr,
                                             e.name.span, e.is_public));
+                   pending_type_decls_[std::string(e.name.name)] = &node;
                  },
                  [&](const InterfaceDeclNode &i) {
                    declare(Symbol::type_sym(std::string(i.name.name), nullptr,
                                             i.name.span, i.is_public));
+                   pending_type_decls_[std::string(i.name.name)] = &node;
                  },
                  [&](const ConstDeclNode &c) {
                    declare(Symbol::constant(std::string(c.name.name), nullptr,
@@ -793,6 +795,7 @@ void Analyzer::collect_declaration(const Node &node) {
                  [&](const TypeDeclNode &t) {
                    declare(Symbol::type_sym(std::string(t.name.name), nullptr,
                                             t.name.span, t.is_public));
+                   pending_type_decls_[std::string(t.name.name)] = &node;
                  },
                  [&](const ImportDeclNode &imp) {
                    // Derive the local name from the last path segment.
@@ -1345,16 +1348,21 @@ TypePtr Analyzer::resolve_type(const Node &node) {
 }
 
 TypePtr Analyzer::resolve_identifier_type(const IdentifierNode &node) {
-  auto sym = lookup(std::string(node.name));
+  std::string name(node.name);
+  auto sym = lookup(name);
   if (!sym) {
-    undefined_error(node.span, std::string(node.name));
+    undefined_error(node.span, name);
     return builtins.invalid_type;
   }
   if (sym->kind != SymbolKind::Type && sym->kind != SymbolKind::TypeParam) {
-    error(node.span, std::format("'{}' is not a type", std::string(node.name)));
+    error(node.span, std::format("'{}' is not a type", name));
     return builtins.invalid_type;
   }
-  return sym->type ? sym->type : builtins.invalid_type;
+  if (!sym->type) {
+    ensure_type_resolved(name);
+    sym = lookup(name);
+  }
+  return sym && sym->type ? sym->type : builtins.invalid_type;
 }
 
 TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
@@ -1536,15 +1544,49 @@ void Analyzer::declare_parameters(const SignatureNode &sig) {
   }
 }
 
-void Analyzer::resolve_declaration(const Node &node) {
+static std::optional<std::string> type_decl_name(const Node &node) {
+  using R = std::optional<std::string>;
+  return std::visit(
+      overloaded{
+          [](const StructDeclNode &s) -> R { return std::string(s.name.name); },
+          [](const EnumDeclNode &e) -> R { return std::string(e.name.name); },
+          [](const ErrorDeclNode &e) -> R { return std::string(e.name.name); },
+          [](const InterfaceDeclNode &i) -> R {
+            return std::string(i.name.name);
+          },
+          [](const TypeDeclNode &t) -> R { return std::string(t.name.name); },
+          [](const auto &) -> R { return std::nullopt; },
+      },
+      node.data);
+}
+
+void Analyzer::ensure_type_resolved(const std::string &name) {
+  auto it = pending_type_decls_.find(name);
+  if (it == pending_type_decls_.end())
+    return;
+  const Node *decl = it->second;
+  // Drop the entry before resolving: a type that names itself, or a peer that
+  // names it back, re-enters here. Each resolver publishes its type into the
+  // symbol before descending into fields, so the cycle sees a real type.
+  pending_type_decls_.erase(it);
+  AtPackageScope at_package(*this);
   std::visit(overloaded{
-                 [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
                  [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                  [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
                  [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
                  [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
-                 [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                  [&](const TypeDeclNode &t) { resolve_type_decl(t); },
+                 [&](const auto &) {},
+             },
+             decl->data);
+}
+
+void Analyzer::resolve_declaration(const Node &node) {
+  if (auto name = type_decl_name(node))
+    return ensure_type_resolved(*name);
+  std::visit(overloaded{
+                 [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
+                 [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                  [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
                  [&](const auto &) { /* already reported in collect */ },
              },
@@ -1928,6 +1970,15 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
 // (auto-injected; the body supplies only its optional `message = Expr`
 // default); extra fields follow.
 void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
+  std::string error_name(e.name.name);
+  auto err_type = make_struct_type(error_name, {}, /*methods=*/{},
+                                   /*type_params=*/{}, current_package_name());
+  std::get<StructTypeInfo>(err_type->detail).is_error = true;
+
+  auto sym_it = current_scope->symbols.find(error_name);
+  if (sym_it != current_scope->symbols.end())
+    sym_it->second.type = err_type;
+
   std::vector<FieldInfo> fields;
   fields.push_back({"type_id", builtins.int64_type, /*is_public=*/false,
                     nullptr});
@@ -1944,15 +1995,7 @@ void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
                         fs->default_value.get()});
   }
 
-  auto err_type =
-      make_struct_type(std::string(e.name.name), std::move(fields),
-                       /*methods=*/{}, /*type_params=*/{},
-                       current_package_name());
-  std::get<StructTypeInfo>(err_type->detail).is_error = true;
-
-  auto sym_it = current_scope->symbols.find(std::string(e.name.name));
-  if (sym_it != current_scope->symbols.end())
-    sym_it->second.type = err_type;
+  std::get<StructTypeInfo>(err_type->detail).fields = std::move(fields);
 }
 
 // A plain (non-interpolated) string literal's text, else nullopt.

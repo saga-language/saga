@@ -486,6 +486,13 @@ public:
   /// Look up a name from the current scope.
   std::optional<Symbol> lookup(const std::string &name) const;
 
+  /// Type declarations collected but not yet resolved, keyed by name.
+  std::unordered_map<std::string, const Node *> pending_type_decls_;
+
+  /// Resolve the named type declaration if it is still pending. Naming a type
+  /// pulls it in, so declaration order within a package does not matter.
+  void ensure_type_resolved(const std::string &name);
+
   // ── Type-parameter helpers ───────────────────────────────────────────
 
   /// Allocate a fresh type-parameter id.

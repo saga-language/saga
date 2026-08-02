@@ -1,0 +1,23 @@
+// Spec: naming a type pulls in its declaration, so a field may name a struct
+// declared further down the file.
+import "std/io"
+
+struct Outer {
+  inner Inner
+  tag Label
+}
+
+struct Inner {
+  value int
+}
+
+enum Label {
+  First
+  Second
+}
+
+pub fn Main() void {
+  o := Outer{inner: Inner{value: 7}, tag: Label.Second}
+  io.Println("{o.inner.value}")
+  io.Println("{o.tag.String()}")
+}
