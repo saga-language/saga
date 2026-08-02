@@ -9,29 +9,36 @@
 
 namespace saga {
 
+static size_t leading_quotes(std::string_view s) {
+  if (s.starts_with(R"(""")"))
+    return 3;
+  return s.starts_with('"') ? 1 : 0;
+}
+
+static size_t trailing_quotes(std::string_view s) {
+  if (s.ends_with(R"(""")"))
+    return 3;
+  return s.ends_with('"') ? 1 : 0;
+}
+
+// A fragment is quoted on the outside and braced on the inside: a whole
+// StringLiteral is `"..."`, and the interpolation pieces are StringStart
+// `"..{`, StringMiddle `}..{`, StringEnd `}.."`. A multi-line string spells the
+// quote `"""`. The braces are stripped only where the lexer put them, since an
+// escaped brace like `"\{"` is content.
+static std::string_view strip_delimiters(std::string_view raw) {
+  size_t front = leading_quotes(raw);
+  raw = raw.substr(front + (front == 0 && raw.starts_with('}') ? 1 : 0));
+
+  if (size_t back = trailing_quotes(raw); back > 0)
+    return raw.substr(0, raw.size() - back);
+  if (raw.ends_with('{'))
+    return raw.substr(0, raw.size() - 1);
+  return raw;
+}
+
 std::string unescape_string_fragment(std::string_view raw) {
-  // A fragment is either a fully-quoted StringLiteral ("..."), or one of the
-  // interpolation pieces (StringStart "..{, StringMiddle }..{, StringEnd }..").
-  // Only the partial pieces carry the unquoted `{`/`}` delimiters; stripping
-  // them from a fully-quoted literal would chew off escaped braces like `"\{"`.
-  bool is_literal =
-      raw.size() >= 2 && raw.front() == '"' && raw.back() == '"';
-  if (is_literal) {
-    raw = raw.substr(1, raw.size() - 2);
-  } else if (raw.size() >= 1 && raw.front() == '"') {
-    raw = raw.substr(1);
-    if (raw.size() >= 1 && raw.back() == '{')
-      raw = raw.substr(0, raw.size() - 1);
-  } else if (raw.size() >= 1 && raw.back() == '"') {
-    raw = raw.substr(0, raw.size() - 1);
-    if (raw.size() >= 1 && raw.front() == '}')
-      raw = raw.substr(1);
-  } else {
-    if (raw.size() >= 1 && raw.front() == '}')
-      raw = raw.substr(1);
-    if (raw.size() >= 1 && raw.back() == '{')
-      raw = raw.substr(0, raw.size() - 1);
-  }
+  raw = strip_delimiters(raw);
 
   std::string out;
   out.reserve(raw.size());

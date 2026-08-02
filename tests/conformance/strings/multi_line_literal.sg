@@ -1,0 +1,11 @@
+// Spec: `"""` delimits a multi-line string; the delimiters are not content.
+// (docs/language.md:726)
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""one line""")
+  io.Println("""two
+lines""")
+  io.Println("""""")
+  io.Println("end")
+}
