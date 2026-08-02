@@ -846,7 +846,28 @@ treat the underlying data as a reference for performance reasons, if the
 runtime detects a write, then it performs a full copy, ensuring all slices are
 unique data.
 
-## String Iterpolation
+## String Interpolation
+
+A `{...}` inside a string holds an expression; its value is substituted where it
+appears. `\{` writes a literal brace instead.
+
+```
+name := "world"
+io.Println("hello, {name}")       // => hello, world
+io.Println("{a} + {b} = {a + b}") // as many as you like
+io.Println("not interp: \{x}")    // => not interp: {x}
+```
+
+The expression may open braces of its own — the interpolation ends at the `}`
+matching its `{`, not at the first one seen. Struct literals, map literals and
+block-bearing expressions all interpolate, as do strings nested inside them.
+
+```
+io.Println("point: {Point{x: 1, y: 2}.x}")
+io.Println("parity: {if n % 2 == 0 { "even" } else { "odd" }}")
+```
+
+Multi-line strings interpolate on the same rule.
 
 Any type that implements a `Stringable` interface can be interpolated in a String.
 All the basic types can return their values as a string. Arrays and maps also

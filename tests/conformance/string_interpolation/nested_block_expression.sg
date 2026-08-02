@@ -1,0 +1,9 @@
+// Spec: a block-bearing expression interpolates, including the string literals
+// inside its blocks — each nested string opens its own interpolation.
+import "std/io"
+
+pub fn Main() void {
+  n := 5
+  io.Println("parity: {if n % 2 == 0 { "even" } else { "odd" }}")
+  io.Println("inner: {if n > 0 { "{n} up" } else { "down" }}")
+}

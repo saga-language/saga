@@ -10,13 +10,21 @@
 
 namespace saga {
 
-enum class LexerState { Default, InString, InMultiLineString };
+enum class LexerState { InString, InMultiLineString };
+
+/// One open `{...}` interpolation. `depth` counts braces opened inside the
+/// expression and not yet closed, so the `}` that ends the interpolation is
+/// told apart from one closing a struct literal or block within it.
+struct Interpolation {
+  LexerState kind;
+  int depth = 0;
+};
 
 struct Lexer {
   File *file = nullptr;
   std::string_view source;
   ErrorList error_list = {};
-  std::vector<LexerState> state = {};
+  std::vector<Interpolation> state = {};
   size_t offset = 0;
   size_t reading_offset = 0;
 

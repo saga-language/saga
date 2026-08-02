@@ -1,0 +1,14 @@
+// Spec: an interpolated expression may open braces of its own. The `}` that
+// ends the interpolation is the one matching its `{`, not the first one seen.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn Main() void {
+  io.Println("point: {Point{x: 1, y: 2}.x}")
+  io.Println("nested: {Point{x: Point{x: 9, y: 0}.x, y: 2}.x}")
+  io.Println("map: {{"k": 9}.Size()}")
+}

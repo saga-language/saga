@@ -152,13 +152,17 @@ Token Lexer::scan() {
   case ')':
     return accept(Token::Kind::RightParenthesis);
   case '{':
+    if (is_interpolating()) {
+      state.back().depth++;
+    }
     return accept(Token::Kind::LeftBrace);
   case '}':
-    if (is_interpolating_multi_line()) {
-      return scan_multi_line_string(c);
+    if (is_interpolating() && state.back().depth == 0) {
+      return is_interpolating_multi_line() ? scan_multi_line_string(c)
+                                           : scan_string(c);
     }
     if (is_interpolating()) {
-      return scan_string(c);
+      state.back().depth--;
     }
     return accept(Token::Kind::RightBrace);
   case '[':
@@ -229,12 +233,9 @@ bool Lexer::is_hex(const char c) {
   return is_digit(c) || ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) ||
          c == '_';
 }
-bool Lexer::is_interpolating() {
-  return !state.empty() && (state.back() == LexerState::InString ||
-                            state.back() == LexerState::InMultiLineString);
-}
+bool Lexer::is_interpolating() { return !state.empty(); }
 bool Lexer::is_interpolating_multi_line() {
-  return !state.empty() && state.back() == LexerState::InMultiLineString;
+  return !state.empty() && state.back().kind == LexerState::InMultiLineString;
 }
 bool Lexer::is_octal(const char c) { return c >= '0' && c <= '7'; }
 bool Lexer::is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
@@ -357,7 +358,7 @@ Token Lexer::scan_multi_line_string(const char c) {
       } else {
         mode = Token::Kind::StringStart;
       }
-      state.push_back(LexerState::InMultiLineString);
+      state.push_back({LexerState::InMultiLineString});
       break;
     }
 
@@ -401,7 +402,7 @@ Token Lexer::scan_string(const char c) {
       } else {
         mode = Token::Kind::StringStart;
       }
-      state.push_back(LexerState::InString);
+      state.push_back({LexerState::InString});
       break;
     }
 

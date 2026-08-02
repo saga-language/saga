@@ -1,0 +1,15 @@
+// Spec: a multi-line string interpolates on the same rule as a single-line
+// one, so an interpolated expression may open braces of its own.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn Main() void {
+  p := Point{x: 3, y: 4}
+  io.Println("""a {Point{x: 7, y: 8}.x} b {p.y} c""")
+  io.Println("""line1 {p.x}
+line2 {Point{x: 5, y: 6}.y}""")
+}
