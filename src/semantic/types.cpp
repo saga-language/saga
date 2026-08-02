@@ -728,8 +728,72 @@ TypePtr common_type(const TypePtr &a, const TypePtr &b) {
 // Generics — substitution
 // ===========================================================================
 
-TypePtr substitute(const TypePtr &t,
-                   const std::unordered_map<uint32_t, TypePtr> &bindings) {
+using Bindings = std::unordered_map<uint32_t, TypePtr>;
+
+// Legal recursion still leaves the type graph cyclic — `Node<T>` reaches
+// itself through `tail Node<T> | Missing` even though its layout is finite —
+// so a substituted struct is memoised before its fields are visited.
+static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
+                               SubstMemo &memo);
+
+static TypePtr substitute_struct(const TypePtr &t, const Bindings &bindings,
+                                 SubstMemo &memo) {
+  auto &info = std::get<StructTypeInfo>(t->detail);
+  // The memo is consulted first: a caller may have seeded this declaration
+  // onto the instantiation it is building.
+  auto seen = memo.find(t.get());
+  if (seen != memo.end())
+    return seen->second;
+
+  // Otherwise only an argument can leave a struct partly generic; a bare
+  // declaration carries its own parameters, not the caller's to bind.
+  if (info.type_args.empty())
+    return t;
+
+  bool changed = false;
+  std::vector<TypePtr> args;
+  args.reserve(info.type_args.size());
+  for (auto &a : info.type_args) {
+    auto sa = substitute_impl(a, bindings, memo);
+    if (sa != a)
+      changed = true;
+    args.push_back(std::move(sa));
+  }
+  if (!changed) {
+    memo[t.get()] = t;
+    return t;
+  }
+
+  auto result = make_struct_type(info.name, {}, {}, info.type_params,
+                                 info.origin_package);
+  auto &ri = std::get<StructTypeInfo>(result->detail);
+  ri.type_args = std::move(args);
+  ri.is_error = info.is_error;
+  memo[t.get()] = result;
+
+  for (auto &f : info.fields)
+    ri.fields.push_back({f.name, substitute_impl(f.type, bindings, memo),
+                         f.is_public, f.default_value});
+  for (auto &m : info.methods)
+    ri.methods.push_back({m.name, substitute_impl(m.signature, bindings, memo),
+                          m.is_public, m.origin_package});
+  for (auto &e : info.embeds)
+    ri.embeds.push_back(substitute_impl(e, bindings, memo));
+  return result;
+}
+
+TypePtr substitute(const TypePtr &t, const Bindings &bindings) {
+  SubstMemo memo;
+  return substitute_impl(t, bindings, memo);
+}
+
+TypePtr substitute(const TypePtr &t, const Bindings &bindings,
+                   SubstMemo &memo) {
+  return substitute_impl(t, bindings, memo);
+}
+
+static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
+                               SubstMemo &memo) {
   if (!t || bindings.empty())
     return t;
 
@@ -744,7 +808,7 @@ TypePtr substitute(const TypePtr &t,
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    auto elem = substitute(info.element, bindings);
+    auto elem = substitute_impl(info.element, bindings, memo);
     if (elem == info.element)
       return t;
     return make_array_type(std::move(elem));
@@ -752,8 +816,8 @@ TypePtr substitute(const TypePtr &t,
 
   case TypeKind::Map: {
     auto &info = std::get<MapTypeInfo>(t->detail);
-    auto k = substitute(info.key, bindings);
-    auto v = substitute(info.value, bindings);
+    auto k = substitute_impl(info.key, bindings, memo);
+    auto v = substitute_impl(info.value, bindings, memo);
     if (k == info.key && v == info.value)
       return t;
     return make_map_type(std::move(k), std::move(v));
@@ -765,14 +829,14 @@ TypePtr substitute(const TypePtr &t,
     std::vector<TypePtr> params;
     params.reserve(info.params.size());
     for (auto &p : info.params) {
-      auto sp = substitute(p, bindings);
+      auto sp = substitute_impl(p, bindings, memo);
       if (sp != p)
         changed = true;
       params.push_back(std::move(sp));
     }
     TypePtr ret;
     if (info.return_type) {
-      ret = substitute(info.return_type, bindings);
+      ret = substitute_impl(info.return_type, bindings, memo);
       if (ret != info.return_type)
         changed = true;
     }
@@ -787,7 +851,7 @@ TypePtr substitute(const TypePtr &t,
     std::vector<TypePtr> alts;
     alts.reserve(info.alternatives.size());
     for (auto &a : info.alternatives) {
-      auto sa = substitute(a, bindings);
+      auto sa = substitute_impl(a, bindings, memo);
       if (sa != a)
         changed = true;
       alts.push_back(std::move(sa));
@@ -799,12 +863,15 @@ TypePtr substitute(const TypePtr &t,
 
   case TypeKind::Alias: {
     auto &info = std::get<AliasTypeInfo>(t->detail);
-    auto u = substitute(info.underlying, bindings);
+    auto u = substitute_impl(info.underlying, bindings, memo);
     if (u == info.underlying)
       return t;
     return make_alias_type(info.name, std::move(u), info.methods,
                            info.origin_package, info.structural);
   }
+
+  case TypeKind::Struct:
+    return substitute_struct(t, bindings, memo);
 
   default:
     return t; // primitive / nominal — no type params inside
@@ -966,6 +1033,22 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
     }
     if (pi.return_type && !unify(pi.return_type, ai.return_type, out))
       return false;
+    return true;
+  }
+
+  case TypeKind::Struct: {
+    // A struct's identity is its declaration; its arguments are what a caller
+    // can bind. Fields are derived from the arguments, so matching them too
+    // would only re-derive the same bindings.
+    if (!same_struct_decl(param_type, arg_type))
+      return false;
+    auto &pi = std::get<StructTypeInfo>(param_type->detail);
+    auto &ai = std::get<StructTypeInfo>(arg_type->detail);
+    if (pi.type_args.size() != ai.type_args.size())
+      return false;
+    for (size_t i = 0; i < pi.type_args.size(); ++i)
+      if (!unify(pi.type_args[i], ai.type_args[i], out))
+        return false;
     return true;
   }
 

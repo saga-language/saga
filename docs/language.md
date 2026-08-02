@@ -596,13 +596,22 @@ its own is rejected:
 pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: U is unbound
 ```
 
-The same rule rejects a signature naming a generic struct the receiver's
-arguments do not reach. In `Same` below, the `T` in `Box<T>` is the
-declaration's own parameter rather than the caller's `int`, so there is
-nothing to bind it to:
+A signature may name a generic struct, including the receiver's own type. The
+receiver's arguments reach it, so `Same` returns `Box<int>` when called on one:
 
 ```
-pub fn (b Box<T>) Same() Box<T> { b }  // error: T is unbound
+pub fn (b Box<T>) Same() Box<T> { b }
+```
+
+A free function binds its parameters from the arguments, so a generic struct
+works in either position:
+
+```
+fn Wrap<T>(x T) Box<T> { Box{value: x} }
+fn Unwrap<T>(b Box<T>) T { b.value }
+
+Wrap(5)          // Box<int>
+Unwrap(Wrap(5))  // 5
 ```
 
 ### Bounded generics
@@ -978,6 +987,16 @@ struct Expr {
 struct Operand {
   literal int
   nested Expr | Missing
+}
+```
+
+A generic struct may reach itself too. Inside its own body, `Node<T>` is the
+type being declared:
+
+```
+struct Node<T> {
+  value T
+  tail Node<T> | Missing
 }
 ```
 

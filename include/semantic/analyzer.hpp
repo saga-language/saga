@@ -489,6 +489,10 @@ public:
   /// Type declarations collected but not yet resolved, keyed by name.
   std::unordered_map<std::string, const Node *> pending_type_decls_;
 
+  /// Structs whose fields are being resolved right now. Inside its own body a
+  /// generic struct names itself, and its field list is not filled in yet.
+  std::unordered_set<std::string> resolving_structs_;
+
   /// Resolve the named type declaration if it is still pending. Naming a type
   /// pulls it in, so declaration order within a package does not matter.
   void ensure_type_resolved(const std::string &name);

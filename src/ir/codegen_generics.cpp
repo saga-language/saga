@@ -100,7 +100,11 @@ std::string CodeGen::mangle_type(const TypePtr &t) const {
   case TypeKind::Struct: {
     auto &si = std::get<StructTypeInfo>(t->detail);
     std::string pkg = package_name.empty() ? "local" : package_name;
-    return "pkg_" + pkg + "_" + si.name;
+    std::string out = "pkg_" + pkg + "_" + si.name;
+    // Without the arguments, Box<int> and Box<string> name one symbol.
+    for (auto &a : si.type_args)
+      out += "_" + mangle_type(a);
+    return out;
   }
   case TypeKind::Alias: {
     auto &ai = std::get<AliasTypeInfo>(t->detail);

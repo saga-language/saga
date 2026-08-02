@@ -1444,6 +1444,21 @@ TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
   return make_union_type(std::move(alts));
 }
 
+// Whether the arguments are the struct's own parameters, in order.
+static bool names_own_params(const StructTypeInfo &info,
+                             const std::vector<TypePtr> &args) {
+  if (args.size() != info.type_params.size())
+    return false;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (!args[i] || args[i]->kind != TypeKind::TypeParam)
+      return false;
+    if (std::get<TypeParamInfo>(args[i]->detail).param.id !=
+        info.type_params[i].id)
+      return false;
+  }
+  return true;
+}
+
 TypePtr
 Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   auto base = resolve_type(*node.base_type);
@@ -1475,6 +1490,12 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
                       info.type_params.size(), args.size()));
     return builtins.invalid_type;
   }
+
+  // Inside its own body a struct names itself: `Node<T>` there is this very
+  // declaration, whose fields are still being filled. Instantiating now would
+  // snapshot an empty field list.
+  if (resolving_structs_.count(info.name) && names_own_params(info, args))
+    return base;
 
   // Build bindings and instantiate.
   std::unordered_map<uint32_t, TypePtr> bindings;
@@ -1927,6 +1948,8 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   if (sym_it != target_scope->symbols.end())
     sym_it->second.type = struct_type;
 
+  resolving_structs_.insert(struct_name);
+
   // Resolve fields.  Methods are bound externally (`fn (x T) M()`) and
   // registered onto the struct type by resolve_func_decl.
   for (auto &member : s.members) {
@@ -1954,6 +1977,8 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
     if (embed_name_taken(*embed_node, et, fields, embeds)) continue;
     embeds.push_back(et);
   }
+
+  resolving_structs_.erase(struct_name);
 
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   info.fields = std::move(fields);
@@ -6029,15 +6054,14 @@ TypePtr Analyzer::instantiate_generic_struct(
 
   std::unordered_map<uint32_t, TypePtr> bindings;
 
-  // Unify each provided field value type against the struct's field type.
+  // Unify each provided field value type against the struct's field type. A
+  // field may bind nothing — `tail Node<T> | Missing` given `Missing{}` says
+  // nothing about T — which is silent here; an unbound parameter is caught
+  // below by the field that was supposed to bind it.
   for (auto &[fname, ftype] : field_types) {
     for (auto &fi : info.fields) {
       if (fi.name == fname && fi.type) {
-        if (!unify(fi.type, ftype, bindings)) {
-          error(span, std::format("cannot infer type parameter from field '{}'",
-                                  fname));
-          return builtins.invalid_type;
-        }
+        unify(fi.type, ftype, bindings);
         break;
       }
     }
@@ -6046,23 +6070,21 @@ TypePtr Analyzer::instantiate_generic_struct(
   if (bindings.empty())
     return struct_type;
 
-  // Build the substituted struct type.
-  std::vector<FieldInfo> new_fields;
-  for (auto &f : info.fields) {
-    new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
-  }
-  std::vector<MethodInfo> new_methods;
-  for (auto &m : info.methods) {
-    new_methods.push_back(
-        {m.name, substitute(m.signature, bindings), m.is_public,
-         m.origin_package});
-  }
-
-  auto result = make_struct_type(info.name, std::move(new_fields),
-                                 std::move(new_methods), {},
+  // Publish the shell before substituting fields, and map the declaration onto
+  // it, so a field naming the struct again lands on this instantiation.
+  auto result = make_struct_type(info.name, {}, {}, info.type_params,
                                  info.origin_package);
   auto &result_info = std::get<StructTypeInfo>(result->detail);
-  result_info.type_params = info.type_params;
+  SubstMemo memo{{struct_type.get(), result}};
+
+  for (auto &f : info.fields)
+    result_info.fields.push_back(
+        {f.name, substitute(f.type, bindings, memo), f.is_public,
+         f.default_value});
+  for (auto &m : info.methods)
+    result_info.methods.push_back(
+        {m.name, substitute(m.signature, bindings, memo), m.is_public,
+         m.origin_package});
   // Record the concrete type arguments.
   for (auto &tp : info.type_params) {
     auto it = bindings.find(tp.id);

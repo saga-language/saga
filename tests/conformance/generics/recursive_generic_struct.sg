@@ -1,0 +1,40 @@
+// Spec: a generic struct may reach itself. Inside its own body `Node<T>` is
+// this very declaration, so the field is the type being declared rather than a
+// snapshot of it, and each instantiation carries the cycle through.
+import "std/io"
+
+struct Node<T> {
+  value T
+  tail Node<T> | Missing
+}
+
+pub fn (n Node<T>) Count() int {
+  t := n.tail
+  if t is Node<T> {
+    1 + t.Count()
+  } else {
+    1
+  }
+}
+
+pub fn (n Node<int>) Sum() int {
+  t := n.tail
+  if t is Node<int> {
+    n.value + t.Sum()
+  } else {
+    n.value
+  }
+}
+
+pub fn Main() void {
+  third := Node{value: 3, tail: Missing{}}
+  second := Node{value: 2, tail: third}
+  first := Node{value: 1, tail: second}
+  io.Println("{first.Count()}")
+  io.Println("{first.Sum()}")
+
+  b := Node{value: "b", tail: Missing{}}
+  a := Node{value: "a", tail: b}
+  io.Println("{a.Count()}")
+  io.Println(a.value)
+}

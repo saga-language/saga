@@ -396,6 +396,16 @@ TypePtr common_type(const TypePtr &a, const TypePtr &b);
 TypePtr substitute(const TypePtr &t,
                    const std::unordered_map<uint32_t, TypePtr> &bindings);
 
+/// Maps a type to its substituted form, so a cyclic type graph terminates.
+using SubstMemo = std::unordered_map<const Type *, TypePtr>;
+
+/// Substitute with a caller-seeded memo. Seed the generic declaration onto the
+/// instantiation being built and a field naming the struct again resolves to
+/// that instantiation rather than recursing forever.
+TypePtr substitute(const TypePtr &t,
+                   const std::unordered_map<uint32_t, TypePtr> &bindings,
+                   SubstMemo &memo);
+
 /// Attempt to infer type-parameter bindings by unifying `param_type` (which
 /// may contain TypeParam nodes) against `arg_type` (fully concrete).
 /// Returns true on success and populates `out`.  On conflict returns false.
