@@ -5613,30 +5613,19 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
 }
 
 // A struct holds its fields inline, so one that reaches itself that way has no
-// finite size and no base case to stop at. An array or a map holds its
-// elements on the heap, which is where a recursive shape gets its footing.
-static bool same_struct(const TypePtr &a, const TypePtr &b) {
-  if (a.get() == b.get())
-    return true;
-  if (!a || !b || a->kind != TypeKind::Struct || b->kind != TypeKind::Struct)
-    return false;
-  // A generic instantiation is a fresh type each time it is resolved, so
-  // identity here is the declaration it came from, not the pointer.
-  auto &ai = std::get<StructTypeInfo>(a->detail);
-  auto &bi = std::get<StructTypeInfo>(b->detail);
-  return ai.name == bi.name && ai.origin_package == bi.origin_package;
-}
-
+// finite size and no base case to stop at. An array, a map, or a union slot
+// holding a boxed alternative puts the value on the heap, which is where a
+// recursive shape gets its footing.
 static bool reaches_by_value(const TypePtr &origin, const TypePtr &t,
                              std::unordered_set<const Type *> &visiting) {
   auto u = unwrap_alias(t);
   if (!u)
     return false;
-  if (same_struct(u, origin))
+  if (same_struct_decl(u, origin))
     return true;
   if (u->kind == TypeKind::Union) {
     for (auto &alt : std::get<UnionTypeInfo>(u->detail).alternatives)
-      if (reaches_by_value(origin, alt, visiting))
+      if (!union_alt_is_boxed(alt) && reaches_by_value(origin, alt, visiting))
         return true;
     return false;
   }
@@ -5659,8 +5648,9 @@ void Analyzer::check_no_infinite_size(const TypePtr &struct_type, Span span) {
   auto blame = [&](const std::string &member) {
     error(span,
           std::format("'{}' contains itself through '{}', so it has no finite "
-                      "size; hold it in an array or a map instead",
-                      info.name, member));
+                      "size; give it a way to stop — '{} | Missing', an array, "
+                      "or a map",
+                      info.name, member, info.name));
   };
   for (auto &f : info.fields) {
     std::unordered_set<const Type *> visiting{struct_type.get()};

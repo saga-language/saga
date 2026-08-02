@@ -810,6 +810,9 @@ private:
                                    const TypePtr &alt_type,
                                    const TypePtr &union_type);
 
+  /// Heap-copy `val` into a fresh box, returning the box pointer.
+  llvm::Value *emit_box_copy(llvm::Value *val, llvm::Type *ll_alt);
+
   /// Get the tag index for a type within a union.
   int union_tag_for_type(const TypePtr &alt_type, const TypePtr &union_type);
 

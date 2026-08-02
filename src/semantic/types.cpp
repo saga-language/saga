@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <unordered_set>
 
 namespace saga {
 
@@ -858,6 +859,65 @@ bool has_type_params(const TypePtr &t) {
   default:
     return false;
   }
+}
+
+bool same_struct_decl(const TypePtr &a, const TypePtr &b) {
+  if (a.get() == b.get())
+    return true;
+  if (!a || !b || a->kind != TypeKind::Struct || b->kind != TypeKind::Struct)
+    return false;
+  auto &ai = std::get<StructTypeInfo>(a->detail);
+  auto &bi = std::get<StructTypeInfo>(b->detail);
+  return ai.name == bi.name && ai.origin_package == bi.origin_package;
+}
+
+// Struct fields, embeds, and union alternatives all sit inside the containing
+// value, so the walk follows them. Arrays and maps hold their elements on the
+// heap, which is where a recursive shape already has its footing.
+static bool reaches_struct(const TypePtr &origin, const TypePtr &t,
+                           std::unordered_set<std::string> &seen) {
+  auto u = unwrap_alias(t);
+  if (!u)
+    return false;
+  if (same_struct_decl(u, origin))
+    return true;
+  if (u->kind != TypeKind::Struct && u->kind != TypeKind::Union)
+    return false;
+  // Keyed by rendering, not pointer: resolving a generic application yields a
+  // fresh type each time, so pointer identity would not terminate.
+  if (!seen.insert(type_to_string(u)).second)
+    return false;
+  if (u->kind == TypeKind::Union) {
+    for (auto &alt : std::get<UnionTypeInfo>(u->detail).alternatives)
+      if (reaches_struct(origin, alt, seen))
+        return true;
+    return false;
+  }
+  auto &si = std::get<StructTypeInfo>(u->detail);
+  for (auto &f : si.fields)
+    if (reaches_struct(origin, f.type, seen))
+      return true;
+  for (auto &e : si.embeds)
+    if (reaches_struct(origin, e, seen))
+      return true;
+  return false;
+}
+
+bool union_alt_is_boxed(const TypePtr &alt) {
+  auto u = unwrap_alias(alt);
+  if (!u || u->kind != TypeKind::Struct)
+    return false;
+  auto &info = std::get<StructTypeInfo>(u->detail);
+  if (info.is_error)
+    return false; // Already a heap box.
+  std::unordered_set<std::string> seen{type_to_string(u)};
+  for (auto &f : info.fields)
+    if (reaches_struct(u, f.type, seen))
+      return true;
+  for (auto &e : info.embeds)
+    if (reaches_struct(u, e, seen))
+      return true;
+  return false;
 }
 
 bool unify(const TypePtr &param_type, const TypePtr &arg_type,

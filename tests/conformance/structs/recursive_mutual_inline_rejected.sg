@@ -1,0 +1,16 @@
+// A cycle that runs through two structs is still inline at every step, so it
+// has no finite size. Routing it through a union or a collection is what gives
+// it a way to stop.
+import "std/io"
+
+struct Left {
+  right Right
+}
+
+struct Right {
+  left Left
+}
+
+pub fn Main() void {
+  io.Println("unreachable")
+}

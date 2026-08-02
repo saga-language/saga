@@ -207,6 +207,11 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_error_alloc", module.get());
 
+  // Zero-initialised heap block for a boxed union alternative.
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_box_alloc", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -601,8 +606,11 @@ uint64_t CodeGen::union_payload_size(const TypePtr &union_sem) {
   auto &info = std::get<UnionTypeInfo>(union_sem->detail);
   uint64_t max_size = 0;
   auto &dl = module->getDataLayout();
+  auto *ptr_rep = llvm::PointerType::getUnqual(context);
   for (auto &alt : info.alternatives) {
-    auto *ll = llvm_type(alt);
+    // Ask before lowering: llvm_type of a self-referential struct comes back
+    // here for its own union field, and the pointer is what breaks the cycle.
+    auto *ll = union_alt_is_boxed(alt) ? ptr_rep : llvm_type(alt);
     if (ll->isVoidTy())
       continue;
     uint64_t sz = dl.getTypeAllocSize(ll);
@@ -674,7 +682,9 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
     auto *cast = builder.CreateBitOrPointerCast(
         payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
     auto *ll_alt = llvm_type(val_type);
-    if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
+    if (union_alt_is_boxed(val_type))
+      builder.CreateStore(emit_box_copy(val, ll_alt), cast);
+    else if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
       auto &dl = module->getDataLayout();
       builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
                            dl.getABITypeAlign(ll_alt),
@@ -705,7 +715,26 @@ llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
                                                "union.payload");
   auto *cast = builder.CreateBitOrPointerCast(
       payload_gep, llvm::PointerType::getUnqual(context), "union.ecast");
+  if (union_alt_is_boxed(alt_type)) {
+    auto *box = builder.CreateLoad(llvm::PointerType::getUnqual(context), cast,
+                                   "union.box");
+    return builder.CreateLoad(ll_alt, box, "union.val");
+  }
   return builder.CreateLoad(ll_alt, cast, "union.val");
+}
+
+llvm::Value *CodeGen::emit_box_copy(llvm::Value *val, llvm::Type *ll_alt) {
+  auto &dl = module->getDataLayout();
+  uint64_t size = dl.getTypeAllocSize(ll_alt);
+  auto *box = builder.CreateCall(
+      module->getFunction("saga_box_alloc"),
+      {llvm::ConstantInt::get(i64_type, size)}, "union.box");
+  if (val->getType()->isPointerTy())
+    builder.CreateMemCpy(box, dl.getABITypeAlign(ll_alt), val,
+                         dl.getABITypeAlign(ll_alt), size);
+  else
+    builder.CreateStore(val, box);
+  return box;
 }
 
 bool CodeGen::is_impure_union(const TypePtr &t) const {

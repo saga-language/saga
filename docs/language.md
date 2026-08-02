@@ -406,8 +406,9 @@ arr.Size() // => 3
 To convert a type like `Byte[]` to a String, a conversion utility method
 must be used, since String supports UTF-8.
 
-Complex types can be self-referential provided they're defined on or before
-their first use.
+Complex types can be self-referential. Declaration order does not matter — a
+field may name a type declared further down the file. See
+[Self-referential structs](#self-referential-structs).
 
 ### Methods on Intrinsic Types
 
@@ -929,6 +930,75 @@ fn (c Counter) Incremented() Counter {
 
 c = c.Incremented()
 ```
+
+### Self-referential structs
+
+A struct may contain itself, as long as there is a way to stop. A struct holds
+its fields inline, so a field that is just the struct again would need a value
+of infinite size:
+
+```
+struct Node {
+  value int
+  tail Node // rejected: no finite size
+}
+```
+
+Three things give it a way to stop. A union alternative:
+
+```
+struct Node {
+  value int
+  tail Node | Missing
+}
+```
+
+An array, or a map:
+
+```
+struct Tree {
+  value int
+  kids array{Tree}
+}
+```
+
+The union form is the list or tree you would reach for; the collection form is
+the one with many children. In both cases the recursion bottoms out on a value
+that holds nothing further — `Missing{}`, or an empty collection.
+
+The cycle may also run through several structs, and they may be declared in any
+order:
+
+```
+struct Expr {
+  op int
+  arg Operand | Missing
+}
+
+struct Operand {
+  literal int
+  nested Expr | Missing
+}
+```
+
+Walk a recursive shape by narrowing, the same as any other union:
+
+```
+fn (n Node) Sum() int {
+  t := n.tail
+  if t is Node {
+    n.value + t.Sum()
+  } else {
+    n.value
+  }
+}
+```
+
+Note that `t := n.tail` is needed: `is` narrows a name, not an expression.
+
+Where a struct closes a cycle, the union stores it on the heap rather than
+inline — that is what bounds the size. This is not something you declare or
+can observe: the value still copies, compares, and narrows like any other.
 
 ### Type bound methods
 

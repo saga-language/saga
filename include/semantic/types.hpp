@@ -406,4 +406,15 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
 /// least one TypeParam node.
 bool has_type_params(const TypePtr &t);
 
+/// Two struct types that came from the same declaration. A generic
+/// instantiation is a fresh type each time it is resolved, so identity is the
+/// declaration, not the pointer.
+bool same_struct_decl(const TypePtr &a, const TypePtr &b);
+
+/// Whether a union stores this alternative behind a pointer rather than inline.
+/// True for a struct that transitively contains itself, which is what gives a
+/// recursive shape a finite size. The answer depends only on the alternative,
+/// so every union mentioning it agrees on the layout.
+bool union_alt_is_boxed(const TypePtr &alt);
+
 } // namespace saga
