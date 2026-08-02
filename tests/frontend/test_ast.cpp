@@ -18,6 +18,22 @@ TEST(Ast, Unescape_MultiLineLiteral) {
   ASSERT_EQ(unescape_string_fragment("\"\"\"a\nb\"\"\""), "a\nb");
 }
 
+TEST(Ast, Unescape_MultiLineDropsOpeningNewline) {
+  ASSERT_EQ(unescape_string_fragment("\"\"\"\na\"\"\""), "a");
+  ASSERT_EQ(unescape_string_fragment("\"\"\"\r\na\"\"\""), "a");
+  // Only the first — a second newline is a deliberate blank line.
+  ASSERT_EQ(unescape_string_fragment("\"\"\"\n\na\"\"\""), "\na");
+  // The closing newline is content.
+  ASSERT_EQ(unescape_string_fragment("\"\"\"\na\n\"\"\""), "a\n");
+  ASSERT_EQ(unescape_string_fragment("\"\"\"\n\"\"\""), "");
+  // A single-line string keeps whatever follows its quote.
+  ASSERT_EQ(unescape_string_fragment("\"\na\""), "\na");
+}
+
+TEST(Ast, Unescape_MultiLineStartPieceDropsOpeningNewline) {
+  ASSERT_EQ(unescape_string_fragment("\"\"\"\na {"), "a ");
+}
+
 TEST(Ast, Unescape_InterpolationPieces) {
   ASSERT_EQ(unescape_string_fragment(R"("hello {)"), "hello ");
   ASSERT_EQ(unescape_string_fragment("} then {"), " then ");

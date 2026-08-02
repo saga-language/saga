@@ -728,7 +728,9 @@ is assigned a zero value by the compiler.
 | array{T} | [] | [1, 2, 3] |
 | map{K:V} | {} | {"key": 42} |
 
-Multiline strings also support interpolation.
+Multiline strings also support interpolation. The newline directly after the
+opening `"""` is layout rather than content and is dropped, so a multiline
+string may start on its own line.
 
 In the case where a type might be ambiguous, either it must be made explicit
 or it will be a type error.

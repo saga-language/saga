@@ -21,6 +21,15 @@ static size_t trailing_quotes(std::string_view s) {
   return s.ends_with('"') ? 1 : 0;
 }
 
+// A multi-line string usually opens on its own line, so the newline directly
+// after `"""` is layout rather than content. Only that one is dropped; a second
+// is a deliberate blank line.
+static std::string_view drop_opening_newline(std::string_view s) {
+  if (s.starts_with("\r\n"))
+    return s.substr(2);
+  return s.starts_with('\n') ? s.substr(1) : s;
+}
+
 // A fragment is quoted on the outside and braced on the inside: a whole
 // StringLiteral is `"..."`, and the interpolation pieces are StringStart
 // `"..{`, StringMiddle `}..{`, StringEnd `}.."`. A multi-line string spells the
@@ -29,6 +38,8 @@ static size_t trailing_quotes(std::string_view s) {
 static std::string_view strip_delimiters(std::string_view raw) {
   size_t front = leading_quotes(raw);
   raw = raw.substr(front + (front == 0 && raw.starts_with('}') ? 1 : 0));
+  if (front == 3)
+    raw = drop_opening_newline(raw);
 
   if (size_t back = trailing_quotes(raw); back > 0)
     return raw.substr(0, raw.size() - back);
