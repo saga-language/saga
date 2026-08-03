@@ -597,7 +597,12 @@ public:
 
   /// Reject a declaration that would have to hold a `void`. Legal as a return
   /// type and as a union alternative; nowhere a value lives.
-  void reject_void_value(Span span, const TypePtr &type, std::string_view what);
+  bool reject_void_value(Span span, const TypePtr &type, std::string_view what);
+
+  /// Reject a type parameter bound to void: every use of it in the
+  /// instantiated body would be storage with nothing to store.
+  bool reject_void_bindings(
+      const std::unordered_map<uint32_t, TypePtr> &bindings, Span span);
 
   /// Report a shadowing error (inner scope reuses outer scope name).
   void shadowing_error(Span span, const std::string &name);

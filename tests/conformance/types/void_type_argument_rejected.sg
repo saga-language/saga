@@ -1,0 +1,15 @@
+// A type parameter stands for the type of a value, so binding one to void
+// would give the instantiated body storage with nothing to store.
+const io = import "std/io"
+
+fn shout() void {
+  io.Println("shouted")
+}
+
+fn id<T>(v T) T {
+  return v
+}
+
+pub fn Main() void {
+  id(shout())
+}

@@ -473,7 +473,11 @@ Rules:
 `void` is the absence of a value, so nothing can hold one. It is legal in
 exactly two positions: as a function's return type, and as a union alternative.
 A variable, parameter, constant, struct field, or collection element typed
-`void` — directly or through an `array{void}` / `map{K: void}` — is an error.
+`void` — directly or through an `array{void}` / `map{K: void}` — is an error,
+and so is binding a type parameter to it. An [ignored](#Identifiers) name is no
+exception: it still declares storage, so `_ := f()` on a void `f` is an error
+rather than a way to discard the call. Calling `f()` as a statement is the way
+to do that.
 
 A `T | void` union is an optional: the value, or its absence. Its main use is
 over-the-wire data (a JSON `null`); in Saga-only code an error union is usually

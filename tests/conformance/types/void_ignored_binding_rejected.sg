@@ -1,0 +1,11 @@
+// An ignored name still declares storage, so `_ :=` is no way around the
+// rule. Discarding a void call is what calling it as a statement already does.
+const io = import "std/io"
+
+fn shout() void {
+  io.Println("shouted")
+}
+
+pub fn Main() void {
+  _ := shout()
+}

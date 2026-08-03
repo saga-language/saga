@@ -1619,12 +1619,30 @@ static bool holds_void(const TypePtr &t) {
   }
 }
 
-void Analyzer::reject_void_value(Span span, const TypePtr &type,
+bool Analyzer::reject_void_value(Span span, const TypePtr &type,
                                  std::string_view what) {
-  if (holds_void(type))
-    error(span, std::format("{} cannot be typed '{}': void is the absence of a "
-                            "value, so there is nothing to hold",
-                            what, type_to_string(type)));
+  if (!holds_void(type))
+    return false;
+  error(span, std::format("{} cannot be typed '{}': void is the absence of a "
+                          "value, so there is nothing to hold",
+                          what, type_to_string(type)));
+  return true;
+}
+
+bool Analyzer::reject_void_bindings(
+    const std::unordered_map<uint32_t, TypePtr> &bindings, Span span) {
+  // `bindings` is unordered, so walk the ids in order or the diagnostics come
+  // out differently from one run to the next.
+  std::vector<uint32_t> ids;
+  for (auto &[id, concrete] : bindings)
+    ids.push_back(id);
+  std::sort(ids.begin(), ids.end());
+
+  bool rejected = false;
+  for (uint32_t id : ids)
+    rejected |=
+        reject_void_value(span, bindings.at(id), "a type argument");
+  return rejected;
 }
 
 TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
@@ -3271,12 +3289,16 @@ TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
     // caught where the binding is made.
     return make_array_type(builtins.unknown_type);
   }
-  auto elem_type = check_expr(*node.elements[0]);
-  for (size_t i = 1; i < node.elements.size(); ++i) {
-    auto t = check_expr(*node.elements[i]);
-    if (!is_invalid_type(t) && !is_invalid_type(elem_type)) {
-      expect_assignable(node.elements[i]->span, elem_type, t, "array element");
+  TypePtr elem_type = nullptr;
+  for (auto &elem : node.elements) {
+    auto t = check_expr(*elem);
+    reject_void_value(elem->span, t, "an array element");
+    if (!elem_type) {
+      elem_type = t;
+      continue;
     }
+    if (!is_invalid_type(t) && !is_invalid_type(elem_type))
+      expect_assignable(elem->span, elem_type, t, "array element");
   }
   return make_array_type(elem_type);
 }
@@ -3285,15 +3307,22 @@ TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
   if (node.entries.empty()) {
     return make_map_type(builtins.unknown_type, builtins.unknown_type);
   }
-  auto key_type = check_expr(*node.entries[0].key);
-  auto val_type = check_expr(*node.entries[0].value);
-  for (size_t i = 1; i < node.entries.size(); ++i) {
-    auto kt = check_expr(*node.entries[i].key);
-    auto vt = check_expr(*node.entries[i].value);
+  TypePtr key_type = nullptr;
+  TypePtr val_type = nullptr;
+  for (auto &entry : node.entries) {
+    auto kt = check_expr(*entry.key);
+    auto vt = check_expr(*entry.value);
+    reject_void_value(entry.key->span, kt, "a map key");
+    reject_void_value(entry.value->span, vt, "a map value");
+    if (!key_type) {
+      key_type = kt;
+      val_type = vt;
+      continue;
+    }
     if (!is_invalid_type(kt))
-      expect_assignable(node.entries[i].key->span, key_type, kt, "map key");
+      expect_assignable(entry.key->span, key_type, kt, "map key");
     if (!is_invalid_type(vt))
-      expect_assignable(node.entries[i].value->span, val_type, vt, "map value");
+      expect_assignable(entry.value->span, val_type, vt, "map value");
   }
   check_satisfies_protocol(key_type, ProtocolKind::Hashable,
                            node.entries[0].key->span, "map key");
@@ -5183,9 +5212,11 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 
   // Update or create the symbol in the current scope.
   std::string name(var.name.name);
+  // Ahead of the ignored-name exit: an ignored name still declares storage,
+  // so `_ := f()` on a void `f` is a void slot. Call it as a statement.
+  reject_void_value(var.name.span, final_type, "a variable");
   if (is_ignored_name(name))
     return;
-  reject_void_value(var.name.span, final_type, "a variable");
   auto sym_it = current_scope->symbols.find(name);
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = final_type;
@@ -5215,11 +5246,9 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
-    // An ignored name holds nothing, so there is nothing for void to fail to
-    // fill: `_ := f()` on a void `f` is just the call.
+    reject_void_value(ident.span, rhs_type, "a variable");
     if (is_ignored_name(name))
       continue;
-    reject_void_value(ident.span, rhs_type, "a variable");
     auto sym_it = current_scope->symbols.find(name);
     if (sym_it != current_scope->symbols.end()) {
       sym_it->second.type = rhs_type;
@@ -5967,6 +5996,9 @@ Analyzer::instantiate_generic_call(
     }
   }
 
+  if (reject_void_bindings(bindings, call_span))
+    return builtins.invalid_type;
+
   // Validate each binding against the type-parameter's constraint, if any.
   // Constraints are carried on the TypeParam nodes embedded in the function's
   // parameter/return types — walk the type tree to recover them.
@@ -6210,6 +6242,9 @@ TypePtr Analyzer::instantiate_generic_struct(
       }
     }
   }
+
+  if (reject_void_bindings(bindings, span))
+    return builtins.invalid_type;
 
   if (bindings.empty())
     return struct_type;
