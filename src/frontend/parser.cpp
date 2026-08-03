@@ -477,14 +477,14 @@ bool Parser::is_at_end() const {
 
 // Report a syntax error at the position of the current token.
 void Parser::error(const std::string &message) {
-  errors.report_error(lexer.file->position_at(current.offset), message);
+  errors.report_error(fileset.position_at(current.offset), message);
 }
 
 // Report a syntax error at the start of an explicit span. Useful when the
 // parser has already advanced past the offending token and needs to point
 // back to it (e.g. mismatched delimiters detected at the closing token).
 void Parser::error_at(Span span, const std::string &message) {
-  errors.report_error(lexer.file->position_at(span.start), message);
+  errors.report_error(fileset.position_at(span.start), message);
 }
 
 // Panic-mode error recovery. After a syntax error, skip tokens until we

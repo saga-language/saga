@@ -495,10 +495,7 @@ void Analyzer::error(Span span, const std::string &message) {
   if (silenced_)
     return;
 
-  Position pos{};
-  if (!fileset.files.empty()) {
-    pos = fileset.files[0]->position_at(span.start);
-  }
+  Position pos = fileset.position_at(span.start);
 
   // Append an "...instantiated from" frame for every active generic
   // instantiation so multi-level generic errors render a C++-template-style
@@ -509,11 +506,8 @@ void Analyzer::error(Span span, const std::string &message) {
     const Node *call_node = *it;
     if (!call_node)
       continue;
-    Position frame_pos{};
-    if (!fileset.files.empty()) {
-      frame_pos = fileset.files[0]->position_at(call_node->span.start);
-    }
-    full += std::format("\n  ...instantiated from {}", frame_pos);
+    full += std::format("\n  ...instantiated from {}",
+                        fileset.position_at(call_node->span.start));
   }
 
   errors.report_error(pos, full);
@@ -531,9 +525,7 @@ void Analyzer::report_deferred_bugs() {
     return;
 
   auto &bug = deferred_bugs_.front();
-  Position pos{};
-  if (!fileset.files.empty())
-    pos = fileset.files[0]->position_at(bug.span.start);
+  Position pos = fileset.position_at(bug.span.start);
   internal_error(std::format(
       "{}: analysis gave up here but reported nothing to the user: {}", pos,
       bug.reason));

@@ -14,6 +14,9 @@ namespace saga {
 struct File {
   std::string filename;
   std::string source;
+  /// Where this file starts in its FileSet's offset space. Spans carry
+  /// FileSet offsets; `position_at` and `line_offsets` are file-local.
+  size_t base = 0;
   std::vector<size_t> line_offsets;
 
   File(std::string filename, std::string source)

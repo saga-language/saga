@@ -193,7 +193,7 @@ Token Lexer::scan() {
 
 Token Lexer::accept(Token::Kind kind) {
   auto literal = source.substr(offset, reading_offset - offset);
-  auto token = Token{kind, literal, offset};
+  auto token = Token{kind, literal, file->base + offset};
 
   offset = reading_offset;
 

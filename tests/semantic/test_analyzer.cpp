@@ -744,4 +744,22 @@ TEST(Analyzer, IntrinsicReceiverMethodResolvesInCheckSelector) {
   EXPECT_TRUE(r.has_no_errors());
 }
 
+TEST(Analyzer, ErrorInSecondFileReportsThatFile) {
+  AnalysisResult r;
+  r.fileset.add_file(File::from_source("a.sg", "pub fn Main() void {}\n"));
+  r.fileset.add_file(File::from_source("b.sg", "fn helper() int {\n"
+                                               "  return notAThing\n"
+                                               "}\n"));
+  Parser parser(r.fileset);
+  r.ast = parser.parse();
+  r.analyzer = std::make_unique<Analyzer>(r.fileset);
+  r.analyzer->is_stdlib = false;
+  r.analyzer->analyze(*r.ast);
+
+  ASSERT_TRUE(r.has_error_containing("notAThing"));
+  auto &err = r.analyzer->errors.errors.front();
+  EXPECT_EQ(err.p.filename, "b.sg");
+  EXPECT_EQ(err.p.line, 2u);
+}
+
 } // namespace saga
