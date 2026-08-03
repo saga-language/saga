@@ -463,10 +463,15 @@ Rules:
 
 ### Optional values (`T | void`)
 
-`void` is assignable and holds a single value, `null`. A `T | void` union is an
-optional: the value, or its absence. Its main use is over-the-wire data (a JSON
-`null`); in Saga-only code an error union is usually preferable, since it carries
-context. Narrow with `is` (`or` does not apply — `void` is not an error).
+`void` is the absence of a value, so nothing can hold one. It is legal in
+exactly two positions: as a function's return type, and as a union alternative.
+A variable, parameter, constant, struct field, or collection element typed
+`void` — directly or through an `array{void}` / `map{K: void}` — is an error.
+
+A `T | void` union is an optional: the value, or its absence. Its main use is
+over-the-wire data (a JSON `null`); in Saga-only code an error union is usually
+preferable, since it carries context. Narrow with `is` (`or` does not apply —
+`void` is not an error).
 
 ```
 fn lookup(key string) int | void {

@@ -588,6 +588,10 @@ public:
   /// Report a duplicate-declaration error.
   void redeclaration_error(Span span, const std::string &name);
 
+  /// Reject a declaration that would have to hold a `void`. Legal as a return
+  /// type and as a union alternative; nowhere a value lives.
+  void reject_void_value(Span span, const TypePtr &type, std::string_view what);
+
   /// Report a shadowing error (inner scope reuses outer scope name).
   void shadowing_error(Span span, const std::string &name);
 

@@ -1,0 +1,8 @@
+// A void parameter can only ever be null, so it carries nothing.
+const io = import "std/io"
+
+fn accepts(v void) void {}
+
+pub fn Main() void {
+  io.Println("ok")
+}

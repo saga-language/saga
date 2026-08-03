@@ -1572,10 +1572,40 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
 // Phase 2b — Resolve top-level declaration types
 // ===========================================================================
 
+// `void` is the absence of a value. It can be returned and it can be a union
+// alternative — that is what `T | void` means — but a value of it does not
+// exist, so nothing can hold one.
+static bool holds_void(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  if (!u)
+    return false;
+  switch (u->kind) {
+  case TypeKind::Void:
+    return true;
+  case TypeKind::Array:
+    return holds_void(std::get<ArrayTypeInfo>(u->detail).element);
+  case TypeKind::Map: {
+    auto &info = std::get<MapTypeInfo>(u->detail);
+    return holds_void(info.key) || holds_void(info.value);
+  }
+  default:
+    return false;
+  }
+}
+
+void Analyzer::reject_void_value(Span span, const TypePtr &type,
+                                 std::string_view what) {
+  if (holds_void(type))
+    error(span, std::format("{} cannot be typed '{}': void is the absence of a "
+                            "value, so there is nothing to hold",
+                            what, type_to_string(type)));
+}
+
 TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
   std::vector<TypePtr> params;
   for (auto &p : sig.params) {
     auto pt = resolve_type(*p.type);
+    reject_void_value(p.type->span, pt, "a parameter");
     // Each name in the identifier list maps to one parameter of that type.
     // An empty identifier list means an unnamed parameter (Go-style interface
     // method) — push the type once.
@@ -5129,6 +5159,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
   std::string name(var.name.name);
   if (is_ignored_name(name))
     return;
+  reject_void_value(var.name.span, final_type, "a variable");
   auto sym_it = current_scope->symbols.find(name);
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = final_type;
@@ -5158,8 +5189,11 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
+    // An ignored name holds nothing, so there is nothing for void to fail to
+    // fill: `_ := f()` on a void `f` is just the call.
     if (is_ignored_name(name))
       continue;
+    reject_void_value(ident.span, rhs_type, "a variable");
     auto sym_it = current_scope->symbols.find(name);
     if (sym_it != current_scope->symbols.end()) {
       sym_it->second.type = rhs_type;
@@ -5419,6 +5453,8 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
   TypePtr const_type = declared_type             ? declared_type
                        : is_invalid_type(init_type) ? builtins.int_type
                                                   : init_type;
+
+  reject_void_value(c.name.span, const_type, "a constant");
 
   if (sym_it != current_scope->symbols.end())
     sym_it->second.type = const_type;
@@ -5717,6 +5753,7 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
                                 info.name));
     }
     seen_fields[f.name] = true;
+    reject_void_value(s.span, f.type, std::format("field '{}'", f.name));
   }
 
   check_method_uniqueness(info.methods, "struct", info.name, s.span, {});
