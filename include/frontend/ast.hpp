@@ -49,6 +49,13 @@ struct IdentifierNode {
   std::string_view name;
 };
 
+/// An "ignored" name (docs/language.md:25-27): it binds nothing, cannot be
+/// read back, and so never collides with another name — including another
+/// ignored one.
+inline bool is_ignored_name(std::string_view name) {
+  return name.starts_with('_');
+}
+
 // IdentifierList = Identifier { "," Identifier }
 struct IdentifierListNode {
   Span span;

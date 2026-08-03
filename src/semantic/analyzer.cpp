@@ -377,6 +377,11 @@ bool Analyzer::declare(const Symbol &sym) {
 }
 
 bool Analyzer::declare_local(const Symbol &sym) {
+  // An ignored name is not a binding, so there is nothing for a second one to
+  // collide with and nothing for a nested one to shadow.
+  if (is_ignored_name(sym.name))
+    return true;
+
   // Check same-scope redeclaration.
   if (current_scope->lookup_local(sym.name)) {
     redeclaration_error(sym.decl_span, sym.name);
@@ -5079,6 +5084,8 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
 
   // Update or create the symbol in the current scope.
   std::string name(var.name.name);
+  if (is_ignored_name(name))
+    return;
   auto sym_it = current_scope->symbols.find(name);
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = final_type;
@@ -5108,6 +5115,8 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
+    if (is_ignored_name(name))
+      continue;
     auto sym_it = current_scope->symbols.find(name);
     if (sym_it != current_scope->symbols.end()) {
       sym_it->second.type = rhs_type;

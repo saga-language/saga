@@ -768,18 +768,18 @@ TypePtr CodeGen::strip_error_from_union(const TypePtr &t) const {
 // Reference counting
 // ===========================================================================
 
-void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
-  if (!sem) return;
+void CodeGen::track_managed(llvm::AllocaInst *slot, const TypePtr &sem) {
+  if (!slot || !sem) return;
   if (sem->kind == TypeKind::String)
-    managed_locals.push_back({name, ManagedKind::String});
+    managed_locals.push_back({slot, ManagedKind::String});
   else if (sem->kind == TypeKind::Array)
-    managed_locals.push_back({name, ManagedKind::Array});
+    managed_locals.push_back({slot, ManagedKind::Array});
   else if (sem->kind == TypeKind::Map)
-    managed_locals.push_back({name, ManagedKind::Map});
+    managed_locals.push_back({slot, ManagedKind::Map});
   else if (sem->kind == TypeKind::Struct) {
     auto &info = std::get<StructTypeInfo>(sem->detail);
     if (info.name == "Task") {
-      managed_locals.push_back({name, ManagedKind::Task});
+      managed_locals.push_back({slot, ManagedKind::Task});
     } else {
       // Check if the struct implements the Closer protocol (has Close() Void).
       for (auto &m : info.methods) {
@@ -787,7 +787,7 @@ void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
             m.signature->kind == TypeKind::Func) {
           auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
           if (fi.params.empty()) {
-            managed_locals.push_back({name, ManagedKind::Closeable});
+            managed_locals.push_back({slot, ManagedKind::Closeable});
             break;
           }
         }
@@ -820,9 +820,7 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
 
 void CodeGen::emit_release_locals() {
   for (auto &ml : managed_locals) {
-    auto it = locals.find(ml.name);
-    if (it == locals.end()) continue;
-    auto *alloca = it->second;
+    auto *alloca = ml.slot;
     auto *val = builder.CreateLoad(alloca->getAllocatedType(), alloca);
     if (ml.kind == ManagedKind::String)
       builder.CreateCall(module->getFunction("saga_release_string"), {val});
@@ -833,9 +831,6 @@ void CodeGen::emit_release_locals() {
     else if (ml.kind == ManagedKind::Task)
       builder.CreateCall(module->getFunction("saga_task_drop"), {val});
     else if (ml.kind == ManagedKind::Closeable) {
-      // Call the struct's Close() method.  The alloca is the self ptr.
-      auto *alloca = it->second;
-
       // Look up the struct's semantic type to resolve the Close() link name.
       // We scan the analyzer's node_types to find the type, but it's
       // simpler to check struct_method_links directly.

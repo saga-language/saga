@@ -22,9 +22,16 @@ Idendifiers must start with either an upper or lowercase letter ("a" to "z")
 or an underscope. They can contain any number of alphanumeric characters,
 including underscores. A tailing question mark ("?") can be appended.
 
-Identifiers that start with with, or consist only of, an underscore are
+Identifiers that start with, or consist only of, an underscore are
 "ignored" variables. They can not be accessed once they are assigned a value
-and the compiler will not flag them as an unused variable.
+and the compiler will not flag them as an unused variable. An ignored name
+binds nothing, so it never collides with another name: any number of them may
+appear in the same scope or in nested ones.
+
+```
+_ := setup()
+for _, v : arr {} // no redeclaration, no shadowing
+```
 
 A constant that is flagged as ignored, while technically valid, is unusable
 and the compiler will not generate code for it.

@@ -295,7 +295,7 @@ void CodeGen::emit_function_body_inner(
       }
       locals[pname] = alloca;
       if (param_sem && param_sem->kind == TypeKind::Array)
-        track_managed(pname, param_sem);
+        track_managed(alloca, param_sem);
       ++ll_idx;
     }
   }
@@ -572,7 +572,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
           auto *alloca = llvm::cast<llvm::AllocaInst>(wrapped);
           alloca->setName(name);
           locals[name] = alloca;
-          track_managed(name, sem_type_ptr);
+          track_managed(alloca, sem_type_ptr);
           return;
         }
       }
@@ -582,7 +582,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
-        track_managed(name, sem_type_ptr);
+        track_managed(alloca, sem_type_ptr);
         return;
       }
     }
@@ -612,7 +612,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
             builder.CreateStore(val, alloca);
           }
           locals[name] = alloca;
-          track_managed(name, sem);
+          track_managed(alloca, sem);
           return;
         }
       }
@@ -625,7 +625,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
-        track_managed(name, sem_type_ptr);
+        track_managed(alloca, sem_type_ptr);
         return;
       }
     }
@@ -695,7 +695,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   }
 
   // Track for release at scope exit.
-  track_managed(name, sem_type_ptr);
+  track_managed(locals[name], sem_type_ptr);
 }
 
 void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
@@ -732,7 +732,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
             builder.CreateStore(val, alloca);
           }
           locals[name] = alloca;
-          track_managed(name, sem);
+          track_managed(alloca, sem);
           continue;
         }
       }
@@ -745,7 +745,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       if (sem && sem->kind == TypeKind::Union) {
         alloca->setName(name);
         locals[name] = alloca;
-        track_managed(name, sem);
+        track_managed(alloca, sem);
         continue;
       }
       if (alloca->getAllocatedType() == closure_fat_ptr_type) {
@@ -767,7 +767,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
         auto al = module->getDataLayout().getABITypeAlign(union_st);
         builder.CreateMemCpy(alloca, al, val, al, sz);
         locals[name] = alloca;
-        track_managed(name, val_sem);
+        track_managed(alloca, val_sem);
         continue;
       }
     }
@@ -779,7 +779,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       builder.CreateStore(val, alloca);
 
     // Track managed types for release at scope exit.
-    track_managed(name, val_sem);
+    track_managed(alloca, val_sem);
 
     // If a pending channel alloca exists from a spawn expression,
     // create a companion local "<name>.channel" for for-range iteration.
