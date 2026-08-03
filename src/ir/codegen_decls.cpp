@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -261,9 +262,8 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // compile-time constant, so a miss here is an unhandled accepted form, not a
   // user error.
   if (!init)
-    llvm::report_fatal_error(
-        llvm::Twine("const '") + name +
-        "' is not lowerable to a compile-time constant");
+    internal_error("const '" + name +
+                   "' is not lowerable to a compile-time constant");
 
   auto *gv = new llvm::GlobalVariable(
       *module, ll_type, /*isConstant=*/true,

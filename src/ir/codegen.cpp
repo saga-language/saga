@@ -3,6 +3,7 @@
 
 #include "ir/codegen.hpp"
 #include "runtime/error_ids.h"
+#include "util/internal_error.hpp"
 
 #include <charconv>
 
@@ -347,10 +348,7 @@ std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
 // instead of substituting void, which defers the failure to an unrelated place
 // (an alloca of void) with none of the context that would explain it.
 [[noreturn]] static void ice_unlowerable_type(const std::string &desc) {
-  llvm::report_fatal_error(llvm::Twine("internal compiler error: ") + desc +
-                           " reached code generation. The analyzer accepted "
-                           "this program, so this is a bug in the compiler, "
-                           "not an error in your code.");
+  internal_error(desc + " reached code generation");
 }
 
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {

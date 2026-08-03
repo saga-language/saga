@@ -522,6 +522,21 @@ public:
   /// Report a semantic error at the given span.
   void error(Span span, const std::string &message);
 
+  /// Gives up on a type without telling the user, which is only defensible if
+  /// something else reports. Records where and why; if analysis ends with no
+  /// diagnostic at all, one of these is the bug and is promoted to an ICE.
+  /// Safe to over-apply: a site that did report is never promoted.
+  TypePtr poison(Span span, std::string reason);
+
+  struct DeferredBug {
+    Span span;
+    std::string reason;
+  };
+  std::vector<DeferredBug> deferred_bugs_;
+
+  /// Promotes the first deferred bug if nothing was reported to the user.
+  void report_deferred_bugs();
+
   /// Drops every diagnostic raised while it is alive. For a caller that
   /// resolves a type node purely to look something up — codegen, after
   /// checking is finished — where a failure is not a program error.
@@ -710,7 +725,7 @@ private:
                         const std::vector<FieldInfo> &fields,
                         const std::vector<TypePtr> &seen);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
-                                   const std::string &field_name);
+                                   const std::string &field_name, Span span);
   /// Resolve a method callable on a union value without narrowing: the
   /// union satisfies some interface declaring `field_name` (every member
   /// satisfies it) and that method is Self-free (no interface-self in its

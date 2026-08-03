@@ -4,6 +4,7 @@
 #include "semantic/analyzer.hpp"
 #include "semantic/sgi.hpp"
 #include "frontend/parser.hpp"
+#include "util/internal_error.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -225,6 +226,7 @@ void Analyzer::analyze(const Node &root) {
                  },
              },
              root.data);
+  report_deferred_bugs();
 }
 
 void Analyzer::load_prelude() {
@@ -515,6 +517,26 @@ void Analyzer::error(Span span, const std::string &message) {
   }
 
   errors.report_error(pos, full);
+}
+
+TypePtr Analyzer::poison(Span span, std::string reason) {
+  // A silenced pass is explicitly one where failure is not a program error.
+  if (!silenced_)
+    deferred_bugs_.push_back({span, std::move(reason)});
+  return builtins.invalid_type;
+}
+
+void Analyzer::report_deferred_bugs() {
+  if (deferred_bugs_.empty() || !errors.errors.empty())
+    return;
+
+  auto &bug = deferred_bugs_.front();
+  Position pos{};
+  if (!fileset.files.empty())
+    pos = fileset.files[0]->position_at(bug.span.start);
+  internal_error(std::format(
+      "{}: analysis gave up here but reported nothing to the user: {}", pos,
+      bug.reason));
 }
 
 void Analyzer::type_error(Span span, const TypePtr &expected,
@@ -3016,7 +3038,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const GenericTypeAppNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
-          [&](const auto &) -> TypePtr { return builtins.invalid_type; },
+          [&](const auto &) -> TypePtr {
+            return poison(node.span, "expression kind has no type rule");
+          },
       },
       node.data);
 
@@ -3927,7 +3951,9 @@ TypePtr Analyzer::resolve_module_selector(const ModuleTypeInfo &mod,
                                           Span field_span) {
   for (auto &exp : mod.exports)
     if (exp.name == field_name)
-      return exp.type ? exp.type : builtins.invalid_type;
+      return exp.type ? exp.type
+                      : poison(field_span, "package export '" + field_name +
+                                               "' has no type");
   error(field_span,
         std::format("package '{}' has no exported member '{}'", mod.name,
                     field_name));
@@ -3963,7 +3989,9 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
   auto &info = std::get<StructTypeInfo>(owner_type->detail);
   for (auto &f : info.fields)
     if (f.name == field_name)
-      return f.type ? f.type : builtins.invalid_type;
+      return f.type ? f.type
+                    : poison(field_span,
+                             "struct field '" + field_name + "' has no type");
 
   for (auto &m : info.methods) {
     if (m.name != field_name)
@@ -4053,7 +4081,8 @@ void Analyzer::collect_promoted_fields(const StructTypeInfo &info,
 }
 
 TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
-                                           const std::string &field_name) {
+                                           const std::string &field_name,
+                                           Span span) {
   auto canonicalize_intrinsic = [this](const TypePtr &t) -> const Type * {
     switch (t->kind) {
     case TypeKind::Int: {
@@ -4107,7 +4136,9 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
   if (auto *vec = find_user_methods())
     for (auto &m : *vec)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.invalid_type;
+        return m.signature ? m.signature
+                           : poison(span, "method '" + field_name +
+                                              "' has no signature");
 
   auto effective_kind = underlying_kind(obj_type);
   auto effective_type = unwrap_alias(obj_type);
@@ -4118,7 +4149,8 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
       if (m.name != field_name)
         continue;
       if (!m.signature)
-        return builtins.invalid_type;
+        return poison(span,
+                      "kind method '" + field_name + "' has no signature");
       if (has_type_params(m.signature))
         return substitute_kind_method(effective_kind, effective_type,
                                       m.signature);
@@ -4130,7 +4162,8 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     if (m.name != field_name)
       continue;
     if (!m.signature)
-      return builtins.invalid_type;
+      return poison(span,
+                    "builtin method '" + field_name + "' has no signature");
     if (has_type_params(m.signature))
       return substitute_kind_method(effective_kind, effective_type,
                                     m.signature);
@@ -4313,7 +4346,10 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
     for (auto &m : info.methods)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.invalid_type;
+        return m.signature ? m.signature
+                           : poison(node.field.span,
+                                    "interface method '" + field_name +
+                                        "' has no signature");
   }
 
   if (obj_type->kind == TypeKind::Enum) {
@@ -4336,7 +4372,10 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     auto &alias_info = std::get<AliasTypeInfo>(obj_type->detail);
     for (auto &m : alias_info.methods)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.invalid_type;
+        return m.signature ? m.signature
+                           : poison(node.field.span,
+                                    "alias method '" + field_name +
+                                        "' has no signature");
     auto underlying = unwrap_alias(obj_type);
     if (underlying && underlying->kind == TypeKind::Struct)
       if (auto t =
@@ -4344,7 +4383,8 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
         return t;
   }
 
-  if (auto sig = resolve_method_signature(obj_type, field_name))
+  if (auto sig = resolve_method_signature(obj_type, field_name,
+                                          node.field.span))
     return sig;
 
   error(node.field.span, std::format("type {} has no member '{}'",
@@ -4984,8 +5024,9 @@ TypePtr Analyzer::check_import_expr(const ImportExprNode &node) {
       return mock_it->second;
     }
   }
-  // If not found, the import was already reported as an error.
-  return builtins.invalid_type;
+  // Expected to have been reported when the import failed; poison() checks
+  // that claim rather than trusting it.
+  return poison(node.span, "import '" + path + "' resolved to no package");
 }
 
 // ===========================================================================
@@ -5898,7 +5939,7 @@ Analyzer::instantiate_generic_call(
       constraint_violation = true;
   }
   if (constraint_violation)
-    return builtins.invalid_type;
+    return poison(call_span, "constraint violation left unreported");
 
   if (out_bindings)
     *out_bindings = bindings;
@@ -6049,7 +6090,7 @@ TypePtr Analyzer::instantiate_generic_struct(
     const std::vector<std::pair<std::string, TypePtr>> &field_types,
     Span span) {
   if (!struct_type || struct_type->kind != TypeKind::Struct)
-    return builtins.invalid_type;
+    return poison(span, "generic instantiation of a non-struct type");
 
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   if (info.type_params.empty())
