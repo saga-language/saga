@@ -3147,9 +3147,9 @@ TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
 
 TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
   if (node.elements.empty()) {
-    // Empty array — type must be inferred from context.  Return a
-    // placeholder; the assignment checker will fill it in.
-    return make_array_type(builtins.invalid_type);
+    // The element type comes from the context. A hole that never meets one is
+    // caught where the binding is made.
+    return make_array_type(builtins.unknown_type);
   }
   auto elem_type = check_expr(*node.elements[0]);
   for (size_t i = 1; i < node.elements.size(); ++i) {
@@ -3163,7 +3163,7 @@ TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
 
 TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
   if (node.entries.empty()) {
-    return make_map_type(builtins.invalid_type, builtins.invalid_type);
+    return make_map_type(builtins.unknown_type, builtins.unknown_type);
   }
   auto key_type = check_expr(*node.entries[0].key);
   auto val_type = check_expr(*node.entries[0].value);
@@ -5027,19 +5027,12 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
     } else {
       init_type = check_expr_expecting(**var.init, declared_type);
     }
-    // An empty `[]` / `{}` literal under a typed declaration adopts the
-    // declared element type; without this, the array-of-error placeholder
-    // produced by check_array_literal would fail expect_assignable.
-    if (declared_type) {
+    // An empty `[]` / `{}` adopts the declared type — its element type is a
+    // hole and the declaration is the context that fills it. The hole only
+    // yields to a declaration of the same shape, so `a int = []` still fails.
+    if (declared_type && contains_unknown(init_type)) {
       TypePtr underlying = unwrap_alias(declared_type);
-      bool empty_arr =
-          std::get_if<ArrayLiteralNode>(&(*var.init)->data) != nullptr &&
-          std::get<ArrayLiteralNode>((*var.init)->data).elements.empty();
-      bool empty_map =
-          std::get_if<MapLiteralNode>(&(*var.init)->data) != nullptr &&
-          std::get<MapLiteralNode>((*var.init)->data).entries.empty();
-      if ((empty_arr && underlying->kind == TypeKind::Array) ||
-          (empty_map && underlying->kind == TypeKind::Map))
+      if (underlying && init_type && underlying->kind == init_type->kind)
         init_type = declared_type;
     }
     if (declared_type && !is_invalid_type(init_type)) {
@@ -5047,7 +5040,8 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
                         "variable initializer");
     }
     if (!final_type)
-      final_type = materialize_untyped(init_type);
+      final_type = resolve_binding_type(materialize_untyped(init_type),
+                                        (*var.init)->span);
   }
 
   // Update or create the symbol in the current scope.
@@ -5061,25 +5055,23 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
   }
 }
 
-void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
-  // The `:=` form has no declared type, so an empty `[]` or `{}` literal
-  // has no source for its element type.  Spec: "arr1 := [] // invalid,
-  // no inferrable type" (docs/language.md:601).  The typed forms
-  // (`arr [Int] = []`) parse as VarDeclNode and are not affected.
-  if (auto *arr_lit = std::get_if<ArrayLiteralNode>(&decl.value->data)) {
-    if (arr_lit->elements.empty())
-      error(decl.value->span,
-            "empty array literal: cannot infer element type without a "
-            "declared type");
-  } else if (auto *map_lit =
-                 std::get_if<MapLiteralNode>(&decl.value->data)) {
-    if (map_lit->entries.empty())
-      error(decl.value->span,
-            "empty map literal: cannot infer key/value type without a "
-            "declared type");
-  }
+// A binding is an inference hole's last chance to be filled: nothing after it
+// supplies a type. Spec: "arr1 := [] // invalid, no inferrable type"
+// (docs/language.md:601).
+TypePtr Analyzer::resolve_binding_type(TypePtr type, Span span) {
+  if (!contains_unknown(type))
+    return type;
+  error(span, type->kind == TypeKind::Map
+                  ? "empty map literal: cannot infer key/value type without a "
+                    "declared type"
+                  : "empty array literal: cannot infer element type without a "
+                    "declared type");
+  return builtins.invalid_type;
+}
 
-  auto rhs_type = materialize_untyped(check_expr(*decl.value));
+void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
+  auto rhs_type = resolve_binding_type(
+      materialize_untyped(check_expr(*decl.value)), decl.value->span);
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);

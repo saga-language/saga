@@ -63,6 +63,10 @@ TypePtr make_invalid_type() {
   return std::make_shared<Type>(TypeKind::Invalid, InvalidType{});
 }
 
+TypePtr make_unknown_type() {
+  return std::make_shared<Type>(TypeKind::Unknown, UnknownType{});
+}
+
 TypePtr make_array_type(TypePtr element) {
   return std::make_shared<Type>(TypeKind::Array,
                                 ArrayTypeInfo{std::move(element)});
@@ -204,6 +208,36 @@ bool is_invalid_type(const TypePtr &t) {
   return t && t->kind == TypeKind::Invalid;
 }
 
+bool is_unknown_type(const TypePtr &t) {
+  return t && t->kind == TypeKind::Unknown;
+}
+
+bool contains_unknown(const TypePtr &t) {
+  if (!t)
+    return false;
+  switch (t->kind) {
+  case TypeKind::Unknown:
+    return true;
+  case TypeKind::Array:
+    return contains_unknown(std::get<ArrayTypeInfo>(t->detail).element);
+  case TypeKind::Map: {
+    auto &info = std::get<MapTypeInfo>(t->detail);
+    return contains_unknown(info.key) || contains_unknown(info.value);
+  }
+  case TypeKind::Union: {
+    for (auto &alt : std::get<UnionTypeInfo>(t->detail).alternatives)
+      if (contains_unknown(alt))
+        return true;
+    return false;
+  }
+  default:
+    // A hole only ever enters through an empty collection literal, so it can
+    // only nest where such a literal's type can nest. Nominal types are not
+    // walked, which also keeps a recursive struct from looping here.
+    return false;
+  }
+}
+
 bool is_error_valued(const TypePtr &t) {
   auto u = unwrap_alias(t);
   return u && u->kind == TypeKind::Struct &&
@@ -331,6 +365,8 @@ std::string type_to_string(const TypePtr &t) {
     return "string";
   case TypeKind::Invalid:
     return "<error>";
+  case TypeKind::Unknown:
+    return "<unknown>";
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
@@ -535,6 +571,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
   }
 
   case TypeKind::Invalid:
+  case TypeKind::Unknown:
     return true;
   }
 
@@ -549,8 +586,11 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (!source || !target)
     return false;
 
-  // Error types propagate silently.
-  if (is_invalid_type(source) || is_invalid_type(target))
+  // Error types propagate silently. An inference hole yields to whatever the
+  // context wants — that is how `a array{int} = []` types — and a hole that
+  // never met a context is caught at the binding, not here.
+  if (is_invalid_type(source) || is_invalid_type(target) ||
+      is_unknown_type(source) || is_unknown_type(target))
     return true;
 
   // Alias assignability.  A structural alias (`type X = T`) is transparent:
@@ -696,9 +736,9 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 TypePtr common_type(const TypePtr &a, const TypePtr &b) {
   if (!a || !b)
     return nullptr;
-  if (is_invalid_type(a))
+  if (is_invalid_type(a) || is_unknown_type(a))
     return b;
-  if (is_invalid_type(b))
+  if (is_invalid_type(b) || is_unknown_type(b))
     return a;
   if (types_equal(a, b))
     return a;

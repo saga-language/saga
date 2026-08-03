@@ -1,0 +1,6 @@
+// Spec: "arr1 := []  // invalid, no inferrable type" (docs/language.md).
+// The rule is about the type, not the syntax: parenthesising the literal
+// does not give it a context to infer from.
+pub fn Main() void {
+  x := ([])
+}

@@ -733,6 +733,9 @@ private:
   void check_stmt(const Node &node);
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
+
+  /// Reports and poisons a binding whose type still holds an inference hole.
+  TypePtr resolve_binding_type(TypePtr type, Span span);
   void check_assign(const AssignNode &node);
   void reject_error_field_mutation(const Node &target);
 

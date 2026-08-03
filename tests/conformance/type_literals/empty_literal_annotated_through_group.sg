@@ -1,0 +1,10 @@
+// The declaration is the context that fills the hole, and it does so whatever
+// shape the initialiser expression takes.
+import "std/io"
+
+pub fn Main() void {
+  a array{int} = ([])
+  b map{string: int} = ({})
+  c array{array{int}} = [[]]
+  io.Println("{a.Size()} {b.Size()} {c.Size()}")
+}
