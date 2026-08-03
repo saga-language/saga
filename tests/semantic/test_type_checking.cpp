@@ -218,7 +218,10 @@ TEST(TypeCheck, VarDeclWithInit) {
 }
 
 TEST(TypeCheck, VarDeclTypeMismatch) {
-  auto r = TC::from("fn f() {\n  x int = \"oops\"\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x int = \"oops\"\n"
+      "  _ := x\n"
+      "}");
   EXPECT_TRUE(r.has_err("variable initializer"));
 }
 
@@ -230,19 +233,28 @@ TEST(TypeCheck, DeclAssignInfersType) {
 // Spec: `arr1 := []` is invalid — no declared type means no inferrable
 // element type.  (docs/language.md:601)
 TEST(TypeCheck, DeclAssign_EmptyArrayLiteral_Rejected) {
-  auto r = TC::from("fn f() {\n  arr := []\n}");
+  auto r = TC::from("fn f() {\n"
+      "  arr := []\n"
+      "  _ := arr\n"
+      "}");
   EXPECT_TRUE(r.has_err("empty array literal"));
 }
 
 TEST(TypeCheck, DeclAssign_EmptyMapLiteral_Rejected) {
-  auto r = TC::from("fn f() {\n  m := {}\n}");
+  auto r = TC::from("fn f() {\n"
+      "  m := {}\n"
+      "  _ := m\n"
+      "}");
   EXPECT_TRUE(r.has_err("empty map literal"));
 }
 
 TEST(TypeCheck, VarDecl_EmptyArrayLiteral_Allowed) {
   // Typed declaration (`arr Int[] = []`) provides the element type, so
   // the empty literal is fine here even though `:=` would reject it.
-  auto r = TC::from("fn f() {\n  arr array{int} = []\n}");
+  auto r = TC::from("fn f() {\n"
+      "  arr array{int} = []\n"
+      "  _ := arr\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
@@ -251,17 +263,29 @@ TEST(TypeCheck, VarDecl_EmptyArrayLiteral_Allowed) {
 // ===========================================================================
 
 TEST(TypeCheck, AssignmentTypeMismatch) {
-  auto r = TC::from("fn f() {\n  x int = 0\n  x = \"oops\"\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x int = 0\n"
+      "  _ := x\n"
+      "  x = \"oops\"\n"
+      "}");
   EXPECT_TRUE(r.has_err("assignment"));
 }
 
 TEST(TypeCheck, CompoundAssignment) {
-  auto r = TC::from("fn f() {\n  x := 10\n  x += 5\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 10\n"
+      "  _ := x\n"
+      "  x += 5\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, StringConcatAssignment) {
-  auto r = TC::from("fn f() {\n  s := \"hello\"\n  s += \" world\"\n}");
+  auto r = TC::from("fn f() {\n"
+      "  s := \"hello\"\n"
+      "  _ := s\n"
+      "  s += \" world\"\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
@@ -270,17 +294,29 @@ TEST(TypeCheck, StringConcatAssignment) {
 // ===========================================================================
 
 TEST(TypeCheck, IncrementInt) {
-  auto r = TC::from("fn f() {\n  x := 0\n  x++\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 0\n"
+      "  _ := x\n"
+      "  x++\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, IncrementNonInt) {
-  auto r = TC::from("fn f() {\n  x := 3.14\n  x++\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 3.14\n"
+      "  _ := x\n"
+      "  x++\n"
+      "}");
   EXPECT_TRUE(r.has_err("increment requires integer"));
 }
 
 TEST(TypeCheck, DecrementInt) {
-  auto r = TC::from("fn f() {\n  x := 5\n  x--\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 5\n"
+      "  _ := x\n"
+      "  x--\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
@@ -543,6 +579,7 @@ TEST(TypeCheck, FuncExprReturnMismatch) {
   auto r = TC::from(
       "fn f() {\n"
       "  bad := fn() int { \"oops\" }\n"
+      "  _ := bad\n"
       "}");
   EXPECT_TRUE(r.has_err("return type"));
 }
@@ -713,27 +750,47 @@ TEST(TypeCheck, BitwiseNotOnBool) {
 // ===========================================================================
 
 TEST(TypeCheck, SubAssignmentNumeric) {
-  auto r = TC::from("fn f() {\n  x := 10\n  x -= 3\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 10\n"
+      "  _ := x\n"
+      "  x -= 3\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, MulAssignmentNumeric) {
-  auto r = TC::from("fn f() {\n  x := 10\n  x *= 2\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 10\n"
+      "  _ := x\n"
+      "  x *= 2\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, DivAssignmentNumeric) {
-  auto r = TC::from("fn f() {\n  x := 10\n  x /= 2\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 10\n"
+      "  _ := x\n"
+      "  x /= 2\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, SubAssignmentOnString) {
-  auto r = TC::from("fn f() {\n  x := \"hello\"\n  x -= \"h\"\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := \"hello\"\n"
+      "  _ := x\n"
+      "  x -= \"h\"\n"
+      "}");
   EXPECT_TRUE(r.has_err("compound assignment requires numeric type"));
 }
 
 TEST(TypeCheck, DivAssignmentOnString) {
-  auto r = TC::from("fn f() {\n  x := \"hello\"\n  x /= \"h\"\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := \"hello\"\n"
+      "  _ := x\n"
+      "  x /= \"h\"\n"
+      "}");
   EXPECT_TRUE(r.has_err("/= requires numeric type"));
 }
 
@@ -746,7 +803,11 @@ TEST(TypeCheck, TypedIntNotDirectlyAssignableToNarrowerWidth) {
   // width — narrowing requires an explicit conversion. (A bare integer
   // literal is "untyped" and may flow into any integer width; that case is
   // exercised separately.)
-  auto r = TC::from("fn f() {\n  x := 65\n  c uint32 = x\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 65\n"
+      "  c uint32 = x\n"
+      "  _ := c\n"
+      "}");
   EXPECT_FALSE(r.ok()) << "typed int should not be directly assignable to uint32";
   EXPECT_TRUE(r.has_err("variable initializer"));
 }
@@ -757,7 +818,14 @@ TEST(TypeCheck, TypedIntNotDirectlyAssignableToNarrowerWidth) {
 
 TEST(TypeCheck, IntLiteralAssignsToNarrowInt) {
   // Bare literal flows into a narrow Int annotation.
-  auto r = TC::from("fn f() {\n  x int64 = 5\n  y int32 = 7\n  z int8 = 1\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x int64 = 5\n"
+      "  _ := x\n"
+      "  y int32 = 7\n"
+      "  _ := y\n"
+      "  z int8 = 1\n"
+      "  _ := z\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
@@ -771,21 +839,29 @@ TEST(TypeCheck, IntLiteralPassesAsNarrowParam) {
 TEST(TypeCheck, IntLiteralBinaryOpWithNarrowInt) {
   // `x + 5` keeps x's narrow Int width when 5 is an untyped literal.
   auto r = TC::from(
-      "fn f() {\n  x int32 = 1\n  y int32 = x + 5\n}");
+      "fn f() {\n"
+      "  x int32 = 1\n"
+      "  y int32 = x + 5\n"
+      "  _ := y\n"
+      "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, IntLiteralInStructFieldOfNarrowInt) {
   auto r = TC::from(
       "struct Header { len int32 }\n"
-      "fn f() { h := Header{len: 42} }");
+      "fn f() { h := Header{len: 42}\n  _ := h }");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, TypedIntNotAssignableToNarrowInt) {
   // Without an explicit annotation `:=` materializes to plain Int, which
   // is then *not* implicitly assignable to a narrower width.
-  auto r = TC::from("fn f() {\n  x := 5\n  y int32 = x\n}");
+  auto r = TC::from("fn f() {\n"
+      "  x := 5\n"
+      "  y int32 = x\n"
+      "  _ := y\n"
+      "}");
   EXPECT_FALSE(r.ok());
   EXPECT_TRUE(r.has_err("variable initializer"));
 }
@@ -827,6 +903,7 @@ TEST(TypeCheck, InterfaceAssignConcreteType) {
       "fn f() void {\n"
       "  d := Dog{name: \"Rex\"}\n"
       "  s Speaker = d\n"
+      "  _ := s\n"
       "}");
   EXPECT_TRUE(r.ok()) << "Concrete struct satisfying interface should be assignable";
 }
@@ -838,6 +915,7 @@ TEST(TypeCheck, InterfaceAssignNonConforming) {
       "fn f() void {\n"
       "  c := Cat{name: \"Mittens\"}\n"
       "  s Speaker = c\n"
+      "  _ := s\n"
       "}");
   EXPECT_FALSE(r.ok()) << "Cat does not implement Speak(), should error";
 }
@@ -984,6 +1062,7 @@ TEST(TypeCheck, UnionTypeVarDecl) {
   auto r = TC::from(
       "fn f() {\n"
       "  x int | error = 0\n"
+      "  _ := x\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1000,7 +1079,7 @@ TEST(TypeCheck, DivisionOrExprStripsToInt) {
 TEST(TypeCheck, OrExprWithPipeVariable) {
   auto r = TC::from(
       "fn f() int {\n"
-      "  10 / 2 or |err| { 0 }\n"
+      "  10 / 2 or |err| { _ := err\n    0 }\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1010,6 +1089,7 @@ TEST(TypeCheck, OrExprEmptyBlock) {
   auto r = TC::from(
       "fn f() {\n"
       "  x := 10 / 2 or {}\n"
+      "  _ := x\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1029,6 +1109,7 @@ TEST(TypeCheck, PureUnionType) {
   auto r = TC::from(
       "fn f() {\n"
       "  x bool | int = 0\n"
+      "  _ := x\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1038,6 +1119,7 @@ TEST(TypeCheck, UnionTypeAssignString) {
   auto r = TC::from(
       "fn f() {\n"
       "  x int | string = \"hello\"\n"
+      "  _ := x\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1050,6 +1132,7 @@ TEST(TypeCheck, OrExprStripsManyToUnion) {
       "fn f() {\n"
       "  x := 10 / 2\n"
       "  y := x or { 0 }\n"
+      "  _ := y\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1065,6 +1148,7 @@ TEST(TypeCheck, IfTypeMatchNarrows) {
       "  x int | error = 0\n"
       "  if x is int {\n"
       "    y := x + 1\n"
+      "    _ := y\n"
       "  }\n"
       "}");
   EXPECT_TRUE(r.ok());
@@ -1152,8 +1236,10 @@ TEST(TypeCheck, IfTypeMatchWithElse) {
       "  x int | string = 0\n"
       "  if x is int {\n"
       "    y := x + 1\n"
+      "    _ := y\n"
       "  } else {\n"
       "    z := x\n"
+      "    _ := z\n"
       "  }\n"
       "}");
   EXPECT_TRUE(r.ok());
@@ -1184,6 +1270,7 @@ TEST(TypeCheck, IntrinsicAtomicAddAcceptsTwoInts) {
       "fn f() {\n"
       "  x := 0\n"
       "  old := intrinsic_atomic_add(x, 1)\n"
+      "  _ := old\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1192,6 +1279,7 @@ TEST(TypeCheck, IntrinsicYieldInsideSpawn) {
   auto r = TC::from(
       "fn f() {\n"
       "  spawn |ctx| {\n"
+      "    _ := ctx\n"
       "    intrinsic_yield()\n"
       "    42\n"
       "  }\n"
@@ -1203,6 +1291,7 @@ TEST(TypeCheck, IntrinsicTrapInsideSpawn) {
   auto r = TC::from(
       "fn f() {\n"
       "  spawn |ctx| {\n"
+      "    _ := ctx\n"
       "    intrinsic_trap(\"fatal\")\n"
       "    42\n"
       "  }\n"
@@ -1406,7 +1495,7 @@ TEST(TypeCheck, NonIterableStructInForLoop) {
   // A plain struct with no Next() method should produce an error.
   auto r = TC::from(
       "struct Bare { n int }\n"
-      "fn f(b Bare) void { for v : b { } }\n");
+      "fn f(b Bare) void { for _ : b { } }");
   EXPECT_TRUE(r.has_err("is not iterable"));
 }
 
@@ -1415,7 +1504,7 @@ TEST(TypeCheck, IterableNextReturnsWrongType) {
   auto r = TC::from(
       "struct Src {}\n"
       "pub fn (s Src) Next() int { 0 }\n"
-      "fn f(s Src) void { for v : s { } }\n");
+      "fn f(s Src) void { for _ : s { } }");
   EXPECT_TRUE(r.has_err("is not iterable"));
 }
 
@@ -1426,7 +1515,7 @@ TEST(TypeCheck, IterableStructRecordedInAnalyzer) {
       "  n int\n"
       "}\n"
       "pub fn (c Counter) Next() int | error { c.n }\n"
-      "fn f(c Counter) void { for v : c { } }\n");
+      "fn f(c Counter) void { for _ : c { } }");
   ASSERT_TRUE(r.ok());
   EXPECT_EQ(r.analyzer->iterable_next_elem_type.size(), 1u);
   auto it = r.analyzer->iterable_next_elem_type.begin();
@@ -1490,6 +1579,7 @@ TEST(TypeCheck, TypeAliasIsResolvedAsType) {
       "type UserID int\n"
       "fn f() {\n"
       "  id UserID\n"
+      "  _ := id\n"
       "}");
   EXPECT_TRUE(r.ok());
 }

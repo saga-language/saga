@@ -7,12 +7,12 @@ enum Suit { Clubs = 1  Diamonds  Hearts = 5  Spades }
 enum Color string { Red = "r"  Green  Blue = "b" }
 
 pub fn Main() void {
-  hit := Suit.From(5) or |e| { Suit.Clubs }
+  hit := Suit.From(5) or { Suit.Clubs }
   io.Println(hit.String())
-  miss := Suit.From(99) or |e| { Suit.Diamonds }
+  miss := Suit.From(99) or { Suit.Diamonds }
   io.Println(miss.String())
-  shit := Color.From("b") or |e| { Color.Red }
+  shit := Color.From("b") or { Color.Red }
   io.Println(shit.String())
-  smiss := Color.From("zzz") or |e| { Color.Green }
+  smiss := Color.From("zzz") or { Color.Green }
   io.Println(smiss.String())
 }

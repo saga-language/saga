@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace saga {
@@ -47,6 +48,10 @@ struct Scope : public std::enable_shared_from_this<Scope> {
   std::shared_ptr<Scope> parent;               // nullptr for global scope
   std::unordered_map<std::string, Symbol> symbols;
 
+  /// Names declared here that something has since read. Compared against
+  /// `symbols` when the scope is popped, to find declarations nothing uses.
+  std::unordered_set<std::string> read_names;
+
   // Type-parameter bindings active in this scope (populated when entering
   // a generic function or type).
   std::unordered_map<uint32_t, TypePtr> type_bindings;
@@ -79,6 +84,9 @@ struct Scope : public std::enable_shared_from_this<Scope> {
 
   /// Look up a name in *only* this scope (no parent walk).
   std::optional<Symbol> lookup_local(const std::string &name) const;
+
+  /// Record a read of `name` against the scope that declares it.
+  void mark_read(const std::string &name);
 
   // ── Scope queries ────────────────────────────────────────────────────
 

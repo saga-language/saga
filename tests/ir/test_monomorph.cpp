@@ -320,6 +320,8 @@ TEST(Monomorph, ReturnTypePropagation) {
       "pub fn Main() void {\n"
       "  n := id(42)\n"
       "  s := id(\"hi\")\n"
+      "  _ := n\n"
+      "  _ := s\n"
       "}");
   EXPECT_TRUE(r.ok()) << r.all_errors();
 }

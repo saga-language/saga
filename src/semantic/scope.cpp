@@ -41,6 +41,15 @@ std::optional<Symbol> Scope::lookup_local(const std::string &name) const {
   return std::nullopt;
 }
 
+void Scope::mark_read(const std::string &name) {
+  for (Scope *s = this; s; s = s->parent.get()) {
+    if (s->symbols.contains(name)) {
+      s->read_names.insert(name);
+      return;
+    }
+  }
+}
+
 // ===========================================================================
 // Scope queries
 // ===========================================================================

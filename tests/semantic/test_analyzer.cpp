@@ -500,6 +500,7 @@ TEST(Analyzer, ResolveShadowInNestedBlock) {
   auto r = AnalysisResult::from(
       "fn foo() {\n"
       "  x := 1\n"
+      "  _ := x\n"
       "  if true {\n"
       "    x := 2\n"
       "  }\n"
@@ -646,6 +647,7 @@ TEST(Analyzer, ResolveAccumulator) {
       "fn foo() {\n"
       "  arr := [1, 2, 3]\n"
       "  for i : arr |acc| {\n"
+      "    _ := i\n"
       "    acc\n"
       "  }\n"
       "}");
@@ -664,6 +666,7 @@ TEST(Analyzer, UseBeforeDeclare) {
       "fn foo() {\n"
       "  y\n"
       "  y := 1\n"
+      "  _ := y\n"
       "}");
   // "y" used on line 2 but declared on line 3 — should be undefined.
   EXPECT_TRUE(r.has_error_containing("undefined name 'y'"));
@@ -734,6 +737,7 @@ TEST(Analyzer, IntrinsicReceiverMethodResolvesInCheckSelector) {
       "pub fn Main() void {\n"
       "  x := 5\n"
       "  y := x.Double()\n"
+      "  _ := y\n"
       "}");
   r.fileset.add_file(std::move(file));
   Parser parser(r.fileset);

@@ -1771,6 +1771,39 @@ y := 1 // implicit type
 Using a variable before it is declared is an error. Redeclaring a variable
 (shadowing) is also an error. Declarations are statements.
 
+### Unused variables
+
+A local that nothing ever reads is an error. It is dead code, a typo, or an
+abandoned intent, and the fix is always the same: remove it, or name it as
+[ignored](#Identifiers).
+
+Assignment is not a read. A variable only ever written to is still dead —
+every write to it is discarded — so `=`, the compound operators, and `++` /
+`--` do not keep a variable alive. Writing *through* a variable does read it:
+`p.x = 1` and `arr[0] = 1` need `p` and `arr` to find where to write.
+
+```
+x := 1        // invalid, nothing reads x
+y := 1
+y = 2         // invalid, still nothing reads y
+_ := 1        // fine, ignored
+```
+
+The rule covers every local you name yourself, including loop variables and
+the `or` pipe — both are optional, so an unread one can always be dropped or
+ignored:
+
+```
+for _ : arr {}       // rather than an unread `v`
+f() or { 0 }         // rather than an unread `|err|`
+```
+
+Parameters are exempt. A parameter's name is part of a signature that a
+caller, an interface, or a callback shape may fix, so removing it is not
+available as a fix. A `for` accumulator is exempt for a different reason: the
+loop's value *is* the accumulator, so the expression reads it even when the
+body only assigns to it.
+
 ## Assignment
 
 There are several assignment operators: 

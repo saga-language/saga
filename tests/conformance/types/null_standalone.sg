@@ -5,5 +5,7 @@ import "std/io"
 pub fn Main() void {
   x void = null
   y := null
+  _ := x
+  _ := y
   io.Println("ok")
 }

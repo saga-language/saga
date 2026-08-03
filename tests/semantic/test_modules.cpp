@@ -228,6 +228,7 @@ import "std/math"
 
 pub fn Main() void {
   x := math.Add(1, 2)
+  _ := x
 }
   )", {{"std/math", mock_math}});
 
@@ -249,6 +250,7 @@ import "std/geo"
 
 pub fn Main() void {
   p := geo.Point
+  _ := p
 }
   )", {{"std/geo", mock_geo}});
 
@@ -538,6 +540,7 @@ import "mylib"
 
 pub fn Main() void {
   p := mylib.Point
+  _ := p
 }
   )");
 
@@ -766,6 +769,8 @@ import "secretlib"
 pub fn Main() void {
   x := secretlib.Public()
   p := secretlib.PubStruct
+  _ := x
+  _ := p
 }
   )");
 
@@ -809,6 +814,7 @@ const Math = import "mega/long/mathematics"
 
 pub fn Main() void {
   x := Math.Sqrt(2.0)
+  _ := x
 }
   )", {{"mega/long/mathematics", mock}});
 
@@ -827,6 +833,7 @@ const M = import "std/math"
 
 pub fn Main() void {
   x := M.Pi
+  _ := x
 }
   )", {{"std/math", mock}});
 

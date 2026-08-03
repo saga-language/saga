@@ -368,6 +368,34 @@ void Analyzer::pop_scope() {
   }
 }
 
+void Analyzer::pop_resolve_scope() {
+  report_unread_locals(*current_scope);
+  pop_scope();
+}
+
+void Analyzer::report_unread_locals(const Scope &scope) {
+  if (suppress_unread_reports_)
+    return;
+
+  std::vector<const Symbol *> unread;
+  for (auto &[name, sym] : scope.symbols) {
+    if (sym.kind == SymbolKind::Variable && !scope.read_names.contains(name))
+      unread.push_back(&sym);
+  }
+
+  // `symbols` is unordered, so sort or the diagnostics come out in a
+  // different order from one run to the next.
+  std::sort(unread.begin(), unread.end(), [](const Symbol *a, const Symbol *b) {
+    return a->decl_span.start < b->decl_span.start;
+  });
+
+  for (const Symbol *sym : unread)
+    error(sym->decl_span,
+          std::format("'{}' is declared but never read; remove it or name it "
+                      "'_{}'",
+                      sym->name, sym->name));
+}
+
 bool Analyzer::declare(const Symbol &sym) {
   if (!current_scope->declare(sym)) {
     redeclaration_error(sym.decl_span, sym.name);
@@ -2289,7 +2317,7 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
   auto &block = std::get<BlockNode>(fn.body->data);
   resolve_block(block);
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 // ===========================================================================
@@ -2299,7 +2327,9 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
 void Analyzer::resolve_expr(const Node &node) {
   std::visit(
       overloaded{
-          [&](const IdentifierNode &n) { resolve_identifier(n, node); },
+          [&](const IdentifierNode &n) {
+            resolve_identifier(n, node, NameUse::Read);
+          },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const NullLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const EnumShorthandNode &) { /* leaf — resolved in check */ },
@@ -2327,7 +2357,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const BlockNode &n) {
             push_scope(ScopeKind::Block);
             resolve_block(n);
-            pop_scope();
+            pop_resolve_scope();
           },
           // Statements that can appear as expressions in blocks.
           [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
@@ -2346,11 +2376,11 @@ void Analyzer::resolve_expr(const Node &node) {
 }
 
 void Analyzer::resolve_identifier(const IdentifierNode &ident,
-                                  const Node &parent) {
+                                  const Node &parent, NameUse use) {
   std::string name(ident.name);
 
   // Ignored identifiers (starting with _) don't need resolution.
-  if (!name.empty() && name[0] == '_')
+  if (is_ignored_name(name))
     return;
 
   auto sym = lookup(name);
@@ -2359,6 +2389,8 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
     return;
   }
   record_symbol(parent, *sym);
+  if (use == NameUse::Read)
+    current_scope->mark_read(name);
 
   // ── Capture detection for closures ─────────────────────────────────
   // If this symbol is a local variable/parameter and we're inside a closure,
@@ -2546,13 +2578,13 @@ void Analyzer::resolve_if_expr(const IfExprNode &node) {
   push_scope(ScopeKind::Block);
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   resolve_block(then_block);
-  pop_scope();
+  pop_resolve_scope();
 
   if (node.else_block) {
     push_scope(ScopeKind::Block);
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     resolve_block(else_block);
-    pop_scope();
+    pop_resolve_scope();
   }
 }
 
@@ -2565,7 +2597,7 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
       resolve_block(*block);
-      pop_scope();
+      pop_resolve_scope();
     } else {
       resolve_expr(*arm.body);
     }
@@ -2574,7 +2606,7 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
     if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
       push_scope(ScopeKind::Block);
       resolve_block(*block);
-      pop_scope();
+      pop_resolve_scope();
     } else {
       resolve_expr(**node.else_body);
     }
@@ -2614,15 +2646,18 @@ void Analyzer::resolve_for_expr(const ForExprNode &node) {
 
   // Declare the accumulator pipe if present.
   if (node.accumulator) {
-    declare_local(Symbol::variable(std::string(node.accumulator->name), nullptr,
-                                   node.accumulator->span));
+    std::string acc(node.accumulator->name);
+    declare_local(Symbol::variable(acc, nullptr, node.accumulator->span));
+    // The loop's value is the accumulator, so the expression reads it even
+    // when the body only assigns to it — as `|acc| { acc += x }` does.
+    current_scope->mark_read(acc);
   }
 
   // Resolve the body.
   auto &body_block = std::get<BlockNode>(node.body->data);
   resolve_block(body_block);
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
@@ -2690,7 +2725,7 @@ void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
     }
   }
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_or_expr(const OrExprNode &node) {
@@ -2707,7 +2742,7 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   auto &block = std::get<BlockNode>(node.fallback->data);
   resolve_block(block);
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_func_expr(const FuncExprNode &node, const Node &parent) {
@@ -2736,7 +2771,7 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node, const Node &parent) {
   pending_closure_node_ =
       closure_node_stack_.empty() ? nullptr : closure_node_stack_.back();
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 // ===========================================================================
@@ -2772,9 +2807,17 @@ void Analyzer::resolve_decl_assign(const DeclAssignNode &decl,
   }
 }
 
+void Analyzer::resolve_write_target(const Node &target) {
+  if (auto *ident = std::get_if<IdentifierNode>(&target.data)) {
+    resolve_identifier(*ident, target, NameUse::Write);
+    return;
+  }
+  resolve_expr(target);
+}
+
 void Analyzer::resolve_assign(const AssignNode &node) {
   for (auto &target : node.targets) {
-    resolve_expr(*target);
+    resolve_write_target(*target);
   }
   for (auto &value : node.values) {
     resolve_expr(*value);
@@ -2799,11 +2842,11 @@ void Analyzer::resolve_break(const BreakNode &node) {
 }
 
 void Analyzer::resolve_increment(const IncrementNode &node) {
-  resolve_expr(*node.operand);
+  resolve_write_target(*node.operand);
 }
 
 void Analyzer::resolve_decrement(const DecrementNode &node) {
-  resolve_expr(*node.operand);
+  resolve_write_target(*node.operand);
 }
 
 // ===========================================================================
@@ -5998,6 +6041,10 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   auto saved_scope = current_scope;
   BodyInstantiation *saved_inst = current_instantiation_;
   bool saved_is_stdlib = is_stdlib;
+  bool saved_suppress = suppress_unread_reports_;
+  // Which locals a body reads is the same answer for every instantiation, so
+  // only the first one draws it.
+  suppress_unread_reports_ = list.size() > 1;
   instantiation_stack_.push_back(&call_node);
 
   current_scope = tpl.decl_scope->child(ScopeKind::Block);
@@ -6076,10 +6123,12 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   }
 
   // Restore everything.
+  report_unread_locals(*current_scope);
   pop_scope();           // the Function scope
   current_scope = saved_scope;
   current_instantiation_ = saved_inst;
   is_stdlib = saved_is_stdlib;
+  suppress_unread_reports_ = saved_suppress;
   instantiation_stack_.pop_back();
 
   inst.in_progress = false;

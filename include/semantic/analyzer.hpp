@@ -356,6 +356,10 @@ struct Analyzer {
   /// Set by Analyzer::Silence; makes error() a no-op.
   bool silenced_ = false;
 
+  /// Set while re-analysing a generic body that a previous instantiation has
+  /// already reported on.
+  bool suppress_unread_reports_ = false;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
 
@@ -479,6 +483,14 @@ public:
 
   /// Pop the current scope, returning to its parent.
   void pop_scope();
+
+  /// Pop a scope built by name resolution, reporting the locals it declared
+  /// that nothing read. Only this pass sees every read with its scope still
+  /// live, so it is the only one that may draw that conclusion.
+  void pop_resolve_scope();
+
+  /// Report every local in `scope` that no read reached.
+  void report_unread_locals(const Scope &scope);
 
   /// Declare a symbol in the current scope; reports an error on duplicate.
   bool declare(const Symbol &sym);
@@ -647,10 +659,20 @@ private:
   /// a switch where every arm returns).
   bool always_returns(const Node &node) const;
 
+  /// Whether an identifier occurrence reads the name or only writes to it.
+  /// `x = 1`, `x++` and `x--` are writes: they cannot be what makes x used,
+  /// or a variable only ever assigned to would look alive.
+  enum class NameUse { Read, Write };
+
   // Phase 3: Name resolution in expressions — resolve identifiers,
   // record symbols, and walk all sub-expressions.
   void resolve_expr(const Node &node);
-  void resolve_identifier(const IdentifierNode &node, const Node &parent);
+  void resolve_identifier(const IdentifierNode &node, const Node &parent,
+                          NameUse use);
+
+  /// Resolve an assignment target. A bare name is a write; through a selector
+  /// or an index it is also a read, since `p.f = 1` needs p to find f.
+  void resolve_write_target(const Node &target);
   void resolve_block(const BlockNode &node);
   void resolve_call_expr(const CallExprNode &node);
   void resolve_index_expr(const IndexExprNode &node);
