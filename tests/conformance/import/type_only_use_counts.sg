@@ -1,0 +1,12 @@
+// A package named only in a type is used: the dependency is as real as it
+// would be in an expression.
+import "std/io"
+import "std/os"
+
+fn describe(f os.File) string {
+  return "a file"
+}
+
+pub fn Main() void {
+  io.Println("compiled")
+}

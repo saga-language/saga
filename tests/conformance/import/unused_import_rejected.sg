@@ -1,0 +1,8 @@
+// An import nothing uses misstates what the code depends on, and unlike a
+// local there is nothing it could be doing invisibly.
+import "std/io"
+import "std/os"
+
+pub fn Main() void {
+  io.Println("ok")
+}

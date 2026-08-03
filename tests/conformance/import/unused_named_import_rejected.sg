@@ -1,0 +1,7 @@
+// Binding an import to a name of your own does not exempt it.
+const Out = import "std/os"
+const io = import "std/io"
+
+pub fn Main() void {
+  io.Println("ok")
+}

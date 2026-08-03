@@ -489,8 +489,15 @@ public:
   /// live, so it is the only one that may draw that conclusion.
   void pop_resolve_scope();
 
+  /// Pop a module scope, reporting the imports nothing used. Deferred to the
+  /// pop so it cannot depend on which pass first reaches a package name.
+  void pop_module_scope();
+
   /// Report every local in `scope` that no read reached.
   void report_unread_locals(const Scope &scope);
+
+  /// Report every import in `scope` that no use reached.
+  void report_unused_imports(const Scope &scope);
 
   /// Declare a symbol in the current scope; reports an error on duplicate.
   bool declare(const Symbol &sym);
@@ -851,7 +858,6 @@ private:
   void check_no_infinite_size(const TypePtr &struct_type, Span span);
   void check_field_default(const FieldSpecNode &fs);
   void check_interface_decl(const InterfaceDeclNode &node);
-  void check_import_decl(const ImportDeclNode &node);
 
   // Block checking.
   TypePtr check_block(const BlockNode &node);

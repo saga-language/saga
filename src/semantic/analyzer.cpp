@@ -373,13 +373,16 @@ void Analyzer::pop_resolve_scope() {
   pop_scope();
 }
 
-void Analyzer::report_unread_locals(const Scope &scope) {
-  if (suppress_unread_reports_)
-    return;
+void Analyzer::pop_module_scope() {
+  report_unused_imports(*current_scope);
+  pop_scope();
+}
 
+static std::vector<const Symbol *> unread_symbols(const Scope &scope,
+                                                  SymbolKind kind) {
   std::vector<const Symbol *> unread;
   for (auto &[name, sym] : scope.symbols) {
-    if (sym.kind == SymbolKind::Variable && !scope.read_names.contains(name))
+    if (sym.kind == kind && !scope.read_names.contains(name))
       unread.push_back(&sym);
   }
 
@@ -388,12 +391,31 @@ void Analyzer::report_unread_locals(const Scope &scope) {
   std::sort(unread.begin(), unread.end(), [](const Symbol *a, const Symbol *b) {
     return a->decl_span.start < b->decl_span.start;
   });
+  return unread;
+}
 
-  for (const Symbol *sym : unread)
+void Analyzer::report_unread_locals(const Scope &scope) {
+  if (suppress_unread_reports_)
+    return;
+
+  for (const Symbol *sym : unread_symbols(scope, SymbolKind::Variable))
     error(sym->decl_span,
           std::format("'{}' is declared but never read; remove it or name it "
                       "'_{}'",
                       sym->name, sym->name));
+}
+
+void Analyzer::report_unused_imports(const Scope &scope) {
+  for (const Symbol *sym : unread_symbols(scope, SymbolKind::Module)) {
+    // An import that failed to resolve already owns its line, and there the
+    // fix is the path, not the import.
+    if (!sym->type || is_invalid_type(sym->type))
+      continue;
+    error(sym->decl_span,
+          std::format("package '{}' is imported but never used; remove the "
+                      "import",
+                      sym->name));
+  }
 }
 
 bool Analyzer::declare(const Symbol &sym) {
@@ -513,6 +535,11 @@ void Analyzer::record_type(const Node &node, TypePtr type) {
 }
 
 void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
+  // A package name reaches source only to be used — there is no write form to
+  // hold apart, as there is for a variable — so binding one is using it.
+  if (sym.kind == SymbolKind::Module)
+    current_scope->mark_read(sym.name);
+
   if (current_instantiation_) {
     current_instantiation_->node_symbols[&node] = sym;
   } else {
@@ -735,14 +762,13 @@ void Analyzer::visit_package(const PackageNode &pkg) {
               [&](const ErrorDeclNode &e) { check_error_decl(e); },
               [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
               [&](const ConstDeclNode &c) { check_const_decl(c); },
-              [&](const ImportDeclNode &imp) { check_import_decl(imp); },
               [&](const auto &) {},
           },
           decl->data);
     }
   }
 
-  pop_scope();
+  pop_module_scope();
 }
 
 void Analyzer::visit_source(const SourceNode &src) {
@@ -791,13 +817,12 @@ void Analyzer::visit_source(const SourceNode &src) {
                    [&](const ErrorDeclNode &e) { check_error_decl(e); },
                    [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
                    [&](const ConstDeclNode &c) { check_const_decl(c); },
-                   [&](const ImportDeclNode &imp) { check_import_decl(imp); },
                    [&](const auto &) {},
                },
                decl->data);
   }
 
-  pop_scope();
+  pop_module_scope();
 }
 
 void Analyzer::collect_declaration(const Node &node) {
@@ -1425,6 +1450,7 @@ TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
           std::format("'{}' is not a package", obj_ident->name));
     return builtins.invalid_type;
   }
+  record_symbol(*node.object, *mod_sym);
   auto &mod = std::get<ModuleTypeInfo>(mod_sym->type->detail);
   std::string type_name(node.field.name);
   for (auto &exp : mod.exports) {
@@ -5915,19 +5941,6 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
   }
 
   check_method_uniqueness(info.methods, "interface", info.name, i.span, {});
-}
-
-void Analyzer::check_import_decl(const ImportDeclNode &node) {
-  // Import declarations are fully processed during the import phase (1.5).
-  // Here we just verify the module symbol was successfully resolved.
-  std::string path(node.path);
-  auto last_slash = path.rfind('/');
-  std::string name =
-      (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
-  auto sym = lookup(name);
-  if (sym && sym->type && is_invalid_type(sym->type)) {
-    // Error was already reported during resolve_import.
-  }
 }
 
 // ===========================================================================

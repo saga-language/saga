@@ -185,6 +185,13 @@ same package more than once is an error, even if bound to an alternate name.
 Only public members of a package can be accessed. Accessing a member of a
 package is done by using a selector: `io.Println()`.
 
+An import that nothing uses is an error, for the same reason an [unread
+local](#unused-variables) is: it misstates what the code depends on. Naming a
+package anywhere counts as using it, including in a type — `f os.File` needs
+`os` as surely as `os.Stdout` does. There is no ignored form: importing a
+package has no effect beyond binding the name, so an unused import can never
+be load-bearing.
+
 ## Packages/Modules
 
 A directory forms the scope and name of a package. Sub-directories are their
