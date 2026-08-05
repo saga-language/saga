@@ -171,7 +171,7 @@ void CodeGen::apply_func_abi_attrs(llvm::Function *func,
       llvm::AttrBuilder ab(context);
       ab.addStructRetAttr(r_ll);
       ab.addAlignmentAttr(
-          module->getDataLayout().getABITypeAlign(r_ll));
+          align_of(r_ll));
       func->addParamAttrs(idx, ab);
       ++idx;
     }
@@ -185,7 +185,7 @@ void CodeGen::apply_func_abi_attrs(llvm::Function *func,
         llvm::AttrBuilder ab(context);
         ab.addByValAttr(p_ll);
         ab.addAlignmentAttr(
-            module->getDataLayout().getABITypeAlign(p_ll));
+            align_of(p_ll));
         func->addParamAttrs(idx, ab);
       }
       ++idx;
@@ -288,8 +288,8 @@ void CodeGen::emit_function_body_inner(
         // Byval struct param: arg is a `ptr` to a stable caller-provided
         // copy.  Memcpy its bytes into the local alloca so subsequent
         // mutations stay local to this frame.
-        auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
-        auto al = module->getDataLayout().getABITypeAlign(ll_type);
+        auto sz = size_of(ll_type);
+        auto al = align_of(ll_type);
         builder.CreateMemCpy(alloca, al, arg, al, sz);
       } else {
         builder.CreateStore(arg, alloca);
@@ -342,8 +342,8 @@ void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
     }
     if (src && struct_ty && struct_ty->isStructTy() &&
         src->getType()->isPointerTy()) {
-      auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
-      auto al = module->getDataLayout().getABITypeAlign(struct_ty);
+      auto sz = size_of(struct_ty);
+      auto al = align_of(struct_ty);
       builder.CreateMemCpy(sret_arg, al, src, al, sz);
     } else if (tail_val && struct_ty && tail_val->getType() == struct_ty) {
       builder.CreateStore(tail_val, sret_arg);
@@ -454,14 +454,14 @@ llvm::Value *CodeGen::emit_empty_map(const TypePtr &map_sem) {
   if (map_info.key) {
     auto *key_ll = llvm_type(map_info.key);
     if (key_ll->isStructTy())
-      key_size = module->getDataLayout().getTypeAllocSize(key_ll);
+      key_size = size_of(key_ll);
     else if (key_ll->isIntegerTy(1))
       key_size = 1;
   }
   if (map_info.value) {
     auto *val_ll = llvm_type(map_info.value);
     if (val_ll->isStructTy())
-      val_size = module->getDataLayout().getTypeAllocSize(val_ll);
+      val_size = size_of(val_ll);
     else if (val_ll->isIntegerTy(1))
       val_size = 1;
   }
@@ -514,7 +514,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   if (!sem_type_ptr)
     sem_type_ptr = lookup_sem_type(**node.type);
 
-  llvm::Type *var_type = llvm_type(sem_type_ptr);
+  llvm::Type *var_type = storage_type(sem_type_ptr);
 
   if (node.init) {
     auto *val = emit_expr(**node.init);
@@ -586,8 +586,8 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
           auto *st_type = st_it->second;
           auto *alloca = create_entry_alloca(func, name, st_type);
           if (val->getType()->isPointerTy()) {
-            auto sz = module->getDataLayout().getTypeAllocSize(st_type);
-            auto al = module->getDataLayout().getABITypeAlign(st_type);
+            auto sz = size_of(st_type);
+            auto al = align_of(st_type);
             builder.CreateMemCpy(alloca, al, val, al, sz);
           } else if (val->getType() == st_type) {
             builder.CreateStore(val, alloca);
@@ -706,8 +706,8 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
           auto *st_type = st_it->second;
           auto *alloca = create_entry_alloca(func, name, st_type);
           if (val->getType()->isPointerTy()) {
-            auto sz = module->getDataLayout().getTypeAllocSize(st_type);
-            auto al = module->getDataLayout().getABITypeAlign(st_type);
+            auto sz = size_of(st_type);
+            auto al = align_of(st_type);
             builder.CreateMemCpy(alloca, al, val, al, sz);
           } else if (val->getType() == st_type) {
             builder.CreateStore(val, alloca);
@@ -744,8 +744,8 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       auto *union_st = get_union_llvm_type(val_sem);
       if (union_st) {
         auto *alloca = create_entry_alloca(func, name, union_st);
-        auto sz = module->getDataLayout().getTypeAllocSize(union_st);
-        auto al = module->getDataLayout().getABITypeAlign(union_st);
+        auto sz = size_of(union_st);
+        auto al = align_of(union_st);
         builder.CreateMemCpy(alloca, al, val, al, sz);
         locals[name] = alloca;
         track_managed(alloca, val_sem);
@@ -830,10 +830,9 @@ void CodeGen::emit_assign(const AssignNode &node) {
           if (auto *wrapped = emit_union_wrap(rhs, val_sem, target_sem);
               wrapped && wrapped->getType()->isPointerTy()) {
             auto *ut = alloca->getAllocatedType();
-            auto &dl = module->getDataLayout();
-            auto al = dl.getABITypeAlign(ut);
+                    auto al = align_of(ut);
             builder.CreateMemCpy(alloca, al, wrapped, al,
-                                 dl.getTypeAllocSize(ut));
+                                 size_of(ut));
             continue;
           }
         }
@@ -960,8 +959,8 @@ void CodeGen::emit_return(const ReturnNode &node) {
         src = as_union_ptr(val, semantic_type(*node.value), union_sem);
       if (src && struct_ty) {
         if (src->getType()->isPointerTy()) {
-          auto sz = module->getDataLayout().getTypeAllocSize(struct_ty);
-          auto al = module->getDataLayout().getABITypeAlign(struct_ty);
+          auto sz = size_of(struct_ty);
+          auto al = align_of(struct_ty);
           builder.CreateMemCpy(sret_arg, al, src, al, sz);
         } else if (src->getType() == struct_ty) {
           builder.CreateStore(src, sret_arg);

@@ -216,7 +216,7 @@ CodeGen::forward_declare_method(const std::string &link_name,
   if (sret_ty) {
     llvm::AttrBuilder ab(context);
     ab.addStructRetAttr(sret_ty);
-    ab.addAlignmentAttr(module->getDataLayout().getABITypeAlign(sret_ty));
+    ab.addAlignmentAttr(align_of(sret_ty));
     func->addParamAttrs(aidx++, ab);
   }
   ++aidx; // self
@@ -225,7 +225,7 @@ CodeGen::forward_declare_method(const std::string &link_name,
       llvm::AttrBuilder ab(context);
       ab.addByValAttr(byval_attached[pi]);
       ab.addAlignmentAttr(
-          module->getDataLayout().getABITypeAlign(byval_attached[pi]));
+          align_of(byval_attached[pi]));
       func->addParamAttrs(aidx, ab);
     }
     ++aidx;

@@ -144,7 +144,7 @@ llvm::Constant *CodeGen::get_or_emit_key_ops(const TypePtr &key_type) {
           llvm::Attribute::getWithByValType(context, struct_ty));
       raw->addParamAttr(1,
           llvm::Attribute::getWithAlignment(context,
-              module->getDataLayout().getABITypeAlign(struct_ty)));
+              align_of(struct_ty)));
     }
     llvm::Value *as_i32;
     if (raw->getType()->isIntegerTy(1))
@@ -259,7 +259,7 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
     llvm::AttrBuilder ab(context);
     ab.addStructRetAttr(sret_struct_ty);
     ab.addAlignmentAttr(
-        module->getDataLayout().getABITypeAlign(sret_struct_ty));
+        align_of(sret_struct_ty));
     func->addParamAttrs(idx++, ab);
   }
   for (size_t i = 0; i < fi.params.size(); ++i) {
@@ -267,7 +267,7 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
       llvm::AttrBuilder ab(context);
       ab.addByValAttr(byval_attached[i]);
       ab.addAlignmentAttr(
-          module->getDataLayout().getABITypeAlign(byval_attached[i]));
+          align_of(byval_attached[i]));
       func->addParamAttrs(idx, ab);
     }
     ++idx;
@@ -349,6 +349,46 @@ std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
 // (an alloca of void) with none of the context that would explain it.
 [[noreturn]] static void ice_unlowerable_type(const std::string &desc) {
   internal_error(desc + " reached code generation");
+}
+
+// LLVM void is a legal return type and nothing else; an incomplete struct is
+// not storable either. Asking DataLayout for the size or alignment of one, or
+// allocating it, faults inside LLVM with a backtrace naming neither the type
+// nor the caller — which is how one bug ("Invalid becomes void becomes an
+// alloca") arrived four separate times wearing four different hats. Ask here
+// instead, where both are still known.
+[[noreturn]] static void ice_unsized(llvm::Type *ll, std::string_view op) {
+  std::string printed = "<null>";
+  if (ll) {
+    printed.clear();
+    llvm::raw_string_ostream os(printed);
+    ll->print(os);
+  }
+  internal_error(std::string(op) + " '" + printed +
+                 "', which has no size: only a return type may be void, and a "
+                 "struct must be complete before it can be stored");
+}
+
+uint64_t CodeGen::size_of(llvm::Type *ll) {
+  if (!ll || !ll->isSized())
+    ice_unsized(ll, "taking the size of");
+  return module->getDataLayout().getTypeAllocSize(ll);
+}
+
+llvm::Align CodeGen::align_of(llvm::Type *ll) {
+  if (!ll || !ll->isSized())
+    ice_unsized(ll, "taking the alignment of");
+  return module->getDataLayout().getABITypeAlign(ll);
+}
+
+// The semantic-type front door to the same question, kept separate from
+// llvm_type because a void *return* is ordinary and must stay cheap to ask for.
+llvm::Type *CodeGen::storage_type(const TypePtr &t) {
+  auto *ll = llvm_type(t);
+  if (!ll->isSized())
+    internal_error("'" + type_to_string(t) +
+                   "' needs storage but has no size; it is not a value");
+  return ll;
 }
 
 void CodeGen::verify_function(llvm::Function &func) {
@@ -447,9 +487,14 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   }
 }
 
+// The only CreateAlloca in the codebase, and so the one place every request for
+// stack storage passes through.
 llvm::AllocaInst *CodeGen::create_entry_alloca(llvm::Function *fn,
                                                 const std::string &name,
                                                 llvm::Type *type) {
+  if (!type || !type->isSized())
+    ice_unsized(type, "allocating storage for");
+
   llvm::IRBuilder<> tmp_builder(&fn->getEntryBlock(),
                                 fn->getEntryBlock().begin());
   return tmp_builder.CreateAlloca(type, nullptr, name);
@@ -461,10 +506,9 @@ llvm::AllocaInst *CodeGen::bind_value_slot(llvm::Function *fn,
                                            llvm::Type *slot_type) {
   auto *slot = create_entry_alloca(fn, name, slot_type);
   if (slot_type->isStructTy()) {
-    auto &dl = module->getDataLayout();
-    auto align = dl.getABITypeAlign(slot_type);
+    auto align = align_of(slot_type);
     builder.CreateMemCpy(slot, align, arg, align,
-                         dl.getTypeAllocSize(slot_type));
+                         size_of(slot_type));
   } else {
     builder.CreateStore(arg, slot);
   }

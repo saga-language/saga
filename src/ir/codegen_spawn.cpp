@@ -44,7 +44,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   if (!closure_field_types.empty()) {
     closure_st = llvm::StructType::create(context, closure_field_types,
                                            spawn_name + ".closure");
-    closure_size = module->getDataLayout().getTypeAllocSize(closure_st);
+    closure_size = size_of(closure_st);
   }
 
   // ── Build the outlined function: void(saga_runtime_actor*) ───────────────────
@@ -178,9 +178,9 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
     TypePtr chan_elem_sem = spawn_channel_elem_type_of(parent);
     if (!chan_elem_sem)
       chan_elem_sem = lookup_sem_type(*node.generic->type_params[0]);
-    auto *chan_elem_ll = llvm_type(chan_elem_sem);
+    auto *chan_elem_ll = storage_type(chan_elem_sem);
     channel_elem_size = static_cast<int64_t>(
-        module->getDataLayout().getTypeAllocSize(chan_elem_ll));
+        size_of(chan_elem_ll));
 
     auto *ch = builder.CreateCall(
         module->getFunction("saga_channel_new"),
