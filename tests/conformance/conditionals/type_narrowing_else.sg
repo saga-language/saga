@@ -1,0 +1,31 @@
+// Spec: `if v is Type` narrows v in the else branch too, to the union minus
+// the type tested for. Every branch below is the one the test rules out, so a
+// narrowing that only reaches the then-block prints garbage rather than failing.
+import "std/io"
+
+fn pick(k int) int | string {
+  if k == 0 { return 7 }
+  "hello"
+}
+
+fn tri(k int) int | string | bool {
+  if k == 0 { return 7 }
+  if k == 1 { return "hi" }
+  true
+}
+
+pub fn Main() void {
+  a := pick(1)
+  if a is int { io.Println("int") } else { io.Println("[{a}]") }
+
+  c := pick(0)
+  if c is string { io.Println("str") } else { io.Println("{c}") }
+
+  // Three alternatives: what survives is a narrower union, not a bare type.
+  t := tri(1)
+  if t is int {
+    io.Println("tri int")
+  } else {
+    if t is string { io.Println("tri str [{t}]") } else { io.Println("tri bool") }
+  }
+}
