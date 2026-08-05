@@ -389,6 +389,14 @@ Token Lexer::scan_string(const char c) {
       return accept(Token::Kind::Invalid);
     }
 
+    // Left unconsumed so the main scan loop still registers the line break;
+    // swallowing it here would shift every later line number in the file.
+    if (peek() == '\n') {
+      error_list.report_error(file->position_at(reading_offset),
+                              "Unterminated string; \"\"\" spans lines.");
+      return accept(Token::Kind::Invalid);
+    }
+
     if (peek() == '\\') {
       next(); // consume the backslash
       next(); // skip whatever follows — don't interpret it

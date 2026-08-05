@@ -90,6 +90,8 @@ private:
   bool is_at_end() const;
 
   /// Report an error at the current token's position.
+  void take_lexer_errors();
+
   void error(const std::string &message);
 
   /// Report an error at an arbitrary span.

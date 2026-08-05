@@ -360,6 +360,16 @@ constexpr bool is_assign_op(Token::Kind kind) {
 // Token Helpers
 // ============================================================================
 
+// The lexer keeps its own diagnostics and nothing else reads them, so they are
+// moved across as each token is committed. Draining here rather than at scan
+// time is what keeps one report per token: peek() rewinds the lexer and the
+// same text is scanned again.
+void Parser::take_lexer_errors() {
+  for (auto &e : lexer.error_list.errors)
+    errors.report_error(e.p, std::move(e.message));
+  lexer.error_list.errors.clear();
+}
+
 // Consume the current token, store it in `previous`, then scan forward past
 // any comment tokens (comments carry no semantic meaning and are invisible to
 // all parsing logic above this point). Returns the token that was consumed.
@@ -374,6 +384,7 @@ Token Parser::advance() {
     current = lexer.scan();
   }
 
+  take_lexer_errors();
   return previous;
 }
 
@@ -383,7 +394,7 @@ Token Parser::peek() const {
   auto saved_offset = lexer.offset;
   auto saved_reading_offset = lexer.reading_offset;
   auto saved_state = lexer.state;
-  auto saved_current = current;
+  auto saved_errors = lexer.error_list.errors.size();
 
   // Scan the next token (const_cast needed because scan mutates the lexer).
   auto &mutable_lexer = const_cast<Lexer &>(lexer);
@@ -395,6 +406,7 @@ Token Parser::peek() const {
   mutable_lexer.offset = saved_offset;
   mutable_lexer.reading_offset = saved_reading_offset;
   mutable_lexer.state = saved_state;
+  mutable_lexer.error_list.errors.resize(saved_errors);
 
   return next;
 }

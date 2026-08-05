@@ -1,0 +1,9 @@
+// A `"` string is the single-line form. Letting one run past its line would
+// make `"""` mean nothing, and the line break went unrecorded, so every error
+// reported after it pointed at the wrong line.
+import "std/io"
+
+pub fn Main() void {
+  io.Println("alpha
+beta")
+}
