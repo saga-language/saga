@@ -1,5 +1,6 @@
-// Spec: \n, \t, \\, \" escapes work in string literals.
-// (docs/language.md:684-685)
+// Spec: \n, \r, \t, \\, \", \{ and \} escapes work in string literals. An
+// escape the language does not define keeps its backslash.
+// (docs/grammar.md — EscapeSequence)
 import "std/io"
 
 pub fn Main() void {
@@ -7,4 +8,6 @@ pub fn Main() void {
   io.Println("a\nb")
   io.Println("c\\d")
   io.Println("e\"f")
+  io.Println("g\{h\}i")
+  io.Println("j\qk")
 }

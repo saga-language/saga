@@ -79,9 +79,13 @@ TEST(Ast, Unescape_EscapedBraceIsContent) {
 
 TEST(Ast, Unescape_EscapeSequences) {
   ASSERT_EQ(inline_form(R"("a\nb")"), "a\nb");
+  ASSERT_EQ(inline_form(R"("a\rb")"), "a\rb");
   ASSERT_EQ(inline_form(R"("a\tb")"), "a\tb");
   ASSERT_EQ(inline_form(R"("a\\b")"), "a\\b");
   ASSERT_EQ(inline_form(R"("a\"b")"), "a\"b");
+  ASSERT_EQ(inline_form(R"("a\}b")"), "a}b");
+  // An unknown escape keeps its backslash rather than quietly losing it.
+  ASSERT_EQ(inline_form(R"("a\qb")"), "a\\qb");
 }
 
 } // namespace saga

@@ -75,10 +75,12 @@ static size_t margin_width(std::string_view line, size_t margin) {
 static void append_escape(std::string &out, char escaped) {
   switch (escaped) {
   case 'n':  out += '\n'; break;
+  case 'r':  out += '\r'; break;
   case 't':  out += '\t'; break;
   case '\\': out += '\\'; break;
   case '"':  out += '"';  break;
   case '{':  out += '{';  break;
+  case '}':  out += '}';  break;
   default:   out += '\\'; out += escaped; break;
   }
 }
