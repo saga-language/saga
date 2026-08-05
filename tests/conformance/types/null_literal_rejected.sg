@@ -1,0 +1,9 @@
+// `null` was the single value of `void`. Both are gone from the value channel,
+// and the word keeps no reserved meaning — so it reaches the ordinary
+// undefined-name error rather than a bespoke one about a removed keyword.
+import "std/io"
+
+pub fn Main() void {
+  x := null
+  io.Println("{x}")
+}

@@ -46,6 +46,11 @@ void BuiltinTypes::init() {
     std::get<StructTypeInfo>(t->detail).is_error = true;
     return t;
   };
+  // Null is a plain field-less struct: no new type kind, no inhabitant to
+  // dereference. Its meaning is its identity, which is exactly what a JSON
+  // null is. Not an error, so `or` walks past it.
+  null_type = make_struct_type("Null", /*fields=*/{});
+
   error_base = make_error_struct("error");
   missing_type = make_error_struct("Missing");
   trapped_type = make_error_struct("Trapped");
@@ -169,6 +174,7 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   reg_type("Iterable", types.iterable_iface);
 
   // -- Internal structs ----------------------------------------------------
+  reg_type("Null", types.null_type);
   reg_type("Missing", types.missing_type);
   reg_type("Task", types.task_type);
   reg_type("Context", types.context_type);

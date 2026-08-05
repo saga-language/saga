@@ -468,35 +468,58 @@ Rules:
 - **Zero value is the leftmost alternative.** `string | int` zeroes to `""`,
   `int | string` to `0`; an unset union reads as its leftmost type.
 
-### Optional values (`T | void`)
+### Optional values (`T | Null`)
 
 `void` is the absence of a value, so nothing can hold one. It is legal in
-exactly two positions: as a function's return type, and as a union alternative.
-A variable, parameter, constant, struct field, or collection element typed
-`void` — directly or through an `array{void}` / `map{K: void}` — is an error,
-and so is binding a type parameter to it. An [ignored](#Identifiers) name is no
-exception: it still declares storage, so `_ := f()` on a void `f` is an error
-rather than a way to discard the call. Calling `f()` as a statement is the way
-to do that.
+exactly one position: as a function's return type. A variable, parameter,
+constant, struct field, collection element, union alternative, or spawn channel
+typed `void` — directly or through an `array{void}` / `map{K: void}` — is an
+error, and so is binding a type parameter to it. An [ignored](#Identifiers) name
+is no exception: it still declares storage, so `_ := f()` on a void `f` is an
+error rather than a way to discard the call. Calling `f()` as a statement is the
+way to do that.
 
-A `T | void` union is an optional: the value, or its absence. Its main use is
-over-the-wire data (a JSON `null`); in Saga-only code an error union is usually
-preferable, since it carries context. Narrow with `is` (`or` does not apply —
-`void` is not an error).
+`Null` is the other nothing, and the useful one: a value that *is* there and
+carries no information — what JSON and SQL mean by null. It is an ordinary
+field-less struct, so it needs no braces (`Null` and `Null{}` are the same
+value), `is` narrows it, and it costs nothing in a union.
+
+A `T | Null` union is an optional: the value, or a value saying there is none.
+Its main use is over-the-wire data; in Saga-only code an error union is usually
+preferable, since it carries context.
 
 ```
-fn lookup(key string) int | void {
+fn lookup(key string) int | Null {
   // ... return an int, or:
-  return null
+  return Null
 }
 
 x := lookup("a")
 if x is int {
   // present
 } else {
-  // x is void — absent
+  // x is Null — absent
 }
 ```
+
+`Null` and `Missing` are both empty; what separates them is the channel. `Missing`
+is an error, so `or` catches it. `Null` is a value, so `or` walks past it and the
+caller still has to say what it means — which is the point when a `null` in the
+data and a missing key mean different things.
+
+```
+fn lookup(key string) int | Null | error { /* ... */ }
+
+v := lookup(key) or { -1 }   // -1 only when the lookup failed
+if v is Null {
+  // the data said null
+}
+```
+
+Saga is a language where the word is safe to reclaim: what made `null` dangerous
+elsewhere was welding indirection to optionality, and Saga has no such weld.
+`Null` can only ever mean "a value which is null" — nothing to dereference,
+nothing to panic on.
 
 ### Error unions
 
@@ -536,8 +559,8 @@ data := parse(raw) or |err| {
 }
 ```
 
-**Ordering convention.** Write a union as `T... | void | error` — the value
-types first, then an optional `void`, then the error. This is only a convention:
+**Ordering convention.** Write a union as `T... | Null | error` — the value
+types first, then an optional `Null`, then the error. This is only a convention:
 errors are nominal and carry no positional requirement, so any order is legal.
 
 ### Generics
@@ -747,7 +770,7 @@ is assigned a zero value by the compiler.
 | float | 0.0 | 3.14, 0.4e-10 |
 | int | 0 | 42, 0b1010, 0o775, 0x1f |
 | string | "" | "single-line", """multi-line""", "{expr}" |
-| void | | |
+| void | | *(no values — a return type only)* |
 | array{T} | [] | [1, 2, 3] |
 | map{K:V} | {} | {"key": 42} |
 

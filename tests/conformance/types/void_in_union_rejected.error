@@ -1,0 +1,1 @@
+a type union may only contain values; 'void' is the absence of a value — use 'Null' for a value that carries nothing

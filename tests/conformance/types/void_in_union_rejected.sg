@@ -1,0 +1,13 @@
+// A union is a set of values, and `void` is the absence of one. The shape that
+// reaches for this slot is a value carrying no information, which is a
+// different thing and has its own name.
+import "std/io"
+
+fn maybe(ok bool) int | void {
+  if ok { return 7 }
+  Null
+}
+
+pub fn Main() void {
+  io.Println("{maybe(true)}")
+}

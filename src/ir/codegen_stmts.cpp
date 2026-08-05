@@ -516,11 +516,6 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
   llvm::Type *var_type = llvm_type(sem_type_ptr);
 
-  // A `void` variable holds only `null` (no data), but native LLVM void is
-  // unstorable — give it a 1-byte slot matching emit_null_literal's placeholder.
-  if (var_type->isVoidTy())
-    var_type = llvm::Type::getInt8Ty(context);
-
   if (node.init) {
     auto *val = emit_expr(**node.init);
     // Interface boxing: declared type is interface, init is a concrete struct.

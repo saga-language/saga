@@ -1,0 +1,22 @@
+// `Null` and `Missing` are both empty; what separates them is the channel.
+// `Missing` is an error, so `or` catches it. `Null` is a value, so `or` walks
+// past it and the caller still has to say what it means.
+import "std/io"
+
+fn lookup(key string) int | Null | error {
+  if key == "found" { return 1 }
+  if key == "explicitly-null" { return Null }
+  Missing{message: "no such key"}
+}
+
+fn show(v int | Null) string {
+  if v is Null { return "null" }
+  if v is int { return v.String() }
+  "?"
+}
+
+pub fn Main() void {
+  io.Println(show(lookup("found") or { -1 }))
+  io.Println(show(lookup("explicitly-null") or { -1 }))
+  io.Println(show(lookup("absent") or { -1 }))
+}

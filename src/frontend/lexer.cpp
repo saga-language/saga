@@ -37,7 +37,6 @@ inline static const std::unordered_map<std::string_view, Token::Kind> keywords =
      {"is", Token::Kind::Is},
      {"map", Token::Kind::Map},
      {"next", Token::Kind::Next},
-     {"null", Token::Kind::Null},
      {"or", Token::Kind::Or},
      {"pub", Token::Kind::Pub},
      {"return", Token::Kind::Return},

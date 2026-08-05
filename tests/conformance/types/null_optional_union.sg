@@ -1,12 +1,13 @@
-// `void` is assignable and holds one value, `null`; a `T | void` union models an
-// optional. `null` takes the void slot, and `is` narrowing recovers which it is.
+// `Null` is a value that carries no information — what JSON and SQL mean by
+// null — so `T | Null` models an optional. It is an ordinary field-less struct,
+// so it needs no braces and `is` narrowing recovers which alternative is held.
 import "std/io"
 
-fn lookup(present bool) int | void {
+fn lookup(present bool) int | Null {
   if present {
     return 42
   }
-  return null
+  return Null
 }
 
 pub fn Main() void {
@@ -14,7 +15,7 @@ pub fn Main() void {
   if a is int {
     io.Println("a present")
   }
-  if a is void {
+  if a is Null {
     io.Println("a missing")
   }
 
@@ -22,7 +23,7 @@ pub fn Main() void {
   if b is int {
     io.Println("b present")
   }
-  if b is void {
+  if b is Null {
     io.Println("b missing")
   }
 }

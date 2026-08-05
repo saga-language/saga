@@ -527,7 +527,6 @@ private:
   llvm::Value *emit_int_literal(const IntegerLiteralNode &node);
   llvm::Value *emit_float_literal(const FloatLiteralNode &node);
   llvm::Value *emit_bool_literal(const BoolLiteralNode &node);
-  llvm::Value *emit_null_literal(const NullLiteralNode &node);
   llvm::Value *emit_enum_shorthand(const EnumShorthandNode &node,
                                    const Node &outer);
   llvm::Value *emit_string_literal(const StringLiteralNode &node);

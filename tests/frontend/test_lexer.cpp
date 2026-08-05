@@ -1095,15 +1095,15 @@ TEST(Lexer, Scan_TrueKeyword) {
   ASSERT_EQ(t.offset, 0);
 }
 
-// Type keywords plus `is` / `null` / `type`, added in the syntax flip. Covered
-// in one table-driven case since each scans identically.
+// Type keywords plus `is` / `type`, added in the syntax flip. Covered in one
+// table-driven case since each scans identically.
 TEST(Lexer, Scan_TypeAndNewKeywords) {
   struct Case {
     const char *source;
     Token::Kind kind;
   };
   const Case cases[] = {
-      {"is", Token::Kind::Is},         {"null", Token::Kind::Null},
+      {"is", Token::Kind::Is},
       {"type", Token::Kind::Type},     {"array", Token::Kind::Array},
       {"bool", Token::Kind::Bool},     {"byte", Token::Kind::Byte},
       {"error", Token::Kind::Error},   {"float", Token::Kind::Float},
@@ -1128,6 +1128,20 @@ TEST(Lexer, Scan_TypeAndNewKeywords) {
     ASSERT_EQ(t.literal, c.source);
     ASSERT_EQ(t.offset, 0);
   }
+}
+
+// `null` was the value of `void`; both are gone from the value channel, and a
+// value carrying nothing is now the built-in `Null` shape. The word keeps no
+// reserved meaning, so it scans as a plain identifier and a use of it reaches
+// the ordinary undefined-name error.
+TEST(Lexer, Scan_NullIsNoLongerAKeyword) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "null");
+  l.init(f.get());
+  auto t = l.scan();
+
+  ASSERT_EQ(t.kind, Token::Kind::Identifier);
+  ASSERT_EQ(t.literal, "null");
 }
 
 // Multi-token tests

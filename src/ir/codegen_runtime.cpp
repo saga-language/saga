@@ -611,8 +611,6 @@ uint64_t CodeGen::union_payload_size(const TypePtr &union_sem) {
     // Ask before lowering: llvm_type of a self-referential struct comes back
     // here for its own union field, and the pointer is what breaks the cycle.
     auto *ll = union_alt_is_boxed(alt) ? ptr_rep : llvm_type(alt);
-    if (ll->isVoidTy())
-      continue;
     uint64_t sz = dl.getTypeAllocSize(ll);
     if (sz > max_size)
       max_size = sz;
@@ -676,22 +674,20 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
   // struct copy its bytes rather than storing the pointer — `emit_union_extract`
   // loads the struct by value.  Scalars, strings, arrays, and boxed errors are
   // value- or pointer-represented and round-trip through a plain store.
-  if (!val->getType()->isVoidTy()) {
-    auto *payload_gep = builder.CreateStructGEP(union_st, alloca, 1,
-                                                 "union.payload");
-    auto *cast = builder.CreateBitOrPointerCast(
-        payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
-    auto *ll_alt = llvm_type(val_type);
-    if (union_alt_is_boxed(val_type))
-      builder.CreateStore(emit_box_copy(val, ll_alt), cast);
-    else if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
-      auto &dl = module->getDataLayout();
-      builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
-                           dl.getABITypeAlign(ll_alt),
-                           dl.getTypeAllocSize(ll_alt));
-    } else {
-      builder.CreateStore(val, cast);
-    }
+  auto *payload_gep = builder.CreateStructGEP(union_st, alloca, 1,
+                                               "union.payload");
+  auto *cast = builder.CreateBitOrPointerCast(
+      payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
+  auto *ll_alt = llvm_type(val_type);
+  if (union_alt_is_boxed(val_type)) {
+    builder.CreateStore(emit_box_copy(val, ll_alt), cast);
+  } else if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
+    auto &dl = module->getDataLayout();
+    builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
+                         dl.getABITypeAlign(ll_alt),
+                         dl.getTypeAllocSize(ll_alt));
+  } else {
+    builder.CreateStore(val, cast);
   }
 
   return alloca;
@@ -708,8 +704,6 @@ llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
     return nullptr;
 
   auto *ll_alt = llvm_type(alt_type);
-  if (ll_alt->isVoidTy())
-    return nullptr;
 
   auto *payload_gep = builder.CreateStructGEP(union_st, union_ptr, 1,
                                                "union.payload");
