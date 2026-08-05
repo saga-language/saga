@@ -297,11 +297,10 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
                 auto *struct_ll = llvm_type(arg_sem);
                 auto *tmp = create_entry_alloca(parent_fn, "box.tmp",
                                                 struct_ll);
-                auto &dl = module->getDataLayout();
-                builder.CreateMemCpy(
-                    tmp, dl.getABITypeAlign(struct_ll),
-                    val, dl.getABITypeAlign(struct_ll),
-                    dl.getTypeAllocSize(struct_ll));
+                            builder.CreateMemCpy(
+                    tmp, align_of(struct_ll),
+                    val, align_of(struct_ll),
+                    size_of(struct_ll));
                 val = tmp;
               } else {
                 auto *tmp = create_entry_alloca(parent_fn, "box.tmp",
@@ -545,8 +544,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
             auto *tmp = create_entry_alloca(func, "exit.tmp",
                                              val->getType());
             builder.CreateStore(val, tmp);
-            auto &dl = module->getDataLayout();
-            uint64_t sz = dl.getTypeAllocSize(val->getType());
+                    uint64_t sz = size_of(val->getType());
             builder.CreateCall(
                 module->getFunction("saga_context_exit"),
                 {obj, tmp,
@@ -1004,7 +1002,7 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
         llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
     call->addParamAttr(idx,
         llvm::Attribute::getWithAlignment(context,
-            module->getDataLayout().getABITypeAlign(sret_struct_ty)));
+            align_of(sret_struct_ty)));
     ++idx;
   }
   for (size_t i = 0; i < fn_info.params.size(); ++i) {
@@ -1017,7 +1015,7 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
             llvm::Attribute::getWithByValType(context, p_ll));
         call->addParamAttr(idx,
             llvm::Attribute::getWithAlignment(context,
-                module->getDataLayout().getABITypeAlign(p_ll)));
+                align_of(p_ll)));
       }
     }
     ++idx;
@@ -1083,13 +1081,12 @@ llvm::Value *CodeGen::emit_receiver_call(
   std::string call_name = callee->getReturnType()->isVoidTy() ? "" : "mcall";
   auto *call = builder.CreateCall(callee, args, call_name);
 
-  auto &dl = module->getDataLayout();
   unsigned cidx = 0;
   if (sret_slot) {
     call->addParamAttr(cidx,
         llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
     call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
-                                 context, dl.getABITypeAlign(sret_struct_ty)));
+                                 context, align_of(sret_struct_ty)));
     ++cidx;
   }
   ++cidx; // self
@@ -1099,7 +1096,7 @@ llvm::Value *CodeGen::emit_receiver_call(
         call->addParamAttr(
             cidx, llvm::Attribute::getWithByValType(context, p_ll));
         call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
-                                     context, dl.getABITypeAlign(p_ll)));
+                                     context, align_of(p_ll)));
       }
 
   if (sret_slot)

@@ -30,7 +30,7 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
     if (first_sem) {
       elem_ll_type = llvm_type(first_sem);
       if (elem_ll_type->isStructTy())
-        elem_size = module->getDataLayout().getTypeAllocSize(elem_ll_type);
+        elem_size = size_of(elem_ll_type);
       else if (elem_ll_type->isIntegerTy(1))
         elem_size = 1;
       else
@@ -97,7 +97,7 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     if (key_sem) {
       key_ll_type = llvm_type(key_sem);
       if (key_ll_type->isStructTy())
-        key_size = module->getDataLayout().getTypeAllocSize(key_ll_type);
+        key_size = size_of(key_ll_type);
       else if (key_ll_type->isIntegerTy(1))
         key_size = 1;
       else
@@ -106,7 +106,7 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
     if (val_sem) {
       val_ll_type = llvm_type(val_sem);
       if (val_ll_type->isStructTy())
-        val_size = module->getDataLayout().getTypeAllocSize(val_ll_type);
+        val_size = size_of(val_ll_type);
       else if (val_ll_type->isIntegerTy(1))
         val_size = 1;
       else
@@ -206,7 +206,7 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
   // type_id in field 0; other structs get a zero-initialised stack alloca.
   llvm::Value *storage = nullptr;
   if (info.is_error) {
-    uint64_t size = module->getDataLayout().getTypeAllocSize(st);
+    uint64_t size = size_of(st);
     storage = builder.CreateCall(
         module->getFunction("saga_error_alloc"),
         {llvm::ConstantInt::get(i64_type, size)}, info.name + ".box");
@@ -352,9 +352,8 @@ void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
   // struct (e.g. from a nested struct literal), memcpy the bytes rather than
   // storing the pointer into the struct slot.
   if (field_ll && field_ll->isStructTy() && val->getType()->isPointerTy()) {
-    auto &dl = module->getDataLayout();
-    uint64_t sz = dl.getTypeAllocSize(field_ll);
-    llvm::Align al = dl.getABITypeAlign(field_ll);
+    uint64_t sz = size_of(field_ll);
+    llvm::Align al = align_of(field_ll);
     builder.CreateMemCpy(gep, al, val, al, sz);
   } else {
     builder.CreateStore(val, gep);

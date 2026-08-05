@@ -605,13 +605,12 @@ uint64_t CodeGen::union_payload_size(const TypePtr &union_sem) {
     return 8;
   auto &info = std::get<UnionTypeInfo>(union_sem->detail);
   uint64_t max_size = 0;
-  auto &dl = module->getDataLayout();
   auto *ptr_rep = llvm::PointerType::getUnqual(context);
   for (auto &alt : info.alternatives) {
     // Ask before lowering: llvm_type of a self-referential struct comes back
     // here for its own union field, and the pointer is what breaks the cycle.
     auto *ll = union_alt_is_boxed(alt) ? ptr_rep : llvm_type(alt);
-    uint64_t sz = dl.getTypeAllocSize(ll);
+    uint64_t sz = size_of(ll);
     if (sz > max_size)
       max_size = sz;
   }
@@ -682,10 +681,9 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
   if (union_alt_is_boxed(val_type)) {
     builder.CreateStore(emit_box_copy(val, ll_alt), cast);
   } else if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
-    auto &dl = module->getDataLayout();
-    builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
-                         dl.getABITypeAlign(ll_alt),
-                         dl.getTypeAllocSize(ll_alt));
+    builder.CreateMemCpy(cast, align_of(ll_alt), val,
+                         align_of(ll_alt),
+                         size_of(ll_alt));
   } else {
     builder.CreateStore(val, cast);
   }
@@ -718,14 +716,13 @@ llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
 }
 
 llvm::Value *CodeGen::emit_box_copy(llvm::Value *val, llvm::Type *ll_alt) {
-  auto &dl = module->getDataLayout();
-  uint64_t size = dl.getTypeAllocSize(ll_alt);
+  uint64_t size = size_of(ll_alt);
   auto *box = builder.CreateCall(
       module->getFunction("saga_box_alloc"),
       {llvm::ConstantInt::get(i64_type, size)}, "union.box");
   if (val->getType()->isPointerTy())
-    builder.CreateMemCpy(box, dl.getABITypeAlign(ll_alt), val,
-                         dl.getABITypeAlign(ll_alt), size);
+    builder.CreateMemCpy(box, align_of(ll_alt), val,
+                         align_of(ll_alt), size);
   else
     builder.CreateStore(val, box);
   return box;

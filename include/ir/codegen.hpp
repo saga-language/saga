@@ -751,6 +751,17 @@ private:
 
   // ── Type query helpers ───────────────────────────────────────────────
 
+  /// Size and alignment, refusing a type that has neither. Every storage
+  /// decision in codegen goes through these two and create_entry_alloca, so an
+  /// unsized type reaching storage is caught once rather than faulting inside
+  /// DataLayout with nothing to name.
+  uint64_t size_of(llvm::Type *ll);
+  llvm::Align align_of(llvm::Type *ll);
+
+  /// The LLVM type for a value that needs storage. Separate from llvm_type
+  /// because a `void` return is ordinary; a `void` variable is not.
+  llvm::Type *storage_type(const TypePtr &t);
+
   /// Look up the semantic type of an AST node (recorded by the analyzer).
   TypePtr semantic_type(const Node &node) const;
 

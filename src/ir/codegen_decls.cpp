@@ -364,7 +364,7 @@ llvm::Constant *CodeGen::build_const_array_global(
 
   int64_t n = static_cast<int64_t>(elems.size());
   int64_t elem_size =
-      static_cast<int64_t>(module->getDataLayout().getTypeAllocSize(elem_ll));
+      static_cast<int64_t>(size_of(elem_ll));
   auto *hdr = llvm::ConstantStruct::get(
       array_type, {buf_global, llvm::ConstantInt::get(i64_type, n),
                    llvm::ConstantInt::get(i64_type, n),
@@ -537,7 +537,7 @@ void CodeGen::apply_method_abi_attrs(llvm::Function *func,
     llvm::AttrBuilder ab(context);
     ab.addStructRetAttr(sig.sret_struct_ty);
     ab.addAlignmentAttr(
-        module->getDataLayout().getABITypeAlign(sig.sret_struct_ty));
+        align_of(sig.sret_struct_ty));
     func->addParamAttrs(idx++, ab);
   }
   ++idx; // self
@@ -545,7 +545,7 @@ void CodeGen::apply_method_abi_attrs(llvm::Function *func,
     if (bv) {
       llvm::AttrBuilder ab(context);
       ab.addByValAttr(bv);
-      ab.addAlignmentAttr(module->getDataLayout().getABITypeAlign(bv));
+      ab.addAlignmentAttr(align_of(bv));
       func->addParamAttrs(idx, ab);
     }
     ++idx;

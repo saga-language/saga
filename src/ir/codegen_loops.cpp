@@ -42,7 +42,7 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
   if (node.accumulator) {
     // A for-expression in statement position has no accumulator slot to fill.
     if (for_sem && for_sem->kind != TypeKind::Void) {
-      acc_ll = llvm_type(for_sem);
+      acc_ll = storage_type(for_sem);
       std::string acc_name(node.accumulator->name);
       acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
       builder.CreateStore(llvm::Constant::getNullValue(acc_ll), acc_alloca);
@@ -274,8 +274,8 @@ void CodeGen::emit_for_range_array(const ForExprNode &node,
     builder.CreateStore(body_idx, key_alloca);
   if (val_alloca) {
     if (struct_elem) {
-      auto sz = module->getDataLayout().getTypeAllocSize(elem_ll);
-      auto al = module->getDataLayout().getABITypeAlign(elem_ll);
+      auto sz = size_of(elem_ll);
+      auto al = align_of(elem_ll);
       builder.CreateMemCpy(val_alloca, al, elem_ptr, al, sz);
     } else {
       auto *elem_val = builder.CreateLoad(elem_ll, elem_ptr, "elem");
@@ -347,8 +347,8 @@ void CodeGen::emit_for_range_map(const ForExprNode &node,
     auto *ptr = builder.CreateCall(fn, {iterable, body_idx},
                                    std::string(vname) + ".ptr");
     if (ll->isStructTy()) {
-      auto sz = module->getDataLayout().getTypeAllocSize(ll);
-      auto al = module->getDataLayout().getABITypeAlign(ll);
+      auto sz = size_of(ll);
+      auto al = align_of(ll);
       builder.CreateMemCpy(dst, al, ptr, al, sz);
     } else {
       auto *v = builder.CreateLoad(ll, ptr, vname);
@@ -405,7 +405,7 @@ void CodeGen::emit_for_range_task(const ForExprNode &node,
   if (!st_info.type_args.empty())
     elem_sem = st_info.type_args[0];
   if (elem_sem)
-    msg_ll = llvm_type(elem_sem);
+    msg_ll = storage_type(elem_sem);
 
   llvm::AllocaInst *msg_alloca = nullptr;
   if (!range.vars.empty()) {

@@ -37,7 +37,7 @@ llvm::AllocaInst *CodeGen::narrow_local(const std::string &name,
         emit_union_convert(it->second, from, to));
   } else if (auto *val = emit_union_extract(it->second, to, from)) {
     auto *func = builder.GetInsertBlock()->getParent();
-    slot = create_entry_alloca(func, name + ".narrowed", llvm_type(to));
+    slot = create_entry_alloca(func, name + ".narrowed", storage_type(to));
     builder.CreateStore(val, slot);
   }
   if (!slot || slot == it->second)

@@ -438,7 +438,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       auto &arr = std::get<ArrayTypeInfo>(last->detail);
       auto *elem_ll = llvm_type(arr.element);
       uint64_t elem_size =
-          elem_ll ? module->getDataLayout().getTypeAllocSize(elem_ll)
+          elem_ll ? size_of(elem_ll)
                   : 8;
       auto *new_fn = module->getFunction("saga_array_new");
       auto *push_fn = module->getFunction("saga_array_builder_push");
@@ -558,7 +558,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
         llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
     call->addParamAttr(cidx,
         llvm::Attribute::getWithAlignment(context,
-            module->getDataLayout().getABITypeAlign(sret_struct_ty)));
+            align_of(sret_struct_ty)));
     ++cidx;
   }
   if (fi) {
@@ -572,7 +572,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
               llvm::Attribute::getWithByValType(context, p_ll));
           call->addParamAttr(cidx,
               llvm::Attribute::getWithAlignment(context,
-                  module->getDataLayout().getABITypeAlign(p_ll)));
+                  align_of(p_ll)));
         }
       }
       ++cidx;

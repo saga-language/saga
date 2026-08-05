@@ -83,9 +83,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
                   auto *union_st =
                       get_union_llvm_type(frame.result_union_type);
                   auto sz =
-                      module->getDataLayout().getTypeAllocSize(union_st);
+                      size_of(union_st);
                   auto al =
-                      module->getDataLayout().getABITypeAlign(union_st);
+                      align_of(union_st);
                   builder.CreateMemCpy(frame.result_alloca, al, wrapped,
                                        al, sz);
                 }
@@ -1029,7 +1029,7 @@ llvm::Value *CodeGen::emit_value_eq(const TypePtr &field_type,
     return emit_struct_fields_eq(a_gep, b_gep, field_type, /*start=*/0);
   // Other aggregates (by-value arrays) fall back to a raw byte compare.
   if (field_ll->isAggregateType()) {
-    uint64_t size = module->getDataLayout().getTypeAllocSize(field_ll);
+    uint64_t size = size_of(field_ll);
     auto *cmp = builder.CreateCall(
         get_or_declare_memcmp(),
         {a_gep, b_gep, llvm::ConstantInt::get(i64_type, size)}, "f.memcmp");
