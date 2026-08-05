@@ -161,4 +161,114 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
   return nullptr;
 }
 
+// ===========================================================================
+// Selector (field access)
+// ===========================================================================
+
+std::pair<llvm::Value *, llvm::Type *>
+CodeGen::struct_field_gep(llvm::Value *struct_ptr,
+                          const TypePtr &struct_sem_type,
+                          const std::string &field_name) {
+  if (!struct_sem_type || struct_sem_type->kind != TypeKind::Struct)
+    return {nullptr, nullptr};
+
+  auto &info = std::get<StructTypeInfo>(struct_sem_type->detail);
+  std::string skey = struct_cache_key(info);
+  auto st_it = struct_types.find(skey);
+  if (st_it == struct_types.end())
+    return {nullptr, nullptr};
+
+  auto *st = st_it->second;
+  auto &fields = struct_fields[skey];
+
+  // Direct field lookup. We restrict to info.fields.size() so that the
+  // synthetic `__embed_<Name>` slots appended after the own fields are
+  // not addressable by name from user code — they are reachable only via
+  // promoted-field access (handled below).
+  for (size_t i = 0; i < info.fields.size() && i < fields.size(); ++i) {
+    if (fields[i] == field_name) {
+      auto *gep = builder.CreateStructGEP(st, struct_ptr, i, field_name);
+      // Prefer the semantic field type's LLVM lowering so generic
+      // instantiations (e.g. Box<Int>) read/write at the right element
+      // type even when the underlying LLVM struct was emitted with a
+      // ptr-typed slot for the unsubstituted template field. Sizes must
+      // match the slot for this to be safe; aggregate type arguments
+      // wider than a pointer are tracked as P8 tech debt.
+      llvm::Type *field_ll = st->getElementType(i);
+      if (info.fields[i].type) {
+        if (auto *sem_ll = llvm_type(info.fields[i].type))
+          field_ll = sem_ll;
+      }
+      return {gep, field_ll};
+    }
+  }
+
+  // Embed slots are appended to `fields` after the owner's own fields, in the
+  // same order as `info.embeds`. An embed is reachable two ways: by its own
+  // type name (`u.Timestamps`), addressing the whole embedded value, and by
+  // any member it promotes. Both passes are needed because the name of an
+  // embed sits at depth 0 alongside the owner's fields, while anything it
+  // promotes is deeper — so a shallower match must win even when a deeper one
+  // appears in an earlier embed.
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= fields.size()) break;
+
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    if (einfo.name != field_name) continue;
+    auto *gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                        embed_slot_name(einfo));
+    return {gep, st->getElementType(slot_idx)};
+  }
+
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= fields.size()) break;
+
+    // Promoted access: the member lives somewhere inside this embed.
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                             embed_slot_name(einfo));
+    auto inner = struct_field_gep(slot_gep, embed, field_name);
+    if (inner.first) return inner;
+  }
+
+  return {nullptr, nullptr};
+}
+
+std::pair<llvm::Value *, TypePtr>
+CodeGen::embed_method_receiver(llvm::Value *struct_ptr,
+                               const TypePtr &struct_sem,
+                               const std::string &method) {
+  auto &info = std::get<StructTypeInfo>(struct_sem->detail);
+  for (auto &m : info.methods)
+    if (m.name == method)
+      return {struct_ptr, struct_sem};
+
+  std::string skey = struct_cache_key(info);
+  auto st_it = struct_types.find(skey);
+  if (st_it == struct_types.end())
+    return {nullptr, nullptr};
+  auto *st = st_it->second;
+
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= st->getNumElements()) break;
+
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                             embed_slot_name(einfo));
+    auto inner = embed_method_receiver(slot_gep, embed, method);
+    if (inner.first) return inner;
+  }
+
+  return {nullptr, nullptr};
+}
+
 } // namespace saga

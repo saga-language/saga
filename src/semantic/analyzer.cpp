@@ -1501,7 +1501,17 @@ TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
       continue;
     }
 
-    // Rule 2 — the composed set must be unique. A union alternative is spliced,
+    // Rule 2 — a union is a set of values, and `void` is the absence of one.
+    // What reaches for this slot is a value carrying no information, which is
+    // a different thing and has its own name.
+    if (auto u = unwrap_alias(rt); u && u->kind == TypeKind::Void) {
+      error(t->span,
+            "a type union may only contain values; 'void' is the absence of a "
+            "value — use 'Null' for a value that carries nothing");
+      continue;
+    }
+
+    // Rule 3 — the composed set must be unique. A union alternative is spliced,
     // so `T | (T | U)` and `T | T` both report the repeat.
     for (auto &m : flatten_union_alternatives({rt})) {
       bool dup = false;
@@ -2405,7 +2415,6 @@ void Analyzer::resolve_expr(const Node &node) {
             resolve_identifier(n, node, NameUse::Read);
           },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
-          [&](const NullLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const EnumShorthandNode &) { /* leaf — resolved in check */ },
           [&](const IntegerLiteralNode &) { /* leaf */ },
           [&](const FloatLiteralNode &) { /* leaf */ },
@@ -3036,9 +3045,6 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const BoolLiteralNode &n) -> TypePtr {
             return check_bool_literal(n);
           },
-          [&](const NullLiteralNode &) -> TypePtr {
-            return builtins.void_type;
-          },
           [&](const EnumShorthandNode &n) -> TypePtr {
             error(n.span,
                   std::format("cannot infer enum type for '.{}' here; name the "
@@ -3162,13 +3168,6 @@ TypePtr Analyzer::check_expr(const Node &node) {
   return type;
 }
 
-static bool is_empty_struct_shape(const TypePtr &t) {
-  if (!t || t->kind != TypeKind::Struct)
-    return false;
-  auto &info = std::get<StructTypeInfo>(t->detail);
-  return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
-}
-
 static bool is_type_expr_node(const Node &node) {
   return std::holds_alternative<ArrayTypeNode>(node.data) ||
          std::holds_alternative<MapTypeNode>(node.data) ||
@@ -3227,7 +3226,7 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
   record_symbol(parent, *sym);
 
   if (sym->kind == SymbolKind::Type) {
-    if (is_empty_struct_shape(sym->type))
+    if (is_empty_shape(sym->type))
       return sym->type;
     error(ident.span,
           std::format("cannot use type '{}' as a value", name));
@@ -4536,17 +4535,7 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
           !is_invalid_type(matched)) {
         narrowed_var = std::string(val_id->name);
         narrowed_type = matched;
-        // Compute the else narrowed type (union minus matched type).
-        auto &info = std::get<UnionTypeInfo>(lhs_sym->type->detail);
-        std::vector<TypePtr> remaining;
-        for (auto &alt : info.alternatives) {
-          if (!types_equal(alt, matched))
-            remaining.push_back(alt);
-        }
-        if (remaining.size() == 1)
-          else_narrowed_type = remaining[0];
-        else if (remaining.size() > 1)
-          else_narrowed_type = make_union_type(std::move(remaining));
+        else_narrowed_type = union_without(lhs_sym->type, matched);
       }
     }
   }
@@ -4958,14 +4947,17 @@ TypePtr Analyzer::check_spawn_expr(const SpawnExprNode &node,
 
   pop_scope();
 
-  // Default Task instantiation: spawn-with-no-explicit-T produces Task<Void>.
-  // Codegen needs a concrete T to lower task.Wait() (the union it produces is
-  // T | Error); without one, the Wait call drops out of the IR and the
-  // parent prints before the spawn body runs.
-  TypePtr chan_type = builtins.void_type;
+  // Default Task instantiation: spawn-with-no-explicit-T produces Task<Null>.
+  // Wait() returns T | error, so T has to be a value — a task that produces
+  // nothing still completes, and completion is what Wait hands back. `void`
+  // here meant "no value", which is why every union path needed a special case
+  // to skip over it.
+  TypePtr chan_type = builtins.null_type;
   if (node.generic && !node.generic->type_params.empty()) {
-    auto explicit_t = resolve_type(*node.generic->type_params[0]);
-    if (explicit_t && !is_invalid_type(explicit_t))
+    auto &t_node = *node.generic->type_params[0];
+    auto explicit_t = resolve_type(t_node);
+    if (explicit_t && !is_invalid_type(explicit_t) &&
+        !reject_void_value(t_node.span, explicit_t, "a spawn channel"))
       chan_type = explicit_t;
   }
   return instantiate_task_type(chan_type);
@@ -5571,7 +5563,6 @@ bool Analyzer::require_const_expr(const Node &expr) {
   return std::visit(
       overloaded{
           [](const BoolLiteralNode &) { return true; },
-          [](const NullLiteralNode &) { return true; },
           [](const IntegerLiteralNode &) { return true; },
           [](const FloatLiteralNode &) { return true; },
           [&](const StringLiteralNode &s) {

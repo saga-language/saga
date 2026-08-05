@@ -129,7 +129,7 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
     }
   }
 
-  llvm::verifyFunction(*tramp_fn);
+  verify_function(*tramp_fn);
 
   // ── Restore the enclosing function's state ─────────────────────────
   builder.SetInsertPoint(saved_block, saved_point);

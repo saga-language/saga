@@ -128,7 +128,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   if (!builder.GetInsertBlock()->getTerminator())
     builder.CreateRetVoid();
 
-  llvm::verifyFunction(*outlined_fn);
+  verify_function(*outlined_fn);
 
   // ── Restore enclosing function state ───────────────────────────────
   builder.SetInsertPoint(saved_block, saved_point);
@@ -179,8 +179,6 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
     if (!chan_elem_sem)
       chan_elem_sem = lookup_sem_type(*node.generic->type_params[0]);
     auto *chan_elem_ll = llvm_type(chan_elem_sem);
-    if (!chan_elem_ll || chan_elem_ll->isVoidTy())
-      chan_elem_ll = i64_type; // defensive fallback; shouldn't happen
     channel_elem_size = static_cast<int64_t>(
         module->getDataLayout().getTypeAllocSize(chan_elem_ll));
 

@@ -73,11 +73,6 @@ struct BoolLiteralNode {
   std::string_view literal; // "true" or "false"
 };
 
-// NullLiteral = "null" — the single value of type `void`.
-struct NullLiteralNode {
-  Span span;
-};
-
 // EnumShorthand = "." Identifier — an enum variant with the enum type inferred
 // from context (`c Color = .Red`, `case .Red`). It is an error where no target
 // enum type is known (`c := .Red`).
@@ -625,7 +620,7 @@ struct Node {
   using Variant = std::variant<
     // --- Leaves / atoms ---
     IdentifierNode,     IdentifierListNode,
-    BoolLiteralNode,    NullLiteralNode,     EnumShorthandNode,
+    BoolLiteralNode,    EnumShorthandNode,
     IntegerLiteralNode,  FloatLiteralNode,
     StringLiteralNode,  StringFragmentNode,
     ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,

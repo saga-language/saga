@@ -1,0 +1,13 @@
+// Spec: bool carries String, Equals and Hash like any other intrinsic. These
+// reach the runtime through `extern fn`s whose C prototypes take a wider
+// integer than a bool lowers to, so the call has to widen rather than pass i1.
+import "std/io"
+
+pub fn Main() void {
+  io.Println(true.String())
+  io.Println(false.String())
+  io.Println("{true.Equals(true)} {true.Equals(false)}")
+  // The hash values themselves are the runtime's business; that they are
+  // stable per value and differ between values is the language's.
+  io.Println("{true.Hash() == true.Hash()} {true.Hash() == false.Hash()}")
+}

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
@@ -318,7 +319,7 @@ void CodeGen::emit_function_body_inner(
     }
   }
 
-  llvm::verifyFunction(*func);
+  verify_function(*func);
 }
 
 void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
@@ -500,40 +501,20 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   std::string name(node.name.name);
   auto *func = builder.GetInsertBlock()->getParent();
 
-  // Determine the LLVM type from the semantic type annotation or
-  // the initializer's type.
-  llvm::Type *var_type = i64_type; // default to Int
-  if (node.type) {
-    // Check node_types first (recorded during analysis), then fallback.
-    if (auto recorded = semantic_type(**node.type)) {
-      var_type = llvm_type(recorded);
-    } else {
-      auto sem_type = lookup_sem_type(**node.type);
-      var_type = llvm_type(sem_type);
-    }
-  } else if (node.init) {
-    // Infer from the init expression's semantic type.
-    if (auto recorded = semantic_type(**node.init))
-      var_type = llvm_type(recorded);
-  }
+  // Every VarDeclNode the parser builds carries a type node — `x := 1` is a
+  // DeclAssignNode and lowers through emit_decl_assign — so there is nothing
+  // here to infer from an initialiser, and no type worth defaulting to.
+  if (!node.type || !*node.type)
+    internal_error("a variable declaration reached code generation with no "
+                   "type node");
 
-  // A `void` variable holds only `null` (no data), but native LLVM void is
-  // unstorable — give it a 1-byte slot matching emit_null_literal's placeholder.
-  if (var_type->isVoidTy())
-    var_type = llvm::Type::getInt8Ty(context);
+  // The analyzer records the resolved type on the annotation; resolve_type
+  // covers the builtins it does not record.
+  TypePtr sem_type_ptr = semantic_type(**node.type);
+  if (!sem_type_ptr)
+    sem_type_ptr = lookup_sem_type(**node.type);
 
-  // Determine semantic type for refcount tracking and interface boxing.
-  TypePtr sem_type_ptr = nullptr;
-  if (node.type) {
-    // Look up from the node_types map first (recorded during analysis).
-    sem_type_ptr = semantic_type(**node.type);
-    if (!sem_type_ptr) {
-      // Fall back to resolve_type (works for builtins).
-      sem_type_ptr = lookup_sem_type(**node.type);
-    }
-  } else if (node.init) {
-    sem_type_ptr = semantic_type(**node.init);
-  }
+  llvm::Type *var_type = llvm_type(sem_type_ptr);
 
   if (node.init) {
     auto *val = emit_expr(**node.init);

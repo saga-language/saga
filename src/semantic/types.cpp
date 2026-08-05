@@ -150,6 +150,29 @@ TypePtr make_union_type(std::vector<TypePtr> alternatives) {
                                 UnionTypeInfo{std::move(uniq)});
 }
 
+TypePtr union_without(const TypePtr &u, const TypePtr &matched) {
+  if (!u || u->kind != TypeKind::Union || !matched)
+    return nullptr;
+
+  std::vector<TypePtr> remaining;
+  for (auto &alt : std::get<UnionTypeInfo>(u->detail).alternatives)
+    if (!types_equal(alt, matched))
+      remaining.push_back(alt);
+
+  if (remaining.empty())
+    return nullptr;
+  if (remaining.size() == 1)
+    return remaining[0];
+  return make_union_type(std::move(remaining));
+}
+
+bool is_empty_shape(const TypePtr &t) {
+  if (!t || t->kind != TypeKind::Struct)
+    return false;
+  auto &info = std::get<StructTypeInfo>(t->detail);
+  return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
+}
+
 TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound) {
   return std::make_shared<Type>(

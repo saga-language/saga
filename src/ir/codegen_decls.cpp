@@ -709,7 +709,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       emit_tail_return(*fn, func, tail_val, block, has_sret);
     }
 
-    llvm::verifyFunction(*func);
+    verify_function(*func);
   }
 }
 
@@ -897,7 +897,7 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
       }
     }
 
-    llvm::verifyFunction(*func);
+    verify_function(*func);
   }
 }
 

@@ -40,14 +40,13 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
   llvm::AllocaInst *acc_alloca = nullptr;
   llvm::Type *acc_ll = nullptr;
   if (node.accumulator) {
+    // A for-expression in statement position has no accumulator slot to fill.
     if (for_sem && for_sem->kind != TypeKind::Void) {
       acc_ll = llvm_type(for_sem);
-      if (acc_ll && !acc_ll->isVoidTy()) {
-        std::string acc_name(node.accumulator->name);
-        acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
-        builder.CreateStore(llvm::Constant::getNullValue(acc_ll), acc_alloca);
-        locals[acc_name] = acc_alloca;
-      }
+      std::string acc_name(node.accumulator->name);
+      acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
+      builder.CreateStore(llvm::Constant::getNullValue(acc_ll), acc_alloca);
+      locals[acc_name] = acc_alloca;
     }
   }
 
@@ -405,11 +404,8 @@ void CodeGen::emit_for_range_task(const ForExprNode &node,
   TypePtr elem_sem;
   if (!st_info.type_args.empty())
     elem_sem = st_info.type_args[0];
-  if (elem_sem) {
-    auto *ll = llvm_type(elem_sem);
-    if (ll && !ll->isVoidTy())
-      msg_ll = ll;
-  }
+  if (elem_sem)
+    msg_ll = llvm_type(elem_sem);
 
   llvm::AllocaInst *msg_alloca = nullptr;
   if (!range.vars.empty()) {

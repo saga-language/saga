@@ -38,7 +38,6 @@ struct Token {
     Interface, // "interface"
     Is,        // "is"
     Next,      // "next"
-    Null,      // "null"
     Or,        // "or"
     Pub,       // "pub"
     Return,    // "return"

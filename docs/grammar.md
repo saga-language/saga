@@ -194,8 +194,9 @@ public             = "pub" ; // private by default
 /* Literals */
 
 Literal      = ArrayLiteral | MapLiteral | StructLiteral
-             | BoolLiteral | IntegerLiteral | FloatLiteral | StringLiteral
-             | "null" ; // the sole value of `void`
+             | BoolLiteral | IntegerLiteral | FloatLiteral | StringLiteral ;
+// A value that carries no information is the built-in `Null` shape, written
+// like any other field-less struct — `Null` or `Null{}` — not a literal.
 
 // Array literal, or generation: `[0..10]` produces 0..9 of an increment type.
 ArrayLiteral = "[" ( [ ExpressionList ] | Expression ".." Expression ) "]" ;

@@ -1,0 +1,11 @@
+// A spawn channel carries values, so its element type is a value type. `void`
+// is the absence of one; a task that produces nothing is `spawn {}`, whose
+// Task<Null> says "it completed" rather than "there is nothing here".
+import "std/io"
+
+pub fn Main() void {
+  t := spawn<void> {
+    io.Println("from task")
+  }
+  t.Wait()
+}

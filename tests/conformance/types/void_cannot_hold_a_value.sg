@@ -1,10 +1,14 @@
 // `void` is the absence of a value, so nothing can hold one: not a variable,
-// not a parameter, not a constant, not a field. Its legal uses are a return
-// type and a union alternative (`T | void`).
+// not a parameter, not a constant, not a field. Its only legal use is a return
+// type. A value that carries no information is `Null`.
 const io = import "std/io"
 
+fn nothing() void {
+  io.Println("called")
+}
+
 pub fn Main() void {
-  x void = null
+  x void = nothing()
   _ := x
   io.Println("ok")
 }

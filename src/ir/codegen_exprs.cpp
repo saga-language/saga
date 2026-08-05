@@ -27,9 +27,6 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const BoolLiteralNode &n) -> llvm::Value * {
             return emit_bool_literal(n);
           },
-          [&](const NullLiteralNode &n) -> llvm::Value * {
-            return emit_null_literal(n);
-          },
           [&](const EnumShorthandNode &n) -> llvm::Value * {
             return emit_enum_shorthand(n, node);
           },
@@ -115,7 +112,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_spawn_expr(n, node);
           },
           [&](const IdentifierNode &n) -> llvm::Value * {
-            return emit_identifier(n);
+            return emit_identifier(n, node);
           },
           [&](const VarDeclNode &n) -> llvm::Value * {
             emit_var_decl(n);
@@ -205,14 +202,6 @@ llvm::Value *CodeGen::emit_float_literal(const FloatLiteralNode &node) {
 llvm::Value *CodeGen::emit_bool_literal(const BoolLiteralNode &node) {
   bool val = (node.literal == "true");
   return llvm::ConstantInt::get(i1_type, val ? 1 : 0);
-}
-
-// `void` (its single value, `null`) has no data. It carries a 1-byte placeholder
-// so it is a valid SSA value; in a `T | void` union the payload store is skipped
-// (emit_union_wrap keys on the semantic void type), and a standalone `void`
-// variable stores this byte.
-llvm::Value *CodeGen::emit_null_literal(const NullLiteralNode &) {
-  return llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 0);
 }
 
 // `.Variant` shorthand — the analyzer recorded the resolved enum type on the
@@ -363,6 +352,10 @@ TypePtr CodeGen::semantic_type(const Node &node) const {
   if (it != analyzer.node_types.end())
     return unwrap_structural_alias(it->second);
   return nullptr;
+}
+
+TypePtr CodeGen::block_result_type(const BlockNode &block) const {
+  return block.stmts.empty() ? nullptr : semantic_type(*block.stmts.back());
 }
 
 // ---------------------------------------------------------------------------

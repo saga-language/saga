@@ -57,6 +57,11 @@ struct BuiltinTypes {
   TypePtr stringable_iface;  // Stringable { String() String }
 
   // Internal structs
+  // Null is the value channel's "there is a value here, and it carries no
+  // information" — what JSON and SQL mean by null. Missing is the error
+  // channel's "there was nothing here". Both are empty; the channel is the
+  // whole distinction, which is why `or` catches one and walks past the other.
+  TypePtr null_type;       // Null (value; a value that carries nothing)
   TypePtr missing_type;    // Missing (error; index/map miss, parse failure)
   TypePtr trapped_type;    // Trapped (error; Task.Wait on a killed actor)
   TypePtr task_type;       // Task (returned from spawn)
