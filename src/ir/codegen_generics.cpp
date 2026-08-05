@@ -100,7 +100,11 @@ std::string CodeGen::mangle_type(const TypePtr &t) const {
   case TypeKind::Struct: {
     auto &si = std::get<StructTypeInfo>(t->detail);
     std::string pkg = package_name.empty() ? "local" : package_name;
-    return "pkg_" + pkg + "_" + si.name;
+    std::string out = "pkg_" + pkg + "_" + si.name;
+    // Without the arguments, Box<int> and Box<string> name one symbol.
+    for (auto &a : si.type_args)
+      out += "_" + mangle_type(a);
+    return out;
   }
   case TypeKind::Alias: {
     auto &ai = std::get<AliasTypeInfo>(t->detail);
@@ -304,6 +308,19 @@ llvm::Function *CodeGen::emit_specialisation(
     }
   }
   return func;
+}
+
+llvm::Function *CodeGen::emit_generic_method(const StructTypeInfo &info,
+                                             const std::string &origin,
+                                             const std::string &method) {
+  auto tpl = origin == package_name
+                 ? analyzer.generic_method_decl(info.name, method,
+                                                info.type_args)
+                 : analyzer.load_imported_method_decl(origin, info.name, method,
+                                                      info.type_args);
+  if (!tpl.decl || !tpl.template_signature) return nullptr;
+  return emit_specialisation(*tpl.decl, tpl.template_signature, tpl.bindings,
+                             tpl.instantiation);
 }
 
 } // namespace saga

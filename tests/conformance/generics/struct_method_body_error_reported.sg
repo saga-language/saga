@@ -1,0 +1,15 @@
+// A generic method's body is checked when the first call fixes its type
+// arguments — which is during emission, after the analyzer's own pass. The
+// error still has to reach the user rather than be built into the binary.
+import "std/io"
+
+struct Stack<T> {
+  items array{T}
+}
+
+pub fn (s Stack<T>) Top() T { s.items[0] }
+
+pub fn Main() void {
+  s := Stack{items: [1, 2, 3]}
+  io.Println("{s.Top()}")
+}

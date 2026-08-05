@@ -9,48 +9,120 @@
 
 namespace saga {
 
-std::string unescape_string_fragment(std::string_view raw) {
-  // A fragment is either a fully-quoted StringLiteral ("..."), or one of the
-  // interpolation pieces (StringStart "..{, StringMiddle }..{, StringEnd }..").
-  // Only the partial pieces carry the unquoted `{`/`}` delimiters; stripping
-  // them from a fully-quoted literal would chew off escaped braces like `"\{"`.
-  bool is_literal =
-      raw.size() >= 2 && raw.front() == '"' && raw.back() == '"';
-  if (is_literal) {
-    raw = raw.substr(1, raw.size() - 2);
-  } else if (raw.size() >= 1 && raw.front() == '"') {
-    raw = raw.substr(1);
-    if (raw.size() >= 1 && raw.back() == '{')
-      raw = raw.substr(0, raw.size() - 1);
-  } else if (raw.size() >= 1 && raw.back() == '"') {
-    raw = raw.substr(0, raw.size() - 1);
-    if (raw.size() >= 1 && raw.front() == '}')
-      raw = raw.substr(1);
-  } else {
-    if (raw.size() >= 1 && raw.front() == '}')
-      raw = raw.substr(1);
-    if (raw.size() >= 1 && raw.back() == '{')
-      raw = raw.substr(0, raw.size() - 1);
+static size_t leading_quotes(std::string_view s) {
+  if (s.starts_with(R"(""")"))
+    return 3;
+  return s.starts_with('"') ? 1 : 0;
+}
+
+static size_t trailing_quotes(std::string_view s) {
+  if (s.ends_with(R"(""")"))
+    return 3;
+  return s.ends_with('"') ? 1 : 0;
+}
+
+// A fragment is quoted on the outside and braced on the inside: a whole
+// StringLiteral is `"..."`, and the interpolation pieces are StringStart
+// `"..{`, StringMiddle `}..{`, StringEnd `}.."`. A multi-line string spells the
+// quote `"""`. The braces are stripped only where the lexer put them, since an
+// escaped brace like `"\{"` is content.
+static std::string_view strip_quotes_and_braces(std::string_view raw) {
+  size_t front = leading_quotes(raw);
+  raw = raw.substr(front + (front == 0 && raw.starts_with('}') ? 1 : 0));
+
+  if (size_t back = trailing_quotes(raw); back > 0)
+    return raw.substr(0, raw.size() - back);
+  if (raw.ends_with('{'))
+    return raw.substr(0, raw.size() - 1);
+  return raw;
+}
+
+static std::string_view drop_opening_break(std::string_view s) {
+  if (s.starts_with("\r\n"))
+    return s.substr(2);
+  return s.starts_with('\n') ? s.substr(1) : s;
+}
+
+static std::string_view drop_closing_break(std::string_view s) {
+  size_t nl = s.rfind('\n');
+  if (nl == std::string_view::npos)
+    return s;
+  s = s.substr(0, nl);
+  return s.ends_with('\r') ? s.substr(0, s.size() - 1) : s;
+}
+
+// In a `"""` block the delimiters sit on lines of their own, so the line break
+// that follows the opening one and the line break that precedes the closing one
+// position the delimiters rather than belonging to the string. To keep a
+// trailing newline, leave a blank line before the closing `"""`.
+static std::string_view drop_layout_breaks(std::string_view s, bool opens,
+                                           bool closes) {
+  if (opens)
+    s = drop_opening_break(s);
+  return closes ? drop_closing_break(s) : s;
+}
+
+// How much of a line's indentation the block margin covers. The parser has
+// already rejected a line that fails to carry the margin; a blank line is
+// allowed to be shorter, so stop at its line break.
+static size_t margin_width(std::string_view line, size_t margin) {
+  size_t n = 0;
+  while (n < margin && n < line.size() && (line[n] == ' ' || line[n] == '\t'))
+    ++n;
+  return n;
+}
+
+static void append_escape(std::string &out, char escaped) {
+  switch (escaped) {
+  case 'n':  out += '\n'; break;
+  case 'r':  out += '\r'; break;
+  case 't':  out += '\t'; break;
+  case '\\': out += '\\'; break;
+  case '"':  out += '"';  break;
+  case '{':  out += '{';  break;
+  case '}':  out += '}';  break;
+  default:   out += '\\'; out += escaped; break;
   }
+}
+
+std::string unescape_string_fragment(std::string_view raw,
+                                     std::optional<size_t> margin) {
+  const bool block = margin.has_value();
+  const bool opens = leading_quotes(raw) == 3;
+  const bool closes = trailing_quotes(raw) == 3;
+  raw = strip_quotes_and_braces(raw);
+  if (block)
+    raw = drop_layout_breaks(raw, opens, closes);
 
   std::string out;
   out.reserve(raw.size());
+  // A fragment opening with `}` resumes the line its interpolation sits on, so
+  // only one that opens the block starts at a margin.
+  bool at_line_start = block && opens;
+
   for (size_t i = 0; i < raw.size(); ++i) {
-    if (raw[i] == '\\' && i + 1 < raw.size()) {
-      ++i;
-      switch (raw[i]) {
-      case 'n':  out += '\n'; break;
-      case 't':  out += '\t'; break;
-      case '\\': out += '\\'; break;
-      case '"':  out += '"';  break;
-      case '{':  out += '{';  break;
-      default:   out += '\\'; out += raw[i]; break;
-      }
-    } else {
-      out += raw[i];
+    if (at_line_start) {
+      i += margin_width(raw.substr(i), *margin);
+      at_line_start = false;
+      if (i >= raw.size())
+        break;
     }
+    if (raw[i] == '\\' && i + 1 < raw.size()) {
+      append_escape(out, raw[++i]);
+      continue;
+    }
+    // A block's line breaks come from the file, so leaving them verbatim would
+    // let a checkout's line endings decide what the string contains.
+    if (block && raw[i] == '\r' && i + 1 < raw.size() && raw[i + 1] == '\n')
+      continue;
+    out += raw[i];
+    at_line_start = block && raw[i] == '\n';
   }
   return out;
+}
+
+std::string unescape_string_fragment(const StringFragmentNode &frag) {
+  return unescape_string_fragment(frag.text, frag.margin);
 }
 
 namespace {
@@ -342,11 +414,6 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
               dump_ptr(n.return_type, os, c);
           },
           [&](const FieldSpecNode &n) { dump_field_spec(n, os, indent); },
-          [&](const StructTypeNode &n) {
-            os << pad(indent) << "StructTypeNode\n";
-            for (const auto &f : n.fields)
-              dump_field_spec(f, os, c);
-          },
           [&](const GenericTypeAppNode &n) {
             os << pad(indent) << "GenericTypeAppNode\n";
             for (auto &ta : n.type_args)

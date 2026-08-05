@@ -1,0 +1,32 @@
+// Spec: a struct may reach itself through a union. The alternative that closes
+// the cycle is stored behind a pointer, so the union slot is one tag plus one
+// pointer and the struct has a finite size. The other alternative is the base
+// case that lets a value stop.
+import "std/io"
+
+struct Node {
+  value int
+  tail Node | Missing
+}
+
+pub fn (n Node) Sum() int {
+  t := n.tail
+  if t is Node {
+    n.value + t.Sum()
+  } else {
+    n.value
+  }
+}
+
+pub fn Main() void {
+  third := Node{value: 3, tail: Missing{}}
+  second := Node{value: 2, tail: third}
+  first := Node{value: 1, tail: second}
+
+  io.Println("{first.Sum()}")
+
+  cur := first.tail
+  if cur is Node {
+    io.Println("{cur.value}")
+  }
+}

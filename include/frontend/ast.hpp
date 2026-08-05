@@ -49,6 +49,13 @@ struct IdentifierNode {
   std::string_view name;
 };
 
+/// An "ignored" name (docs/language.md:25-27): it binds nothing, cannot be
+/// read back, and so never collides with another name — including another
+/// ignored one.
+inline bool is_ignored_name(std::string_view name) {
+  return name.starts_with('_');
+}
+
 // IdentifierList = Identifier { "," Identifier }
 struct IdentifierListNode {
   Span span;
@@ -93,15 +100,22 @@ struct FloatLiteralNode {
 
 // A raw text fragment inside a string literal (between interpolations, or the
 // whole string if there is no interpolation). Escape sequences are stored
-// verbatim; interpretation is deferred to a semantic pass.
+// verbatim; interpretation is deferred to a semantic pass. `margin` is the
+// indentation the enclosing `"""` block strips from every line, set by the
+// parser once it has seen the closing delimiter, and empty for every other
+// kind of string.
 struct StringFragmentNode {
   Span span;
   std::string_view text;
+  std::optional<size_t> margin;
 };
 
 // Strip the delimiters from a raw string-fragment token (a full `"..."`
-// literal or an interpolation piece) and resolve its escape sequences.
-std::string unescape_string_fragment(std::string_view raw);
+// literal or an interpolation piece), remove `margin` worth of block
+// indentation from each line, and resolve its escape sequences.
+std::string unescape_string_fragment(std::string_view raw,
+                                     std::optional<size_t> margin);
+std::string unescape_string_fragment(const StringFragmentNode &frag);
 
 // StringLiteral = fragments of StringFragmentNode and interpolated expressions.
 // A plain string with no interpolation has a single StringFragmentNode child.
@@ -136,10 +150,10 @@ struct FieldAssignmentNode {
   NodePtr value;
 };
 
-// StructLiteral = ( Identifier | Selector | StructType ) StructInitializer
+// StructLiteral = ( Identifier | Selector ) StructInitializer
 struct StructLiteralNode {
   Span span;
-  NodePtr type_expr; // IdentifierNode, SelectorNode, or StructTypeNode
+  NodePtr type_expr; // IdentifierNode or SelectorNode
   std::vector<FieldAssignmentNode> fields;
 };
 
@@ -147,7 +161,6 @@ struct StructLiteralNode {
 // Section 2: Type nodes
 //
 // FieldSpecNode depends on IdentifierListNode (defined above).
-// StructTypeNode depends on FieldSpecNode.
 // ===========================================================================
 
 // UnionType = SingleType { "|" SingleType }   (2 or more alternatives)
@@ -186,12 +199,6 @@ struct FieldSpecNode {
   IdentifierListNode names;
   NodePtr type;
   NodePtr default_value; // nullptr when no `= Expression` is present
-};
-
-// StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
-struct StructTypeNode {
-  Span span;
-  std::vector<FieldSpecNode> fields;
 };
 
 // GenericTypeApp = "|" TypeList "|" Identifier
@@ -626,7 +633,7 @@ struct Node {
 
     // --- Types ---
     UnionTypeNode,  ArrayTypeNode,  MapTypeNode,   FuncTypeNode,
-    StructTypeNode, GenericTypeAppNode, GenericNode,
+    GenericTypeAppNode, GenericNode,
     TypeParamNode,
 
     // --- Shared sub-nodes ---

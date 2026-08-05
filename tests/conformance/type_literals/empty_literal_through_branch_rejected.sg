@@ -1,0 +1,5 @@
+// An if-expression yields no element type either, so the hole survives to the
+// binding and is reported there rather than leaking into an untyped array.
+pub fn Main() void {
+  x := if true { [] } else { [] }
+}

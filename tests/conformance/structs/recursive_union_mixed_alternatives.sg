@@ -1,0 +1,39 @@
+// Spec: only the alternative that closes the cycle is stored behind a pointer.
+// A larger sibling alternative still sits inline, so the payload is as wide as
+// that sibling and both narrow correctly.
+import "std/io"
+
+struct Big {
+  a int
+  b int
+  c int
+  d int
+}
+
+struct Node {
+  value int
+  tail Node | Missing
+}
+
+pub fn Describe(u Node | Big | Missing) int {
+  switch u {
+    case Node: u.value
+    case Big: u.a + u.b + u.c + u.d
+    else: -1
+  }
+}
+
+pub fn Main() void {
+  leaf := Node{value: 9, tail: Missing{}}
+  n := Node{value: 5, tail: leaf}
+  big := Big{a: 1, b: 2, c: 3, d: 4}
+  none := Missing{}
+
+  io.Println("{Describe(n)}")
+  io.Println("{Describe(big)}")
+  io.Println("{Describe(none)}")
+
+  zero := Node{value: 0, tail: Missing{}}
+  fallback := n.tail or { zero }
+  io.Println("{fallback.value}")
+}

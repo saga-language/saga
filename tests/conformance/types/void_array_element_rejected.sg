@@ -1,0 +1,11 @@
+// An array element is storage, and the element type is inferred rather than
+// declared, so the rule has to catch it here too.
+const io = import "std/io"
+
+fn shout() void {
+  io.Println("shouted")
+}
+
+pub fn Main() void {
+  [shout()]
+}

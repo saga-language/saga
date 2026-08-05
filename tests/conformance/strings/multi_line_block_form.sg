@@ -1,0 +1,23 @@
+// Spec: a `"""` block puts each delimiter on a line of its own, so the line
+// break after the opening one and the break before the closing one position the
+// delimiters rather than belonging to the string. Interpolation works as it
+// does anywhere else.
+// (docs/language.md — Type Literals)
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""
+    alpha
+    beta
+    """)
+  io.Println("---")
+  name := "world"
+  io.Println("""
+    hello, {name}
+    """)
+  io.Println("---")
+  io.Println("""
+
+    blank line kept
+    """)
+}

@@ -1,0 +1,19 @@
+// Spec: a receiver is named like any other binding and its fields are
+// assignable; reading a sibling field afterwards is unaffected.
+// (docs/language.md §Methods)
+import "std/io"
+
+struct Counter {
+  n int
+  m int
+}
+
+fn (c Counter) Bump() int {
+  c.n = 7
+  c.n + c.m
+}
+
+pub fn Main() void {
+  c := Counter{n: 1, m: 42}
+  io.Println(c.Bump().String())
+}

@@ -1,0 +1,14 @@
+// Spec: an empty collection literal carries no element type of its own, so it
+// takes the one the field asks for.
+import "std/io"
+
+struct Bag {
+  items array{int}
+  index map{string: int}
+}
+
+pub fn Main() void {
+  b := Bag{items: [], index: {}}
+  io.Println("{b.items.Size()}")
+  io.Println("{b.index.Size()}")
+}

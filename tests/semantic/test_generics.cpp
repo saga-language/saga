@@ -127,6 +127,7 @@ TEST(Generics, GenericStructMultipleTypeParams) {
       "}\n"
       "fn f() {\n"
       "  p := Pair{key: \"name\", value: 42}\n"
+      "  _ := p\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -139,6 +140,7 @@ TEST(Generics, GenericFuncExpr) {
   auto r = GR::from(
       "fn f() {\n"
       "  id := fn<T>(x T) T { x }\n"
+      "  _ := id\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -245,7 +247,7 @@ TEST(Generics, InstantiatingGenericStructPreservesMethodOrigin) {
   auto r = GR::from(
       "struct Box<T> { value T }\n"
       "pub fn (b Box<T>) Get() T { b.value }\n"
-      "pub fn Main() void { b := Box{value: 1}\n  v := b.Get() }");
+      "pub fn Main() void { b := Box{value: 1}\n  v := b.Get()\n  _ := v }");
   ASSERT_TRUE(r.ok()) << r.analyzer->errors.errors.size() << " errors";
 
   // Find the Box struct type in the package scope and confirm every

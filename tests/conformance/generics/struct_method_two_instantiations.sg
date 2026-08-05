@@ -1,0 +1,17 @@
+// Spec: each type argument gets its own specialisation, so two
+// instantiations of the same generic struct in one program do not collide
+// on a single symbol.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Get() T { b.value }
+
+pub fn Main() void {
+  n := Box{value: 21}
+  s := Box{value: "hello"}
+  io.Println("{n.Get()}")
+  io.Println(s.Get())
+}

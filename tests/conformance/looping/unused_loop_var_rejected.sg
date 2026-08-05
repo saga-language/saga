@@ -1,0 +1,10 @@
+// A loop variable is named by choice — `for _ : arr` is always available —
+// so one nothing reads is an error like any other local.
+const io = import "std/io"
+
+pub fn Main() void {
+  arr := [1, 2, 3]
+  for k, v : arr {
+    io.Println("{v}")
+  }
+}

@@ -12,6 +12,50 @@
 
 namespace saga {
 
+llvm::Value *CodeGen::struct_slot_address(llvm::AllocaInst *slot,
+                                          const TypePtr &sem,
+                                          const std::string &name) {
+  auto &info = std::get<StructTypeInfo>(sem->detail);
+  auto st_it = struct_types.find(struct_cache_key(info));
+  if (st_it == struct_types.end())
+    return nullptr;
+
+  auto *slot_type = slot->getAllocatedType();
+  if (slot_type == st_it->second)
+    return slot;
+  if (slot_type->isPointerTy())
+    return builder.CreateLoad(slot_type, slot, name);
+  return nullptr;
+}
+
+std::pair<llvm::Value *, TypePtr> CodeGen::struct_lvalue(const Node &node) {
+  auto sem = semantic_type(node);
+  if (!sem || sem->kind != TypeKind::Struct)
+    return {nullptr, nullptr};
+
+  if (auto *ident = std::get_if<IdentifierNode>(&node.data)) {
+    std::string name(ident->name);
+    auto local_it = locals.find(name);
+    if (local_it == locals.end())
+      return {nullptr, nullptr};
+    if (auto *addr = struct_slot_address(local_it->second, sem, name))
+      return {addr, sem};
+    return {nullptr, nullptr};
+  }
+
+  if (auto *sel = std::get_if<SelectorNode>(&node.data)) {
+    auto [base, base_sem] = struct_lvalue(*sel->object);
+    if (!base)
+      return {nullptr, nullptr};
+    auto [gep, _] =
+        struct_field_gep(base, base_sem, std::string(sel->field.name));
+    if (gep)
+      return {gep, sem};
+  }
+
+  return {nullptr, nullptr};
+}
+
 llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
                                     const Node &parent) {
   std::string field_name(node.field.name);
@@ -71,44 +115,12 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
     return nullptr;
   }
 
-  // Emit the object expression.  For a struct variable this will be a load
-  // of a pointer (from the alloca).  But we need the alloca itself to GEP.
-  // Check if the object is an identifier referencing a local struct.
-  if (auto *ident = std::get_if<IdentifierNode>(&node.object->data)) {
-    std::string obj_name(ident->name);
-    auto local_it = locals.find(obj_name);
-    if (local_it != locals.end()) {
-      auto *alloca = local_it->second;
-      // Check if this alloca holds a struct type.
-      auto sem = semantic_type(*node.object);
-      if (sem && sem->kind == TypeKind::Struct) {
-        auto &info = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = struct_cache_key(info);
-        auto st_it = struct_types.find(skey);
-        if (st_it != struct_types.end()) {
-          // The alloca might be a ptr to struct (if stored from a literal)
-          // or the struct type itself.
-          auto *alloca_type = alloca->getAllocatedType();
-          if (alloca_type == st_it->second) {
-            // Direct struct alloca — GEP into it.
-            auto [gep, ftype] = struct_field_gep(alloca, sem, field_name);
-            if (gep) {
-              if (ftype && ftype->isStructTy())
-                return gep;
-              return builder.CreateLoad(ftype, gep, field_name);
-            }
-          } else if (alloca_type->isPointerTy()) {
-            // Pointer to struct — load the pointer, then GEP.
-            auto *ptr = builder.CreateLoad(alloca_type, alloca, obj_name);
-            auto [gep, ftype] = struct_field_gep(ptr, sem, field_name);
-            if (gep) {
-              if (ftype && ftype->isStructTy())
-                return gep;
-              return builder.CreateLoad(ftype, gep, field_name);
-            }
-          }
-        }
-      }
+  if (auto [obj_addr, obj_sem] = struct_lvalue(*node.object); obj_addr) {
+    auto [gep, ftype] = struct_field_gep(obj_addr, obj_sem, field_name);
+    if (gep) {
+      if (ftype && ftype->isStructTy())
+        return gep;
+      return builder.CreateLoad(ftype, gep, field_name);
     }
   }
 

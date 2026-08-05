@@ -1,0 +1,17 @@
+// Spec: substitution descends into a struct, so the `T` in a returned
+// `Box<T>` takes whatever the argument bound. Each instantiation is a
+// separate specialisation.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+fn Wrap<T>(x T) Box<T> { Box{value: x} }
+
+pub fn Main() void {
+  n := Wrap(5)
+  s := Wrap("hi")
+  io.Println("{n.value}")
+  io.Println(s.value)
+}

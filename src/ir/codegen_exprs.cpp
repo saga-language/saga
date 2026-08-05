@@ -235,10 +235,6 @@ llvm::Value *CodeGen::emit_enum_shorthand(const EnumShorthandNode &n,
 // String literals
 // ===========================================================================
 
-std::string CodeGen::unescape_fragment(std::string_view raw) {
-  return unescape_string_fragment(raw);
-}
-
 /// Convert an LLVM value to an saga_runtime_string* based on its semantic type.
 llvm::Value *CodeGen::emit_to_string(llvm::Value *val, const TypePtr &sem) {
   if (!val || !sem)
@@ -281,7 +277,7 @@ llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
     std::string text;
     for (auto &frag : node.fragments) {
       if (auto *sf = std::get_if<StringFragmentNode>(&frag->data))
-        text += unescape_fragment(sf->text);
+        text += unescape_string_fragment(*sf);
     }
     return make_string_constant(text);
   }
@@ -294,7 +290,7 @@ llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
     llvm::Value *part = nullptr;
 
     if (auto *sf = std::get_if<StringFragmentNode>(&frag->data)) {
-      std::string text = unescape_fragment(sf->text);
+      std::string text = unescape_string_fragment(*sf);
       if (text.empty())
         continue;
       part = make_string_constant(text);

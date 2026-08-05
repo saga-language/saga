@@ -1,0 +1,8 @@
+// A local nothing reads is an error: it is dead code, a typo, or an
+// abandoned intent, and the fix is always to remove it or ignore it.
+const io = import "std/io"
+
+pub fn Main() void {
+  unused := 42
+  io.Println("ok")
+}

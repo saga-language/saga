@@ -1,0 +1,20 @@
+// Spec: a promoted field of an embedded struct is assignable through the
+// child, writing into the embed's own storage.
+// (docs/language.md §Struct embedding)
+import "std/io"
+
+struct Base {
+  label int
+}
+
+struct Wrap {
+  Base
+  other int
+}
+
+pub fn Main() void {
+  w := Wrap{other: 2}
+  w.label = 9
+  io.Println(w.label.String())
+  io.Println(w.other.String())
+}

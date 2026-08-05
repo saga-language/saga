@@ -22,9 +22,16 @@ Idendifiers must start with either an upper or lowercase letter ("a" to "z")
 or an underscope. They can contain any number of alphanumeric characters,
 including underscores. A tailing question mark ("?") can be appended.
 
-Identifiers that start with with, or consist only of, an underscore are
+Identifiers that start with, or consist only of, an underscore are
 "ignored" variables. They can not be accessed once they are assigned a value
-and the compiler will not flag them as an unused variable.
+and the compiler will not flag them as an unused variable. An ignored name
+binds nothing, so it never collides with another name: any number of them may
+appear in the same scope or in nested ones.
+
+```
+_ := setup()
+for _, v : arr {} // no redeclaration, no shadowing
+```
 
 A constant that is flagged as ignored, while technically valid, is unusable
 and the compiler will not generate code for it.
@@ -177,6 +184,13 @@ same package more than once is an error, even if bound to an alternate name.
 
 Only public members of a package can be accessed. Accessing a member of a
 package is done by using a selector: `io.Println()`.
+
+An import that nothing uses is an error, for the same reason an [unread
+local](#unused-variables) is: it misstates what the code depends on. Naming a
+package anywhere counts as using it, including in a type — `f os.File` needs
+`os` as surely as `os.Stdout` does. There is no ignored form: importing a
+package has no effect beyond binding the name, so an unused import can never
+be load-bearing.
 
 ## Packages/Modules
 
@@ -406,8 +420,9 @@ arr.Size() // => 3
 To convert a type like `Byte[]` to a String, a conversion utility method
 must be used, since String supports UTF-8.
 
-Complex types can be self-referential provided they're defined on or before
-their first use.
+Complex types can be self-referential. Declaration order does not matter — a
+field may name a type declared further down the file. See
+[Self-referential structs](#self-referential-structs).
 
 ### Methods on Intrinsic Types
 
@@ -455,10 +470,19 @@ Rules:
 
 ### Optional values (`T | void`)
 
-`void` is assignable and holds a single value, `null`. A `T | void` union is an
-optional: the value, or its absence. Its main use is over-the-wire data (a JSON
-`null`); in Saga-only code an error union is usually preferable, since it carries
-context. Narrow with `is` (`or` does not apply — `void` is not an error).
+`void` is the absence of a value, so nothing can hold one. It is legal in
+exactly two positions: as a function's return type, and as a union alternative.
+A variable, parameter, constant, struct field, or collection element typed
+`void` — directly or through an `array{void}` / `map{K: void}` — is an error,
+and so is binding a type parameter to it. An [ignored](#Identifiers) name is no
+exception: it still declares storage, so `_ := f()` on a void `f` is an error
+rather than a way to discard the call. Calling `f()` as a statement is the way
+to do that.
+
+A `T | void` union is an optional: the value, or its absence. Its main use is
+over-the-wire data (a JSON `null`); in Saga-only code an error union is usually
+preferable, since it carries context. Narrow with `is` (`or` does not apply —
+`void` is not an error).
 
 ```
 fn lookup(key string) int | void {
@@ -518,127 +542,168 @@ errors are nominal and carry no positional requirement, so any order is legal.
 
 ### Generics
 
-Generics are not tacked; types flow through pipes. Generics are available to
-only structs and functions. When used appropriately, in combination with
-interfaces and union types, they can be a powerful tool.
-
-When a generic is instantiated, if it's type can be inferred, the generic type
-can be omitted.
-
-Generics are monomorphic. The type must be known at compile time since the
-compiler must generate a typed copy of the data or expression.
+A generic parameterises a declaration over a type. Structs and functions take
+type parameters; they are named in `<>` after the declaration's name and used
+like any other type within it.
 
 ```
-// declare a generic struct
-struct |T| Box { value T }
-
-// instantiate a generic struct
-box := |Int| Box{ value: 0 } // explicit type, piped into the Generic box type
-box := Box{ value: 0 } // Int is inferred.
-```
-
-Here's an example of mapping a Generiic List of type T to a List of type U:
-```
-// A generic function that takes a list of T and returns a list of U
-fn |T, U| Map(list |T| List, transform fn(T) U) |U| List {
-    return for item : list |acc| {
-        acc.Push(transform(item))
-    }
-}
-```
-
-Putting it all together using an example of a Linked List:
-
-```
-struct |T| Node {
+struct Box<T> {
   value T
-  next  |T| Node | Missing
 }
 
-struct |T| List {
-  head |T| Node | Missing
-  curr |T| Node | Missing
+fn Identity<T>(x T) T { x }
+```
 
-  pub fn Push(val T) Void {
-    new_node := |T| Node{value: val, next: head}
-    head = new_node
-  }
+Generics are monomorphic. The compiler emits one copy per concrete type
+argument, so every argument must be known at compile time.
 
-  pub fn Peek() T | Error {
-    node := head or { return Error{"Empty"} }
-    return node.value
-  }
-  
-  pub fn Next() T | Missing {
-    // If curr is Missing, start at head. Otherwise, move to next.
-    node := curr or { head } or { return Missing }
-      
-    curr = node.next
-    return node.value
-  }
+A type argument is inferred from the values at the use site and is never
+written there — there is no `Box<int>{...}` form:
 
-  pub fn Reset() { curr = Missing }
+```
+n := Box{value: 21}      // Box<int>
+s := Box{value: "saga"}  // Box<string>
+```
+
+Used with interfaces and union types, generics let one declaration serve many
+concrete types without giving up static checking.
+
+#### Methods on a generic struct
+
+A method on a generic struct is declared at top level with a receiver, like
+any other method. The receiver repeats the struct's type parameters, which the
+signature and body may then use:
+
+```
+struct Box<T> {
+  value T
 }
 
-// Usage
-list := |Int| List{}
-list.Push(42)
-val := list.Peek() or { 0 }
+pub fn (b Box<T>) Get() T { b.value }
+pub fn (b Box<T>) Fallback(other T) T { b.value }
 
-for node : list {} // Next() lets you iterate over the list.
+b := Box{value: 21}
+b.Get()   // 21
+```
+
+The call site binds the type parameters from the receiver's type arguments,
+and each binding gets its own specialisation. Two instantiations in one
+program are separate functions, not one shared symbol:
+
+```
+n := Box{value: 21}
+s := Box{value: "saga"}
+n.Get()   // 21
+s.Get()   // saga
+```
+
+A struct with several type parameters binds them positionally:
+
+```
+struct Pair<A, B> {
+  first  A
+  second B
+}
+
+pub fn (p Pair<A, B>) First() A { p.first }
+pub fn (p Pair<A, B>) Second() B { p.second }
+
+p := Pair{first: 1, second: "two"}
+```
+
+Every type parameter a method uses must come from its receiver — that is the
+only place a call site has anything to bind one from. A method that declares
+its own is rejected:
+
+```
+pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: U is unbound
+```
+
+A signature may name a generic struct, including the receiver's own type. The
+receiver's arguments reach it, so `Same` returns `Box<int>` when called on one:
+
+```
+pub fn (b Box<T>) Same() Box<T> { b }
+```
+
+A free function binds its parameters from the arguments, so a generic struct
+works in either position:
+
+```
+fn Wrap<T>(x T) Box<T> { Box{value: x} }
+fn Unwrap<T>(b Box<T>) T { b.value }
+
+Wrap(5)          // Box<int>
+Unwrap(Wrap(5))  // 5
 ```
 
 ### Bounded generics
 
-A generic type parameter can be constrained to a named built-in type set by
-writing the constraint immediately after the parameter name inside the pipe
-syntax. The constraint follows by adjacency, matching the patterns used
-elsewhere in the language (`enum Color string`, wire-name field slots):
+A type parameter can be constrained by naming the constraint immediately after
+it. The constraint follows by adjacency, matching the patterns used elsewhere
+in the language (`enum Color string`, receiver declarations):
 
 ```
-fn |T Numeric| Add(a T, b T) T { a + b }
+fn Add<T numeric>(a T, b T) T { a + b }
 
-Add(1, 2)       // T = Int
-Add(1.0, 2.0)   // T = Float
-Add("a", "b")   // compile error: String is not Numeric
+Add(1, 2)       // T = int
+Add(1.0, 2.0)   // T = float
+Add("a", "b")   // compile error: type string does not satisfy constraint numeric
 ```
 
-The constraint slot is optional — bare `|T|` still means "any type":
+The constraint slot is optional — bare `<T>` still means "any type":
 
 ```
-fn |T| Identity(x T) T { x }
+fn Identity<T>(x T) T { x }
 ```
 
 Multiple type parameters each carry their own optional constraint:
 
 ```
-fn |T Integer, U Numeric| Mix(a T, b U) U { ... }
+fn Pick<T integer, U numeric>(a T, b U) U { b }
 ```
 
-Three named constraints are built into the compiler. They are
-compiler-only identifiers and cannot appear as the type of a variable,
-parameter, or return value — only in a constraint slot.
+Three named constraints are built into the compiler. They are compiler-only
+identifiers and cannot appear as the type of a variable, parameter, or return
+value — only in a constraint slot.
 
 | Constraint | Members |
 |---|---|
-| `Integer` | `Int`, `Int8`, `Int16`, `Int32`, `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Byte` |
-| `Float`   | `Float`, `Float32`, `Float64` |
-| `Numeric` | All members of `Integer` and `Float` |
+| `integer` | `int`, `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `byte` |
+| `float`   | `float`, `float32`, `float64` |
+| `numeric` | All members of `integer` and `float` |
 
-Each constraint implicitly permits the operators that are valid across
-every member of its set:
+Each constraint implicitly permits the operators that are valid across every
+member of its set:
 
-- `Integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
+- `integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
   `==`, `!=`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
-- `Float`: `+`, `-`, `*`, `/`, comparison
-- `Numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
+- `float`: `+`, `-`, `*`, `/`, comparison
+- `numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
   valid on floats)
 
-Inside a function with a constrained generic, the listed operators are
-usable on the constrained type without further declaration. The compiler
-validates at instantiation that the actual type belongs to the constraint
-set; if not, the call fails with an error naming both the constraint and
-the offending type.
+Inside a function with a constrained generic, the listed operators are usable
+on the constrained type without further declaration. The compiler validates at
+instantiation that the actual type belongs to the constraint set; if not, the
+call fails with an error naming both the constraint and the offending type.
+
+An interface is also nameable as a constraint, which is how a generic requires
+behaviour rather than a built-in type set. The bound's methods are callable on
+the type parameter and dispatch to whichever concrete type it was instantiated
+with:
+
+```
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+pub fn (c Cat) Name() string { "cat" }
+
+fn Describe<T Named>(x T) string { x.Name() }
+
+Describe(Cat{})  // cat
+```
 
 ## Type Aliases
 
@@ -686,7 +751,41 @@ is assigned a zero value by the compiler.
 | array{T} | [] | [1, 2, 3] |
 | map{K:V} | {} | {"key": 42} |
 
-Multiline strings also support interpolation.
+A `"` string is the single-line form. To span lines, open a `"""` block: write
+the delimiters on lines of their own, and the two line breaks beside them
+position the delimiters rather than joining the content.
+
+```
+lines := """
+  alpha
+  beta
+  """                 // "alpha\nbeta"
+```
+
+The indentation of the closing `"""` is the margin, and it comes off every
+line, so a block reads at the depth of the code around it. Indentation past the
+margin is content, and a line indented less than the margin is an error rather
+than a guess:
+
+```
+tree := """
+  root
+    leaf
+  """                 // "root\n  leaf"
+```
+
+Both breaks are layout, so a string that ends in a newline says so with a blank
+line before the closing delimiter — `"""\n  a\n\n  """` is `"a\n"`. A block's
+line breaks are always `\n`, whatever the file uses.
+
+Written inline, `"""..."""` is content verbatim and stays on one line, which
+makes it the way to write a string full of quotes:
+
+```
+q := """a "quoted" word"""
+```
+
+Blocks interpolate on the same rule as any other string.
 
 In the case where a type might be ambiguous, either it must be made explicit
 or it will be a type error.
@@ -772,12 +871,13 @@ Even then, prefer iterating directly (`for x : arr`) over indexing.
 
 ## Strings
 
-Strings behave like most language. They're wrapped in double quotes and can
-contain any printable character. Tabs and newlines can be used and special
-characters can be escaped with '\'.
+Strings behave like most languages. They're wrapped in double quotes and can
+contain any printable character. A `"` string stays on one line; spanning lines
+is what the `"""` block above is for. Special characters are escaped with '\'.
 
-Example characters: '\n' (newline), '\t' (tab), '\\' (backslash), '\"', and
-'\{'. The grammar contains an exhaustive list.
+Example characters: '\n' (newline), '\r' (carriage return), '\t' (tab), '\\'
+(backslash), '\"', '\{' and '\}'. An escape the language does not define keeps
+its backslash. The grammar contains an exhaustive list.
 
 ### String Access
 
@@ -804,7 +904,28 @@ treat the underlying data as a reference for performance reasons, if the
 runtime detects a write, then it performs a full copy, ensuring all slices are
 unique data.
 
-## String Iterpolation
+## String Interpolation
+
+A `{...}` inside a string holds an expression; its value is substituted where it
+appears. `\{` writes a literal brace instead.
+
+```
+name := "world"
+io.Println("hello, {name}")       // => hello, world
+io.Println("{a} + {b} = {a + b}") // as many as you like
+io.Println("not interp: \{x}")    // => not interp: {x}
+```
+
+The expression may open braces of its own — the interpolation ends at the `}`
+matching its `{`, not at the first one seen. Struct literals, map literals and
+block-bearing expressions all interpolate, as do strings nested inside them.
+
+```
+io.Println("point: {Point{x: 1, y: 2}.x}")
+io.Println("parity: {if n % 2 == 0 { "even" } else { "odd" }}")
+```
+
+Multi-line strings interpolate on the same rule.
 
 Any type that implements a `Stringable` interface can be interpolated in a String.
 All the basic types can return their values as a string. Arrays and maps also
@@ -856,32 +977,126 @@ pub fn (u User) Email() String {
 }
 ```
 
-Structs can also be bound to local variables or passed to methods by using an
-anonymous struct. Methods can not be bound to anonymous structs.
-
-```
-pub fn Foo() String {
-  s := struct{id Int, name String}
-  user := net.Get("User", s)
-  "{s.id}: {s.name}"
-}
-```
+There is no anonymous struct form. A shape is spelled once, as a declaration,
+and referred to by name — so there is only one way to write it and a method can
+always be bound to it.
 
 Instead of `this` or `self`, you name the receiver. Field access always goes
 through the receiver name — struct fields are never injected as bare locals.
 
 ```
 struct Foo {
-  name String // private
+  name string // private
 }
 
-fn (f Foo) SetName(value String) Void {
-  f.name = value
+fn (f Foo) Named(value string) Foo {
+  Foo{name: value}
 }
 ```
 
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
+
+The receiver is a value, exactly like a parameter, so the rules under
+[Mutability](#mutability-memory-model) apply to it. Assigning to one of its
+fields rewrites the method's own copy and the caller never sees it:
+
+```
+fn (c Counter) Bump() int {
+  c.n += 1 // scratch: local to this call
+  c.n
+}
+```
+
+A method that changes a struct therefore returns the new value rather than
+mutating in place — there is no by-reference receiver.
+
+```
+fn (c Counter) Incremented() Counter {
+  Counter{n: c.n + 1}
+}
+
+c = c.Incremented()
+```
+
+### Self-referential structs
+
+A struct may contain itself, as long as there is a way to stop. A struct holds
+its fields inline, so a field that is just the struct again would need a value
+of infinite size:
+
+```
+struct Node {
+  value int
+  tail Node // rejected: no finite size
+}
+```
+
+Three things give it a way to stop. A union alternative:
+
+```
+struct Node {
+  value int
+  tail Node | Missing
+}
+```
+
+An array, or a map:
+
+```
+struct Tree {
+  value int
+  kids array{Tree}
+}
+```
+
+The union form is the list or tree you would reach for; the collection form is
+the one with many children. In both cases the recursion bottoms out on a value
+that holds nothing further — `Missing{}`, or an empty collection.
+
+The cycle may also run through several structs, and they may be declared in any
+order:
+
+```
+struct Expr {
+  op int
+  arg Operand | Missing
+}
+
+struct Operand {
+  literal int
+  nested Expr | Missing
+}
+```
+
+A generic struct may reach itself too. Inside its own body, `Node<T>` is the
+type being declared:
+
+```
+struct Node<T> {
+  value T
+  tail Node<T> | Missing
+}
+```
+
+Walk a recursive shape by narrowing, the same as any other union:
+
+```
+fn (n Node) Sum() int {
+  t := n.tail
+  if t is Node {
+    n.value + t.Sum()
+  } else {
+    n.value
+  }
+}
+```
+
+Note that `t := n.tail` is needed: `is` narrows a name, not an expression.
+
+Where a struct closes a cycle, the union stores it on the heap rather than
+inline — that is what bounds the size. This is not something you declare or
+can observe: the value still copies, compares, and narrows like any other.
 
 ### Type bound methods
 
@@ -934,18 +1149,16 @@ Config{timeout: 5}       // timeout 5,  name "anon", active true, retries 0
 
 ### Struct literals
 
-To initialize a struct, its literal form must be used. The structs Identifier,
-or an anonymous struct, must proceed the literal.
+To initialize a struct, its literal form must be used. The struct's identifier,
+or a `pkg.Type` selector, must precede the literal.
 
 ```
 struct Point {
   x, y Int
 }
 
-// named struct
 p := Point{x: 2, y: 4}
-
-tmp := struct{name, email String}{name: "Jane", email: "jane@example.com"}
+q := geom.Point{x: 2, y: 4} // from another package
 ```
 
 ### Struct access
@@ -954,7 +1167,15 @@ Since the structs of a field are stronly typed, they can be accessed with dot
 access, called a selector.
 
 ```
-data := struct{a struct {b Int}}{a: {b: 0}}
+struct Inner {
+  b int
+}
+
+struct Outer {
+  a Inner
+}
+
+data := Outer{a: Inner{b: 0}}
 b := data.a.b
 ```
 
@@ -976,9 +1197,9 @@ value := data.optional or { "unknown" }
 
 ### Struct embedding (mix-ins)
 
-A struct may be embedding inside another struct. Unlike class inheritance, a
-struct that is embedded passes is members and methods on to the child struct
-but does not create a parent-child hierarchial inheritance.
+A struct may be embedded inside another struct. Unlike class inheritance, a
+struct that is embedded passes its members and methods on to the child struct
+but does not create a parent-child hierarchical inheritance.
 
 The "child" struct, the one receiving the embedding, gains all the fields and
 methods of the embedded struct as if they were its own. The embedded struct
@@ -1030,6 +1251,51 @@ pub fn (c Child) Kind() string { "child" }
 
 c := Child{}
 c.Kind() // returns "child" because the child's method shadows the embedded one
+```
+
+#### Reaching the embedded value
+
+Shadowing hides a name, not the storage behind it. The embedded struct keeps
+its own memory inside the child, and it answers to its bare type name — so
+`u.Timestamps` reaches that value directly, for reading, writing, and
+initialising:
+
+```
+struct User {
+  Timestamps
+  created int // shadows the embedded `created`
+}
+
+u := User{Timestamps: Timestamps{created: 100}, created: 5}
+u.created            // 5   — the child's
+u.Timestamps.created // 100 — the embedded one
+u.Timestamps.Age()   // the method, run against the embedded value
+
+u.Timestamps.created = 77 // writes the embedded field; u.created stays 5
+```
+
+Without this, a child field would make the embedded field it shadows
+unreachable in both directions, and a promoted method reading that field would
+quietly see a zero.
+
+This is **not** `super`. `u.Timestamps.Age()` is ordinary field access followed
+by ordinary dispatch: it finds the embedded value and calls the method on
+*that*. There is no chain to walk up and no way to re-enter the child, which
+is the same onion rule as above — the inside can't see out.
+
+Qualified access composes one name at a time, so a struct embedded two levels
+down is reached as `u.Base.Timestamps.created`.
+
+An embedded type is always named by its **unqualified** name, even when it
+comes from another package: `lib.Timestamps` is declared with the package
+qualifier but reached as `u.Timestamps`. Because that name has to stay
+unambiguous, it is an error for a declared field or a second embed to claim it.
+
+```
+struct Bad {
+  Timestamps
+  Timestamps string // Error: collides with the embedded type's name
+}
 ```
 
 ```
@@ -1553,6 +1819,39 @@ y := 1 // implicit type
 
 Using a variable before it is declared is an error. Redeclaring a variable
 (shadowing) is also an error. Declarations are statements.
+
+### Unused variables
+
+A local that nothing ever reads is an error. It is dead code, a typo, or an
+abandoned intent, and the fix is always the same: remove it, or name it as
+[ignored](#Identifiers).
+
+Assignment is not a read. A variable only ever written to is still dead —
+every write to it is discarded — so `=`, the compound operators, and `++` /
+`--` do not keep a variable alive. Writing *through* a variable does read it:
+`p.x = 1` and `arr[0] = 1` need `p` and `arr` to find where to write.
+
+```
+x := 1        // invalid, nothing reads x
+y := 1
+y = 2         // invalid, still nothing reads y
+_ := 1        // fine, ignored
+```
+
+The rule covers every local you name yourself, including loop variables and
+the `or` pipe — both are optional, so an unread one can always be dropped or
+ignored:
+
+```
+for _ : arr {}       // rather than an unread `v`
+f() or { 0 }         // rather than an unread `|err|`
+```
+
+Parameters are exempt. A parameter's name is part of a signature that a
+caller, an interface, or a callback shape may fix, so removing it is not
+available as a fix. A `for` accumulator is exempt for a different reason: the
+loop's value *is* the accumulator, so the expression reads it even when the
+body only assigns to it.
 
 ## Assignment
 

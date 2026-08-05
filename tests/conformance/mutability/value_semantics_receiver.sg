@@ -1,0 +1,19 @@
+// Spec: "Values that escape their scope are copied." (docs/language.md:51)
+// A receiver is a value like any parameter, so writing one of its fields
+// inside the method is visible there but not to the caller.
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+fn (c Counter) Bump() int {
+  c.n = 99
+  c.n
+}
+
+pub fn Main() void {
+  c := Counter{n: 1}
+  io.Println(c.Bump().String())
+  io.Println(c.n.String())
+}

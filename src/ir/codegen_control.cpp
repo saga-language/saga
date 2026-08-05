@@ -1176,7 +1176,7 @@ CodeGen::const_error_message(const StructLiteralNode &node,
     auto *sf = std::get_if<StringFragmentNode>(&frag->data);
     if (!sf)
       return std::nullopt;
-    text += unescape_fragment(sf->text);
+    text += unescape_string_fragment(*sf);
   }
   return text;
 }
@@ -1314,16 +1314,33 @@ CodeGen::struct_field_gep(llvm::Value *struct_ptr,
     }
   }
 
-  // Promoted-field access: the field lives on one of the embedded structs.
-  // Walk each embed in declaration order and recurse into its layout.
-  // Layout invariant: embed slots are appended to `fields` after the
-  // owner's own fields, in the same order as `info.embeds`.
+  // Embed slots are appended to `fields` after the owner's own fields, in the
+  // same order as `info.embeds`. An embed is reachable two ways: by its own
+  // type name (`u.Timestamps`), addressing the whole embedded value, and by
+  // any member it promotes. Both passes are needed because the name of an
+  // embed sits at depth 0 alongside the owner's fields, while anything it
+  // promotes is deeper — so a shallower match must win even when a deeper one
+  // appears in an earlier embed.
   for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
     auto &embed = info.embeds[ei];
     if (!embed || embed->kind != TypeKind::Struct) continue;
     size_t slot_idx = info.fields.size() + ei;
     if (slot_idx >= fields.size()) break;
 
+    auto &einfo = std::get<StructTypeInfo>(embed->detail);
+    if (einfo.name != field_name) continue;
+    auto *gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
+                                        embed_slot_name(einfo));
+    return {gep, st->getElementType(slot_idx)};
+  }
+
+  for (size_t ei = 0; ei < info.embeds.size(); ++ei) {
+    auto &embed = info.embeds[ei];
+    if (!embed || embed->kind != TypeKind::Struct) continue;
+    size_t slot_idx = info.fields.size() + ei;
+    if (slot_idx >= fields.size()) break;
+
+    // Promoted access: the member lives somewhere inside this embed.
     auto &einfo = std::get<StructTypeInfo>(embed->detail);
     auto *slot_gep = builder.CreateStructGEP(st, struct_ptr, slot_idx,
                                              embed_slot_name(einfo));

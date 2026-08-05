@@ -276,9 +276,22 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
                                              bindings, inst);
             if (spec) {
               std::vector<llvm::Value *> args;
+              auto *ft = spec->getFunctionType();
+              auto *parent_fn = builder.GetInsertBlock()->getParent();
               for (auto &a : node.args) {
                 auto *v = emit_expr(*a);
-                if (v) args.push_back(v);
+                if (!v) continue;
+                // A specialisation takes a struct by pointer. Ask its
+                // signature rather than re-deriving the rule here.
+                if (args.size() < ft->getNumParams() &&
+                    ft->getParamType(args.size())->isPointerTy() &&
+                    v->getType()->isStructTy()) {
+                  auto *tmp = create_entry_alloca(parent_fn, "arg.spill",
+                                                  v->getType());
+                  builder.CreateStore(v, tmp);
+                  v = tmp;
+                }
+                args.push_back(v);
               }
               if (spec->getReturnType()->isVoidTy()) {
                 builder.CreateCall(spec, args);

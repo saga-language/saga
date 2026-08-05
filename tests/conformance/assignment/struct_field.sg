@@ -1,0 +1,14 @@
+// Spec: a field of a local struct is assignable; sibling fields are
+// untouched. (docs/language.md §Mutability)
+import "std/io"
+
+struct Point {
+  x, y int
+}
+
+pub fn Main() void {
+  p := Point{x: 1, y: 2}
+  p.x = 7
+  io.Println(p.x.String())
+  io.Println(p.y.String())
+}

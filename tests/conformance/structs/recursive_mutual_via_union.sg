@@ -1,0 +1,34 @@
+// Spec: the cycle may run through two structs rather than one, and either of
+// them may be declared first. Each closes the other's cycle, so both are stored
+// behind a pointer where they appear as a union alternative.
+import "std/io"
+
+struct Expr {
+  op int
+  arg Operand | Missing
+}
+
+struct Operand {
+  literal int
+  nested Expr | Missing
+}
+
+pub fn Total(e Expr | Missing) int {
+  if e is Expr {
+    a := e.arg
+    if a is Operand {
+      e.op + a.literal + Total(a.nested)
+    } else {
+      e.op
+    }
+  } else {
+    0
+  }
+}
+
+pub fn Main() void {
+  inner := Expr{op: 100, arg: Missing{}}
+  operand := Operand{literal: 20, nested: inner}
+  top := Expr{op: 3, arg: operand}
+  io.Println("{Total(top)}")
+}

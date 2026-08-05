@@ -228,6 +228,7 @@ import "std/math"
 
 pub fn Main() void {
   x := math.Add(1, 2)
+  _ := x
 }
   )", {{"std/math", mock_math}});
 
@@ -249,6 +250,7 @@ import "std/geo"
 
 pub fn Main() void {
   p := geo.Point
+  _ := p
 }
   )", {{"std/geo", mock_geo}});
 
@@ -538,6 +540,7 @@ import "mylib"
 
 pub fn Main() void {
   p := mylib.Point
+  _ := p
 }
   )");
 
@@ -766,6 +769,8 @@ import "secretlib"
 pub fn Main() void {
   x := secretlib.Public()
   p := secretlib.PubStruct
+  _ := x
+  _ := p
 }
   )");
 
@@ -809,6 +814,7 @@ const Math = import "mega/long/mathematics"
 
 pub fn Main() void {
   x := Math.Sqrt(2.0)
+  _ := x
 }
   )", {{"mega/long/mathematics", mock}});
 
@@ -827,12 +833,76 @@ const M = import "std/math"
 
 pub fn Main() void {
   x := M.Pi
+  _ := x
 }
   )", {{"std/math", mock}});
 
   EXPECT_TRUE(r.has_no_errors()) << "Errors:";
   for (auto &e : r.analyzer->errors.errors)
     std::cerr << "  " << e.message << "\n";
+}
+
+// ===========================================================================
+// Unused imports
+// ===========================================================================
+
+TEST(Modules, UnusedImportRejected) {
+  auto mock = make_mock_module("math", "std/math", {{"Pi", make_float_type()}});
+
+  auto r = ModuleTestResult::with_mocks(R"(
+import "std/math"
+
+pub fn Main() void {
+}
+  )", {{"std/math", mock}});
+
+  EXPECT_TRUE(r.has_error_containing("package 'math' is imported but never used"));
+}
+
+TEST(Modules, UnusedNamedImportRejected) {
+  auto mock = make_mock_module("math", "std/math", {{"Pi", make_float_type()}});
+
+  auto r = ModuleTestResult::with_mocks(R"(
+const M = import "std/math"
+
+pub fn Main() void {
+}
+  )", {{"std/math", mock}});
+
+  EXPECT_TRUE(r.has_error_containing("package 'M' is imported but never used"));
+}
+
+TEST(Modules, ImportUsedOnlyInATypeIsUsed) {
+  auto mock = make_mock_module(
+      "shapes", "std/shapes",
+      {{"Point", make_struct_type("Point", {{"x", make_int_type(), true}})}});
+
+  auto r = ModuleTestResult::with_mocks(R"(
+import "std/shapes"
+
+fn origin(p shapes.Point) int {
+  return p.x
+}
+
+pub fn Main() void {
+}
+  )", {{"std/shapes", mock}});
+
+  EXPECT_TRUE(r.has_no_errors()) << "Errors:";
+  for (auto &e : r.analyzer->errors.errors)
+    std::cerr << "  " << e.message << "\n";
+}
+
+TEST(Modules, UnresolvableImportIsNotAlsoCalledUnused) {
+  auto r = ModuleTestResult::from(R"(
+import "std/nowhere"
+
+pub fn Main() void {
+}
+  )");
+
+  EXPECT_TRUE(r.has_error_containing("cannot find package"));
+  EXPECT_FALSE(r.has_error_containing("never used"));
 }
 
 } // namespace saga

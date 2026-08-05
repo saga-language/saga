@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <unordered_set>
 
 namespace saga {
 
@@ -60,6 +61,10 @@ TypePtr make_string_type() {
 
 TypePtr make_invalid_type() {
   return std::make_shared<Type>(TypeKind::Invalid, InvalidType{});
+}
+
+TypePtr make_unknown_type() {
+  return std::make_shared<Type>(TypeKind::Unknown, UnknownType{});
 }
 
 TypePtr make_array_type(TypePtr element) {
@@ -203,6 +208,36 @@ bool is_invalid_type(const TypePtr &t) {
   return t && t->kind == TypeKind::Invalid;
 }
 
+bool is_unknown_type(const TypePtr &t) {
+  return t && t->kind == TypeKind::Unknown;
+}
+
+bool contains_unknown(const TypePtr &t) {
+  if (!t)
+    return false;
+  switch (t->kind) {
+  case TypeKind::Unknown:
+    return true;
+  case TypeKind::Array:
+    return contains_unknown(std::get<ArrayTypeInfo>(t->detail).element);
+  case TypeKind::Map: {
+    auto &info = std::get<MapTypeInfo>(t->detail);
+    return contains_unknown(info.key) || contains_unknown(info.value);
+  }
+  case TypeKind::Union: {
+    for (auto &alt : std::get<UnionTypeInfo>(t->detail).alternatives)
+      if (contains_unknown(alt))
+        return true;
+    return false;
+  }
+  default:
+    // A hole only ever enters through an empty collection literal, so it can
+    // only nest where such a literal's type can nest. Nominal types are not
+    // walked, which also keeps a recursive struct from looping here.
+    return false;
+  }
+}
+
 bool is_error_valued(const TypePtr &t) {
   auto u = unwrap_alias(t);
   return u && u->kind == TypeKind::Struct &&
@@ -330,6 +365,8 @@ std::string type_to_string(const TypePtr &t) {
     return "string";
   case TypeKind::Invalid:
     return "<error>";
+  case TypeKind::Unknown:
+    return "<unknown>";
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
@@ -361,7 +398,14 @@ std::string type_to_string(const TypePtr &t) {
 
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
-    return info.name;
+    if (info.type_args.empty())
+      return info.name;
+    std::string out = info.name + "<";
+    for (size_t i = 0; i < info.type_args.size(); ++i) {
+      if (i) out += ", ";
+      out += type_to_string(info.type_args[i]);
+    }
+    return out + ">";
   }
 
   case TypeKind::Enum: {
@@ -527,6 +571,7 @@ bool types_equal(const TypePtr &a, const TypePtr &b) {
   }
 
   case TypeKind::Invalid:
+  case TypeKind::Unknown:
     return true;
   }
 
@@ -541,8 +586,11 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
   if (!source || !target)
     return false;
 
-  // Error types propagate silently.
-  if (is_invalid_type(source) || is_invalid_type(target))
+  // Error types propagate silently. An inference hole yields to whatever the
+  // context wants — that is how `a array{int} = []` types — and a hole that
+  // never met a context is caught at the binding, not here.
+  if (is_invalid_type(source) || is_invalid_type(target) ||
+      is_unknown_type(source) || is_unknown_type(target))
     return true;
 
   // Alias assignability.  A structural alias (`type X = T`) is transparent:
@@ -688,9 +736,9 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
 TypePtr common_type(const TypePtr &a, const TypePtr &b) {
   if (!a || !b)
     return nullptr;
-  if (is_invalid_type(a))
+  if (is_invalid_type(a) || is_unknown_type(a))
     return b;
-  if (is_invalid_type(b))
+  if (is_invalid_type(b) || is_unknown_type(b))
     return a;
   if (types_equal(a, b))
     return a;
@@ -720,8 +768,72 @@ TypePtr common_type(const TypePtr &a, const TypePtr &b) {
 // Generics — substitution
 // ===========================================================================
 
-TypePtr substitute(const TypePtr &t,
-                   const std::unordered_map<uint32_t, TypePtr> &bindings) {
+using Bindings = std::unordered_map<uint32_t, TypePtr>;
+
+// Legal recursion still leaves the type graph cyclic — `Node<T>` reaches
+// itself through `tail Node<T> | Missing` even though its layout is finite —
+// so a substituted struct is memoised before its fields are visited.
+static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
+                               SubstMemo &memo);
+
+static TypePtr substitute_struct(const TypePtr &t, const Bindings &bindings,
+                                 SubstMemo &memo) {
+  auto &info = std::get<StructTypeInfo>(t->detail);
+  // The memo is consulted first: a caller may have seeded this declaration
+  // onto the instantiation it is building.
+  auto seen = memo.find(t.get());
+  if (seen != memo.end())
+    return seen->second;
+
+  // Otherwise only an argument can leave a struct partly generic; a bare
+  // declaration carries its own parameters, not the caller's to bind.
+  if (info.type_args.empty())
+    return t;
+
+  bool changed = false;
+  std::vector<TypePtr> args;
+  args.reserve(info.type_args.size());
+  for (auto &a : info.type_args) {
+    auto sa = substitute_impl(a, bindings, memo);
+    if (sa != a)
+      changed = true;
+    args.push_back(std::move(sa));
+  }
+  if (!changed) {
+    memo[t.get()] = t;
+    return t;
+  }
+
+  auto result = make_struct_type(info.name, {}, {}, info.type_params,
+                                 info.origin_package);
+  auto &ri = std::get<StructTypeInfo>(result->detail);
+  ri.type_args = std::move(args);
+  ri.is_error = info.is_error;
+  memo[t.get()] = result;
+
+  for (auto &f : info.fields)
+    ri.fields.push_back({f.name, substitute_impl(f.type, bindings, memo),
+                         f.is_public, f.default_value});
+  for (auto &m : info.methods)
+    ri.methods.push_back({m.name, substitute_impl(m.signature, bindings, memo),
+                          m.is_public, m.origin_package});
+  for (auto &e : info.embeds)
+    ri.embeds.push_back(substitute_impl(e, bindings, memo));
+  return result;
+}
+
+TypePtr substitute(const TypePtr &t, const Bindings &bindings) {
+  SubstMemo memo;
+  return substitute_impl(t, bindings, memo);
+}
+
+TypePtr substitute(const TypePtr &t, const Bindings &bindings,
+                   SubstMemo &memo) {
+  return substitute_impl(t, bindings, memo);
+}
+
+static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
+                               SubstMemo &memo) {
   if (!t || bindings.empty())
     return t;
 
@@ -736,7 +848,7 @@ TypePtr substitute(const TypePtr &t,
 
   case TypeKind::Array: {
     auto &info = std::get<ArrayTypeInfo>(t->detail);
-    auto elem = substitute(info.element, bindings);
+    auto elem = substitute_impl(info.element, bindings, memo);
     if (elem == info.element)
       return t;
     return make_array_type(std::move(elem));
@@ -744,8 +856,8 @@ TypePtr substitute(const TypePtr &t,
 
   case TypeKind::Map: {
     auto &info = std::get<MapTypeInfo>(t->detail);
-    auto k = substitute(info.key, bindings);
-    auto v = substitute(info.value, bindings);
+    auto k = substitute_impl(info.key, bindings, memo);
+    auto v = substitute_impl(info.value, bindings, memo);
     if (k == info.key && v == info.value)
       return t;
     return make_map_type(std::move(k), std::move(v));
@@ -757,14 +869,14 @@ TypePtr substitute(const TypePtr &t,
     std::vector<TypePtr> params;
     params.reserve(info.params.size());
     for (auto &p : info.params) {
-      auto sp = substitute(p, bindings);
+      auto sp = substitute_impl(p, bindings, memo);
       if (sp != p)
         changed = true;
       params.push_back(std::move(sp));
     }
     TypePtr ret;
     if (info.return_type) {
-      ret = substitute(info.return_type, bindings);
+      ret = substitute_impl(info.return_type, bindings, memo);
       if (ret != info.return_type)
         changed = true;
     }
@@ -779,7 +891,7 @@ TypePtr substitute(const TypePtr &t,
     std::vector<TypePtr> alts;
     alts.reserve(info.alternatives.size());
     for (auto &a : info.alternatives) {
-      auto sa = substitute(a, bindings);
+      auto sa = substitute_impl(a, bindings, memo);
       if (sa != a)
         changed = true;
       alts.push_back(std::move(sa));
@@ -791,12 +903,15 @@ TypePtr substitute(const TypePtr &t,
 
   case TypeKind::Alias: {
     auto &info = std::get<AliasTypeInfo>(t->detail);
-    auto u = substitute(info.underlying, bindings);
+    auto u = substitute_impl(info.underlying, bindings, memo);
     if (u == info.underlying)
       return t;
     return make_alias_type(info.name, std::move(u), info.methods,
                            info.origin_package, info.structural);
   }
+
+  case TypeKind::Struct:
+    return substitute_struct(t, bindings, memo);
 
   default:
     return t; // primitive / nominal — no type params inside
@@ -838,9 +953,78 @@ bool has_type_params(const TypePtr &t) {
         return true;
     return false;
   }
+  // Only the arguments — descending into fields would not terminate on a
+  // self-referential struct (`Node<T> { tail Node<T> }`), and an argument
+  // is the only place a caller can leave a struct partly generic.
+  case TypeKind::Struct: {
+    auto &s = std::get<StructTypeInfo>(t->detail);
+    for (auto &a : s.type_args)
+      if (has_type_params(a))
+        return true;
+    return false;
+  }
   default:
     return false;
   }
+}
+
+bool same_struct_decl(const TypePtr &a, const TypePtr &b) {
+  if (a.get() == b.get())
+    return true;
+  if (!a || !b || a->kind != TypeKind::Struct || b->kind != TypeKind::Struct)
+    return false;
+  auto &ai = std::get<StructTypeInfo>(a->detail);
+  auto &bi = std::get<StructTypeInfo>(b->detail);
+  return ai.name == bi.name && ai.origin_package == bi.origin_package;
+}
+
+// Struct fields, embeds, and union alternatives all sit inside the containing
+// value, so the walk follows them. Arrays and maps hold their elements on the
+// heap, which is where a recursive shape already has its footing.
+static bool reaches_struct(const TypePtr &origin, const TypePtr &t,
+                           std::unordered_set<std::string> &seen) {
+  auto u = unwrap_alias(t);
+  if (!u)
+    return false;
+  if (same_struct_decl(u, origin))
+    return true;
+  if (u->kind != TypeKind::Struct && u->kind != TypeKind::Union)
+    return false;
+  // Keyed by rendering, not pointer: resolving a generic application yields a
+  // fresh type each time, so pointer identity would not terminate.
+  if (!seen.insert(type_to_string(u)).second)
+    return false;
+  if (u->kind == TypeKind::Union) {
+    for (auto &alt : std::get<UnionTypeInfo>(u->detail).alternatives)
+      if (reaches_struct(origin, alt, seen))
+        return true;
+    return false;
+  }
+  auto &si = std::get<StructTypeInfo>(u->detail);
+  for (auto &f : si.fields)
+    if (reaches_struct(origin, f.type, seen))
+      return true;
+  for (auto &e : si.embeds)
+    if (reaches_struct(origin, e, seen))
+      return true;
+  return false;
+}
+
+bool union_alt_is_boxed(const TypePtr &alt) {
+  auto u = unwrap_alias(alt);
+  if (!u || u->kind != TypeKind::Struct)
+    return false;
+  auto &info = std::get<StructTypeInfo>(u->detail);
+  if (info.is_error)
+    return false; // Already a heap box.
+  std::unordered_set<std::string> seen{type_to_string(u)};
+  for (auto &f : info.fields)
+    if (reaches_struct(u, f.type, seen))
+      return true;
+  for (auto &e : info.embeds)
+    if (reaches_struct(u, e, seen))
+      return true;
+  return false;
 }
 
 bool unify(const TypePtr &param_type, const TypePtr &arg_type,
@@ -889,6 +1073,22 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
     }
     if (pi.return_type && !unify(pi.return_type, ai.return_type, out))
       return false;
+    return true;
+  }
+
+  case TypeKind::Struct: {
+    // A struct's identity is its declaration; its arguments are what a caller
+    // can bind. Fields are derived from the arguments, so matching them too
+    // would only re-derive the same bindings.
+    if (!same_struct_decl(param_type, arg_type))
+      return false;
+    auto &pi = std::get<StructTypeInfo>(param_type->detail);
+    auto &ai = std::get<StructTypeInfo>(arg_type->detail);
+    if (pi.type_args.size() != ai.type_args.size())
+      return false;
+    for (size_t i = 0; i < pi.type_args.size(); ++i)
+      if (!unify(pi.type_args[i], ai.type_args[i], out))
+        return false;
     return true;
   }
 

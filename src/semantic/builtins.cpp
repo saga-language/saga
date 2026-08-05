@@ -95,6 +95,7 @@ void BuiltinTypes::init() {
 
   // -- Error-recovery sentinel (compiler internal) -------------------------
   invalid_type = make_invalid_type();
+  unknown_type = make_unknown_type();
 }
 
 // ===========================================================================

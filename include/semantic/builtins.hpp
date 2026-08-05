@@ -67,6 +67,7 @@ struct BuiltinTypes {
 
   // Error-recovery sentinel (not a language type)
   TypePtr invalid_type;
+  TypePtr unknown_type;
 
   /// Initialise all built-in type singletons.
   void init();

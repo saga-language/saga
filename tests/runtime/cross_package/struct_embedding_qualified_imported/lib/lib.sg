@@ -1,0 +1,10 @@
+pub struct Timestamps {
+  created int
+}
+
+pub fn (t Timestamps) Created() int { t.created }
+
+pub struct User {
+  Timestamps
+  created int
+}

@@ -353,6 +353,13 @@ struct Analyzer {
   /// Analyzer::error() reads this to append "...instantiated from" frames.
   std::vector<const Node *> instantiation_stack_;
 
+  /// Set by Analyzer::Silence; makes error() a no-op.
+  bool silenced_ = false;
+
+  /// Set while re-analysing a generic body that a previous instantiation has
+  /// already reported on.
+  bool suppress_unread_reports_ = false;
+
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
 
@@ -396,15 +403,14 @@ struct Analyzer {
   /// Process all import declarations in a source after names are collected.
   void process_imports(const std::vector<NodePtr> &declarations);
 
-  // ── Cross-package generic method body loading (D8) ────────────────────
+  // ── Generic method body loading (D8) ──────────────────────────────────
 
-  /// Result of `load_imported_method_decl`: enough information for codegen
-  /// to emit a per-importer specialisation of a generic method whose body
-  /// lives in another package. The instantiation pointer drives body
+  /// Enough information for codegen to emit a specialisation of a method
+  /// declared on a generic struct. The instantiation pointer drives body
   /// codegen via current_instantiation_; the bindings are keyed by the
-  /// origin package's TypeParam IDs (struct-aligned) so emit_specialisation
+  /// declaring package's TypeParam IDs (struct-aligned) so emit_specialisation
   /// can substitute and mangle correctly.
-  struct ImportedMethodDecl {
+  struct GenericMethodDecl {
     const FuncDeclNode *decl = nullptr;
     TypePtr template_signature;
     std::vector<TypeParam> struct_type_params;
@@ -412,14 +418,21 @@ struct Analyzer {
     BodyInstantiation *instantiation = nullptr;
   };
 
-  /// Lazily load and analyse the origin package's source so codegen can
-  /// emit a generic method body that the origin's compiled .o does not
-  /// contain. The caller supplies the concrete type arguments (positionally
-  /// aligned with the struct's type parameters) so this method can drive
-  /// per-binding body type-checking in the sub-analyzer. Returns
-  /// `decl == nullptr` if the source cannot be located or the requested
-  /// method cannot be found.
-  ImportedMethodDecl
+  /// Find a method on a generic struct declared in *this* package and bind
+  /// its type parameters to `type_args` (positionally aligned with the
+  /// struct's). Returns `decl == nullptr` if the struct or method is absent.
+  /// A generic struct has no single concrete signature to declare eagerly,
+  /// so its methods reach codegen only through here.
+  GenericMethodDecl
+  generic_method_decl(const std::string &struct_name,
+                      const std::string &method_name,
+                      const std::vector<TypePtr> &type_args);
+
+  /// Same, for a struct owned by `origin`: lazily loads and analyses that
+  /// package's source, because the origin's compiled .o has no symbol for
+  /// the importer's type arguments. Returns `decl == nullptr` if the source
+  /// cannot be located.
+  GenericMethodDecl
   load_imported_method_decl(const std::string &origin,
                              const std::string &struct_name,
                              const std::string &method_name,
@@ -471,11 +484,37 @@ public:
   /// Pop the current scope, returning to its parent.
   void pop_scope();
 
+  /// Pop a scope built by name resolution, reporting the locals it declared
+  /// that nothing read. Only this pass sees every read with its scope still
+  /// live, so it is the only one that may draw that conclusion.
+  void pop_resolve_scope();
+
+  /// Pop a module scope, reporting the imports nothing used. Deferred to the
+  /// pop so it cannot depend on which pass first reaches a package name.
+  void pop_module_scope();
+
+  /// Report every local in `scope` that no read reached.
+  void report_unread_locals(const Scope &scope);
+
+  /// Report every import in `scope` that no use reached.
+  void report_unused_imports(const Scope &scope);
+
   /// Declare a symbol in the current scope; reports an error on duplicate.
   bool declare(const Symbol &sym);
 
   /// Look up a name from the current scope.
   std::optional<Symbol> lookup(const std::string &name) const;
+
+  /// Type declarations collected but not yet resolved, keyed by name.
+  std::unordered_map<std::string, const Node *> pending_type_decls_;
+
+  /// Structs whose fields are being resolved right now. Inside its own body a
+  /// generic struct names itself, and its field list is not filled in yet.
+  std::unordered_set<std::string> resolving_structs_;
+
+  /// Resolve the named type declaration if it is still pending. Naming a type
+  /// pulls it in, so declaration order within a package does not matter.
+  void ensure_type_resolved(const std::string &name);
 
   // ── Type-parameter helpers ───────────────────────────────────────────
 
@@ -502,6 +541,50 @@ public:
   /// Report a semantic error at the given span.
   void error(Span span, const std::string &message);
 
+  /// Gives up on a type without telling the user, which is only defensible if
+  /// something else reports. Records where and why; if analysis ends with no
+  /// diagnostic at all, one of these is the bug and is promoted to an ICE.
+  /// Safe to over-apply: a site that did report is never promoted.
+  TypePtr poison(Span span, std::string reason);
+
+  struct DeferredBug {
+    Span span;
+    std::string reason;
+  };
+  std::vector<DeferredBug> deferred_bugs_;
+
+  /// Promotes the first deferred bug if nothing was reported to the user.
+  void report_deferred_bugs();
+
+  /// Drops every diagnostic raised while it is alive. For a caller that
+  /// resolves a type node purely to look something up — codegen, after
+  /// checking is finished — where a failure is not a program error.
+  struct Silence {
+    explicit Silence(Analyzer &a) : a_(a), saved_(a.silenced_) {
+      a.silenced_ = true;
+    }
+    ~Silence() { a_.silenced_ = saved_; }
+
+  private:
+    Analyzer &a_;
+    bool saved_;
+  };
+
+  /// Resolves names against the package scope for as long as it is alive.
+  /// Analysis leaves current_scope wherever it finished, so a caller running
+  /// afterwards — codegen — cannot otherwise see a package-level type.
+  struct AtPackageScope {
+    explicit AtPackageScope(Analyzer &a) : a_(a), saved_(a.current_scope) {
+      if (a.package_scope_)
+        a.current_scope = a.package_scope_;
+    }
+    ~AtPackageScope() { a_.current_scope = saved_; }
+
+  private:
+    Analyzer &a_;
+    Scope::Ptr saved_;
+  };
+
   /// Report a type-mismatch error with expected/actual formatting.
   void type_error(Span span, const TypePtr &expected, const TypePtr &actual,
                   const std::string &context = "");
@@ -511,6 +594,15 @@ public:
 
   /// Report a duplicate-declaration error.
   void redeclaration_error(Span span, const std::string &name);
+
+  /// Reject a declaration that would have to hold a `void`. Legal as a return
+  /// type and as a union alternative; nowhere a value lives.
+  bool reject_void_value(Span span, const TypePtr &type, std::string_view what);
+
+  /// Reject a type parameter bound to void: every use of it in the
+  /// instantiated body would be storage with nothing to store.
+  bool reject_void_bindings(
+      const std::unordered_map<uint32_t, TypePtr> &bindings, Span span);
 
   /// Report a shadowing error (inner scope reuses outer scope name).
   void shadowing_error(Span span, const std::string &name);
@@ -540,7 +632,6 @@ private:
   TypePtr resolve_array_type(const ArrayTypeNode &node);
   TypePtr resolve_map_type(const MapTypeNode &node);
   TypePtr resolve_func_type(const FuncTypeNode &node);
-  TypePtr resolve_struct_type(const StructTypeNode &node);
   TypePtr resolve_union_type(const UnionTypeNode &node);
   TypePtr resolve_generic_type_app(const GenericTypeAppNode &node);
 
@@ -584,10 +675,20 @@ private:
   /// a switch where every arm returns).
   bool always_returns(const Node &node) const;
 
+  /// Whether an identifier occurrence reads the name or only writes to it.
+  /// `x = 1`, `x++` and `x--` are writes: they cannot be what makes x used,
+  /// or a variable only ever assigned to would look alive.
+  enum class NameUse { Read, Write };
+
   // Phase 3: Name resolution in expressions — resolve identifiers,
   // record symbols, and walk all sub-expressions.
   void resolve_expr(const Node &node);
-  void resolve_identifier(const IdentifierNode &node, const Node &parent);
+  void resolve_identifier(const IdentifierNode &node, const Node &parent,
+                          NameUse use);
+
+  /// Resolve an assignment target. A bare name is a write; through a selector
+  /// or an index it is also a read, since `p.f = 1` needs p to find f.
+  void resolve_write_target(const Node &target);
   void resolve_block(const BlockNode &node);
   void resolve_call_expr(const CallExprNode &node);
   void resolve_index_expr(const IndexExprNode &node);
@@ -649,8 +750,20 @@ private:
                                 Span field_span);
   void collect_promoted_fields(const StructTypeInfo &info,
                                std::vector<FieldInfo> &out);
+
+  /// The embed of `info` whose type name is `name`, or null. An embed is
+  /// addressable by its bare type name — `u.Timestamps` reaches the embedded
+  /// value itself, which is the only way to get at storage a child field
+  /// shadows. Direct embeds only; deeper ones are reached a step at a time.
+  TypePtr embed_by_name(const StructTypeInfo &info, const std::string &name);
+
+  /// Report and return true when an embed's type name is already claimed by a
+  /// declared field or an earlier embed.
+  bool embed_name_taken(const Node &embed_node, const TypePtr &embed,
+                        const std::vector<FieldInfo> &fields,
+                        const std::vector<TypePtr> &seen);
   TypePtr resolve_method_signature(const TypePtr &obj_type,
-                                   const std::string &field_name);
+                                   const std::string &field_name, Span span);
   /// Resolve a method callable on a union value without narrowing: the
   /// union satisfies some interface declaring `field_name` (every member
   /// satisfies it) and that method is Self-free (no interface-self in its
@@ -673,8 +786,21 @@ private:
   void check_stmt(const Node &node);
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
+
+  /// Reports and poisons a binding whose type still holds an inference hole.
+  TypePtr resolve_binding_type(TypePtr type, Span span);
   void check_assign(const AssignNode &node);
   void reject_error_field_mutation(const Node &target);
+
+  /// The identifier a write target is rooted at, walking selector and index
+  /// chains. Null when the target bottoms out in something with no storage,
+  /// such as a call result or a literal.
+  const IdentifierNode *target_root(const Node &target);
+
+  /// Reject a write target that names no writable storage. `verb` completes
+  /// the message ("assign to", "increment", "decrement").
+  void reject_immutable_target(const Node &target, std::string_view verb);
+
   void check_increment(const IncrementNode &node);
   void check_decrement(const DecrementNode &node);
   void check_return(const ReturnNode &node);
@@ -731,9 +857,12 @@ private:
   void check_func_decl(const FuncDeclNode &node);
   void check_struct_decl(const StructDeclNode &node);
   void check_field_defaults(const StructDeclNode &node);
+
+  /// Reject a struct that reaches itself through inline storage: it would
+  /// have no finite size. A cycle through an array or a map is fine.
+  void check_no_infinite_size(const TypePtr &struct_type, Span span);
   void check_field_default(const FieldSpecNode &fs);
   void check_interface_decl(const InterfaceDeclNode &node);
-  void check_import_decl(const ImportDeclNode &node);
 
   // Block checking.
   TypePtr check_block(const BlockNode &node);

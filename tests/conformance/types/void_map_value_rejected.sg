@@ -1,0 +1,10 @@
+// Same for a map: key and value types are both inferred from the literal.
+const io = import "std/io"
+
+fn shout() void {
+  io.Println("shouted")
+}
+
+pub fn Main() void {
+  {1: shout()}
+}

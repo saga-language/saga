@@ -1,0 +1,25 @@
+// Spec: a struct may reach itself through an array or a map, which hold their
+// elements on the heap. That is what gives a tree a finite size and a base
+// case — an empty collection.
+import "std/io"
+
+struct Node {
+  value int
+  kids array{Node}
+}
+
+pub fn (n Node) Sum() int {
+  total := n.value
+  for k : n.kids {
+    total += k.Sum()
+  }
+  total
+}
+
+pub fn Main() void {
+  a := Node{value: 2, kids: []}
+  b := Node{value: 3, kids: []}
+  root := Node{value: 1, kids: [a, b]}
+  io.Println("{root.Sum()}")
+  io.Println("{root.kids.Size()}")
+}

@@ -1,0 +1,10 @@
+// An interpolation needs an expression. Inside a `"""` block the unreadable
+// interpolation leaves a hole in the literal's fragments, which the margin pass
+// walks before anything has gated on the error — so this is where a crash hides.
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""
+    a {}
+    """)
+}

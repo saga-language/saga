@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "ir/codegen.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <format>
@@ -241,4 +243,20 @@ inline void setup_analyzer_paths(saga::Analyzer &analyzer,
   }
   for (auto &sp : sgi_paths)
     analyzer.package_resolver->sgi_search_paths.push_back(sp);
+}
+
+/// True when emission produced diagnostics, which are printed. Codegen
+/// specialises a generic body on first use, so the analyzer can still report
+/// type errors after its own pass has been inspected — emitting an object
+/// from that state would bake the error into the binary instead.
+inline bool report_emission_errors(saga::Analyzer &analyzer,
+                                   saga::CodeGen &codegen) {
+  bool failed = false;
+  for (auto *list : {&analyzer.errors, &codegen.errors}) {
+    if (list->errors.empty())
+      continue;
+    list->print_errors();
+    failed = true;
+  }
+  return failed;
 }

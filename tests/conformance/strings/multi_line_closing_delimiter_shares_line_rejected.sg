@@ -1,0 +1,10 @@
+// The closing `"""` is what sets the margin, so it has to sit on a line of its
+// own. Trailing it after content would leave the block with no margin at all,
+// silently turning the surrounding indentation into string content.
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""
+    alpha
+    beta""")
+}

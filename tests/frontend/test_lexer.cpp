@@ -353,6 +353,67 @@ TEST(Lexer, Scan_MultiLineString_Interpolation) {
   ASSERT_EQ(t3.literal, "}\nworld\"\"\"");
 }
 
+TEST(Lexer, Scan_StringEnd_AfterNestedBraces) {
+  // A '}' closing a brace opened inside the interpolation does not end it.
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"a {P{x: 1}.x} b\"");
+  l.init(f.get());
+
+  ASSERT_EQ(l.scan().kind, Token::Kind::StringStart);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // P
+  ASSERT_EQ(l.scan().kind, Token::Kind::LeftBrace);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // x
+  ASSERT_EQ(l.scan().kind, Token::Kind::Colon);
+  ASSERT_EQ(l.scan().kind, Token::Kind::IntegerLiteral);
+  ASSERT_EQ(l.scan().kind, Token::Kind::RightBrace);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Dot);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // x
+
+  auto end = l.scan();
+  ASSERT_EQ(end.kind, Token::Kind::StringEnd);
+  ASSERT_EQ(end.literal, "} b\"");
+}
+
+TEST(Lexer, Scan_StringEnd_AfterTwoBraceLevels) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"{a{b{c}}}\"");
+  l.init(f.get());
+
+  ASSERT_EQ(l.scan().kind, Token::Kind::StringStart);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // a
+  ASSERT_EQ(l.scan().kind, Token::Kind::LeftBrace);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // b
+  ASSERT_EQ(l.scan().kind, Token::Kind::LeftBrace);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // c
+  ASSERT_EQ(l.scan().kind, Token::Kind::RightBrace);
+  ASSERT_EQ(l.scan().kind, Token::Kind::RightBrace);
+
+  auto end = l.scan();
+  ASSERT_EQ(end.kind, Token::Kind::StringEnd);
+  ASSERT_EQ(end.literal, "}\"");
+}
+
+TEST(Lexer, Scan_MultiLineString_NestedBraces) {
+  Lexer l;
+  auto f = File::from_source("test.txt", "\"\"\"a\n{P{x: 1}}\nb\"\"\"");
+  l.init(f.get());
+
+  auto t1 = l.scan();
+  ASSERT_EQ(t1.kind, Token::Kind::StringStart);
+  ASSERT_EQ(t1.literal, "\"\"\"a\n{");
+
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // P
+  ASSERT_EQ(l.scan().kind, Token::Kind::LeftBrace);
+  ASSERT_EQ(l.scan().kind, Token::Kind::Identifier); // x
+  ASSERT_EQ(l.scan().kind, Token::Kind::Colon);
+  ASSERT_EQ(l.scan().kind, Token::Kind::IntegerLiteral);
+  ASSERT_EQ(l.scan().kind, Token::Kind::RightBrace);
+
+  auto end = l.scan();
+  ASSERT_EQ(end.kind, Token::Kind::StringEnd);
+  ASSERT_EQ(end.literal, "}\nb\"\"\"");
+}
+
 TEST(Lexer, Scan_MultiLineString_MultipleInterpolations) {
   Lexer l;
   auto f = File::from_source("test.txt", "\"\"\"a\n{x} b {y}\nc\"\"\"");

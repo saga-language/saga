@@ -1272,6 +1272,10 @@ typedef struct {
  * whose concrete fields follow the { type_id, message } prefix. */
 void *saga_error_alloc(int64_t size) { return calloc(1, (size_t)size); }
 
+/* Zero-initialised heap block for a union alternative that transitively
+ * contains itself, so the union slot holds a pointer and stays finite. */
+void *saga_box_alloc(int64_t size) { return calloc(1, (size_t)size); }
+
 void *saga_missing_new(const char *msg, int64_t len) {
   saga_runtime_error *e =
       (saga_runtime_error *)malloc(sizeof(saga_runtime_error));

@@ -1,0 +1,23 @@
+// Spec: a generic struct in a parameter position binds the type parameter from
+// the argument, and two instantiations stay separate specialisations rather
+// than collapsing onto one symbol.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+fn Unwrap<T>(b Box<T>) T { b.value }
+
+fn Describe<T>(b Box<T>) string { "boxed" }
+
+pub fn Main() void {
+  n := Box{value: 5}
+  s := Box{value: "hi"}
+
+  bumped := Unwrap(n) + 1
+  io.Println("{bumped}")
+  io.Println(Unwrap(s))
+  io.Println(Describe(n))
+  io.Println(Describe(s))
+}

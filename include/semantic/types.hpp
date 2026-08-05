@@ -46,6 +46,11 @@ enum class TypeKind : uint8_t {
   TypeParam,   // unresolved generic parameter, e.g. T
   Alias,       // type alias (const MyType = Int)
   Module,      // package/module (from import)
+  // An inference hole: an empty `[]`/`{}` knows it is a collection but not of
+  // what. The context supplies the answer; a binding still holding one is a
+  // user error, not a failure — which is precisely what Invalid must not be
+  // reused for, or no check can tell "we gave up" from "ask the context".
+  Unknown,
   Invalid,     // sentinel for a type-check failure (propagates silently)
 };
 
@@ -118,6 +123,7 @@ struct FloatType {
 
 struct StringType {};
 struct InvalidType {};      // type-check-failure sentinel
+struct UnknownType {};      // inference hole the context must fill
 
 struct ArrayTypeInfo {
   TypePtr element;
@@ -234,6 +240,7 @@ struct Type {
     TypeParamInfo,
     AliasTypeInfo,
     ModuleTypeInfo,
+    UnknownType,
     InvalidType
   >;
   // clang-format on
@@ -304,6 +311,14 @@ TypePtr make_module_type(const std::string &name,
 
 /// True if `t` is the error-recovery sentinel.
 bool is_invalid_type(const TypePtr &t);
+
+TypePtr make_unknown_type();
+bool is_unknown_type(const TypePtr &t);
+
+/// Whether an inference hole survives anywhere inside `t` — as a collection's
+/// element, a map's key/value, or a union alternative. A binding whose type
+/// answers true never had its holes filled, which the user must resolve.
+bool contains_unknown(const TypePtr &t);
 
 /// True if a value of `t` is an error handled by `or` — any struct carrying
 /// the `is_error` marker (the abstract base `error`, the built-in `Missing`
@@ -396,6 +411,16 @@ TypePtr common_type(const TypePtr &a, const TypePtr &b);
 TypePtr substitute(const TypePtr &t,
                    const std::unordered_map<uint32_t, TypePtr> &bindings);
 
+/// Maps a type to its substituted form, so a cyclic type graph terminates.
+using SubstMemo = std::unordered_map<const Type *, TypePtr>;
+
+/// Substitute with a caller-seeded memo. Seed the generic declaration onto the
+/// instantiation being built and a field naming the struct again resolves to
+/// that instantiation rather than recursing forever.
+TypePtr substitute(const TypePtr &t,
+                   const std::unordered_map<uint32_t, TypePtr> &bindings,
+                   SubstMemo &memo);
+
 /// Attempt to infer type-parameter bindings by unifying `param_type` (which
 /// may contain TypeParam nodes) against `arg_type` (fully concrete).
 /// Returns true on success and populates `out`.  On conflict returns false.
@@ -405,5 +430,16 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
 /// Returns true if the type (or any nested type within it) contains at
 /// least one TypeParam node.
 bool has_type_params(const TypePtr &t);
+
+/// Two struct types that came from the same declaration. A generic
+/// instantiation is a fresh type each time it is resolved, so identity is the
+/// declaration, not the pointer.
+bool same_struct_decl(const TypePtr &a, const TypePtr &b);
+
+/// Whether a union stores this alternative behind a pointer rather than inline.
+/// True for a struct that transitively contains itself, which is what gives a
+/// recursive shape a finite size. The answer depends only on the alternative,
+/// so every union mentioning it agrees on the layout.
+bool union_alt_is_boxed(const TypePtr &alt);
 
 } // namespace saga

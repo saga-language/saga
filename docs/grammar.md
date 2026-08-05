@@ -69,19 +69,17 @@ Constraint = "integer" | "float" | "numeric" | Identifier | Selector ;
 
 Type        = UnionType ;
 UnionType   = SingleType { "|" SingleType } ;
-SingleType  = basic_type | ArrayType | MapType | StructType | EnumType
-            | ErrorType | FuncType | GenericApp | Selector | Identifier ;
+SingleType  = basic_type | ArrayType | MapType | FuncType | GenericApp
+            | Selector | Identifier ;
 
-basic_type  = "bool" | "byte" | "string" | "void"
+// `error` is the abstract error base type: any error value satisfies it.
+basic_type  = "bool" | "byte" | "string" | "void" | "error"
             | "int" | "int8" | "int16" | "int32" | "int64"
             | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
             | "float" | "float32" | "float64" ;
 
 ArrayType   = "array" "{" Type [ ";" Expression ] "}" ;
 MapType     = "map" "{" Type ":" Type [ ";" Expression ] "}" ;
-StructType  = "struct" [ "{" [ FieldSpec { "," FieldSpec } ] "}" ] ;
-EnumType    = "enum" [ "{" Identifier { "," Identifier } "}" ] ;
-ErrorType   = "error" [ "{" [ ErrorMember { "," ErrorMember } ] "}" ] ;
 FuncType    = "fn" "(" [ TypeList ] ")" [ Type ] ;
 GenericApp  = ( Identifier | Selector ) "<" Type { "," Type } ">" ; // e.g. Box<int>
 TypeList    = Type { "," Type } ;
@@ -205,7 +203,7 @@ ArrayLiteral = "[" ( [ ExpressionList ] | Expression ".." Expression ) "]" ;
 MapLiteral   = "{" [ KeyValuePair { "," KeyValuePair } ] "}" ;
 KeyValuePair = Expression ":" Expression ; // key is always an expression
 
-StructLiteral     = ( Identifier | Selector | StructType ) [ StructInitializer ] ;
+StructLiteral     = ( Identifier | Selector ) [ StructInitializer ] ;
 StructInitializer = "{" [ FieldAssignment { ( "," | terminal ) FieldAssignment } ] "}" ;
 FieldAssignment   = Identifier ":" Expression ;
 
@@ -219,12 +217,18 @@ FloatLiteral  = decimal_digit { decimal_digit | "_" } "." FloatEnd ;
 FloatEnd      = decimal_digit { decimal_digit | "_" } [ Exponent ] ;
 Exponent      = ( "e" | "E" ) [ "+" | "-" ] decimal_digit { decimal_digit | "_" } ;
 
-StringLiteral    = SingleLineString | MultiLineString ;
+StringLiteral    = SingleLineString | InlineString | BlockString ;
 SingleLineString = "\"" { StringContent } "\"" ;
-MultiLineString  = "\"\"\"" ( StringContent | "\n" ) "\"\"\"" ;
+InlineString     = "\"\"\"" { StringContent } "\"\"\"" ;
+// Context-sensitive, so not stated above: every line of a BlockString carries
+// the indent its closing delimiter sits at, and a line that does not is an
+// error. That indent is layout, as are the two terminals beside the delimiters.
+BlockString      = "\"\"\"" terminal { indent { StringContent } terminal }
+                   indent "\"\"\"" ;
 StringContent    = unicode_char_except_special | EscapeSequence | Interpolation ;
-EscapeSequence   = "\\" ( "n" | "t" | "r" | "\\" | "\"" | "{" | "}" ) ;
+EscapeSequence   = "\\" ( "n" | "r" | "t" | "\\" | "\"" | "{" | "}" ) ;
 Interpolation    = "{" Expression "}" ;
+indent           = { " " | "\t" } ;
 
 /* Lexical elements */
 comments = "//" unicode_char newline ;
@@ -238,4 +242,5 @@ hex_digit     = decimal_digit | "a" ... "f" | "A" ... "F" ;
 terminal = "\r\n" | "\n" ;
 unicode_char = /* any visible Unicode code point */ ;
 unicode_char_except_special = /* any visible Unicode code point excluding \, {, }, and " */ ;
+/* A terminal never appears in StringContent: only a BlockString spans lines. */
 ```

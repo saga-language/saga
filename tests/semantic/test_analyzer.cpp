@@ -500,6 +500,7 @@ TEST(Analyzer, ResolveShadowInNestedBlock) {
   auto r = AnalysisResult::from(
       "fn foo() {\n"
       "  x := 1\n"
+      "  _ := x\n"
       "  if true {\n"
       "    x := 2\n"
       "  }\n"
@@ -646,6 +647,7 @@ TEST(Analyzer, ResolveAccumulator) {
       "fn foo() {\n"
       "  arr := [1, 2, 3]\n"
       "  for i : arr |acc| {\n"
+      "    _ := i\n"
       "    acc\n"
       "  }\n"
       "}");
@@ -664,6 +666,7 @@ TEST(Analyzer, UseBeforeDeclare) {
       "fn foo() {\n"
       "  y\n"
       "  y := 1\n"
+      "  _ := y\n"
       "}");
   // "y" used on line 2 but declared on line 3 — should be undefined.
   EXPECT_TRUE(r.has_error_containing("undefined name 'y'"));
@@ -734,6 +737,7 @@ TEST(Analyzer, IntrinsicReceiverMethodResolvesInCheckSelector) {
       "pub fn Main() void {\n"
       "  x := 5\n"
       "  y := x.Double()\n"
+      "  _ := y\n"
       "}");
   r.fileset.add_file(std::move(file));
   Parser parser(r.fileset);
@@ -742,6 +746,24 @@ TEST(Analyzer, IntrinsicReceiverMethodResolvesInCheckSelector) {
   r.analyzer->is_stdlib = true;
   r.analyzer->analyze(*r.ast);
   EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, ErrorInSecondFileReportsThatFile) {
+  AnalysisResult r;
+  r.fileset.add_file(File::from_source("a.sg", "pub fn Main() void {}\n"));
+  r.fileset.add_file(File::from_source("b.sg", "fn helper() int {\n"
+                                               "  return notAThing\n"
+                                               "}\n"));
+  Parser parser(r.fileset);
+  r.ast = parser.parse();
+  r.analyzer = std::make_unique<Analyzer>(r.fileset);
+  r.analyzer->is_stdlib = false;
+  r.analyzer->analyze(*r.ast);
+
+  ASSERT_TRUE(r.has_error_containing("notAThing"));
+  auto &err = r.analyzer->errors.errors.front();
+  EXPECT_EQ(err.p.filename, "b.sg");
+  EXPECT_EQ(err.p.line, 2u);
 }
 
 } // namespace saga

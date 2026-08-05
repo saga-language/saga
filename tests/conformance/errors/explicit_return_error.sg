@@ -21,7 +21,7 @@ pub fn Main() void {
   }
   io.Println(a.String())
 
-  b := parse(true) or |err| {
+  b := parse(true) or {
     io.Println("unreachable")
     -1
   }

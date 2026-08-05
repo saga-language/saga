@@ -1,0 +1,17 @@
+import "std/io"
+import "lib"
+
+struct User {
+  lib.Timestamps
+  name string
+  created int
+}
+
+pub fn Main() void {
+  u := User{name: "alice", created: 5,
+            Timestamps: lib.Timestamps{created: 1, updated: 2}}
+  io.Println(u.name)
+  io.Println("{u.created}")
+  io.Println("{u.Timestamps.created}")
+  io.Println("{u.Timestamps.updated}")
+}

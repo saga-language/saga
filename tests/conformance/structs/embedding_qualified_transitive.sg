@@ -1,0 +1,25 @@
+// Spec: qualified access composes — each step names one embed, so a struct
+// embedded two levels down is reached one name at a time.
+// (docs/language.md §Struct embedding)
+import "std/io"
+
+struct Timestamps {
+  created int
+}
+
+struct Base {
+  Timestamps
+  tag int
+}
+
+struct User {
+  Base
+  created int
+}
+
+pub fn Main() void {
+  u := User{Base: Base{Timestamps: Timestamps{created: 100}, tag: 7}, created: 5}
+  io.Println(u.created.String())
+  io.Println(u.tag.String())
+  io.Println(u.Base.Timestamps.created.String())
+}

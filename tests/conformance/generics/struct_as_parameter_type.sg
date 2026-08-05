@@ -1,0 +1,14 @@
+// Spec: a generic struct instantiation is usable wherever a type is — as a
+// parameter, not only as a variable's annotation. Codegen resolves the
+// annotation from the package scope, which analysis has long since left.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+fn Describe(b Box<int>) string { b.value.String() }
+
+pub fn Main() void {
+  io.Println(Describe(Box{value: 5}))
+}

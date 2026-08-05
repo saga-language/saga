@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -146,7 +147,7 @@ void CodeGen::emit_struct_decl(const StructDeclNode &node) {
   } else {
     for (auto &member : node.members) {
       if (auto *fs = std::get_if<FieldSpecNode>(&member.member->data)) {
-        auto sem_type = analyzer.resolve_type(*fs->type);
+        auto sem_type = lookup_sem_type(*fs->type);
         auto *ll = llvm_type(sem_type);
         for (auto &ident : fs->names.identifiers) {
           field_types.push_back(ll);
@@ -220,18 +221,9 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // Determine the semantic type.
   auto sem_type = semantic_type(*node.value);
   if (!sem_type && node.type)
-    sem_type = analyzer.resolve_type(**node.type);
+    sem_type = lookup_sem_type(**node.type);
   if (!sem_type)
     return;
-
-  // Forward references in const initializers (e.g. `const A = B * 2`
-  // where B is declared later) leave the semantic type unresolved
-  // (Error).  Spec: "the read will see the type's zero value with no
-  // diagnostic" (docs/language.md:120-122).  Without an inferred type
-  // the safest fallback is Int — the spec's primary numeric type and
-  // the common case for compile-time arithmetic.
-  if (is_invalid_type(sem_type))
-    sem_type = analyzer.builtins.int_type;
 
   auto *ll_type = llvm_type(sem_type);
   if (!ll_type || ll_type->isVoidTy())
@@ -270,9 +262,8 @@ void CodeGen::emit_const_decl(const ConstDeclNode &node) {
   // compile-time constant, so a miss here is an unhandled accepted form, not a
   // user error.
   if (!init)
-    llvm::report_fatal_error(
-        llvm::Twine("const '") + name +
-        "' is not lowerable to a compile-time constant");
+    internal_error("const '" + name +
+                   "' is not lowerable to a compile-time constant");
 
   auto *gv = new llvm::GlobalVariable(
       *module, ll_type, /*isConstant=*/true,
@@ -303,7 +294,7 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
     std::string text;
     for (auto &frag_node : sl->fragments) {
       if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
-        text += unescape_fragment(frag->text);
+        text += unescape_string_fragment(*frag);
     }
     return llvm::cast<llvm::Constant>(make_string_constant(text));
   }
@@ -468,12 +459,12 @@ CodeGen::ast_interface_methods(const InterfaceDeclNode &node) {
   for (auto &m : node.methods) {
     std::vector<TypePtr> params;
     for (auto &p : m.signature.params) {
-      auto pt = analyzer.resolve_type(*p.type);
+      auto pt = lookup_sem_type(*p.type);
       for (size_t i = 0; i < p.names.identifiers.size(); ++i)
         params.push_back(pt);
     }
     TypePtr ret = m.signature.return_type
-                      ? analyzer.resolve_type(*m.signature.return_type)
+                      ? lookup_sem_type(*m.signature.return_type)
                       : nullptr;
     methods.push_back({std::string(m.name.name),
                        make_func_type(std::move(params), std::move(ret)),
@@ -688,29 +679,24 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       }
     }
 
-    // The self slot mirrors the declared ABI (build_method_signature): structs
-    // pass by pointer, scalar/alias receivers by value, so the arg's own type
-    // is the correct alloca type.
+    // A struct receiver arrives by pointer (build_method_signature) but is a
+    // value like any parameter, so it is copied into the frame: writes stay
+    // local to the method (docs/language.md §Mutability).
     std::string recv_name(fn->receiver->name.name);
     auto *self_arg = func->getArg(arg_idx++);
-    auto *recv_alloca = create_entry_alloca(func, recv_name, self_arg->getType());
-    builder.CreateStore(self_arg, recv_alloca);
-    locals[recv_name] = recv_alloca;
+    auto recv_st = struct_types.find(mangle(package_name, struct_name));
+    auto *recv_slot_type = self_arg->getType();
+    if (recv_st != struct_types.end() && self_arg->getType()->isPointerTy())
+      recv_slot_type = recv_st->second;
+    locals[recv_name] =
+        bind_value_slot(func, recv_name, self_arg, recv_slot_type);
 
     for (auto &param : fn->signature.params) {
       auto *ll_type = resolve_type_node(*param.type);
       for (auto &ident : param.names.identifiers) {
         std::string pname(ident.name);
-        auto *alloca = create_entry_alloca(func, pname, ll_type);
-        auto *arg = func->getArg(arg_idx++);
-        if (ll_type && ll_type->isStructTy()) {
-          auto sz = module->getDataLayout().getTypeAllocSize(ll_type);
-          auto al = module->getDataLayout().getABITypeAlign(ll_type);
-          builder.CreateMemCpy(alloca, al, arg, al, sz);
-        } else {
-          builder.CreateStore(arg, alloca);
-        }
-        locals[pname] = alloca;
+        locals[pname] =
+            bind_value_slot(func, pname, func->getArg(arg_idx++), ll_type);
       }
     }
 

@@ -1,0 +1,14 @@
+// Writing through a selector or an index reads the base: `p.x = 1` needs p.
+const io = import "std/io"
+
+struct Point {
+  x int
+}
+
+pub fn Main() void {
+  p := Point{x: 1}
+  p.x = 5
+  arr := [1, 2]
+  arr[0] = 9
+  io.Println("ok")
+}

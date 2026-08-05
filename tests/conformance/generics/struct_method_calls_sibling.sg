@@ -1,0 +1,15 @@
+// Spec: one method of a generic struct may call another on the same
+// receiver; both specialise under the same bindings.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Get() T { b.value }
+pub fn (b Box<T>) Echo() T { b.Get() }
+
+pub fn Main() void {
+  b := Box{value: 9}
+  io.Println("{b.Echo()}")
+}

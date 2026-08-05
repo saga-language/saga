@@ -1,0 +1,13 @@
+import "std/io"
+import "liba"
+import "libb"
+
+struct User {
+  liba.Timestamps
+  libb.Timestamps
+  name string
+}
+
+pub fn Main() void {
+  io.Println("unreachable")
+}

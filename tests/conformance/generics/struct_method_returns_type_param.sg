@@ -1,0 +1,14 @@
+// Spec: a method on a generic struct declared in the same package is
+// monomorphised from the receiver's type arguments, like an imported one.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Get() T { b.value }
+
+pub fn Main() void {
+  b := Box{value: 21}
+  io.Println("{b.Get()}")
+}

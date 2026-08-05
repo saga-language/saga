@@ -3,6 +3,7 @@
 
 #include "ir/codegen.hpp"
 #include "runtime/error_ids.h"
+#include "util/internal_error.hpp"
 
 #include <charconv>
 
@@ -342,9 +343,17 @@ std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
   return base;
 }
 
+// Codegen only runs once the analyzer has reported zero errors, so a type that
+// cannot be lowered means the analyzer produced poison and stayed quiet. Say so
+// instead of substituting void, which defers the failure to an unrelated place
+// (an alloca of void) with none of the context that would explain it.
+[[noreturn]] static void ice_unlowerable_type(const std::string &desc) {
+  internal_error(desc + " reached code generation");
+}
+
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   if (!t)
-    return void_ll_type;
+    ice_unlowerable_type("a null type");
 
   // Aliases are transparent at the LLVM ABI level — `const MyInt = Int`
   // lowers to whatever Int lowers to.  Unwrap before dispatching.
@@ -410,9 +419,9 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_iface
   case TypeKind::Union: {
     auto *st = get_union_llvm_type(t);
-    if (st)
-      return st;
-    return void_ll_type;
+    if (!st)
+      ice_unlowerable_type("union '" + type_to_string(t) + "'");
+    return st;
   }
   case TypeKind::Array:
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_array
@@ -425,7 +434,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     // At runtime, generic values are passed as opaque pointers.
     return llvm::PointerType::getUnqual(context);
   default:
-    return void_ll_type;
+    ice_unlowerable_type("type '" + type_to_string(t) + "'");
   }
 }
 
@@ -435,6 +444,22 @@ llvm::AllocaInst *CodeGen::create_entry_alloca(llvm::Function *fn,
   llvm::IRBuilder<> tmp_builder(&fn->getEntryBlock(),
                                 fn->getEntryBlock().begin());
   return tmp_builder.CreateAlloca(type, nullptr, name);
+}
+
+llvm::AllocaInst *CodeGen::bind_value_slot(llvm::Function *fn,
+                                           const std::string &name,
+                                           llvm::Value *arg,
+                                           llvm::Type *slot_type) {
+  auto *slot = create_entry_alloca(fn, name, slot_type);
+  if (slot_type->isStructTy()) {
+    auto &dl = module->getDataLayout();
+    auto align = dl.getABITypeAlign(slot_type);
+    builder.CreateMemCpy(slot, align, arg, align,
+                         dl.getTypeAllocSize(slot_type));
+  } else {
+    builder.CreateStore(arg, slot);
+  }
+  return slot;
 }
 
 // ===========================================================================

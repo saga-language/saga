@@ -4,6 +4,7 @@
 #include "semantic/analyzer.hpp"
 #include "semantic/sgi.hpp"
 #include "frontend/parser.hpp"
+#include "util/internal_error.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -225,6 +226,7 @@ void Analyzer::analyze(const Node &root) {
                  },
              },
              root.data);
+  report_deferred_bugs();
 }
 
 void Analyzer::load_prelude() {
@@ -366,6 +368,56 @@ void Analyzer::pop_scope() {
   }
 }
 
+void Analyzer::pop_resolve_scope() {
+  report_unread_locals(*current_scope);
+  pop_scope();
+}
+
+void Analyzer::pop_module_scope() {
+  report_unused_imports(*current_scope);
+  pop_scope();
+}
+
+static std::vector<const Symbol *> unread_symbols(const Scope &scope,
+                                                  SymbolKind kind) {
+  std::vector<const Symbol *> unread;
+  for (auto &[name, sym] : scope.symbols) {
+    if (sym.kind == kind && !scope.read_names.contains(name))
+      unread.push_back(&sym);
+  }
+
+  // `symbols` is unordered, so sort or the diagnostics come out in a
+  // different order from one run to the next.
+  std::sort(unread.begin(), unread.end(), [](const Symbol *a, const Symbol *b) {
+    return a->decl_span.start < b->decl_span.start;
+  });
+  return unread;
+}
+
+void Analyzer::report_unread_locals(const Scope &scope) {
+  if (suppress_unread_reports_)
+    return;
+
+  for (const Symbol *sym : unread_symbols(scope, SymbolKind::Variable))
+    error(sym->decl_span,
+          std::format("'{}' is declared but never read; remove it or name it "
+                      "'_{}'",
+                      sym->name, sym->name));
+}
+
+void Analyzer::report_unused_imports(const Scope &scope) {
+  for (const Symbol *sym : unread_symbols(scope, SymbolKind::Module)) {
+    // An import that failed to resolve already owns its line, and there the
+    // fix is the path, not the import.
+    if (!sym->type || is_invalid_type(sym->type))
+      continue;
+    error(sym->decl_span,
+          std::format("package '{}' is imported but never used; remove the "
+                      "import",
+                      sym->name));
+  }
+}
+
 bool Analyzer::declare(const Symbol &sym) {
   if (!current_scope->declare(sym)) {
     redeclaration_error(sym.decl_span, sym.name);
@@ -375,6 +427,11 @@ bool Analyzer::declare(const Symbol &sym) {
 }
 
 bool Analyzer::declare_local(const Symbol &sym) {
+  // An ignored name is not a binding, so there is nothing for a second one to
+  // collide with and nothing for a nested one to shadow.
+  if (is_ignored_name(sym.name))
+    return true;
+
   // Check same-scope redeclaration.
   if (current_scope->lookup_local(sym.name)) {
     redeclaration_error(sym.decl_span, sym.name);
@@ -478,6 +535,11 @@ void Analyzer::record_type(const Node &node, TypePtr type) {
 }
 
 void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
+  // A package name reaches source only to be used — there is no write form to
+  // hold apart, as there is for a variable — so binding one is using it.
+  if (sym.kind == SymbolKind::Module)
+    current_scope->mark_read(sym.name);
+
   if (current_instantiation_) {
     current_instantiation_->node_symbols[&node] = sym;
   } else {
@@ -490,10 +552,10 @@ void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
 // ===========================================================================
 
 void Analyzer::error(Span span, const std::string &message) {
-  Position pos{};
-  if (!fileset.files.empty()) {
-    pos = fileset.files[0]->position_at(span.start);
-  }
+  if (silenced_)
+    return;
+
+  Position pos = fileset.position_at(span.start);
 
   // Append an "...instantiated from" frame for every active generic
   // instantiation so multi-level generic errors render a C++-template-style
@@ -504,14 +566,29 @@ void Analyzer::error(Span span, const std::string &message) {
     const Node *call_node = *it;
     if (!call_node)
       continue;
-    Position frame_pos{};
-    if (!fileset.files.empty()) {
-      frame_pos = fileset.files[0]->position_at(call_node->span.start);
-    }
-    full += std::format("\n  ...instantiated from {}", frame_pos);
+    full += std::format("\n  ...instantiated from {}",
+                        fileset.position_at(call_node->span.start));
   }
 
   errors.report_error(pos, full);
+}
+
+TypePtr Analyzer::poison(Span span, std::string reason) {
+  // A silenced pass is explicitly one where failure is not a program error.
+  if (!silenced_)
+    deferred_bugs_.push_back({span, std::move(reason)});
+  return builtins.invalid_type;
+}
+
+void Analyzer::report_deferred_bugs() {
+  if (deferred_bugs_.empty() || !errors.errors.empty())
+    return;
+
+  auto &bug = deferred_bugs_.front();
+  Position pos = fileset.position_at(bug.span.start);
+  internal_error(std::format(
+      "{}: analysis gave up here but reported nothing to the user: {}", pos,
+      bug.reason));
 }
 
 void Analyzer::type_error(Span span, const TypePtr &expected,
@@ -589,10 +666,13 @@ void Analyzer::expect_bool(Span span, const TypePtr &type,
 // Phase 1 — Declaration collection (top-level names)
 // ===========================================================================
 
+static std::optional<std::string> type_decl_name(const Node &node);
+
 void Analyzer::visit_package(const PackageNode &pkg) {
   // Load stdlib type packages' receiver methods before analyzing user code.
   load_prelude();
 
+  pending_type_decls_.clear();
   push_scope(ScopeKind::Module);
 
   // Save the package scope so import resolution can extract exports later.
@@ -617,15 +697,8 @@ void Analyzer::visit_package(const PackageNode &pkg) {
   for (auto &src : pkg.sources) {
     auto &src_node = std::get<SourceNode>(src->data);
     for (auto &decl : src_node.declarations) {
-      std::visit(overloaded{
-                     [&](const StructDeclNode &s) { resolve_struct_decl(s); },
-                     [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
-                     [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
-                     [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
-                     [&](const TypeDeclNode &t) { resolve_type_decl(t); },
-                     [&](const auto &) { /* handled in phase 2b */ },
-                 },
-                 decl->data);
+      if (auto name = type_decl_name(*decl))
+        ensure_type_resolved(*name);
     }
   }
 
@@ -651,6 +724,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
                      [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
                      [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                      [&](const StructDeclNode &) { /* done in phase 2a */ },
+                     [&](const TypeDeclNode &) { /* done in phase 2a */ },
                      [&](const EnumDeclNode &) { /* done in phase 2a */ },
                      [&](const ErrorDeclNode &) { /* done in phase 2a */ },
                      [&](const InterfaceDeclNode &) { /* done in phase 2a */ },
@@ -688,17 +762,17 @@ void Analyzer::visit_package(const PackageNode &pkg) {
               [&](const ErrorDeclNode &e) { check_error_decl(e); },
               [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
               [&](const ConstDeclNode &c) { check_const_decl(c); },
-              [&](const ImportDeclNode &imp) { check_import_decl(imp); },
               [&](const auto &) {},
           },
           decl->data);
     }
   }
 
-  pop_scope();
+  pop_module_scope();
 }
 
 void Analyzer::visit_source(const SourceNode &src) {
+  pending_type_decls_.clear();
   push_scope(ScopeKind::Module);
   package_scope_ = current_scope;
 
@@ -743,13 +817,12 @@ void Analyzer::visit_source(const SourceNode &src) {
                    [&](const ErrorDeclNode &e) { check_error_decl(e); },
                    [&](const InterfaceDeclNode &i) { check_interface_decl(i); },
                    [&](const ConstDeclNode &c) { check_const_decl(c); },
-                   [&](const ImportDeclNode &imp) { check_import_decl(imp); },
                    [&](const auto &) {},
                },
                decl->data);
   }
 
-  pop_scope();
+  pop_module_scope();
 }
 
 void Analyzer::collect_declaration(const Node &node) {
@@ -770,18 +843,22 @@ void Analyzer::collect_declaration(const Node &node) {
                  [&](const StructDeclNode &s) {
                    declare(Symbol::type_sym(std::string(s.name.name), nullptr,
                                             s.name.span, s.is_public));
+                   pending_type_decls_[std::string(s.name.name)] = &node;
                  },
                  [&](const EnumDeclNode &e) {
                    declare(Symbol::type_sym(std::string(e.name.name), nullptr,
                                             e.name.span, e.is_public));
+                   pending_type_decls_[std::string(e.name.name)] = &node;
                  },
                  [&](const ErrorDeclNode &e) {
                    declare(Symbol::type_sym(std::string(e.name.name), nullptr,
                                             e.name.span, e.is_public));
+                   pending_type_decls_[std::string(e.name.name)] = &node;
                  },
                  [&](const InterfaceDeclNode &i) {
                    declare(Symbol::type_sym(std::string(i.name.name), nullptr,
                                             i.name.span, i.is_public));
+                   pending_type_decls_[std::string(i.name.name)] = &node;
                  },
                  [&](const ConstDeclNode &c) {
                    declare(Symbol::constant(std::string(c.name.name), nullptr,
@@ -790,6 +867,7 @@ void Analyzer::collect_declaration(const Node &node) {
                  [&](const TypeDeclNode &t) {
                    declare(Symbol::type_sym(std::string(t.name.name), nullptr,
                                             t.name.span, t.is_public));
+                   pending_type_decls_[std::string(t.name.name)] = &node;
                  },
                  [&](const ImportDeclNode &imp) {
                    // Derive the local name from the last path segment.
@@ -1247,25 +1325,23 @@ Analyzer *Analyzer::ensure_source_loaded(const std::string &origin) {
   return sub_ptr;
 }
 
-Analyzer::ImportedMethodDecl
-Analyzer::load_imported_method_decl(const std::string &origin,
-                                     const std::string &struct_name,
-                                     const std::string &method_name,
-                                     const std::vector<TypePtr> &type_args) {
-  ImportedMethodDecl result;
-  auto *sub = ensure_source_loaded(origin);
-  if (!sub || !sub->package_scope_) return result;
+Analyzer::GenericMethodDecl
+Analyzer::generic_method_decl(const std::string &struct_name,
+                              const std::string &method_name,
+                              const std::vector<TypePtr> &type_args) {
+  GenericMethodDecl result;
+  if (!package_scope_) return result;
 
-  auto sym_it = sub->package_scope_->symbols.find(struct_name);
-  if (sym_it == sub->package_scope_->symbols.end()) return result;
+  auto sym_it = package_scope_->symbols.find(struct_name);
+  if (sym_it == package_scope_->symbols.end()) return result;
   auto struct_type = sym_it->second.type;
   if (!struct_type || struct_type->kind != TypeKind::Struct) return result;
 
   auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
   for (auto &m : sinfo.methods) {
     if (m.name != method_name || !m.signature) continue;
-    auto fd_it = sub->func_decl_by_type_.find(m.signature.get());
-    if (fd_it == sub->func_decl_by_type_.end()) return result;
+    auto fd_it = func_decl_by_type_.find(m.signature.get());
+    if (fd_it == func_decl_by_type_.end()) return result;
     result.decl = fd_it->second;
     result.template_signature = m.signature;
     result.struct_type_params = sinfo.type_params;
@@ -1277,8 +1353,8 @@ Analyzer::load_imported_method_decl(const std::string &origin,
   // read concrete TypePtrs out of the resulting BodyInstantiation. Bind by
   // the function's GenericTemplate IDs (which P5's receiver remap aligned
   // with the struct's type-param IDs).
-  auto tpl_it = sub->generic_templates_.find(result.decl);
-  if (tpl_it != sub->generic_templates_.end()) {
+  auto tpl_it = generic_templates_.find(result.decl);
+  if (tpl_it != generic_templates_.end()) {
     auto &tpl_params = tpl_it->second.type_params;
     size_t n = std::min(tpl_params.size(), type_args.size());
     for (size_t i = 0; i < n; ++i)
@@ -1293,10 +1369,20 @@ Analyzer::load_imported_method_decl(const std::string &origin,
   }
   if (!result.bindings.empty() && result.decl->body) {
     result.instantiation =
-        sub->instantiate_generic_body(*result.decl, result.bindings,
-                                       *result.decl->body);
+        instantiate_generic_body(*result.decl, result.bindings,
+                                 *result.decl->body);
   }
   return result;
+}
+
+Analyzer::GenericMethodDecl
+Analyzer::load_imported_method_decl(const std::string &origin,
+                                     const std::string &struct_name,
+                                     const std::string &method_name,
+                                     const std::vector<TypePtr> &type_args) {
+  auto *sub = ensure_source_loaded(origin);
+  if (!sub) return {};
+  return sub->generic_method_decl(struct_name, method_name, type_args);
 }
 
 // ===========================================================================
@@ -1316,9 +1402,6 @@ TypePtr Analyzer::resolve_type(const Node &node) {
           [&](const FuncTypeNode &n) -> TypePtr {
             return resolve_func_type(n);
           },
-          [&](const StructTypeNode &n) -> TypePtr {
-            return resolve_struct_type(n);
-          },
           [&](const UnionTypeNode &n) -> TypePtr {
             return resolve_union_type(n);
           },
@@ -1337,16 +1420,21 @@ TypePtr Analyzer::resolve_type(const Node &node) {
 }
 
 TypePtr Analyzer::resolve_identifier_type(const IdentifierNode &node) {
-  auto sym = lookup(std::string(node.name));
+  std::string name(node.name);
+  auto sym = lookup(name);
   if (!sym) {
-    undefined_error(node.span, std::string(node.name));
+    undefined_error(node.span, name);
     return builtins.invalid_type;
   }
   if (sym->kind != SymbolKind::Type && sym->kind != SymbolKind::TypeParam) {
-    error(node.span, std::format("'{}' is not a type", std::string(node.name)));
+    error(node.span, std::format("'{}' is not a type", name));
     return builtins.invalid_type;
   }
-  return sym->type ? sym->type : builtins.invalid_type;
+  if (!sym->type) {
+    ensure_type_resolved(name);
+    sym = lookup(name);
+  }
+  return sym && sym->type ? sym->type : builtins.invalid_type;
 }
 
 TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
@@ -1362,6 +1450,7 @@ TypePtr Analyzer::resolve_selector_type(const SelectorNode &node) {
           std::format("'{}' is not a package", obj_ident->name));
     return builtins.invalid_type;
   }
+  record_symbol(*node.object, *mod_sym);
   auto &mod = std::get<ModuleTypeInfo>(mod_sym->type->detail);
   std::string type_name(node.field.name);
   for (auto &exp : mod.exports) {
@@ -1393,17 +1482,6 @@ TypePtr Analyzer::resolve_func_type(const FuncTypeNode &node) {
     params.push_back(resolve_type(*p));
   TypePtr ret = node.return_type ? resolve_type(*node.return_type) : nullptr;
   return make_func_type(std::move(params), std::move(ret));
-}
-
-TypePtr Analyzer::resolve_struct_type(const StructTypeNode &node) {
-  std::vector<FieldInfo> fields;
-  for (auto &fs : node.fields) {
-    auto ft = resolve_type(*fs.type);
-    for (auto &ident : fs.names.identifiers) {
-      fields.push_back({std::string(ident.name), ft, false});
-    }
-  }
-  return make_struct_type("<anonymous>", std::move(fields));
 }
 
 TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
@@ -1439,6 +1517,21 @@ TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
   return make_union_type(std::move(alts));
 }
 
+// Whether the arguments are the struct's own parameters, in order.
+static bool names_own_params(const StructTypeInfo &info,
+                             const std::vector<TypePtr> &args) {
+  if (args.size() != info.type_params.size())
+    return false;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (!args[i] || args[i]->kind != TypeKind::TypeParam)
+      return false;
+    if (std::get<TypeParamInfo>(args[i]->detail).param.id !=
+        info.type_params[i].id)
+      return false;
+  }
+  return true;
+}
+
 TypePtr
 Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   auto base = resolve_type(*node.base_type);
@@ -1471,6 +1564,12 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
     return builtins.invalid_type;
   }
 
+  // Inside its own body a struct names itself: `Node<T>` there is this very
+  // declaration, whose fields are still being filled. Instantiating now would
+  // snapshot an empty field list.
+  if (resolving_structs_.count(info.name) && names_own_params(info, args))
+    return base;
+
   // Build bindings and instantiate.
   std::unordered_map<uint32_t, TypePtr> bindings;
   for (size_t i = 0; i < info.type_params.size(); ++i)
@@ -1499,10 +1598,58 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
 // Phase 2b — Resolve top-level declaration types
 // ===========================================================================
 
+// `void` is the absence of a value. It can be returned and it can be a union
+// alternative — that is what `T | void` means — but a value of it does not
+// exist, so nothing can hold one.
+static bool holds_void(const TypePtr &t) {
+  auto u = unwrap_alias(t);
+  if (!u)
+    return false;
+  switch (u->kind) {
+  case TypeKind::Void:
+    return true;
+  case TypeKind::Array:
+    return holds_void(std::get<ArrayTypeInfo>(u->detail).element);
+  case TypeKind::Map: {
+    auto &info = std::get<MapTypeInfo>(u->detail);
+    return holds_void(info.key) || holds_void(info.value);
+  }
+  default:
+    return false;
+  }
+}
+
+bool Analyzer::reject_void_value(Span span, const TypePtr &type,
+                                 std::string_view what) {
+  if (!holds_void(type))
+    return false;
+  error(span, std::format("{} cannot be typed '{}': void is the absence of a "
+                          "value, so there is nothing to hold",
+                          what, type_to_string(type)));
+  return true;
+}
+
+bool Analyzer::reject_void_bindings(
+    const std::unordered_map<uint32_t, TypePtr> &bindings, Span span) {
+  // `bindings` is unordered, so walk the ids in order or the diagnostics come
+  // out differently from one run to the next.
+  std::vector<uint32_t> ids;
+  for (auto &[id, concrete] : bindings)
+    ids.push_back(id);
+  std::sort(ids.begin(), ids.end());
+
+  bool rejected = false;
+  for (uint32_t id : ids)
+    rejected |=
+        reject_void_value(span, bindings.at(id), "a type argument");
+  return rejected;
+}
+
 TypePtr Analyzer::resolve_signature(const SignatureNode &sig) {
   std::vector<TypePtr> params;
   for (auto &p : sig.params) {
     auto pt = resolve_type(*p.type);
+    reject_void_value(p.type->span, pt, "a parameter");
     // Each name in the identifier list maps to one parameter of that type.
     // An empty identifier list means an unnamed parameter (Go-style interface
     // method) — push the type once.
@@ -1539,15 +1686,49 @@ void Analyzer::declare_parameters(const SignatureNode &sig) {
   }
 }
 
-void Analyzer::resolve_declaration(const Node &node) {
+static std::optional<std::string> type_decl_name(const Node &node) {
+  using R = std::optional<std::string>;
+  return std::visit(
+      overloaded{
+          [](const StructDeclNode &s) -> R { return std::string(s.name.name); },
+          [](const EnumDeclNode &e) -> R { return std::string(e.name.name); },
+          [](const ErrorDeclNode &e) -> R { return std::string(e.name.name); },
+          [](const InterfaceDeclNode &i) -> R {
+            return std::string(i.name.name);
+          },
+          [](const TypeDeclNode &t) -> R { return std::string(t.name.name); },
+          [](const auto &) -> R { return std::nullopt; },
+      },
+      node.data);
+}
+
+void Analyzer::ensure_type_resolved(const std::string &name) {
+  auto it = pending_type_decls_.find(name);
+  if (it == pending_type_decls_.end())
+    return;
+  const Node *decl = it->second;
+  // Drop the entry before resolving: a type that names itself, or a peer that
+  // names it back, re-enters here. Each resolver publishes its type into the
+  // symbol before descending into fields, so the cycle sees a real type.
+  pending_type_decls_.erase(it);
+  AtPackageScope at_package(*this);
   std::visit(overloaded{
-                 [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
                  [&](const StructDeclNode &s) { resolve_struct_decl(s); },
                  [&](const EnumDeclNode &e) { resolve_enum_decl(e); },
                  [&](const ErrorDeclNode &e) { resolve_error_decl(e); },
                  [&](const InterfaceDeclNode &i) { resolve_interface_decl(i); },
-                 [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                  [&](const TypeDeclNode &t) { resolve_type_decl(t); },
+                 [&](const auto &) {},
+             },
+             decl->data);
+}
+
+void Analyzer::resolve_declaration(const Node &node) {
+  if (auto name = type_decl_name(node))
+    return ensure_type_resolved(*name);
+  std::visit(overloaded{
+                 [&](const FuncDeclNode &fn) { resolve_func_decl(fn); },
+                 [&](const ConstDeclNode &c) { resolve_const_decl(c); },
                  [&](const ImportDeclNode &) { /* processed in phase 1.5 */ },
                  [&](const auto &) { /* already reported in collect */ },
              },
@@ -1875,6 +2056,21 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
     type_params = enter_generics(*s.generic);
   }
 
+  std::string struct_name(s.name.name);
+  auto &target_scope = has_generics ? current_scope->parent : current_scope;
+
+  // Publish the type before resolving fields, so a mention of the struct
+  // inside its own body resolves to this very type rather than the Invalid
+  // sentinel. The remaining detail is filled in below; every holder shares
+  // the one TypePtr and sees it complete.
+  auto struct_type = make_struct_type(struct_name, {}, std::move(methods),
+                                      type_params, current_package_name());
+  auto sym_it = target_scope->symbols.find(struct_name);
+  if (sym_it != target_scope->symbols.end())
+    sym_it->second.type = struct_type;
+
+  resolving_structs_.insert(struct_name);
+
   // Resolve fields.  Methods are bound externally (`fn (x T) M()`) and
   // registered onto the struct type by resolve_func_decl.
   for (auto &member : s.members) {
@@ -1899,25 +2095,15 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
       error(embed_node->span, "embedded type must be a struct");
       continue;
     }
+    if (embed_name_taken(*embed_node, et, fields, embeds)) continue;
     embeds.push_back(et);
   }
 
-  auto struct_type =
-      make_struct_type(std::string(s.name.name), std::move(fields),
-                       std::move(methods), std::move(type_params),
-                       current_package_name());
-  // Set embeds on the created type.
-  auto &info = std::get<StructTypeInfo>(struct_type->detail);
-  info.embeds = std::move(embeds);
+  resolving_structs_.erase(struct_name);
 
-  // Update the symbol.
-  auto sym_it = current_scope->symbols.find(std::string(s.name.name));
-  // If we pushed a scope for generics, the symbol is in the parent.
-  auto &target_scope = has_generics ? current_scope->parent : current_scope;
-  sym_it = target_scope->symbols.find(std::string(s.name.name));
-  if (sym_it != target_scope->symbols.end()) {
-    sym_it->second.type = struct_type;
-  }
+  auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  info.fields = std::move(fields);
+  info.embeds = std::move(embeds);
 
   if (has_generics) {
     pop_scope();
@@ -1930,6 +2116,15 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
 // (auto-injected; the body supplies only its optional `message = Expr`
 // default); extra fields follow.
 void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
+  std::string error_name(e.name.name);
+  auto err_type = make_struct_type(error_name, {}, /*methods=*/{},
+                                   /*type_params=*/{}, current_package_name());
+  std::get<StructTypeInfo>(err_type->detail).is_error = true;
+
+  auto sym_it = current_scope->symbols.find(error_name);
+  if (sym_it != current_scope->symbols.end())
+    sym_it->second.type = err_type;
+
   std::vector<FieldInfo> fields;
   fields.push_back({"type_id", builtins.int64_type, /*is_public=*/false,
                     nullptr});
@@ -1946,15 +2141,7 @@ void Analyzer::resolve_error_decl(const ErrorDeclNode &e) {
                         fs->default_value.get()});
   }
 
-  auto err_type =
-      make_struct_type(std::string(e.name.name), std::move(fields),
-                       /*methods=*/{}, /*type_params=*/{},
-                       current_package_name());
-  std::get<StructTypeInfo>(err_type->detail).is_error = true;
-
-  auto sym_it = current_scope->symbols.find(std::string(e.name.name));
-  if (sym_it != current_scope->symbols.end())
-    sym_it->second.type = err_type;
+  std::get<StructTypeInfo>(err_type->detail).fields = std::move(fields);
 }
 
 // A plain (non-interpolated) string literal's text, else nullopt.
@@ -1967,7 +2154,7 @@ static std::optional<std::string> plain_string_literal(const NodePtr &n) {
   auto *frag = std::get_if<StringFragmentNode>(&sl->fragments[0]->data);
   if (!frag)
     return std::nullopt;
-  return unescape_string_fragment(frag->text);
+  return unescape_string_fragment(*frag);
 }
 
 void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
@@ -2204,7 +2391,7 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
   auto &block = std::get<BlockNode>(fn.body->data);
   resolve_block(block);
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 // ===========================================================================
@@ -2214,7 +2401,9 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
 void Analyzer::resolve_expr(const Node &node) {
   std::visit(
       overloaded{
-          [&](const IdentifierNode &n) { resolve_identifier(n, node); },
+          [&](const IdentifierNode &n) {
+            resolve_identifier(n, node, NameUse::Read);
+          },
           [&](const BoolLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const NullLiteralNode &) { /* leaf — nothing to resolve */ },
           [&](const EnumShorthandNode &) { /* leaf — resolved in check */ },
@@ -2242,7 +2431,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const BlockNode &n) {
             push_scope(ScopeKind::Block);
             resolve_block(n);
-            pop_scope();
+            pop_resolve_scope();
           },
           // Statements that can appear as expressions in blocks.
           [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
@@ -2261,11 +2450,11 @@ void Analyzer::resolve_expr(const Node &node) {
 }
 
 void Analyzer::resolve_identifier(const IdentifierNode &ident,
-                                  const Node &parent) {
+                                  const Node &parent, NameUse use) {
   std::string name(ident.name);
 
   // Ignored identifiers (starting with _) don't need resolution.
-  if (!name.empty() && name[0] == '_')
+  if (is_ignored_name(name))
     return;
 
   auto sym = lookup(name);
@@ -2274,6 +2463,8 @@ void Analyzer::resolve_identifier(const IdentifierNode &ident,
     return;
   }
   record_symbol(parent, *sym);
+  if (use == NameUse::Read)
+    current_scope->mark_read(name);
 
   // ── Capture detection for closures ─────────────────────────────────
   // If this symbol is a local variable/parameter and we're inside a closure,
@@ -2461,13 +2652,13 @@ void Analyzer::resolve_if_expr(const IfExprNode &node) {
   push_scope(ScopeKind::Block);
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   resolve_block(then_block);
-  pop_scope();
+  pop_resolve_scope();
 
   if (node.else_block) {
     push_scope(ScopeKind::Block);
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     resolve_block(else_block);
-    pop_scope();
+    pop_resolve_scope();
   }
 }
 
@@ -2480,7 +2671,7 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
     if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
       push_scope(ScopeKind::Block);
       resolve_block(*block);
-      pop_scope();
+      pop_resolve_scope();
     } else {
       resolve_expr(*arm.body);
     }
@@ -2489,7 +2680,7 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
     if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
       push_scope(ScopeKind::Block);
       resolve_block(*block);
-      pop_scope();
+      pop_resolve_scope();
     } else {
       resolve_expr(**node.else_body);
     }
@@ -2529,15 +2720,18 @@ void Analyzer::resolve_for_expr(const ForExprNode &node) {
 
   // Declare the accumulator pipe if present.
   if (node.accumulator) {
-    declare_local(Symbol::variable(std::string(node.accumulator->name), nullptr,
-                                   node.accumulator->span));
+    std::string acc(node.accumulator->name);
+    declare_local(Symbol::variable(acc, nullptr, node.accumulator->span));
+    // The loop's value is the accumulator, so the expression reads it even
+    // when the body only assigns to it — as `|acc| { acc += x }` does.
+    current_scope->mark_read(acc);
   }
 
   // Resolve the body.
   auto &body_block = std::get<BlockNode>(node.body->data);
   resolve_block(body_block);
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
@@ -2605,7 +2799,7 @@ void Analyzer::resolve_spawn_expr(const SpawnExprNode &node,
     }
   }
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_or_expr(const OrExprNode &node) {
@@ -2622,7 +2816,7 @@ void Analyzer::resolve_or_expr(const OrExprNode &node) {
   auto &block = std::get<BlockNode>(node.fallback->data);
   resolve_block(block);
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_func_expr(const FuncExprNode &node, const Node &parent) {
@@ -2651,7 +2845,7 @@ void Analyzer::resolve_func_expr(const FuncExprNode &node, const Node &parent) {
   pending_closure_node_ =
       closure_node_stack_.empty() ? nullptr : closure_node_stack_.back();
 
-  pop_scope();
+  pop_resolve_scope();
 }
 
 // ===========================================================================
@@ -2687,9 +2881,17 @@ void Analyzer::resolve_decl_assign(const DeclAssignNode &decl,
   }
 }
 
+void Analyzer::resolve_write_target(const Node &target) {
+  if (auto *ident = std::get_if<IdentifierNode>(&target.data)) {
+    resolve_identifier(*ident, target, NameUse::Write);
+    return;
+  }
+  resolve_expr(target);
+}
+
 void Analyzer::resolve_assign(const AssignNode &node) {
   for (auto &target : node.targets) {
-    resolve_expr(*target);
+    resolve_write_target(*target);
   }
   for (auto &value : node.values) {
     resolve_expr(*value);
@@ -2714,11 +2916,11 @@ void Analyzer::resolve_break(const BreakNode &node) {
 }
 
 void Analyzer::resolve_increment(const IncrementNode &node) {
-  resolve_expr(*node.operand);
+  resolve_write_target(*node.operand);
 }
 
 void Analyzer::resolve_decrement(const DecrementNode &node) {
-  resolve_expr(*node.operand);
+  resolve_write_target(*node.operand);
 }
 
 // ===========================================================================
@@ -2941,9 +3143,6 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const MapTypeNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
-          [&](const StructTypeNode &) -> TypePtr {
-            return reject_type_as_value(node);
-          },
           [&](const UnionTypeNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
@@ -2953,7 +3152,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const GenericTypeAppNode &) -> TypePtr {
             return reject_type_as_value(node);
           },
-          [&](const auto &) -> TypePtr { return builtins.invalid_type; },
+          [&](const auto &) -> TypePtr {
+            return poison(node.span, "expression kind has no type rule");
+          },
       },
       node.data);
 
@@ -2971,7 +3172,6 @@ static bool is_empty_struct_shape(const TypePtr &t) {
 static bool is_type_expr_node(const Node &node) {
   return std::holds_alternative<ArrayTypeNode>(node.data) ||
          std::holds_alternative<MapTypeNode>(node.data) ||
-         std::holds_alternative<StructTypeNode>(node.data) ||
          std::holds_alternative<UnionTypeNode>(node.data) ||
          std::holds_alternative<FuncTypeNode>(node.data) ||
          std::holds_alternative<GenericTypeAppNode>(node.data);
@@ -2980,7 +3180,11 @@ static bool is_type_expr_node(const Node &node) {
 TypePtr Analyzer::check_type_or_value_expr(const Node &node) {
   if (auto *id = std::get_if<IdentifierNode>(&node.data)) {
     auto sym = lookup(std::string(id->name));
-    if (sym && sym->kind == SymbolKind::Type) {
+    // A type name and a package name are both legal here and nowhere else a
+    // value is expected, which is why this path exists separately from
+    // check_expr.
+    if (sym && (sym->kind == SymbolKind::Type ||
+                sym->kind == SymbolKind::Module)) {
       record_symbol(node, *sym);
       auto type = sym->type ? sym->type : builtins.invalid_type;
       record_type(node, type);
@@ -3030,9 +3234,16 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
     return builtins.invalid_type;
   }
 
-  // For module symbols, return the module type directly.
-  if (sym->kind == SymbolKind::Module && sym->type)
-    return sym->type;
+  // A package is introduced by an import binding, never copied by assignment;
+  // reaching here means it was used where a value belongs. Selector objects go
+  // through check_type_or_value_expr instead.
+  if (sym->kind == SymbolKind::Module) {
+    error(ident.span,
+          std::format("cannot use package '{}' as a value; to bind it to "
+                      "another name use `const Name = import \"...\"`",
+                      name));
+    return builtins.invalid_type;
+  }
 
   // Forward reference inside a constant initialiser.  check_const_decl
   // runs in textual order and assigns each Constant's type as it goes,
@@ -3074,33 +3285,44 @@ TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
 
 TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
   if (node.elements.empty()) {
-    // Empty array — type must be inferred from context.  Return a
-    // placeholder; the assignment checker will fill it in.
-    return make_array_type(builtins.invalid_type);
+    // The element type comes from the context. A hole that never meets one is
+    // caught where the binding is made.
+    return make_array_type(builtins.unknown_type);
   }
-  auto elem_type = check_expr(*node.elements[0]);
-  for (size_t i = 1; i < node.elements.size(); ++i) {
-    auto t = check_expr(*node.elements[i]);
-    if (!is_invalid_type(t) && !is_invalid_type(elem_type)) {
-      expect_assignable(node.elements[i]->span, elem_type, t, "array element");
+  TypePtr elem_type = nullptr;
+  for (auto &elem : node.elements) {
+    auto t = check_expr(*elem);
+    reject_void_value(elem->span, t, "an array element");
+    if (!elem_type) {
+      elem_type = t;
+      continue;
     }
+    if (!is_invalid_type(t) && !is_invalid_type(elem_type))
+      expect_assignable(elem->span, elem_type, t, "array element");
   }
   return make_array_type(elem_type);
 }
 
 TypePtr Analyzer::check_map_literal(const MapLiteralNode &node) {
   if (node.entries.empty()) {
-    return make_map_type(builtins.invalid_type, builtins.invalid_type);
+    return make_map_type(builtins.unknown_type, builtins.unknown_type);
   }
-  auto key_type = check_expr(*node.entries[0].key);
-  auto val_type = check_expr(*node.entries[0].value);
-  for (size_t i = 1; i < node.entries.size(); ++i) {
-    auto kt = check_expr(*node.entries[i].key);
-    auto vt = check_expr(*node.entries[i].value);
+  TypePtr key_type = nullptr;
+  TypePtr val_type = nullptr;
+  for (auto &entry : node.entries) {
+    auto kt = check_expr(*entry.key);
+    auto vt = check_expr(*entry.value);
+    reject_void_value(entry.key->span, kt, "a map key");
+    reject_void_value(entry.value->span, vt, "a map value");
+    if (!key_type) {
+      key_type = kt;
+      val_type = vt;
+      continue;
+    }
     if (!is_invalid_type(kt))
-      expect_assignable(node.entries[i].key->span, key_type, kt, "map key");
+      expect_assignable(entry.key->span, key_type, kt, "map key");
     if (!is_invalid_type(vt))
-      expect_assignable(node.entries[i].value->span, val_type, vt, "map value");
+      expect_assignable(entry.value->span, val_type, vt, "map value");
   }
   check_satisfies_protocol(key_type, ProtocolKind::Hashable,
                            node.entries[0].key->span, "map key");
@@ -3187,10 +3409,23 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
         break;
       }
     }
-    if (!found) {
-      error(node.span,
-            std::format("struct '{}' has no field '{}'", info.name, fname));
+    if (found)
+      continue;
+
+    // A key may also name an embed, which initialises the embedded value as a
+    // whole — the only way to set storage a child field shadows.
+    if (auto embed = embed_by_name(info, fname)) {
+      if (!is_invalid_type(val_type))
+        expect_assignable(node.span, embed, val_type,
+                          std::format("embedded '{}'", fname));
+      auto &st = current_instantiation_ ? current_instantiation_->span_types
+                                        : span_types;
+      st.push_back({node.fields[i].name.span, embed});
+      continue;
     }
+
+    error(node.span,
+          std::format("struct '{}' has no field '{}'", info.name, fname));
   }
 
   // If the original type was an alias, return the alias type so the
@@ -3557,6 +3792,14 @@ TypePtr Analyzer::check_group_expr(const GroupExprNode &node) {
   return check_expr(*node.inner);
 }
 
+static std::string callee_display_name(const Node &callee) {
+  if (auto *id = std::get_if<IdentifierNode>(&callee.data))
+    return std::string(id->name);
+  if (auto *sel = std::get_if<SelectorNode>(&callee.data))
+    return std::string(sel->field.name);
+  return "function";
+}
+
 TypePtr Analyzer::check_call_expr(const CallExprNode &node,
                                   const Node &parent) {
   // Gate all intrinsic_* calls to stdlib packages only.
@@ -3614,6 +3857,20 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       if (fd_it != func_decl_by_type_.end() &&
           !fd_it->second->is_extern &&
           generic_templates_.find(fd_it->second) != generic_templates_.end()) {
+        // Substitution stops at a struct boundary, so a generic struct named
+        // in the signature keeps its own type parameters however the call
+        // binds them. Lowering that reads the value through the wrong layout,
+        // so refuse the call rather than answer wrongly. Only a specialisable
+        // function is checked: elsewhere a leftover parameter means a template
+        // body being checked generically, where nothing is concrete yet.
+        if (!is_invalid_type(effective_type) &&
+            has_type_params(effective_type)) {
+          error(node.span,
+                std::format("cannot call '{}': its signature names a generic "
+                            "struct that inference does not substitute",
+                            callee_display_name(*node.callee)));
+          return builtins.invalid_type;
+        }
         instantiate_generic_body(*fd_it->second, bindings, parent);
         if (current_instantiation_) {
           current_instantiation_->node_type_args[&parent] = bindings;
@@ -3819,7 +4076,9 @@ TypePtr Analyzer::resolve_module_selector(const ModuleTypeInfo &mod,
                                           Span field_span) {
   for (auto &exp : mod.exports)
     if (exp.name == field_name)
-      return exp.type ? exp.type : builtins.invalid_type;
+      return exp.type ? exp.type
+                      : poison(field_span, "package export '" + field_name +
+                                               "' has no type");
   error(field_span,
         std::format("package '{}' has no exported member '{}'", mod.name,
                     field_name));
@@ -3855,24 +4114,33 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
   auto &info = std::get<StructTypeInfo>(owner_type->detail);
   for (auto &f : info.fields)
     if (f.name == field_name)
-      return f.type ? f.type : builtins.invalid_type;
+      return f.type ? f.type
+                    : poison(field_span,
+                             "struct field '" + field_name + "' has no type");
 
   for (auto &m : info.methods) {
     if (m.name != field_name)
       continue;
     auto sig = m.signature ? m.signature : builtins.invalid_type;
-    if (!info.origin_package.empty() &&
-        info.origin_package != current_package_name() &&
-        has_type_params(sig)) {
+    // A method is monomorphised from the receiver's type arguments alone, so
+    // on a concrete instantiation nothing generic may be left in its
+    // signature — neither a method-own type parameter nor a generic struct
+    // the receiver's arguments do not reach.
+    if (!info.type_args.empty() && has_type_params(sig)) {
       error(field_span,
-            std::format("cannot call generic method '{}' across packages "
-                        "(D3: generic method bodies are not cross-package "
-                        "in this version)",
-                        field_name));
+            std::format("cannot call '{}' on '{}': its signature has type "
+                        "parameters that the receiver does not bind",
+                        field_name, type_to_string(owner_type)));
       return builtins.invalid_type;
     }
     return sig;
   }
+
+  // An embed answers to its own type name, which reaches the embedded value
+  // itself. This is the only way to read storage a child field shadows, so it
+  // is checked before the promoted-member recursion.
+  if (auto embed = embed_by_name(info, field_name))
+    return embed;
 
   // Promoted members: recurse through embeds so a member declared several
   // levels deep is still found. Own members are checked above first, so a
@@ -3882,6 +4150,48 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
       continue;
     if (auto t = resolve_struct_member(embed, field_name, field_span))
       return t;
+  }
+  return nullptr;
+}
+
+// An embed answers to its bare type name, so anything else claiming that name
+// would leave the embedded value unreachable. Two embeds of the same name from
+// different packages collide for the same reason.
+bool Analyzer::embed_name_taken(const Node &embed_node, const TypePtr &embed,
+                                const std::vector<FieldInfo> &fields,
+                                const std::vector<TypePtr> &seen) {
+  auto &einfo = std::get<StructTypeInfo>(embed->detail);
+
+  for (auto &f : fields) {
+    if (f.name != einfo.name)
+      continue;
+    error(embed_node.span,
+          std::format("embedded type '{}' collides with a field of the same "
+                      "name",
+                      einfo.name));
+    return true;
+  }
+
+  for (auto &other : seen) {
+    if (std::get<StructTypeInfo>(other->detail).name != einfo.name)
+      continue;
+    error(embed_node.span,
+          std::format("embedded type '{}' collides with another embed of the "
+                      "same name",
+                      einfo.name));
+    return true;
+  }
+
+  return false;
+}
+
+TypePtr Analyzer::embed_by_name(const StructTypeInfo &info,
+                                const std::string &name) {
+  for (auto &embed : info.embeds) {
+    if (!embed || embed->kind != TypeKind::Struct)
+      continue;
+    if (std::get<StructTypeInfo>(embed->detail).name == name)
+      return embed;
   }
   return nullptr;
 }
@@ -3896,7 +4206,8 @@ void Analyzer::collect_promoted_fields(const StructTypeInfo &info,
 }
 
 TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
-                                           const std::string &field_name) {
+                                           const std::string &field_name,
+                                           Span span) {
   auto canonicalize_intrinsic = [this](const TypePtr &t) -> const Type * {
     switch (t->kind) {
     case TypeKind::Int: {
@@ -3950,7 +4261,9 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
   if (auto *vec = find_user_methods())
     for (auto &m : *vec)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.invalid_type;
+        return m.signature ? m.signature
+                           : poison(span, "method '" + field_name +
+                                              "' has no signature");
 
   auto effective_kind = underlying_kind(obj_type);
   auto effective_type = unwrap_alias(obj_type);
@@ -3961,7 +4274,8 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
       if (m.name != field_name)
         continue;
       if (!m.signature)
-        return builtins.invalid_type;
+        return poison(span,
+                      "kind method '" + field_name + "' has no signature");
       if (has_type_params(m.signature))
         return substitute_kind_method(effective_kind, effective_type,
                                       m.signature);
@@ -3973,7 +4287,8 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     if (m.name != field_name)
       continue;
     if (!m.signature)
-      return builtins.invalid_type;
+      return poison(span,
+                    "builtin method '" + field_name + "' has no signature");
     if (has_type_params(m.signature))
       return substitute_kind_method(effective_kind, effective_type,
                                     m.signature);
@@ -4156,7 +4471,10 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     auto &info = std::get<InterfaceTypeInfo>(obj_type->detail);
     for (auto &m : info.methods)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.invalid_type;
+        return m.signature ? m.signature
+                           : poison(node.field.span,
+                                    "interface method '" + field_name +
+                                        "' has no signature");
   }
 
   if (obj_type->kind == TypeKind::Enum) {
@@ -4179,7 +4497,10 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
     auto &alias_info = std::get<AliasTypeInfo>(obj_type->detail);
     for (auto &m : alias_info.methods)
       if (m.name == field_name)
-        return m.signature ? m.signature : builtins.invalid_type;
+        return m.signature ? m.signature
+                           : poison(node.field.span,
+                                    "alias method '" + field_name +
+                                        "' has no signature");
     auto underlying = unwrap_alias(obj_type);
     if (underlying && underlying->kind == TypeKind::Struct)
       if (auto t =
@@ -4187,7 +4508,8 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
         return t;
   }
 
-  if (auto sig = resolve_method_signature(obj_type, field_name))
+  if (auto sig = resolve_method_signature(obj_type, field_name,
+                                          node.field.span))
     return sig;
 
   error(node.field.span, std::format("type {} has no member '{}'",
@@ -4827,8 +5149,9 @@ TypePtr Analyzer::check_import_expr(const ImportExprNode &node) {
       return mock_it->second;
     }
   }
-  // If not found, the import was already reported as an error.
-  return builtins.invalid_type;
+  // Expected to have been reported when the import failed; poison() checks
+  // that claim rather than trusting it.
+  return poison(node.span, "import '" + path + "' resolved to no package");
 }
 
 // ===========================================================================
@@ -4870,19 +5193,12 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
     } else {
       init_type = check_expr_expecting(**var.init, declared_type);
     }
-    // An empty `[]` / `{}` literal under a typed declaration adopts the
-    // declared element type; without this, the array-of-error placeholder
-    // produced by check_array_literal would fail expect_assignable.
-    if (declared_type) {
+    // An empty `[]` / `{}` adopts the declared type — its element type is a
+    // hole and the declaration is the context that fills it. The hole only
+    // yields to a declaration of the same shape, so `a int = []` still fails.
+    if (declared_type && contains_unknown(init_type)) {
       TypePtr underlying = unwrap_alias(declared_type);
-      bool empty_arr =
-          std::get_if<ArrayLiteralNode>(&(*var.init)->data) != nullptr &&
-          std::get<ArrayLiteralNode>((*var.init)->data).elements.empty();
-      bool empty_map =
-          std::get_if<MapLiteralNode>(&(*var.init)->data) != nullptr &&
-          std::get<MapLiteralNode>((*var.init)->data).entries.empty();
-      if ((empty_arr && underlying->kind == TypeKind::Array) ||
-          (empty_map && underlying->kind == TypeKind::Map))
+      if (underlying && init_type && underlying->kind == init_type->kind)
         init_type = declared_type;
     }
     if (declared_type && !is_invalid_type(init_type)) {
@@ -4890,11 +5206,17 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
                         "variable initializer");
     }
     if (!final_type)
-      final_type = materialize_untyped(init_type);
+      final_type = resolve_binding_type(materialize_untyped(init_type),
+                                        (*var.init)->span);
   }
 
   // Update or create the symbol in the current scope.
   std::string name(var.name.name);
+  // Ahead of the ignored-name exit: an ignored name still declares storage,
+  // so `_ := f()` on a void `f` is a void slot. Call it as a statement.
+  reject_void_value(var.name.span, final_type, "a variable");
+  if (is_ignored_name(name))
+    return;
   auto sym_it = current_scope->symbols.find(name);
   if (sym_it != current_scope->symbols.end()) {
     sym_it->second.type = final_type;
@@ -4904,28 +5226,29 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
   }
 }
 
-void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
-  // The `:=` form has no declared type, so an empty `[]` or `{}` literal
-  // has no source for its element type.  Spec: "arr1 := [] // invalid,
-  // no inferrable type" (docs/language.md:601).  The typed forms
-  // (`arr [Int] = []`) parse as VarDeclNode and are not affected.
-  if (auto *arr_lit = std::get_if<ArrayLiteralNode>(&decl.value->data)) {
-    if (arr_lit->elements.empty())
-      error(decl.value->span,
-            "empty array literal: cannot infer element type without a "
-            "declared type");
-  } else if (auto *map_lit =
-                 std::get_if<MapLiteralNode>(&decl.value->data)) {
-    if (map_lit->entries.empty())
-      error(decl.value->span,
-            "empty map literal: cannot infer key/value type without a "
-            "declared type");
-  }
+// A binding is an inference hole's last chance to be filled: nothing after it
+// supplies a type. Spec: "arr1 := [] // invalid, no inferrable type"
+// (docs/language.md:601).
+TypePtr Analyzer::resolve_binding_type(TypePtr type, Span span) {
+  if (!contains_unknown(type))
+    return type;
+  error(span, type->kind == TypeKind::Map
+                  ? "empty map literal: cannot infer key/value type without a "
+                    "declared type"
+                  : "empty array literal: cannot infer element type without a "
+                    "declared type");
+  return builtins.invalid_type;
+}
 
-  auto rhs_type = materialize_untyped(check_expr(*decl.value));
+void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
+  auto rhs_type = resolve_binding_type(
+      materialize_untyped(check_expr(*decl.value)), decl.value->span);
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
+    reject_void_value(ident.span, rhs_type, "a variable");
+    if (is_ignored_name(name))
+      continue;
     auto sym_it = current_scope->symbols.find(name);
     if (sym_it != current_scope->symbols.end()) {
       sym_it->second.type = rhs_type;
@@ -4936,6 +5259,44 @@ void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
           name, Symbol::variable(name, rhs_type, ident.span));
     }
   }
+}
+
+const IdentifierNode *Analyzer::target_root(const Node &target) {
+  if (auto *id = std::get_if<IdentifierNode>(&target.data))
+    return id;
+  if (auto *sel = std::get_if<SelectorNode>(&target.data))
+    return target_root(*sel->object);
+  if (auto *idx = std::get_if<IndexExprNode>(&target.data))
+    return target_root(*idx->object);
+  return nullptr;
+}
+
+// A write needs somewhere to land. Without this the store is emitted against a
+// temporary and silently discarded, so the statement compiles and does nothing.
+void Analyzer::reject_immutable_target(const Node &target,
+                                       std::string_view verb) {
+  auto *root = target_root(target);
+  if (!root) {
+    error(target.span,
+          std::format("cannot {} a temporary value: the write would be "
+                      "discarded",
+                      verb));
+    return;
+  }
+
+  auto sym = lookup(std::string(root->name));
+  if (!sym)
+    return;
+
+  if (sym->kind == SymbolKind::Constant) {
+    error(target.span,
+          std::format("cannot {} constant '{}'", verb, root->name));
+    return;
+  }
+
+  if (sym->kind != SymbolKind::Variable && sym->kind != SymbolKind::Parameter)
+    error(target.span,
+          std::format("cannot {} '{}': not a variable", verb, root->name));
 }
 
 // Errors are immutable pure data: reject writing a field via `=`, a compound
@@ -4950,17 +5311,7 @@ void Analyzer::reject_error_field_mutation(const Node &target) {
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
-    // Reject assignment to a top-level constant.  Spec: "All top level
-    // constants are immutable" (docs/language.md:50).  Catches
-    // `Pi = 4`, `Pi += 1`, etc. for any compound assignment too.
-    if (auto *id = std::get_if<IdentifierNode>(&node.targets[i]->data)) {
-      auto sym = lookup(std::string(id->name));
-      if (sym && sym->kind == SymbolKind::Constant) {
-        error(node.targets[i]->span,
-              std::format("cannot assign to constant '{}'", id->name));
-      }
-    }
-
+    reject_immutable_target(*node.targets[i], "assign to");
     reject_error_field_mutation(*node.targets[i]);
 
     auto target_type = check_expr(*node.targets[i]);
@@ -5006,13 +5357,7 @@ void Analyzer::check_assign(const AssignNode &node) {
 }
 
 void Analyzer::check_increment(const IncrementNode &node) {
-  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
-    auto sym = lookup(std::string(id->name));
-    if (sym && sym->kind == SymbolKind::Constant) {
-      error(node.operand->span,
-            std::format("cannot increment constant '{}'", id->name));
-    }
-  }
+  reject_immutable_target(*node.operand, "increment");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
   if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
@@ -5022,13 +5367,7 @@ void Analyzer::check_increment(const IncrementNode &node) {
 }
 
 void Analyzer::check_decrement(const DecrementNode &node) {
-  if (auto *id = std::get_if<IdentifierNode>(&node.operand->data)) {
-    auto sym = lookup(std::string(id->name));
-    if (sym && sym->kind == SymbolKind::Constant) {
-      error(node.operand->span,
-            std::format("cannot decrement constant '{}'", id->name));
-    }
-  }
+  reject_immutable_target(*node.operand, "decrement");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
   if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
@@ -5169,6 +5508,8 @@ void Analyzer::check_const_decl(const ConstDeclNode &c) {
   TypePtr const_type = declared_type             ? declared_type
                        : is_invalid_type(init_type) ? builtins.int_type
                                                   : init_type;
+
+  reject_void_value(c.name.span, const_type, "a constant");
 
   if (sym_it != current_scope->symbols.end())
     sym_it->second.type = const_type;
@@ -5402,6 +5743,20 @@ TypePtr Analyzer::check_expr_expecting(const Node &expr,
                                        const TypePtr &expected) {
   if (auto *sh = std::get_if<EnumShorthandNode>(&expr.data))
     return check_enum_shorthand(*sh, expr, expected);
+  // An empty collection literal carries no element type of its own, so it
+  // takes the one being asked for.
+  if (auto exp = unwrap_alias(expected)) {
+    if (auto *arr = std::get_if<ArrayLiteralNode>(&expr.data);
+        arr && arr->elements.empty() && exp->kind == TypeKind::Array) {
+      record_type(expr, exp);
+      return exp;
+    }
+    if (auto *map = std::get_if<MapLiteralNode>(&expr.data);
+        map && map->entries.empty() && exp->kind == TypeKind::Map) {
+      record_type(expr, exp);
+      return exp;
+    }
+  }
   return check_expr(expr);
 }
 
@@ -5453,11 +5808,65 @@ void Analyzer::check_struct_decl(const StructDeclNode &s) {
                                 info.name));
     }
     seen_fields[f.name] = true;
+    reject_void_value(s.span, f.type, std::format("field '{}'", f.name));
   }
 
   check_method_uniqueness(info.methods, "struct", info.name, s.span, {});
 
+  check_no_infinite_size(sym->type, s.span);
   check_field_defaults(s);
+}
+
+// A struct holds its fields inline, so one that reaches itself that way has no
+// finite size and no base case to stop at. An array, a map, or a union slot
+// holding a boxed alternative puts the value on the heap, which is where a
+// recursive shape gets its footing.
+static bool reaches_by_value(const TypePtr &origin, const TypePtr &t,
+                             std::unordered_set<const Type *> &visiting) {
+  auto u = unwrap_alias(t);
+  if (!u)
+    return false;
+  if (same_struct_decl(u, origin))
+    return true;
+  if (u->kind == TypeKind::Union) {
+    for (auto &alt : std::get<UnionTypeInfo>(u->detail).alternatives)
+      if (!union_alt_is_boxed(alt) && reaches_by_value(origin, alt, visiting))
+        return true;
+    return false;
+  }
+  if (u->kind != TypeKind::Struct)
+    return false;
+  if (!visiting.insert(u.get()).second)
+    return false;
+  auto &si = std::get<StructTypeInfo>(u->detail);
+  for (auto &f : si.fields)
+    if (reaches_by_value(origin, f.type, visiting))
+      return true;
+  for (auto &e : si.embeds)
+    if (reaches_by_value(origin, e, visiting))
+      return true;
+  return false;
+}
+
+void Analyzer::check_no_infinite_size(const TypePtr &struct_type, Span span) {
+  auto &info = std::get<StructTypeInfo>(struct_type->detail);
+  auto blame = [&](const std::string &member) {
+    error(span,
+          std::format("'{}' contains itself through '{}', so it has no finite "
+                      "size; give it a way to stop — '{} | Missing', an array, "
+                      "or a map",
+                      info.name, member, info.name));
+  };
+  for (auto &f : info.fields) {
+    std::unordered_set<const Type *> visiting{struct_type.get()};
+    if (reaches_by_value(struct_type, f.type, visiting))
+      return blame(f.name);
+  }
+  for (auto &e : info.embeds) {
+    std::unordered_set<const Type *> visiting{struct_type.get()};
+    if (reaches_by_value(struct_type, e, visiting))
+      return blame(type_to_string(e));
+  }
 }
 
 void Analyzer::check_field_defaults(const StructDeclNode &s) {
@@ -5563,19 +5972,6 @@ void Analyzer::check_interface_decl(const InterfaceDeclNode &i) {
   check_method_uniqueness(info.methods, "interface", info.name, i.span, {});
 }
 
-void Analyzer::check_import_decl(const ImportDeclNode &node) {
-  // Import declarations are fully processed during the import phase (1.5).
-  // Here we just verify the module symbol was successfully resolved.
-  std::string path(node.path);
-  auto last_slash = path.rfind('/');
-  std::string name =
-      (last_slash != std::string::npos) ? path.substr(last_slash + 1) : path;
-  auto sym = lookup(name);
-  if (sym && sym->type && is_invalid_type(sym->type)) {
-    // Error was already reported during resolve_import.
-  }
-}
-
 // ===========================================================================
 // Generic instantiation
 // ===========================================================================
@@ -5599,6 +5995,9 @@ Analyzer::instantiate_generic_call(
       return builtins.invalid_type;
     }
   }
+
+  if (reject_void_bindings(bindings, call_span))
+    return builtins.invalid_type;
 
   // Validate each binding against the type-parameter's constraint, if any.
   // Constraints are carried on the TypeParam nodes embedded in the function's
@@ -5666,7 +6065,7 @@ Analyzer::instantiate_generic_call(
       constraint_violation = true;
   }
   if (constraint_violation)
-    return builtins.invalid_type;
+    return poison(call_span, "constraint violation left unreported");
 
   if (out_bindings)
     *out_bindings = bindings;
@@ -5724,6 +6123,10 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   auto saved_scope = current_scope;
   BodyInstantiation *saved_inst = current_instantiation_;
   bool saved_is_stdlib = is_stdlib;
+  bool saved_suppress = suppress_unread_reports_;
+  // Which locals a body reads is the same answer for every instantiation, so
+  // only the first one draws it.
+  suppress_unread_reports_ = list.size() > 1;
   instantiation_stack_.push_back(&call_node);
 
   current_scope = tpl.decl_scope->child(ScopeKind::Block);
@@ -5802,10 +6205,12 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   }
 
   // Restore everything.
+  report_unread_locals(*current_scope);
   pop_scope();           // the Function scope
   current_scope = saved_scope;
   current_instantiation_ = saved_inst;
   is_stdlib = saved_is_stdlib;
+  suppress_unread_reports_ = saved_suppress;
   instantiation_stack_.pop_back();
 
   inst.in_progress = false;
@@ -5817,7 +6222,7 @@ TypePtr Analyzer::instantiate_generic_struct(
     const std::vector<std::pair<std::string, TypePtr>> &field_types,
     Span span) {
   if (!struct_type || struct_type->kind != TypeKind::Struct)
-    return builtins.invalid_type;
+    return poison(span, "generic instantiation of a non-struct type");
 
   auto &info = std::get<StructTypeInfo>(struct_type->detail);
   if (info.type_params.empty())
@@ -5825,40 +6230,40 @@ TypePtr Analyzer::instantiate_generic_struct(
 
   std::unordered_map<uint32_t, TypePtr> bindings;
 
-  // Unify each provided field value type against the struct's field type.
+  // Unify each provided field value type against the struct's field type. A
+  // field may bind nothing — `tail Node<T> | Missing` given `Missing{}` says
+  // nothing about T — which is silent here; an unbound parameter is caught
+  // below by the field that was supposed to bind it.
   for (auto &[fname, ftype] : field_types) {
     for (auto &fi : info.fields) {
       if (fi.name == fname && fi.type) {
-        if (!unify(fi.type, ftype, bindings)) {
-          error(span, std::format("cannot infer type parameter from field '{}'",
-                                  fname));
-          return builtins.invalid_type;
-        }
+        unify(fi.type, ftype, bindings);
         break;
       }
     }
   }
 
+  if (reject_void_bindings(bindings, span))
+    return builtins.invalid_type;
+
   if (bindings.empty())
     return struct_type;
 
-  // Build the substituted struct type.
-  std::vector<FieldInfo> new_fields;
-  for (auto &f : info.fields) {
-    new_fields.push_back({f.name, substitute(f.type, bindings), f.is_public});
-  }
-  std::vector<MethodInfo> new_methods;
-  for (auto &m : info.methods) {
-    new_methods.push_back(
-        {m.name, substitute(m.signature, bindings), m.is_public,
-         m.origin_package});
-  }
-
-  auto result = make_struct_type(info.name, std::move(new_fields),
-                                 std::move(new_methods), {},
+  // Publish the shell before substituting fields, and map the declaration onto
+  // it, so a field naming the struct again lands on this instantiation.
+  auto result = make_struct_type(info.name, {}, {}, info.type_params,
                                  info.origin_package);
   auto &result_info = std::get<StructTypeInfo>(result->detail);
-  result_info.type_params = info.type_params;
+  SubstMemo memo{{struct_type.get(), result}};
+
+  for (auto &f : info.fields)
+    result_info.fields.push_back(
+        {f.name, substitute(f.type, bindings, memo), f.is_public,
+         f.default_value});
+  for (auto &m : info.methods)
+    result_info.methods.push_back(
+        {m.name, substitute(m.signature, bindings, memo), m.is_public,
+         m.origin_package});
   // Record the concrete type arguments.
   for (auto &tp : info.type_params) {
     auto it = bindings.find(tp.id);

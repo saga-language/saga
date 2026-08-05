@@ -1,0 +1,18 @@
+// Spec: a method may name its own receiver's type in the signature. The
+// receiver's type arguments reach it, so `Box<T>` returns `Box<int>` here.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Same() Box<T> { b }
+
+pub fn Main() void {
+  b := Box{value: 5}
+  again := b.Same()
+  io.Println("{again.value}")
+
+  s := Box{value: "hi"}
+  io.Println(s.Same().value)
+}

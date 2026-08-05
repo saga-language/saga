@@ -1,0 +1,24 @@
+const io = import "std/io"
+
+fn label(n int) string {
+  "n={n}"
+}
+
+fn drop(_ int, _ string) int {
+  7
+}
+
+pub fn Main() void {
+  _ := label(1)
+  _ := label(2)
+
+  arr := [1, 2]
+  for _ : arr {
+    for _, _ : arr {
+      io.Println("tick")
+    }
+  }
+
+  n := drop(1, "two")
+  io.Println("{n}")
+}

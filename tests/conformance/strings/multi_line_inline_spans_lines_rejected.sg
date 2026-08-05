@@ -1,0 +1,9 @@
+// An inline `"""..."""` has no closing delimiter on a line of its own, so a
+// line break inside it has no defined indentation. Spanning lines means opening
+// the block properly.
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""alpha
+beta""")
+}

@@ -1,0 +1,11 @@
+// Assignment is not a use. A local only ever written to is still dead —
+// every write to it is discarded.
+const io = import "std/io"
+
+pub fn Main() void {
+  count := 0
+  count = 1
+  count += 2
+  count++
+  io.Println("ok")
+}

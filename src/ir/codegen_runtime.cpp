@@ -207,6 +207,11 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_error_alloc", module.get());
 
+  // Zero-initialised heap block for a boxed union alternative.
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_box_alloc", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -601,8 +606,11 @@ uint64_t CodeGen::union_payload_size(const TypePtr &union_sem) {
   auto &info = std::get<UnionTypeInfo>(union_sem->detail);
   uint64_t max_size = 0;
   auto &dl = module->getDataLayout();
+  auto *ptr_rep = llvm::PointerType::getUnqual(context);
   for (auto &alt : info.alternatives) {
-    auto *ll = llvm_type(alt);
+    // Ask before lowering: llvm_type of a self-referential struct comes back
+    // here for its own union field, and the pointer is what breaks the cycle.
+    auto *ll = union_alt_is_boxed(alt) ? ptr_rep : llvm_type(alt);
     if (ll->isVoidTy())
       continue;
     uint64_t sz = dl.getTypeAllocSize(ll);
@@ -674,7 +682,9 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
     auto *cast = builder.CreateBitOrPointerCast(
         payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
     auto *ll_alt = llvm_type(val_type);
-    if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
+    if (union_alt_is_boxed(val_type))
+      builder.CreateStore(emit_box_copy(val, ll_alt), cast);
+    else if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
       auto &dl = module->getDataLayout();
       builder.CreateMemCpy(cast, dl.getABITypeAlign(ll_alt), val,
                            dl.getABITypeAlign(ll_alt),
@@ -705,7 +715,26 @@ llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
                                                "union.payload");
   auto *cast = builder.CreateBitOrPointerCast(
       payload_gep, llvm::PointerType::getUnqual(context), "union.ecast");
+  if (union_alt_is_boxed(alt_type)) {
+    auto *box = builder.CreateLoad(llvm::PointerType::getUnqual(context), cast,
+                                   "union.box");
+    return builder.CreateLoad(ll_alt, box, "union.val");
+  }
   return builder.CreateLoad(ll_alt, cast, "union.val");
+}
+
+llvm::Value *CodeGen::emit_box_copy(llvm::Value *val, llvm::Type *ll_alt) {
+  auto &dl = module->getDataLayout();
+  uint64_t size = dl.getTypeAllocSize(ll_alt);
+  auto *box = builder.CreateCall(
+      module->getFunction("saga_box_alloc"),
+      {llvm::ConstantInt::get(i64_type, size)}, "union.box");
+  if (val->getType()->isPointerTy())
+    builder.CreateMemCpy(box, dl.getABITypeAlign(ll_alt), val,
+                         dl.getABITypeAlign(ll_alt), size);
+  else
+    builder.CreateStore(val, box);
+  return box;
 }
 
 bool CodeGen::is_impure_union(const TypePtr &t) const {
@@ -739,18 +768,18 @@ TypePtr CodeGen::strip_error_from_union(const TypePtr &t) const {
 // Reference counting
 // ===========================================================================
 
-void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
-  if (!sem) return;
+void CodeGen::track_managed(llvm::AllocaInst *slot, const TypePtr &sem) {
+  if (!slot || !sem) return;
   if (sem->kind == TypeKind::String)
-    managed_locals.push_back({name, ManagedKind::String});
+    managed_locals.push_back({slot, ManagedKind::String});
   else if (sem->kind == TypeKind::Array)
-    managed_locals.push_back({name, ManagedKind::Array});
+    managed_locals.push_back({slot, ManagedKind::Array});
   else if (sem->kind == TypeKind::Map)
-    managed_locals.push_back({name, ManagedKind::Map});
+    managed_locals.push_back({slot, ManagedKind::Map});
   else if (sem->kind == TypeKind::Struct) {
     auto &info = std::get<StructTypeInfo>(sem->detail);
     if (info.name == "Task") {
-      managed_locals.push_back({name, ManagedKind::Task});
+      managed_locals.push_back({slot, ManagedKind::Task});
     } else {
       // Check if the struct implements the Closer protocol (has Close() Void).
       for (auto &m : info.methods) {
@@ -758,7 +787,7 @@ void CodeGen::track_managed(const std::string &name, const TypePtr &sem) {
             m.signature->kind == TypeKind::Func) {
           auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
           if (fi.params.empty()) {
-            managed_locals.push_back({name, ManagedKind::Closeable});
+            managed_locals.push_back({slot, ManagedKind::Closeable});
             break;
           }
         }
@@ -791,9 +820,7 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
 
 void CodeGen::emit_release_locals() {
   for (auto &ml : managed_locals) {
-    auto it = locals.find(ml.name);
-    if (it == locals.end()) continue;
-    auto *alloca = it->second;
+    auto *alloca = ml.slot;
     auto *val = builder.CreateLoad(alloca->getAllocatedType(), alloca);
     if (ml.kind == ManagedKind::String)
       builder.CreateCall(module->getFunction("saga_release_string"), {val});
@@ -804,9 +831,6 @@ void CodeGen::emit_release_locals() {
     else if (ml.kind == ManagedKind::Task)
       builder.CreateCall(module->getFunction("saga_task_drop"), {val});
     else if (ml.kind == ManagedKind::Closeable) {
-      // Call the struct's Close() method.  The alloca is the self ptr.
-      auto *alloca = it->second;
-
       // Look up the struct's semantic type to resolve the Close() link name.
       // We scan the analyzer's node_types to find the type, but it's
       // simpler to check struct_method_links directly.

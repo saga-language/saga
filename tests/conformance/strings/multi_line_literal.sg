@@ -1,0 +1,12 @@
+// Spec: `"""` delimits a multi-line string; the delimiters are not content.
+// Written inline, it is content verbatim and stays on one line — which is what
+// makes it the way to write a string full of quotes.
+// (docs/language.md:726)
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""one line""")
+  io.Println("""""")
+  io.Println("""a "quoted" word""")
+  io.Println("end")
+}

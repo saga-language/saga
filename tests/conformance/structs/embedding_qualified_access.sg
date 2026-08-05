@@ -1,0 +1,28 @@
+// Spec: an embedded struct is reachable by its bare type name, for read,
+// write, and literal initialisation. This is the only way to address storage
+// that a child field of the same name shadows.
+// (docs/language.md §Struct embedding)
+import "std/io"
+
+struct Timestamps {
+  created int
+}
+
+fn (t Timestamps) Created() int {
+  t.created
+}
+
+struct User {
+  Timestamps
+  created int
+}
+
+pub fn Main() void {
+  u := User{Timestamps: Timestamps{created: 100}, created: 5}
+  io.Println(u.created.String())
+  io.Println(u.Timestamps.created.String())
+  io.Println(u.Created().String())
+  u.Timestamps.created = 77
+  io.Println(u.Timestamps.created.String())
+  io.Println(u.created.String())
+}

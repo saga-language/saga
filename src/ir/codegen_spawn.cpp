@@ -177,7 +177,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
     // fail for user struct names because their scope has been popped.
     TypePtr chan_elem_sem = spawn_channel_elem_type_of(parent);
     if (!chan_elem_sem)
-      chan_elem_sem = analyzer.resolve_type(*node.generic->type_params[0]);
+      chan_elem_sem = lookup_sem_type(*node.generic->type_params[0]);
     auto *chan_elem_ll = llvm_type(chan_elem_sem);
     if (!chan_elem_ll || chan_elem_ll->isVoidTy())
       chan_elem_ll = i64_type; // defensive fallback; shouldn't happen

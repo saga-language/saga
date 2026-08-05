@@ -244,7 +244,6 @@ constexpr bool is_type_start(Token::Kind kind) {
   case Token::Kind::Array:      // array{T}
   case Token::Kind::Map:        // map{K:V}
   case Token::Kind::Fn:         // fn(...) T
-  case Token::Kind::Struct:     // struct{...}
   case Token::Kind::BitwiseOr:  // |T| generic app (until 1b-2)
   // Basic type keywords.
   case Token::Kind::Bool:
@@ -330,7 +329,6 @@ constexpr bool is_expression_start(Token::Kind kind) {
   case Token::Kind::BitwiseOr: // |T| generic prefix for spawn / fn
   case Token::Kind::Fn:
   case Token::Kind::Import:
-  case Token::Kind::Struct:          // anonymous struct literal
   case Token::Kind::Array:           // array{T}{...} typed literal
   case Token::Kind::Map:             // map{K:V}{...} typed literal
     return true;
@@ -362,6 +360,16 @@ constexpr bool is_assign_op(Token::Kind kind) {
 // Token Helpers
 // ============================================================================
 
+// The lexer keeps its own diagnostics and nothing else reads them, so they are
+// moved across as each token is committed. Draining here rather than at scan
+// time is what keeps one report per token: peek() rewinds the lexer and the
+// same text is scanned again.
+void Parser::take_lexer_errors() {
+  for (auto &e : lexer.error_list.errors)
+    errors.report_error(e.p, std::move(e.message));
+  lexer.error_list.errors.clear();
+}
+
 // Consume the current token, store it in `previous`, then scan forward past
 // any comment tokens (comments carry no semantic meaning and are invisible to
 // all parsing logic above this point). Returns the token that was consumed.
@@ -376,6 +384,7 @@ Token Parser::advance() {
     current = lexer.scan();
   }
 
+  take_lexer_errors();
   return previous;
 }
 
@@ -385,7 +394,7 @@ Token Parser::peek() const {
   auto saved_offset = lexer.offset;
   auto saved_reading_offset = lexer.reading_offset;
   auto saved_state = lexer.state;
-  auto saved_current = current;
+  auto saved_errors = lexer.error_list.errors.size();
 
   // Scan the next token (const_cast needed because scan mutates the lexer).
   auto &mutable_lexer = const_cast<Lexer &>(lexer);
@@ -397,6 +406,7 @@ Token Parser::peek() const {
   mutable_lexer.offset = saved_offset;
   mutable_lexer.reading_offset = saved_reading_offset;
   mutable_lexer.state = saved_state;
+  mutable_lexer.error_list.errors.resize(saved_errors);
 
   return next;
 }
@@ -479,14 +489,14 @@ bool Parser::is_at_end() const {
 
 // Report a syntax error at the position of the current token.
 void Parser::error(const std::string &message) {
-  errors.report_error(lexer.file->position_at(current.offset), message);
+  errors.report_error(fileset.position_at(current.offset), message);
 }
 
 // Report a syntax error at the start of an explicit span. Useful when the
 // parser has already advanced past the offending token and needs to point
 // back to it (e.g. mismatched delimiters detected at the closing token).
 void Parser::error_at(Span span, const std::string &message) {
-  errors.report_error(lexer.file->position_at(span.start), message);
+  errors.report_error(fileset.position_at(span.start), message);
 }
 
 // Panic-mode error recovery. After a syntax error, skip tokens until we
@@ -714,7 +724,6 @@ NodePtr Parser::parse_union_type() {
 //   "array"          → ArrayType   array{T [; N]}
 //   "map"            → MapType     map{K:V [; N]}
 //   "fn"             → FuncType    fn(...) T
-//   "struct"         → StructType  struct{...}
 //   basic_type kw    → IdentifierNode carrying the keyword text (int, string…)
 //   Identifier       → IdentifierNode / SelectorNode, optional <…> application
 //
@@ -731,8 +740,6 @@ NodePtr Parser::parse_single_type() {
     return parse_map_type();
   case Token::Kind::Fn:
     return parse_func_type();
-  case Token::Kind::Struct:
-    return parse_struct_type();
 
   // ── Basic type keywords ──────────────────────────────────────────────
   // Lowered to an IdentifierNode carrying the keyword text, resolved against
@@ -800,12 +807,12 @@ NodePtr Parser::parse_single_type() {
 // ============================================================================
 //
 // These helpers are declared under "Declaration sub-helpers" in the header but
-// are implemented here because parse_func_type and parse_struct_type (both type
-// parsers) call them directly.
+// are implemented here because parse_func_type (a type parser) calls them
+// directly.
 
 // parse_field_spec — FieldSpec = IdentifierList Type
 //
-// Used for inline StructType fields.  The IdentifierList collects all
+// Used for struct and error declaration fields.  The IdentifierList collects all
 // comma-separated names; the type follows WITHOUT a preceding comma.
 //
 //   x, y Int      →  names=[x, y]  type=Int
@@ -1077,34 +1084,6 @@ NodePtr Parser::parse_map_type() {
                                 std::move(value), std::move(size));
 }
 
-// parse_struct_type — StructType = "struct" "{" [ FieldSpec { "," FieldSpec } ]
-// "}"
-//
-// Fields are comma-separated (not newline-separated; that convention is
-// reserved for StructDecl).  Trailing commas are tolerated.
-NodePtr Parser::parse_struct_type() {
-  auto start = mark();
-  expect(Token::Kind::Struct);    // "struct"
-  expect(Token::Kind::LeftBrace); // "{"
-  skip_terminators();
-
-  std::vector<FieldSpecNode> fields;
-  if (!check(Token::Kind::RightBrace)) {
-    fields.push_back(parse_field_spec());
-    while (check(Token::Kind::Comma)) {
-      advance(); // consume ","
-      skip_terminators();
-      if (check(Token::Kind::RightBrace))
-        break; // trailing comma
-      fields.push_back(parse_field_spec());
-    }
-    skip_terminators_before(Token::Kind::RightBrace);
-  }
-
-  expect(Token::Kind::RightBrace); // "}"
-  return make_node<StructTypeNode>(span_from(start), std::move(fields));
-}
-
 // parse_func_type — FuncType = "fn" "(" [ TypeList ] ")" Type
 //
 // FuncTypeNode stores type nodes only (no parameter names).
@@ -1204,14 +1183,12 @@ NodePtr Parser::parse_func_type() {
 NodePtr Parser::parse_expression() { return parse_expr_bp(0); }
 
 // A "{" begins a struct initialiser only after a type expression that can name
-// a struct: an Identifier, a Selector (`pkg.Type`), or an anonymous struct type
-// (`struct{...}`) — grammar.md:208.  After a container type (`array{T}`,
-// `map{K:V}`) it is not an infix, so the stray "{" surfaces as a natural syntax
-// error rather than a malformed struct literal.
+// a struct: an Identifier or a Selector (`pkg.Type`).  After a container type
+// (`array{T}`, `map{K:V}`) it is not an infix, so the stray "{" surfaces as a
+// natural syntax error rather than a malformed struct literal.
 static bool begins_struct_initializer(const Node &lhs) {
   return std::holds_alternative<IdentifierNode>(lhs.data) ||
-         std::holds_alternative<SelectorNode>(lhs.data) ||
-         std::holds_alternative<StructTypeNode>(lhs.data);
+         std::holds_alternative<SelectorNode>(lhs.data);
 }
 
 // parse_expr_bp — Pratt core loop.
@@ -1363,17 +1340,6 @@ NodePtr Parser::parse_prefix() {
   // spawn (optional typed channel after the keyword: spawn<int> { })
   case Token::Kind::Spawn:
     return parse_spawn_expr();
-
-  // ── Anonymous struct type (prefix for struct literal) ──────────────────────
-  //
-  // Grammar: StructLiteral = StructType StructInitializer
-  //          StructType    = "struct" "{" [ FieldSpec { "," FieldSpec } ] "}"
-  //
-  // parse_struct_type() produces a StructTypeNode.  The Pratt loop then sees
-  // the following "{" as an infix LeftBrace (bp = 1) and dispatches to
-  // parse_struct_literal(), which consumes the StructInitializer.
-  case Token::Kind::Struct:
-    return parse_struct_type();
 
   // ── Container type prefix (typed composite literal) ────────────────────────
   //
@@ -2308,48 +2274,59 @@ NodePtr Parser::parse_bool_literal() {
 //
 // On any unexpected token, an error is reported and a best-effort
 // StringLiteralNode is returned so callers always receive a non-null node.
+void Parser::take_fragment(std::vector<NodePtr> &fragments,
+                           std::vector<RawFragment> &raws) {
+  auto frag_start = mark();
+  Token tok = advance();
+  fragments.push_back(
+      make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
+  raws.push_back({tok.literal, tok.offset});
+}
+
+// The margin a `"""` block strips is the indentation of its closing delimiter,
+// so it is only known once every fragment has been read, and it then applies to
+// all of them.
+void Parser::apply_block_margin(std::vector<NodePtr> &fragments,
+                                std::span<const RawFragment> raws) {
+  auto layout = block_string_layout(raws);
+  for (const auto &e : layout.errors)
+    errors.report_error(fileset.position_at(e.offset), e.message);
+  if (!layout.margin)
+    return;
+
+  // An interpolation the parser could not read leaves a null behind, and this
+  // runs before anything gates on the error being reported.
+  for (auto &frag : fragments)
+    if (auto *sf = frag ? std::get_if<StringFragmentNode>(&frag->data) : nullptr)
+      sf->margin = layout.margin;
+}
+
 NodePtr Parser::parse_string_literal() {
   auto start = mark();
   std::vector<NodePtr> fragments;
+  std::vector<RawFragment> raws;
 
   // ── Plain string — no interpolation ──────────────────────────────────
   if (check(Token::Kind::StringLiteral)) {
-    auto frag_start = mark();
-    Token tok = advance();
-    fragments.push_back(
-        make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
+    take_fragment(fragments, raws);
+    apply_block_margin(fragments, raws);
     return make_node<StringLiteralNode>(span_from(start), std::move(fragments));
   }
 
   // ── Interpolated string ───────────────────────────────────────────────
   // StringStart { Expression ( StringMiddle | StringEnd ) }
   if (check(Token::Kind::StringStart)) {
-    // Opening fragment  ("...{)
-    {
-      auto frag_start = mark();
-      Token tok = advance();
-      fragments.push_back(
-          make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
-    }
+    take_fragment(fragments, raws); // opening fragment ("...{)
 
     while (!is_at_end()) {
       // Interpolated expression between the braces.
       fragments.push_back(parse_expression());
 
       if (check(Token::Kind::StringMiddle)) {
-        // Middle fragment (}...{) — more interpolations follow.
-        auto frag_start = mark();
-        Token tok = advance();
-        fragments.push_back(
-            make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
-        // Loop back to parse the next expression.
+        take_fragment(fragments, raws); // more interpolations follow (}...{)
 
       } else if (check(Token::Kind::StringEnd)) {
-        // Closing fragment (}...") — string is complete.
-        auto frag_start = mark();
-        Token tok = advance();
-        fragments.push_back(
-            make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
+        take_fragment(fragments, raws); // string is complete (}...")
         break;
 
       } else {
@@ -2359,6 +2336,7 @@ NodePtr Parser::parse_string_literal() {
       }
     }
 
+    apply_block_margin(fragments, raws);
     return make_node<StringLiteralNode>(span_from(start), std::move(fragments));
   }
 
@@ -3397,7 +3375,7 @@ NodePtr Parser::parse_spawn_expr() {
 //                        FieldAssignment = Identifier ":" Expression
 //
 // Called from parse_infix when the current token is "{" and the LHS is the
-// type expression (an IdentifierNode, SelectorNode, or StructTypeNode).
+// type expression (an IdentifierNode or SelectorNode).
 //
 // Field separators
 // ────────────────

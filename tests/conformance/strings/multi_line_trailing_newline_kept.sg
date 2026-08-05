@@ -1,0 +1,16 @@
+// Spec: the break before the closing `"""` is layout, so a string that really
+// does end in a newline says so with a blank line — visible in the source
+// rather than implied by where the delimiter sits.
+import "std/io"
+
+pub fn Main() void {
+  stripped := """
+    no trailing newline
+    """
+  kept := """
+    trailing newline
+
+    """
+  io.Println("[{stripped}]")
+  io.Println("[{kept}]")
+}

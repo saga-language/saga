@@ -15,10 +15,19 @@ namespace saga {
 // Function type building
 // ===========================================================================
 
-// analyzer.resolve_type() can't resolve a bare identifier or selector at
-// codegen time — current_scope is no longer the package scope. Resolve named
-// and qualified types here against the stable package scope; everything else
-// (builtins, composite type nodes) falls through to the analyzer.
+// Resolve a type node the way the analyzer would have at declaration time:
+// from the package scope, since analysis left current_scope elsewhere. A miss
+// is a failed lookup rather than a program error — checking is over — so it
+// must not reach the user.
+TypePtr CodeGen::lookup_sem_type(const Node &type_node) {
+  Analyzer::Silence quiet(analyzer);
+  Analyzer::AtPackageScope scope(analyzer);
+  return analyzer.resolve_type(type_node);
+}
+
+// Named and qualified types resolve straight out of the package scope; every
+// other node shape — including a generic application like `Box<int>` — goes
+// through the analyzer.
 llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
   // Prefer the type the analyzer already resolved for this node (recorded with
   // the package scope active). Codegen's current_scope can't resolve a
@@ -39,7 +48,7 @@ llvm::Type *CodeGen::resolve_type_node(const Node &type_node) {
     if (ll)
       return ll;
   }
-  return llvm_type(analyzer.resolve_type(type_node));
+  return llvm_type(lookup_sem_type(type_node));
 }
 
 std::optional<Symbol> CodeGen::package_symbol(std::string_view name) {
@@ -247,16 +256,15 @@ void CodeGen::emit_function_body_inner(
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
-  // Skip the hidden sret arg if present.
+  // Skip the hidden sret arg if present. The function is the authority, not
+  // the annotation: a monomorphised specialisation returns a struct by
+  // pointer, and re-resolving `fn`'s declared return type cannot tell that
+  // apart from a declared function's sret lowering.
   size_t arg_idx = 0;
-  bool has_sret = false;
-  if (!is_main && fn.signature.return_type) {
-    auto *r_ll = resolve_type_node(*fn.signature.return_type);
-    if (r_ll && r_ll->isStructTy()) {
-      has_sret = true;
-      ++arg_idx; // arg 0 is the sret pointer
-    }
-  }
+  bool has_sret =
+      !is_main && func->hasParamAttribute(0, llvm::Attribute::StructRet);
+  if (has_sret)
+    ++arg_idx;
 
   // Create allocas for parameters and store the incoming argument values.
   // param_ll has one entry per flattened parameter name so variadic /
@@ -287,7 +295,7 @@ void CodeGen::emit_function_body_inner(
       }
       locals[pname] = alloca;
       if (param_sem && param_sem->kind == TypeKind::Array)
-        track_managed(pname, param_sem);
+        track_managed(alloca, param_sem);
       ++ll_idx;
     }
   }
@@ -500,7 +508,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     if (auto recorded = semantic_type(**node.type)) {
       var_type = llvm_type(recorded);
     } else {
-      auto sem_type = analyzer.resolve_type(**node.type);
+      auto sem_type = lookup_sem_type(**node.type);
       var_type = llvm_type(sem_type);
     }
   } else if (node.init) {
@@ -521,7 +529,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     sem_type_ptr = semantic_type(**node.type);
     if (!sem_type_ptr) {
       // Fall back to resolve_type (works for builtins).
-      sem_type_ptr = analyzer.resolve_type(**node.type);
+      sem_type_ptr = lookup_sem_type(**node.type);
     }
   } else if (node.init) {
     sem_type_ptr = semantic_type(**node.init);
@@ -564,7 +572,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
           auto *alloca = llvm::cast<llvm::AllocaInst>(wrapped);
           alloca->setName(name);
           locals[name] = alloca;
-          track_managed(name, sem_type_ptr);
+          track_managed(alloca, sem_type_ptr);
           return;
         }
       }
@@ -574,7 +582,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
-        track_managed(name, sem_type_ptr);
+        track_managed(alloca, sem_type_ptr);
         return;
       }
     }
@@ -604,7 +612,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
             builder.CreateStore(val, alloca);
           }
           locals[name] = alloca;
-          track_managed(name, sem);
+          track_managed(alloca, sem);
           return;
         }
       }
@@ -617,7 +625,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
         locals[name] = alloca;
-        track_managed(name, sem_type_ptr);
+        track_managed(alloca, sem_type_ptr);
         return;
       }
     }
@@ -687,7 +695,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   }
 
   // Track for release at scope exit.
-  track_managed(name, sem_type_ptr);
+  track_managed(locals[name], sem_type_ptr);
 }
 
 void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
@@ -724,7 +732,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
             builder.CreateStore(val, alloca);
           }
           locals[name] = alloca;
-          track_managed(name, sem);
+          track_managed(alloca, sem);
           continue;
         }
       }
@@ -737,7 +745,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       if (sem && sem->kind == TypeKind::Union) {
         alloca->setName(name);
         locals[name] = alloca;
-        track_managed(name, sem);
+        track_managed(alloca, sem);
         continue;
       }
       if (alloca->getAllocatedType() == closure_fat_ptr_type) {
@@ -759,7 +767,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
         auto al = module->getDataLayout().getABITypeAlign(union_st);
         builder.CreateMemCpy(alloca, al, val, al, sz);
         locals[name] = alloca;
-        track_managed(name, val_sem);
+        track_managed(alloca, val_sem);
         continue;
       }
     }
@@ -771,7 +779,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       builder.CreateStore(val, alloca);
 
     // Track managed types for release at scope exit.
-    track_managed(name, val_sem);
+    track_managed(alloca, val_sem);
 
     // If a pending channel alloca exists from a spawn expression,
     // create a companion local "<name>.channel" for for-range iteration.
@@ -814,36 +822,8 @@ void CodeGen::emit_assign(const AssignNode &node) {
       continue;
     }
 
-    if (auto *sel = std::get_if<SelectorNode>(&node.targets[i]->data)) {
-      // Field assignment: obj.field = rhs
-      std::string field_name(sel->field.name);
-      if (auto *ident = std::get_if<IdentifierNode>(&sel->object->data)) {
-        auto local_it = locals.find(std::string(ident->name));
-        if (local_it != locals.end()) {
-          auto sem = semantic_type(*sel->object);
-          if (sem && sem->kind == TypeKind::Struct) {
-            auto [gep, ftype] =
-                struct_field_gep(local_it->second, sem, field_name);
-            if (gep) {
-              if (node.op == Token::Kind::Assignment) {
-                builder.CreateStore(rhs, gep);
-              } else {
-                auto *cur = builder.CreateLoad(ftype, gep);
-                llvm::Value *result = nullptr;
-                using K = Token::Kind;
-                switch (node.op) {
-                case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
-                case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
-                case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
-                case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
-                default: result = rhs; break;
-                }
-                builder.CreateStore(result, gep);
-              }
-            }
-          }
-        }
-      }
+    if (std::holds_alternative<SelectorNode>(node.targets[i]->data)) {
+      emit_field_assign(*node.targets[i], node.op, rhs);
       continue;
     }
 
@@ -886,29 +866,80 @@ void CodeGen::emit_assign(const AssignNode &node) {
       }
       builder.CreateStore(rhs, alloca);
     } else {
-      // Compound assignment: load current, apply op, store.
       auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-      llvm::Value *result = nullptr;
-
-      // Check if this is a string compound assignment.
-      bool is_str = target_sem && target_sem->kind == TypeKind::String;
-
-      if (is_str && node.op == K::AddAssignment) {
-        auto *concat_fn = module->getFunction("saga_string_concat");
-        result = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
-        // Release the old string since concat created a new one.
-        emit_release(cur, target_sem);
-      } else {
-        switch (node.op) {
-        case K::AddAssignment: result = builder.CreateAdd(cur, rhs, "add"); break;
-        case K::SubAssignment: result = builder.CreateSub(cur, rhs, "sub"); break;
-        case K::MulAssignment: result = builder.CreateMul(cur, rhs, "mul"); break;
-        case K::DivAssignment: result = builder.CreateSDiv(cur, rhs, "div"); break;
-        default: result = rhs; break;
-        }
-      }
-      builder.CreateStore(result, alloca);
+      builder.CreateStore(emit_compound_op(node.op, cur, rhs, target_sem),
+                          alloca);
     }
+  }
+}
+
+std::pair<llvm::Value *, llvm::Type *>
+CodeGen::assign_target_address(const Node &target) {
+  if (auto *ident = std::get_if<IdentifierNode>(&target.data)) {
+    auto local_it = locals.find(std::string(ident->name));
+    if (local_it == locals.end())
+      return {nullptr, nullptr};
+    return {local_it->second, local_it->second->getAllocatedType()};
+  }
+
+  if (auto *sel = std::get_if<SelectorNode>(&target.data)) {
+    auto [obj_addr, obj_sem] = struct_lvalue(*sel->object);
+    if (!obj_addr)
+      return {nullptr, nullptr};
+    return struct_field_gep(obj_addr, obj_sem, std::string(sel->field.name));
+  }
+
+  return {nullptr, nullptr};
+}
+
+void CodeGen::emit_field_assign(const Node &target, Token::Kind op,
+                                llvm::Value *rhs) {
+  auto [addr, ftype] = assign_target_address(target);
+  if (!addr)
+    return;
+
+  if (op == Token::Kind::Assignment) {
+    builder.CreateStore(rhs, addr);
+    return;
+  }
+
+  auto *cur = builder.CreateLoad(ftype, addr);
+  builder.CreateStore(emit_compound_op(op, cur, rhs, semantic_type(target)),
+                      addr);
+}
+
+llvm::Value *CodeGen::emit_compound_op(Token::Kind op, llvm::Value *cur,
+                                       llvm::Value *rhs,
+                                       const TypePtr &target_sem) {
+  using K = Token::Kind;
+
+  if (target_sem && target_sem->kind == TypeKind::String) {
+    if (op != K::AddAssignment)
+      return rhs;
+    auto *concat_fn = module->getFunction("saga_string_concat");
+    auto *joined = builder.CreateCall(concat_fn, {cur, rhs}, "concat");
+    emit_release(cur, target_sem);
+    return joined;
+  }
+
+  if (cur->getType()->isDoubleTy()) {
+    if (rhs->getType()->isIntegerTy(64))
+      rhs = builder.CreateSIToFP(rhs, f64_type, "itof");
+    switch (op) {
+    case K::AddAssignment: return builder.CreateFAdd(cur, rhs, "fadd");
+    case K::SubAssignment: return builder.CreateFSub(cur, rhs, "fsub");
+    case K::MulAssignment: return builder.CreateFMul(cur, rhs, "fmul");
+    case K::DivAssignment: return builder.CreateFDiv(cur, rhs, "fdiv");
+    default: return rhs;
+    }
+  }
+
+  switch (op) {
+  case K::AddAssignment: return builder.CreateAdd(cur, rhs, "add");
+  case K::SubAssignment: return builder.CreateSub(cur, rhs, "sub");
+  case K::MulAssignment: return builder.CreateMul(cur, rhs, "mul");
+  case K::DivAssignment: return builder.CreateSDiv(cur, rhs, "div");
+  default: return rhs;
   }
 }
 
@@ -1012,30 +1043,24 @@ void CodeGen::emit_return(const ReturnNode &node) {
   }
 }
 
-void CodeGen::emit_increment(const IncrementNode &node) {
-  auto *ident = std::get_if<IdentifierNode>(&node.operand->data);
-  if (!ident) return;
-  auto it = locals.find(std::string(ident->name));
-  if (it == locals.end()) return;
+void CodeGen::emit_step(const Node &target, bool increment) {
+  auto [addr, type] = assign_target_address(target);
+  if (!addr)
+    return;
 
-  auto *alloca = it->second;
-  auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
+  auto *cur = builder.CreateLoad(type, addr);
   auto *one = llvm::ConstantInt::get(i64_type, 1);
-  auto *inc = builder.CreateAdd(cur, one, "inc");
-  builder.CreateStore(inc, alloca);
+  builder.CreateStore(increment ? builder.CreateAdd(cur, one, "inc")
+                                : builder.CreateSub(cur, one, "dec"),
+                      addr);
+}
+
+void CodeGen::emit_increment(const IncrementNode &node) {
+  emit_step(*node.operand, /*increment=*/true);
 }
 
 void CodeGen::emit_decrement(const DecrementNode &node) {
-  auto *ident = std::get_if<IdentifierNode>(&node.operand->data);
-  if (!ident) return;
-  auto it = locals.find(std::string(ident->name));
-  if (it == locals.end()) return;
-
-  auto *alloca = it->second;
-  auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-  auto *one = llvm::ConstantInt::get(i64_type, 1);
-  auto *dec = builder.CreateSub(cur, one, "dec");
-  builder.CreateStore(dec, alloca);
+  emit_step(*node.operand, /*increment=*/false);
 }
 
 

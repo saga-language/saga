@@ -1,0 +1,9 @@
+// The loop's value is its accumulator, so the expression reads it even when
+// the body only assigns to it.
+const io = import "std/io"
+
+pub fn Main() void {
+  arr := [1, 2, 3]
+  total int = for v : arr |acc| { acc += v }
+  io.Println("{total}")
+}
