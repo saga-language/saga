@@ -294,7 +294,7 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
     std::string text;
     for (auto &frag_node : sl->fragments) {
       if (auto *frag = std::get_if<StringFragmentNode>(&frag_node->data))
-        text += unescape_fragment(frag->text);
+        text += unescape_string_fragment(*frag);
     }
     return llvm::cast<llvm::Constant>(make_string_constant(text));
   }

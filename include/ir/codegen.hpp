@@ -331,7 +331,6 @@ private:
 
   /// Unescape a raw string fragment (strips surrounding quotes, processes
   /// backslash sequences).  Shared by emit_string_literal and emit_const_decl.
-  static std::string unescape_fragment(std::string_view raw);
 
   /// Get the LLVM type corresponding to a semantic TypePtr.
   llvm::Type *llvm_type(const TypePtr &t);

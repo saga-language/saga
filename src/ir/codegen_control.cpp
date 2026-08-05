@@ -1176,7 +1176,7 @@ CodeGen::const_error_message(const StructLiteralNode &node,
     auto *sf = std::get_if<StringFragmentNode>(&frag->data);
     if (!sf)
       return std::nullopt;
-    text += unescape_fragment(sf->text);
+    text += unescape_string_fragment(*sf);
   }
   return text;
 }

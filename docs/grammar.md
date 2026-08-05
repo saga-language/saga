@@ -217,12 +217,18 @@ FloatLiteral  = decimal_digit { decimal_digit | "_" } "." FloatEnd ;
 FloatEnd      = decimal_digit { decimal_digit | "_" } [ Exponent ] ;
 Exponent      = ( "e" | "E" ) [ "+" | "-" ] decimal_digit { decimal_digit | "_" } ;
 
-StringLiteral    = SingleLineString | MultiLineString ;
+StringLiteral    = SingleLineString | InlineString | BlockString ;
 SingleLineString = "\"" { StringContent } "\"" ;
-MultiLineString  = "\"\"\"" ( StringContent | "\n" ) "\"\"\"" ;
+InlineString     = "\"\"\"" { StringContent } "\"\"\"" ;
+// Context-sensitive, so not stated above: every line of a BlockString carries
+// the indent its closing delimiter sits at, and a line that does not is an
+// error. That indent is layout, as are the two terminals beside the delimiters.
+BlockString      = "\"\"\"" terminal { indent { StringContent } terminal }
+                   indent "\"\"\"" ;
 StringContent    = unicode_char_except_special | EscapeSequence | Interpolation ;
-EscapeSequence   = "\\" ( "n" | "t" | "r" | "\\" | "\"" | "{" | "}" ) ;
+EscapeSequence   = "\\" ( "n" | "r" | "t" | "\\" | "\"" | "{" | "}" ) ;
 Interpolation    = "{" Expression "}" ;
+indent           = { " " | "\t" } ;
 
 /* Lexical elements */
 comments = "//" unicode_char newline ;
@@ -236,4 +242,5 @@ hex_digit     = decimal_digit | "a" ... "f" | "A" ... "F" ;
 terminal = "\r\n" | "\n" ;
 unicode_char = /* any visible Unicode code point */ ;
 unicode_char_except_special = /* any visible Unicode code point excluding \, {, }, and " */ ;
+/* A terminal never appears in StringContent: only a BlockString spans lines. */
 ```

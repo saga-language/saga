@@ -1,0 +1,11 @@
+// A line indented less than the closing `"""` has no margin to take off it,
+// and guessing one silently would make the string's content depend on layout
+// nobody stated. It is an error.
+import "std/io"
+
+pub fn Main() void {
+  io.Println("""
+    alpha
+  beta
+    """)
+}

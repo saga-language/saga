@@ -1,0 +1,21 @@
+// Spec: the indentation of the closing `"""` is the margin, and it comes off
+// every line. Indentation past the margin is content, which is what lets a
+// block sit at the depth of the code around it and still say what it means.
+import "std/io"
+
+fn indented() string {
+  return """
+      outer
+        inner
+      """
+}
+
+pub fn Main() void {
+  io.Println(indented())
+  io.Println("---")
+  io.Println("""
+    a
+
+    b
+    """)
+}

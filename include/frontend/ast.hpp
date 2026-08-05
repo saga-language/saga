@@ -100,15 +100,22 @@ struct FloatLiteralNode {
 
 // A raw text fragment inside a string literal (between interpolations, or the
 // whole string if there is no interpolation). Escape sequences are stored
-// verbatim; interpretation is deferred to a semantic pass.
+// verbatim; interpretation is deferred to a semantic pass. `margin` is the
+// indentation the enclosing `"""` block strips from every line, set by the
+// parser once it has seen the closing delimiter, and empty for every other
+// kind of string.
 struct StringFragmentNode {
   Span span;
   std::string_view text;
+  std::optional<size_t> margin;
 };
 
 // Strip the delimiters from a raw string-fragment token (a full `"..."`
-// literal or an interpolation piece) and resolve its escape sequences.
-std::string unescape_string_fragment(std::string_view raw);
+// literal or an interpolation piece), remove `margin` worth of block
+// indentation from each line, and resolve its escape sequences.
+std::string unescape_string_fragment(std::string_view raw,
+                                     std::optional<size_t> margin);
+std::string unescape_string_fragment(const StringFragmentNode &frag);
 
 // StringLiteral = fragments of StringFragmentNode and interpolated expressions.
 // A plain string with no interpolation has a single StringFragmentNode child.

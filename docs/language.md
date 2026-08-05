@@ -751,9 +751,41 @@ is assigned a zero value by the compiler.
 | array{T} | [] | [1, 2, 3] |
 | map{K:V} | {} | {"key": 42} |
 
-Multiline strings also support interpolation. The newline directly after the
-opening `"""` is layout rather than content and is dropped, so a multiline
-string may start on its own line.
+A `"` string is the single-line form. To span lines, open a `"""` block: write
+the delimiters on lines of their own, and the two line breaks beside them
+position the delimiters rather than joining the content.
+
+```
+lines := """
+  alpha
+  beta
+  """                 // "alpha\nbeta"
+```
+
+The indentation of the closing `"""` is the margin, and it comes off every
+line, so a block reads at the depth of the code around it. Indentation past the
+margin is content, and a line indented less than the margin is an error rather
+than a guess:
+
+```
+tree := """
+  root
+    leaf
+  """                 // "root\n  leaf"
+```
+
+Both breaks are layout, so a string that ends in a newline says so with a blank
+line before the closing delimiter — `"""\n  a\n\n  """` is `"a\n"`. A block's
+line breaks are always `\n`, whatever the file uses.
+
+Written inline, `"""..."""` is content verbatim and stays on one line, which
+makes it the way to write a string full of quotes:
+
+```
+q := """a "quoted" word"""
+```
+
+Blocks interpolate on the same rule as any other string.
 
 In the case where a type might be ambiguous, either it must be made explicit
 or it will be a type error.
@@ -839,12 +871,13 @@ Even then, prefer iterating directly (`for x : arr`) over indexing.
 
 ## Strings
 
-Strings behave like most language. They're wrapped in double quotes and can
-contain any printable character. Tabs and newlines can be used and special
-characters can be escaped with '\'.
+Strings behave like most languages. They're wrapped in double quotes and can
+contain any printable character. A `"` string stays on one line; spanning lines
+is what the `"""` block above is for. Special characters are escaped with '\'.
 
-Example characters: '\n' (newline), '\t' (tab), '\\' (backslash), '\"', and
-'\{'. The grammar contains an exhaustive list.
+Example characters: '\n' (newline), '\r' (carriage return), '\t' (tab), '\\'
+(backslash), '\"', '\{' and '\}'. An escape the language does not define keeps
+its backslash. The grammar contains an exhaustive list.
 
 ### String Access
 

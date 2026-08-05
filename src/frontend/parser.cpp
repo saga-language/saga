@@ -2274,48 +2274,59 @@ NodePtr Parser::parse_bool_literal() {
 //
 // On any unexpected token, an error is reported and a best-effort
 // StringLiteralNode is returned so callers always receive a non-null node.
+void Parser::take_fragment(std::vector<NodePtr> &fragments,
+                           std::vector<RawFragment> &raws) {
+  auto frag_start = mark();
+  Token tok = advance();
+  fragments.push_back(
+      make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
+  raws.push_back({tok.literal, tok.offset});
+}
+
+// The margin a `"""` block strips is the indentation of its closing delimiter,
+// so it is only known once every fragment has been read, and it then applies to
+// all of them.
+void Parser::apply_block_margin(std::vector<NodePtr> &fragments,
+                                std::span<const RawFragment> raws) {
+  auto layout = block_string_layout(raws);
+  for (const auto &e : layout.errors)
+    errors.report_error(fileset.position_at(e.offset), e.message);
+  if (!layout.margin)
+    return;
+
+  // An interpolation the parser could not read leaves a null behind, and this
+  // runs before anything gates on the error being reported.
+  for (auto &frag : fragments)
+    if (auto *sf = frag ? std::get_if<StringFragmentNode>(&frag->data) : nullptr)
+      sf->margin = layout.margin;
+}
+
 NodePtr Parser::parse_string_literal() {
   auto start = mark();
   std::vector<NodePtr> fragments;
+  std::vector<RawFragment> raws;
 
   // ── Plain string — no interpolation ──────────────────────────────────
   if (check(Token::Kind::StringLiteral)) {
-    auto frag_start = mark();
-    Token tok = advance();
-    fragments.push_back(
-        make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
+    take_fragment(fragments, raws);
+    apply_block_margin(fragments, raws);
     return make_node<StringLiteralNode>(span_from(start), std::move(fragments));
   }
 
   // ── Interpolated string ───────────────────────────────────────────────
   // StringStart { Expression ( StringMiddle | StringEnd ) }
   if (check(Token::Kind::StringStart)) {
-    // Opening fragment  ("...{)
-    {
-      auto frag_start = mark();
-      Token tok = advance();
-      fragments.push_back(
-          make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
-    }
+    take_fragment(fragments, raws); // opening fragment ("...{)
 
     while (!is_at_end()) {
       // Interpolated expression between the braces.
       fragments.push_back(parse_expression());
 
       if (check(Token::Kind::StringMiddle)) {
-        // Middle fragment (}...{) — more interpolations follow.
-        auto frag_start = mark();
-        Token tok = advance();
-        fragments.push_back(
-            make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
-        // Loop back to parse the next expression.
+        take_fragment(fragments, raws); // more interpolations follow (}...{)
 
       } else if (check(Token::Kind::StringEnd)) {
-        // Closing fragment (}...") — string is complete.
-        auto frag_start = mark();
-        Token tok = advance();
-        fragments.push_back(
-            make_node<StringFragmentNode>(span_from(frag_start), tok.literal));
+        take_fragment(fragments, raws); // string is complete (}...")
         break;
 
       } else {
@@ -2325,6 +2336,7 @@ NodePtr Parser::parse_string_literal() {
       }
     }
 
+    apply_block_margin(fragments, raws);
     return make_node<StringLiteralNode>(span_from(start), std::move(fragments));
   }
 

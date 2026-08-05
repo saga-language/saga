@@ -4,6 +4,7 @@
 #pragma once
 
 #include "ast.hpp"
+#include "block_string.hpp"
 #include "error_list.hpp"
 #include "fileset.hpp"
 #include "lexer.hpp"
@@ -169,6 +170,10 @@ private:
   NodePtr parse_null_literal();
   NodePtr parse_enum_shorthand();
   NodePtr parse_string_literal(); // handles interpolation fragments
+  void take_fragment(std::vector<NodePtr> &fragments,
+                     std::vector<RawFragment> &raws);
+  void apply_block_margin(std::vector<NodePtr> &fragments,
+                          std::span<const RawFragment> raws);
   NodePtr parse_array_literal();  // "[" ... "]"
   NodePtr parse_map_or_block();   // disambiguate "{" — map literal vs block
 

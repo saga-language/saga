@@ -2154,7 +2154,7 @@ static std::optional<std::string> plain_string_literal(const NodePtr &n) {
   auto *frag = std::get_if<StringFragmentNode>(&sl->fragments[0]->data);
   if (!frag)
     return std::nullopt;
-  return unescape_string_fragment(frag->text);
+  return unescape_string_fragment(*frag);
 }
 
 void Analyzer::resolve_enum_decl(const EnumDeclNode &e) {
