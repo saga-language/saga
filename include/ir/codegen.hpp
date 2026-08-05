@@ -635,6 +635,11 @@ private:
                                                   const TypePtr &val_type,
                                                   const std::string &miss_msg);
   llvm::Value *emit_or_expr(const OrExprNode &node);
+
+  /// Bring an `or` handler's value to the union type the ok path produces,
+  /// wrapping a concrete value or remapping a narrower union.
+  llvm::Value *fallback_as_union(llvm::Value *val, const BlockNode &block,
+                                 const TypePtr &target);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
 
@@ -749,6 +754,11 @@ private:
 
   /// Look up the semantic type of an AST node (recorded by the analyzer).
   TypePtr semantic_type(const Node &node) const;
+
+  /// The type a block evaluates to. The analyzer records it on the block's
+  /// last statement, so asking the block node itself yields nothing — which is
+  /// a silent null, not an error, and reads as "this block has no type".
+  TypePtr block_result_type(const BlockNode &block) const;
 
   // ── Per-instantiation accessors (Step 4) ─────────────────────────────
   //

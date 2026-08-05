@@ -6,6 +6,7 @@
 // what survives stripping decides whether the result is still a union.
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 
@@ -16,6 +17,32 @@ namespace saga {
 // ===========================================================================
 // Or expression (error stripping)
 // ===========================================================================
+
+// Stripping the error alternatives can leave more than one behind, and then the
+// result is still a union. The handler's value has to reach the merge as that
+// same union, so it is wrapped (or remapped, if it is a union already) here.
+llvm::Value *CodeGen::fallback_as_union(llvm::Value *val,
+                                        const BlockNode &block,
+                                        const TypePtr &target) {
+  auto sem = block_result_type(block);
+  auto *target_st = get_union_llvm_type(target);
+  if (!sem || !target_st)
+    return val;
+
+  llvm::Value *slot = nullptr;
+  if (sem->kind == TypeKind::Union) {
+    if (!val->getType()->isPointerTy()) {
+      auto *func = builder.GetInsertBlock()->getParent();
+      auto *spill = create_entry_alloca(func, "or.fb.spill", val->getType());
+      builder.CreateStore(val, spill);
+      val = spill;
+    }
+    slot = emit_union_convert(val, sem, target);
+  } else {
+    slot = emit_union_wrap(val, sem, target);
+  }
+  return slot ? builder.CreateLoad(target_st, slot, "or.fb.union") : val;
+}
 
 llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   // Emit the expression that may produce a union with Error.
@@ -211,25 +238,12 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   if (!fallback_val && ok_val)
     fallback_val = llvm::Constant::getNullValue(ok_val->getType());
 
-  // Coerce fallback to match ok_val type if needed.
-  if (fallback_val && ok_val &&
-      fallback_val->getType() != ok_val->getType()) {
-    // If the result is a union but fallback is a concrete value, wrap it.
-    if (purified && purified->kind == TypeKind::Union && fallback_val) {
-      // Try to find the semantic type of the fallback.
-      auto fb_sem = semantic_type(*node.fallback);
-      if (fb_sem && fb_sem->kind != TypeKind::Union) {
-        auto *wrapped = emit_union_wrap(fallback_val, fb_sem, purified);
-        if (wrapped) {
-          auto *purified_st = get_union_llvm_type(purified);
-          fallback_val = builder.CreateLoad(purified_st, wrapped,
-                                             "or.fb.union");
-        }
-      }
-    } else {
-      // Type mismatch — use null of ok type.
-      fallback_val = llvm::Constant::getNullValue(ok_val->getType());
-    }
+  if (fallback_val && ok_val && fallback_val->getType() != ok_val->getType()) {
+    if (purified && purified->kind == TypeKind::Union)
+      fallback_val = fallback_as_union(fallback_val, fallback_block, purified);
+    if (fallback_val->getType() != ok_val->getType())
+      internal_error("`or` handler produced a value the result type cannot "
+                     "hold, which the analyzer should have rejected");
   }
 
   bool err_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;

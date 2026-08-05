@@ -1,0 +1,29 @@
+// Spec: `or` strips the error alternatives and runs the handler on the error
+// path. When more than one alternative survives, the result is still a union,
+// and the handler's value has to arrive as that union rather than be dropped.
+import "std/io"
+
+struct Tag {}
+
+fn mixed(k int) int | Tag | error {
+  if k == 0 { return 7 }
+  if k == 1 { return Tag }
+  Missing{message: "nope"}
+}
+
+fn describe(v int | Tag) string {
+  if v is int { return "int {v}" }
+  "tag"
+}
+
+pub fn Main() void {
+  io.Println(describe(mixed(0) or { -1 }))
+  io.Println(describe(mixed(1) or { -1 }))
+  io.Println(describe(mixed(2) or { -1 }))
+  // The handler may name any surviving alternative, not just the leftmost.
+  io.Println(describe(mixed(2) or { Tag }))
+  io.Println(describe(mixed(2) or |_e| {
+    io.Println("handler ran")
+    -99
+  }))
+}

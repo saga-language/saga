@@ -66,8 +66,7 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
     // there's nothing to wrap (and the block is terminated).
     if (builder.GetInsertBlock()->getTerminator())
       return v;
-    TypePtr vs = b.stmts.empty() ? nullptr : semantic_type(*b.stmts.back());
-    if (auto *w = as_union_ptr(v, vs, if_sem))
+    if (auto *w = as_union_ptr(v, block_result_type(b), if_sem))
       return w;
     return v;
   };

@@ -365,6 +365,10 @@ TypePtr CodeGen::semantic_type(const Node &node) const {
   return nullptr;
 }
 
+TypePtr CodeGen::block_result_type(const BlockNode &block) const {
+  return block.stmts.empty() ? nullptr : semantic_type(*block.stmts.back());
+}
+
 // ---------------------------------------------------------------------------
 // Per-instantiation side-table accessors (monomorphism_plan.md, Step 4)
 //
