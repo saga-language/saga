@@ -115,7 +115,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_spawn_expr(n, node);
           },
           [&](const IdentifierNode &n) -> llvm::Value * {
-            return emit_identifier(n);
+            return emit_identifier(n, node);
           },
           [&](const VarDeclNode &n) -> llvm::Value * {
             emit_var_decl(n);

@@ -351,6 +351,15 @@ std::string CodeGen::struct_cache_key(const StructTypeInfo &info) const {
   internal_error(desc + " reached code generation");
 }
 
+void CodeGen::verify_function(llvm::Function &func) {
+  std::string reason;
+  llvm::raw_string_ostream os(reason);
+  if (!llvm::verifyFunction(func, &os))
+    return;
+  internal_error("malformed IR emitted for '" + func.getName().str() +
+                 "'\n" + reason);
+}
+
 llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   if (!t)
     ice_unlowerable_type("a null type");

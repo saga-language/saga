@@ -3162,13 +3162,6 @@ TypePtr Analyzer::check_expr(const Node &node) {
   return type;
 }
 
-static bool is_empty_struct_shape(const TypePtr &t) {
-  if (!t || t->kind != TypeKind::Struct)
-    return false;
-  auto &info = std::get<StructTypeInfo>(t->detail);
-  return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
-}
-
 static bool is_type_expr_node(const Node &node) {
   return std::holds_alternative<ArrayTypeNode>(node.data) ||
          std::holds_alternative<MapTypeNode>(node.data) ||
@@ -3227,7 +3220,7 @@ TypePtr Analyzer::check_identifier(const IdentifierNode &ident,
   record_symbol(parent, *sym);
 
   if (sym->kind == SymbolKind::Type) {
-    if (is_empty_struct_shape(sym->type))
+    if (is_empty_shape(sym->type))
       return sym->type;
     error(ident.span,
           std::format("cannot use type '{}' as a value", name));
@@ -4536,17 +4529,7 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
           !is_invalid_type(matched)) {
         narrowed_var = std::string(val_id->name);
         narrowed_type = matched;
-        // Compute the else narrowed type (union minus matched type).
-        auto &info = std::get<UnionTypeInfo>(lhs_sym->type->detail);
-        std::vector<TypePtr> remaining;
-        for (auto &alt : info.alternatives) {
-          if (!types_equal(alt, matched))
-            remaining.push_back(alt);
-        }
-        if (remaining.size() == 1)
-          else_narrowed_type = remaining[0];
-        else if (remaining.size() > 1)
-          else_narrowed_type = make_union_type(std::move(remaining));
+        else_narrowed_type = union_without(lhs_sym->type, matched);
       }
     }
   }

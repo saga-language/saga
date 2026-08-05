@@ -295,6 +295,17 @@ TypePtr make_interface_type(const std::string &name,
                             std::vector<TypeParam> type_params = {},
                             std::string origin_package = "");
 TypePtr make_union_type(std::vector<TypePtr> alternatives);
+
+/// What a union narrows to when `is matched` was false: the alternatives that
+/// remain, collapsed to the bare type when only one does. Null if `u` is not a
+/// union or nothing survives. The analyzer narrows an else-branch with this and
+/// codegen lowers it with the same answer, so the two cannot drift.
+TypePtr union_without(const TypePtr &u, const TypePtr &matched);
+
+/// A struct with nothing to fill in. Its name alone constructs it, so `Marker`
+/// and `Marker{}` are the same value. The analyzer admits the braceless form on
+/// this test and codegen builds the value on the same one.
+bool is_empty_shape(const TypePtr &t);
 TypePtr make_type_param(uint32_t id, const std::string &name,
                         std::optional<TypePtr> bound = std::nullopt);
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,

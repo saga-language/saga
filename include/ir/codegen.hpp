@@ -459,6 +459,11 @@ private:
                         llvm::Value *tail_val, const BlockNode &block,
                         bool has_sret);
 
+  /// Check a finished function against the LLVM verifier. Malformed IR means
+  /// the analyzer accepted a program this stage then mis-lowered, so it raises
+  /// an ICE rather than handing broken IR to the backend.
+  void verify_function(llvm::Function &func);
+
   /// Emit one monomorphised specialisation of a generic free function.
   /// Creates (or returns) an LLVM Function with LinkOnceODR linkage whose
   /// signature is derived from `bindings`.  Runs the body under a fresh
@@ -527,7 +532,13 @@ private:
                                    const Node &outer);
   llvm::Value *emit_string_literal(const StringLiteralNode &node);
   llvm::Value *emit_call_expr(const CallExprNode &node, const Node &parent);
-  llvm::Value *emit_identifier(const IdentifierNode &node);
+
+  /// Widen or narrow an integer argument to the width an extern callee was
+  /// declared with. Saga's narrow integers are unsigned, so widening is zext.
+  llvm::Value *fit_extern_int(llvm::Value *val, llvm::Type *expected);
+
+  llvm::Value *emit_identifier(const IdentifierNode &node,
+                               const Node &parent);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
   llvm::Value *emit_int_pow(llvm::Value *base, llvm::Value *exp);
@@ -810,6 +821,12 @@ private:
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,
                                    const TypePtr &alt_type,
                                    const TypePtr &union_type);
+
+  /// Rebind a local to the type an `is` test narrowed it to, for the duration
+  /// of one branch. Returns the alloca it displaced, which the caller must put
+  /// back when the branch ends, or null if nothing was rebound.
+  llvm::AllocaInst *narrow_local(const std::string &name, const TypePtr &from,
+                                 const TypePtr &to);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
   llvm::Value *emit_box_copy(llvm::Value *val, llvm::Type *ll_alt);

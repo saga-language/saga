@@ -20,6 +20,23 @@ static int64_t parse_int_literal(std::string_view lit) {
   return val;
 }
 
+// A C prototype takes what C declared, and the runtime spells its `bool` and
+// `byte` parameters `int64_t`. The Saga-side `extern fn` names the Saga type,
+// so the two disagree on width and the value has to reach the callee at the
+// width it was declared with. Saga's narrow integers are unsigned, so widening
+// is a zext.
+llvm::Value *CodeGen::fit_extern_int(llvm::Value *val, llvm::Type *expected) {
+  if (!val || !val->getType()->isIntegerTy() || !expected->isIntegerTy())
+    return val;
+
+  unsigned have = val->getType()->getIntegerBitWidth();
+  unsigned want = expected->getIntegerBitWidth();
+  if (have == want)
+    return val;
+  return have < want ? builder.CreateZExt(val, expected, "extern.ext")
+                     : builder.CreateTrunc(val, expected, "extern.trunc");
+}
+
 
 // ===========================================================================
 // Call expressions
@@ -524,6 +541,8 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
                                            val->getType());
           builder.CreateStore(val, tmp);
           val = tmp;
+        } else {
+          val = fit_extern_int(val, expected);
         }
       }
     }
@@ -569,7 +588,8 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
 // Identifier expressions
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
+llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node,
+                                      const Node &parent) {
   std::string name(node.name);
 
   // Check local variables.
@@ -613,6 +633,20 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node) {
   }
   if (enum_types.count(key_for("", name)))
     return llvm::ConstantInt::get(i64_type, 0);
+
+  // A shape with no fields may be written without `{}`, so a bare type name
+  // here is a construction, not a type escaping into value position. Locals
+  // were resolved above, and the analyzer's recorded type is what admitted the
+  // braceless form, so it is what decides. There is nothing to store: the slot
+  // exists so the value has an address to be passed and received by.
+  if (auto sem = semantic_type(parent); is_empty_shape(sem)) {
+    llvm_type(sem);
+    auto &info = std::get<StructTypeInfo>(sem->detail);
+    if (auto it = struct_types.find(struct_cache_key(info));
+        it != struct_types.end())
+      return create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                 info.name + ".shape", it->second);
+  }
 
   // Top-level function referenced as a value (e.g. `call_it(greet, ...)` or
   // a struct literal like `Reg{ handler: greet }`).  Return the raw LLVM

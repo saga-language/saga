@@ -128,7 +128,7 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   if (!builder.GetInsertBlock()->getTerminator())
     builder.CreateRetVoid();
 
-  llvm::verifyFunction(*outlined_fn);
+  verify_function(*outlined_fn);
 
   // ── Restore enclosing function state ───────────────────────────────
   builder.SetInsertPoint(saved_block, saved_point);

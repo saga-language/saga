@@ -318,7 +318,7 @@ void CodeGen::emit_function_body_inner(
     }
   }
 
-  llvm::verifyFunction(*func);
+  verify_function(*func);
 }
 
 void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,

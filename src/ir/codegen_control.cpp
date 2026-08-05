@@ -22,6 +22,32 @@ llvm::Value *CodeGen::emit_group_expr(const GroupExprNode &node) {
 // If/else expression
 // ===========================================================================
 
+llvm::AllocaInst *CodeGen::narrow_local(const std::string &name,
+                                        const TypePtr &from,
+                                        const TypePtr &to) {
+  auto it = locals.find(name);
+  if (it == locals.end() || !to)
+    return nullptr;
+
+  llvm::AllocaInst *slot = nullptr;
+  if (to->kind == TypeKind::Union) {
+    // More than one alternative survives, so the value stays a union — a
+    // narrower one, with its own tag numbering.
+    slot = llvm::dyn_cast_or_null<llvm::AllocaInst>(
+        emit_union_convert(it->second, from, to));
+  } else if (auto *val = emit_union_extract(it->second, to, from)) {
+    auto *func = builder.GetInsertBlock()->getParent();
+    slot = create_entry_alloca(func, name + ".narrowed", llvm_type(to));
+    builder.CreateStore(val, slot);
+  }
+  if (!slot || slot == it->second)
+    return nullptr;
+
+  auto *displaced = it->second;
+  locals[name] = slot;
+  return displaced;
+}
+
 llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   auto *cond = emit_expr(*node.condition);
   if (!cond)
@@ -89,24 +115,9 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   // ── Then block ─────────────────────────────────────────────────────
   builder.SetInsertPoint(then_bb);
 
-  // If type-testing, narrow the variable by extracting from the union.
-  if (!narrowed_var_name.empty()) {
-    auto local_it = locals.find(narrowed_var_name);
-    if (local_it != locals.end()) {
-      auto *union_ptr = local_it->second;
-      auto *extracted =
-          emit_union_extract(union_ptr, narrow_target_sem, narrow_union_sem);
-      if (extracted) {
-        auto *ll_type = llvm_type(narrow_target_sem);
-        auto *narrowed_alloca = create_entry_alloca(
-            func, narrowed_var_name + ".narrowed", ll_type);
-        builder.CreateStore(extracted, narrowed_alloca);
-        // Temporarily replace the local.
-        saved_alloca = local_it->second;
-        locals[narrowed_var_name] = narrowed_alloca;
-      }
-    }
-  }
+  if (!narrowed_var_name.empty())
+    saved_alloca =
+        narrow_local(narrowed_var_name, narrow_union_sem, narrow_target_sem);
 
   auto &then_block = std::get<BlockNode>(node.then_block->data);
   auto *then_val = emit_block(then_block);
@@ -133,9 +144,22 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   if (else_bb) {
     func->insert(func->end(), else_bb);
     builder.SetInsertPoint(else_bb);
+
+    // The test failed, so what is left is the union minus the type tested for
+    // — the same answer the analyzer narrowed the else-scope with.
+    llvm::AllocaInst *saved_else = nullptr;
+    if (!narrowed_var_name.empty())
+      saved_else = narrow_local(narrowed_var_name, narrow_union_sem,
+                                union_without(narrow_union_sem,
+                                              narrow_target_sem));
+
     auto &else_block = std::get<BlockNode>((*node.else_block)->data);
     else_val = emit_block(else_block);
     else_val = wrap_branch(else_val, else_block);
+
+    if (saved_else)
+      locals[narrowed_var_name] = saved_else;
+
     else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
     if (!else_terminated)
       builder.CreateBr(merge_bb);
@@ -163,10 +187,11 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   func->insert(func->end(), merge_bb);
   builder.SetInsertPoint(merge_bb);
 
-  // Build a PHI node if both branches produce a value of the same type.
-  if (then_val && else_val &&
-      then_val->getType() == else_val->getType() &&
-      !then_terminated && !else_terminated) {
+  // Build a PHI node if both branches produce a value of the same type. A void
+  // one is not a value: an `if` in statement position has nothing to merge.
+  if (then_val && else_val && then_val->getType() == else_val->getType() &&
+      !then_val->getType()->isVoidTy() && !then_terminated &&
+      !else_terminated) {
     auto *phi = builder.CreatePHI(then_val->getType(), 2, "ifval");
     phi->addIncoming(then_val, then_end_bb);
     phi->addIncoming(else_val, else_end_bb);
