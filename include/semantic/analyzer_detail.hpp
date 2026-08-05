@@ -20,4 +20,9 @@ namespace saga {
 /// resolve/check split.
 std::optional<std::string> plain_string_literal(const NodePtr &n);
 
+/// The declared name of a type declaration node (struct, enum, interface,
+/// alias), else nothing. Declaration collection needs it to register the name
+/// and type resolution needs it to find the declaration again.
+std::optional<std::string> type_decl_name(const Node &node);
+
 } // namespace saga
