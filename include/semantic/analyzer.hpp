@@ -104,6 +104,30 @@ struct PackageResolver {
 //   analyzer.analyze(package_node);
 //   analyzer.errors.print_errors();
 // ---------------------------------------------------------------------------
+//
+// The implementation is split across src/semantic/. A class declaration cannot
+// be split with it, so this is the map from a declaration to the file that
+// defines it:
+//
+//   analyzer.cpp             construction, the entry point, scope, recording,
+//                            error reporting, validation helpers
+//   declarations.cpp         collecting top-level names
+//   imports.cpp              resolving and reading another package
+//   resolve_types.cpp        an annotation to a TypePtr
+//   resolve_decl_types.cpp   giving each top-level declaration its type
+//   resolve_names.cpp        binding identifiers in a function body
+//   check_exprs.cpp          expression dispatch and literals
+//   check_operators.cpp      operators and their struct overloads
+//   check_calls.cpp          calls and argument matching
+//   check_index.cpp          a[i]
+//   check_control_exprs.cpp  if, switch, or
+//   check_stmts.cpp          statements, blocks, top-level declarations
+//   generic_instantiation.cpp  monomorphisation
+//   interface_conformance.cpp  does a type satisfy an interface
+//
+// Helpers shared between two of those files, and only those, are declared in
+// analyzer_detail.hpp.
+// ---------------------------------------------------------------------------
 
 struct Analyzer {
   FileSet &fileset;
@@ -621,7 +645,7 @@ public:
   TypePtr resolve_type(const Node &node);
 
 private:
-  // ── Node visitors (to be implemented in phases) ──────────────────────
+  // ── Declaration collection and name resolution ───────────────────────
 
   // Phase 1: Declarations — collect top-level names.
   void visit_package(const PackageNode &node);
@@ -720,7 +744,7 @@ private:
   // Phase 3–4 combined: resolve a block statement or expression.
   void resolve_block_stmt(const Node &node);
 
-  // ── Type-checking stubs (later phases) ───────────────────────────────
+  // ── Type checking ────────────────────────────────────────────────────
 
   // Phase 5: Expression type-checking — infer/check expression types.
   TypePtr check_expr(const Node &node);
