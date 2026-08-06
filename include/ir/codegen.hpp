@@ -632,7 +632,8 @@ private:
   std::optional<std::string> const_error_message(const StructLiteralNode &node,
                                                  const StructTypeInfo &info);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
-  llvm::Value *emit_switch_expr(const SwitchExprNode &node);
+  llvm::Value *emit_switch_expr(const SwitchExprNode &node,
+                                const Node &parent);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
   llvm::Value *emit_map_literal(const MapLiteralNode &node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
@@ -776,6 +777,10 @@ private:
   /// last statement, so asking the block node itself yields nothing — which is
   /// a silent null, not an error, and reads as "this block has no type".
   TypePtr block_result_type(const BlockNode &block) const;
+
+  /// The type a switch arm or `or` handler evaluates to. Its body is either a
+  /// block or a bare expression, and the analyzer records those differently.
+  TypePtr body_result_type(const Node &body) const;
 
   // ── Per-instantiation accessors (Step 4) ─────────────────────────────
   //

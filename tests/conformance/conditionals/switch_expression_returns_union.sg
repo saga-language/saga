@@ -1,0 +1,63 @@
+// Spec: a switch used as a value yields the type its arms agree on. When that
+// type is a union, each arm holds a different member, so each has to be wrapped
+// into the union before the arms can merge — otherwise they disagree on their
+// LLVM type, no merge is built, and every arm's value is silently lost.
+import "std/io"
+
+struct Tag {
+}
+
+fn describe(v int | Tag) string {
+  if v is int { return "int {v}" }
+  "tag"
+}
+
+// Int subject, expression bodies.
+fn byNumber(k int) int | Tag {
+  switch k {
+  case 0: 7
+  else: Tag
+  }
+}
+
+// String subject, a block body, and a multi-pattern arm.
+fn byName(s string) int | Tag {
+  switch s {
+  case "one": {
+    n := 1
+    n
+  }
+  case "two", "three": 23
+  else: Tag
+  }
+}
+
+// Union subject: each arm sees the subject narrowed to its own pattern.
+fn fromUnion(v int | string) int | Tag {
+  switch v {
+  case int: v * 2
+  case string: v.Size()
+  else: Tag
+  }
+}
+
+// An arm whose value is already the whole union passes through rather than
+// being wrapped a second time.
+fn passthrough(k int) int | Tag {
+  switch k {
+  case 0: byName("one")
+  else: Tag
+  }
+}
+
+pub fn Main() void {
+  io.Println(describe(byNumber(0)))
+  io.Println(describe(byNumber(1)))
+  io.Println(describe(byName("one")))
+  io.Println(describe(byName("three")))
+  io.Println(describe(byName("zzz")))
+  io.Println(describe(fromUnion(21)))
+  io.Println(describe(fromUnion("abcd")))
+  io.Println(describe(passthrough(0)))
+  io.Println(describe(passthrough(9)))
+}

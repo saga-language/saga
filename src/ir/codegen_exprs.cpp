@@ -50,7 +50,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_for_expr(n, node);
           },
           [&](const SwitchExprNode &n) -> llvm::Value * {
-            return emit_switch_expr(n);
+            return emit_switch_expr(n, node);
           },
           [&](const StructLiteralNode &n) -> llvm::Value * {
             return emit_struct_literal(n, node);
@@ -400,6 +400,12 @@ TypePtr CodeGen::semantic_type(const Node &node) const {
 
 TypePtr CodeGen::block_result_type(const BlockNode &block) const {
   return block.stmts.empty() ? nullptr : semantic_type(*block.stmts.back());
+}
+
+TypePtr CodeGen::body_result_type(const Node &body) const {
+  if (auto *block = std::get_if<BlockNode>(&body.data))
+    return block_result_type(*block);
+  return semantic_type(body);
 }
 
 // ---------------------------------------------------------------------------
