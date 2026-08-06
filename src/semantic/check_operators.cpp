@@ -10,6 +10,22 @@
 
 namespace saga {
 
+// The spec's second route to a safe division: a divisor the compiler can see is
+// non-zero. Only a compile-time constant qualifies here; narrowing from a
+// preceding `if d == 0` guard is flow analysis and is not implemented, so a
+// checked variable still needs `or`.
+bool Analyzer::divisor_is_known_nonzero(const Node &rhs) {
+  auto cv = evaluate_constant(rhs);
+  if (!cv)
+    return false;
+  switch (cv->kind) {
+  case ConstValue::Kind::Int:   return cv->i != 0;
+  case ConstValue::Kind::Float: return cv->f != 0.0;
+  case ConstValue::Kind::Bool:  return false;
+  }
+  return false;
+}
+
 TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
                                             const Node &parent,
                                             const TypePtr &lhs,
@@ -200,8 +216,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   case K::Add:
   case K::Sub:
   case K::Multiply:
-  case K::Pow:
-  case K::Modulo: {
+  case K::Pow: {
     // String concatenation with +.
     if (node.op == K::Add && lhs->kind == TypeKind::String &&
         rhs->kind == TypeKind::String) {
@@ -222,8 +237,15 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     return common_type(lhs, rhs);
   }
 
-  // Division: returns T | Error (division by zero).
-  case K::Divide: {
+  // Division and remainder: `T | error`. Both have no answer for a zero
+  // divisor, and the machine instruction faults rather than producing one, so
+  // the type is what forces the caller to say what should happen instead.
+  //
+  // A divisor the compiler can evaluate to something non-zero cannot fail, and
+  // a union that can never hold its error is noise the reader has to handle
+  // anyway — so `n % 2` stays an `int` and `n % 2 == 0` keeps working.
+  case K::Divide:
+  case K::Modulo: {
     if (!is_numeric(lhs) || !is_numeric(rhs)) {
       error(node.span,
             std::format("division requires numeric types, got {} and {}",
@@ -231,6 +253,8 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       return builtins.invalid_type;
     }
     auto result = common_type(lhs, rhs);
+    if (divisor_is_known_nonzero(*node.rhs))
+      return result;
     return make_union_type({result, builtins.error_base});
   }
 

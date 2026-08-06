@@ -540,6 +540,13 @@ private:
                                const Node &parent);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
+  /// Integer division or remainder that answers a zero divisor with an error
+  /// instead of faulting. Result is the `T | error` the analyzer gave the
+  /// expression.
+  llvm::Value *emit_checked_division(llvm::Value *lhs, llvm::Value *rhs,
+                                     Token::Kind op,
+                                     const TypePtr &result_union);
+
   llvm::Value *emit_int_pow(llvm::Value *base, llvm::Value *exp);
   llvm::Value *emit_float_pow(llvm::Value *base, llvm::Value *exp);
 

@@ -1928,33 +1928,50 @@ through methods (`Add`, `Sub`, `Mul`, `Div`, `Equals`, `Compare`).
 
 ### Division by zero
 
-Division is special amongst operators in that it can exhibit exceptional
-behaviour. Namely, dividing by zero is an error. In most languages this would
-raise an exception but in this language it produces an impure type. There are
-two ways the type checker can be assured that a division operation is safe.
-
-The first, is to use an `or` expression to resolve the impure return type and
-return a zero value. The second is to pre-check that the divisor is safe
-(non-zero). If the divisor is checked to be non-zero and it can't be mutated
-between the check and the usage, then the compiler will allow the inline 
-division.
+`/` and `%` are special amongst operators in that they can exhibit exceptional
+behaviour. Namely, a zero divisor has no answer. In most languages this raises
+an exception or faults; in this language it produces an impure type, so the
+possibility is in the type and cannot be reached by accident.
 
 ```
-// wrapping the division in parenthesis is preferred but not manditory
-x := (6 / 0 or { 0 }) + 1 // => 1
+n := 10
+d := readDivisor()
 
-divisor := 1
-if divisor == 0 { 
-  // do some logging, return an error, etc
-  return BadCalculation{message: "Division by zero"}
+x := n / d or { 0 }   // n / d is `int | error`
+y := n % d or { 0 }   // so is n % d
+```
+
+The error is `DivideByZero`, a built-in error like `Missing`. It is nominal, so
+a handler can tell it apart from anything else the union carries:
+
+```
+v := n / d or |e| {
+  if e is DivideByZero { log.Warn(e.message) }
+  0
 }
-
-// divisor was checked and divisor is not zero and has not been mutated
-result := 42 / divisor + 10 // safe, no `or` check necessary
 ```
 
-This eliminates the possibility of a "div by zero" crashing a program. The
-compiler will warn you if the division is unsafe and not handled.
+**A divisor that cannot be zero needs no `or`.** When the compiler can evaluate
+the divisor and it is not zero, the operation cannot fail and its type is the
+plain result — a union carrying an error that can never arrive is noise the
+reader would have to handle anyway:
+
+```
+if n % 2 == 0 { ... }   // `%` by a literal: plain int, no `or`
+half int = n / 2        // likewise
+
+const Stride = 8
+i := offset / Stride    // a named constant is just as knowable
+```
+
+Today "can evaluate" means a compile-time constant. Narrowing a variable from a
+preceding `if d == 0` guard is flow analysis and is not implemented, so a
+checked variable still needs `or`.
+
+Note what this does **not** cover: signed overflow. `INT64_MIN / -1` has no
+representable answer and still faults, as does `+` or `*` past the end of the
+range — Saga has no overflow story yet, and division is not the place to invent
+one.
 
 ## Concurrency
 

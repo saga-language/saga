@@ -1,8 +1,18 @@
-// Spec: division by zero produces an impure type that must be
-// resolved with `or`. (docs/language.md:1384-1399)
+// Spec: dividing by zero produces an impure type that must be resolved with
+// `or` — "this eliminates the possibility of a 'div by zero' crashing a
+// program". (docs/language.md — Division by zero)
+//
+// The divisor is a variable on purpose: a literal one is provably non-zero or
+// provably zero, and the point here is the case the compiler cannot decide.
 import "std/io"
 
 pub fn Main() void {
-  x := 6 / 0 or { 0 }
-  io.Println(x.String())
+  n := 10
+  d := 2
+  z := 0
+
+  io.Println("{n / d or { -1 }}")
+  io.Println("{n / z or { -1 }}")
+  io.Println("{n % d or { -2 }}")
+  io.Println("{n % z or { -2 }}")
 }

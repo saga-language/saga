@@ -320,6 +320,7 @@ void CodeGen::init_types() {
 uint64_t CodeGen::error_type_id(const StructTypeInfo &info) const {
   if (info.name == "Missing") return SAGA_ERR_ID_MISSING;
   if (info.name == "Trapped") return SAGA_ERR_ID_TRAPPED;
+  if (info.name == "DivideByZero") return SAGA_ERR_ID_DIVIDE_BY_ZERO;
   // FNV-1a over the mangled name — stable across packages, distinct per type.
   uint64_t h = 1469598103934665603ULL;
   for (char c : struct_cache_key(info)) {

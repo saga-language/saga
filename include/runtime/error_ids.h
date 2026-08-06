@@ -14,5 +14,6 @@
 
 #define SAGA_ERR_ID_MISSING ((int64_t)1)
 #define SAGA_ERR_ID_TRAPPED ((int64_t)2)
+#define SAGA_ERR_ID_DIVIDE_BY_ZERO ((int64_t)3)
 
 #endif /* SAGA_RUNTIME_ERROR_IDS_H */

@@ -852,6 +852,11 @@ private:
   /// range); other unreducible shapes return nullopt silently.
   std::optional<ConstValue> evaluate_constant(const Node &expr);
 
+  /// Whether a division's right operand is provably non-zero, in which case the
+  /// operation cannot fail and its type is the plain result rather than a union
+  /// carrying an error that can never arrive.
+  bool divisor_is_known_nonzero(const Node &rhs);
+
   // Struct operator overloading helper.
   TypePtr check_struct_binary_expr(const BinaryExprNode &node,
                                     const Node &parent, const TypePtr &lhs,

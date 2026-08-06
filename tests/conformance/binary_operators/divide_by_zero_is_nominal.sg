@@ -1,0 +1,22 @@
+// Spec: the error a zero divisor produces is `DivideByZero`, a built-in error
+// like `Missing`. It is nominal, so a handler can narrow it with `is` and tell
+// it apart from any other error the same union might carry.
+import "std/io"
+
+fn parse(ok bool) int | error {
+  if ok { return 0 }
+  Missing{message: "not a number"}
+}
+
+pub fn Main() void {
+  n := 10
+  d := parse(true) or { 1 }
+
+  v := n / d or |e| {
+    if e is DivideByZero {
+      io.Println("divide: {e.message}")
+    }
+    -1
+  }
+  io.Println("{v}")
+}

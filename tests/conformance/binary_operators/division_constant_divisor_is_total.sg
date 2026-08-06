@@ -1,0 +1,22 @@
+// Spec: a divisor the compiler can see is non-zero makes the division safe, so
+// no `or` is needed. (docs/language.md — Division by zero, the second route.)
+// Without this, `n % 2 == 0` would need an `or` to compare against an int,
+// which is the most common use of `%` there is.
+import "std/io"
+
+const Half = 2
+
+pub fn Main() void {
+  n := 7
+  if n % 2 == 0 {
+    io.Println("even")
+  } else {
+    io.Println("odd")
+  }
+
+  half int = n / 2
+  io.Println("{half}")
+
+  // A named constant is just as knowable as a literal.
+  io.Println("{n / Half}")
+}

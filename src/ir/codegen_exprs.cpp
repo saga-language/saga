@@ -188,6 +188,50 @@ static double parse_float_literal(std::string_view lit) {
   return val;
 }
 
+// `sdiv`/`srem` by zero does not produce a value — it faults, and the fault is
+// what the `T | error` type exists to prevent. The divisor is tested first and
+// the error path takes a shared rodata singleton, so a division that never
+// divides by zero costs one predictable branch and no allocation.
+llvm::Value *CodeGen::emit_checked_division(llvm::Value *lhs, llvm::Value *rhs,
+                                            Token::Kind op,
+                                            const TypePtr &result_union) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *zero = llvm::ConstantInt::get(rhs->getType(), 0);
+  auto *by_zero = builder.CreateICmpEQ(rhs, zero, "div.by_zero");
+
+  auto *err_bb = llvm::BasicBlock::Create(context, "div.err", func);
+  auto *ok_bb = llvm::BasicBlock::Create(context, "div.ok", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "div.merge", func);
+  builder.CreateCondBr(by_zero, err_bb, ok_bb);
+
+  builder.SetInsertPoint(err_bb);
+  llvm_type(analyzer.builtins.divide_by_zero_type);
+  auto &err_info =
+      std::get<StructTypeInfo>(analyzer.builtins.divide_by_zero_type->detail);
+  auto *box = emit_error_singleton(err_info, op == Token::Kind::Modulo
+                                                ? "remainder by zero"
+                                                : "division by zero");
+  auto *err_val =
+      emit_union_wrap(box, analyzer.builtins.error_base, result_union);
+  auto *err_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(ok_bb);
+  llvm::Value *quotient = op == Token::Kind::Modulo
+                              ? builder.CreateSRem(lhs, rhs, "mod")
+                              : builder.CreateSDiv(lhs, rhs, "div");
+  auto *ok_val = emit_union_wrap(quotient, analyzer.builtins.int_type,
+                                 result_union);
+  auto *ok_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(merge_bb);
+  auto *phi = builder.CreatePHI(ok_val->getType(), 2, "div.result");
+  phi->addIncoming(err_val, err_end_bb);
+  phi->addIncoming(ok_val, ok_end_bb);
+  return phi;
+}
+
 llvm::Value *CodeGen::emit_int_literal(const IntegerLiteralNode &node) {
   int64_t val = parse_int_literal(node.literal);
   return llvm::ConstantInt::get(i64_type, static_cast<uint64_t>(val),
@@ -794,15 +838,17 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
   case K::Sub:      return builder.CreateSub(lhs, rhs, "sub");
   case K::Multiply: return builder.CreateMul(lhs, rhs, "mul");
   case K::Divide: {
-    auto *result = builder.CreateSDiv(lhs, rhs, "div");
     auto node_sem = semantic_type(parent);
-    if (node_sem && node_sem->kind == TypeKind::Union) {
-      auto val_t = analyzer.builtins.int_type;
-      return emit_union_wrap(result, val_t, node_sem);
-    }
-    return result;
+    if (node_sem && node_sem->kind == TypeKind::Union)
+      return emit_checked_division(lhs, rhs, K::Divide, node_sem);
+    return builder.CreateSDiv(lhs, rhs, "div");
   }
-  case K::Modulo:   return builder.CreateSRem(lhs, rhs, "mod");
+  case K::Modulo: {
+    auto node_sem = semantic_type(parent);
+    if (node_sem && node_sem->kind == TypeKind::Union)
+      return emit_checked_division(lhs, rhs, K::Modulo, node_sem);
+    return builder.CreateSRem(lhs, rhs, "mod");
+  }
   case K::Pow:
     return is_float ? emit_float_pow(lhs, rhs) : emit_int_pow(lhs, rhs);
 

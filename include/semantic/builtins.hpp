@@ -64,6 +64,7 @@ struct BuiltinTypes {
   TypePtr null_type;       // Null (value; a value that carries nothing)
   TypePtr missing_type;    // Missing (error; index/map miss, parse failure)
   TypePtr trapped_type;    // Trapped (error; Task.Wait on a killed actor)
+  TypePtr divide_by_zero_type; // DivideByZero (error; `a / 0`, `a % 0`)
   TypePtr task_type;       // Task (returned from spawn)
   TypePtr context_type;    // Context (available inside spawn block)
 

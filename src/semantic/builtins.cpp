@@ -54,6 +54,7 @@ void BuiltinTypes::init() {
   error_base = make_error_struct("error");
   missing_type = make_error_struct("Missing");
   trapped_type = make_error_struct("Trapped");
+  divide_by_zero_type = make_error_struct("DivideByZero");
 
   // -- Iterable interface: |T| Iterable { Next() T | error } --------------
   // Registered with a single type parameter; concrete instantiations are
@@ -176,6 +177,7 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   // -- Internal structs ----------------------------------------------------
   reg_type("Null", types.null_type);
   reg_type("Missing", types.missing_type);
+  reg_type("DivideByZero", types.divide_by_zero_type);
   reg_type("Task", types.task_type);
   reg_type("Context", types.context_type);
 

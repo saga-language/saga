@@ -2506,7 +2506,8 @@ TEST(CodeGen, DivisionProducesUnion) {
   // Division returns Int | Error, so it should produce a tagged union.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2\n"
+      "  d := 2\n"
+      "  x := 10 / d\n"
       "  _ := x\n"
       "}");
   auto *main = r.func("main");
@@ -2519,7 +2520,8 @@ TEST(CodeGen, OrExprStripsErrorSimple) {
   // `x or { 0 }` should produce the non-error value.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2 or { 0 }\n"
+      "  d := 2\n"
+      "  x := 10 / d or { 0 }\n"
       "  _ := x\n"
       "}");
   auto *main = r.func("main");
@@ -2538,7 +2540,8 @@ TEST(CodeGen, OrExprWithPipe) {
   // `x or |err| { 0 }` should create the pipe variable.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2 or |err| { _ := err\n    0 }\n"
+      "  d := 2\n"
+      "  x := 10 / d or |err| { _ := err\n    0 }\n"
       "  x\n"
       "}");
   auto *main = r.func("main");
@@ -2559,7 +2562,8 @@ TEST(CodeGen, OrExprMergeBlock) {
   // The or expression should merge into a single block after ok/err.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2 or { 0 }\n"
+      "  d := 2\n"
+      "  x := 10 / d or { 0 }\n"
       "  _ := x\n"
       "}");
   auto *main = r.func("main");
@@ -2591,7 +2595,8 @@ TEST(CodeGen, OrExprDefaultValue) {
   // Empty or block should produce zero value.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2 or {}\n"
+      "  d := 2\n"
+      "  x := 10 / d or {}\n"
       "  _ := x\n"
       "}");
   auto *main = r.func("main");
@@ -2660,7 +2665,8 @@ TEST(CodeGen, OrExprPhiNode) {
   // The or expression should produce a PHI node merging ok/fallback values.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2 or { 99 }\n"
+      "  d := 2\n"
+      "  x := 10 / d or { 99 }\n"
       "  _ := x\n"
       "}");
   auto *main = r.func("main");
@@ -2706,7 +2712,8 @@ TEST(CodeGen, DivisionOrThenUse) {
   // Division, or-unwrap, then use the result.
   auto r = CG::from(
       "pub fn Main() void {\n"
-      "  x := 10 / 2 or { 0 }\n"
+      "  d := 2\n"
+      "  x := 10 / d or { 0 }\n"
       "  y := x + 1\n"
       "  _ := y\n"
       "}");
