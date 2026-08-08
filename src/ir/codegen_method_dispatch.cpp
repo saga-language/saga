@@ -404,7 +404,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   if (obj_sem && obj_sem->kind == TypeKind::Struct) {
     auto &sinfo = std::get<StructTypeInfo>(obj_sem->detail);
     if (sinfo.name == "Task") {
-      if (method == "Alive?") {
+      if (method == "Alive") {
         auto *fn = module->getFunction("saga_task_alive");
         auto *result = builder.CreateCall(fn, {obj}, "alive");
         return builder.CreateICmpNE(result,
@@ -507,7 +507,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
 
     // ── Context method calls (inside spawn body) ─────────────────
     if (sinfo.name == "Context") {
-      if (method == "Cancelled?") {
+      if (method == "Cancelled") {
         auto *fn = module->getFunction("saga_context_cancelled");
         auto *result = builder.CreateCall(fn, {obj}, "cancelled");
         return builder.CreateICmpNE(result,

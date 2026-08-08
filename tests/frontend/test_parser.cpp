@@ -630,14 +630,6 @@ TEST_F(ParserPrefixTest, Atom_Identifier) {
   EXPECT_EQ(n->name, "myVar");
 }
 
-TEST_F(ParserPrefixTest, Atom_Identifier_WithQuestionMark) {
-  auto r = ExprResult::from("value?");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<IdentifierNode>();
-  ASSERT_NE(n, nullptr);
-  EXPECT_EQ(n->name, "value?");
-}
-
 TEST_F(ParserPrefixTest, Atom_String_Plain) {
   auto r = ExprResult::from("\"hello\"");
   EXPECT_TRUE(r.errors.empty());

@@ -1,8 +1,8 @@
 // Spec: "return" as early exit. (docs/language.md:226-232)
 import "std/io"
 
-pub fn Greeting(evening? bool) string {
-  if evening? {
+pub fn Greeting(evening bool) string {
+  if evening {
     return "Goodnight"
   }
   "Good day"

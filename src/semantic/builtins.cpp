@@ -77,7 +77,7 @@ void BuiltinTypes::init() {
   // -- Task (returned from spawn) ------------------------------------------
   task_type = make_struct_type(
       "Task", /*fields=*/{},
-      {MethodInfo{"Alive?", make_func_type({}, {bool_type}), true},
+      {MethodInfo{"Alive", make_func_type({}, {bool_type}), true},
        MethodInfo{"Cancel", make_func_type({}, {void_type}), true},
        MethodInfo{"Term", make_func_type({}, {void_type}), true},
        MethodInfo{"Wait",
@@ -90,7 +90,7 @@ void BuiltinTypes::init() {
   // -- Context (available inside spawn block) ------------------------------
   context_type = make_struct_type(
       "Context", /*fields=*/{},
-      {MethodInfo{"Cancelled?", make_func_type({}, {bool_type}), true},
+      {MethodInfo{"Cancelled", make_func_type({}, {bool_type}), true},
        MethodInfo{"Exit",
                   make_func_type({make_type_param(0, "T")}, {void_type}),
                   true},

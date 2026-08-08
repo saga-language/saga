@@ -3012,8 +3012,8 @@ TEST(CodeGen, MapKeyCheckMethod) {
   auto r = CG::from(
       "pub fn Main() void {\n"
       "  m := {\"a\": 1}\n"
-      "  exists? := m.Key?(\"a\")\n"
-      "  _ := exists?\n"
+      "  exists := m.Has(\"a\")\n"
+      "  _ := exists\n"
       "}", false);
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
@@ -3022,7 +3022,7 @@ TEST(CodeGen, MapKeyCheckMethod) {
     for (auto &inst : bb)
       if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
         if (call->getCalledFunction() &&
-            call->getCalledFunction()->getName() == "map__Map__Key?")
+            call->getCalledFunction()->getName() == "map__Map__Has")
           found = true;
   EXPECT_TRUE(found);
 }
@@ -3823,7 +3823,7 @@ TEST(CodeGen, SpawnWithPipeVariable) {
   auto r = CG::from(
       "pub fn Main() void {\n"
       "  t := spawn |ctx| {\n"
-      "    ctx.Cancelled?()\n"
+      "    ctx.Cancelled()\n"
       "    42\n"
       "  }\n"
       "  _ := t\n"

@@ -2143,12 +2143,7 @@ NodePtr Parser::parse_source() {
 // Primary / Atom Expression Parsing
 // ============================================================================
 
-// parse_identifier — Identifier = letter { letter | decimal_digit } [ "?" ]
-//
-// The lexer's scan_identifier() absorbs the optional trailing "?" into the
-// token literal, so `value?` arrives as a single Identifier token whose
-// literal is "value?". We simply consume that token and wrap its literal in
-// an IdentifierNode.
+// parse_identifier — Identifier = letter { letter | decimal_digit }
 //
 // On mismatch, expect() reports a "expected identifier" error and returns a
 // synthetic token without advancing, so subsequent parsing can still proceed.

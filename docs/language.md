@@ -20,7 +20,7 @@ pub fn Main() Void {
 
 Idendifiers must start with either an upper or lowercase letter ("a" to "z")
 or an underscope. They can contain any number of alphanumeric characters,
-including underscores. A tailing question mark ("?") can be appended.
+including underscores.
 
 Identifiers that start with, or consist only of, an underscore are
 "ignored" variables. They can not be accessed once they are assigned a value
@@ -42,8 +42,7 @@ Identifier convensions are a work in progress. The current convensions for
 identifers are as follows but are subject to change:
 
 Public identifiers should be written in PascalCase or Capitalized_Snake_Case.
-Private identifiers should be written in camelCase or snake_case.  Only 
-boolean identifiers should have the "?" suffix.
+Private identifiers should be written in camelCase or snake_case.
 
 _Note: These preferences are applied by the formatter but are not strictly
 enforced by the language._
@@ -254,8 +253,8 @@ exits the outer-most block. It must contain the same number of expressions to
 match the return type.
 
 ```
-pub fn Greeting(evening? Bool) String {
-  if evening? {
+pub fn Greeting(evening Bool) String {
+  if evening {
     return "Goodnight"
   }
   
@@ -2001,7 +2000,7 @@ passed in, like any other Generic type.
 
 ```
 t := spawn { ... }
-t.Alive?() // is thread running?
+t.Alive() // is thread running?
 t.Cancel() // ask the thread to stop
 t.Term() // terminate the thread immediately
 t.Wait() // block until the thread finishes
@@ -2009,7 +2008,7 @@ t.Wait() // block until the thread finishes
 
 From inside the thread, you get a context task.
 ```
-t.Cancelled?() // did the parent call Cancel()?
+t.Cancelled() // did the parent call Cancel()?
 t.Error() // exit with an error
 t.Exit() // exit with a value
 t.Send() // non-blocking, buffered

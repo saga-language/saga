@@ -171,7 +171,7 @@ Each of the float types need the following methods:
 indirection.
 
 `.At(K) V`: get value at key
-`.Key?(K) Bool`: check if key exists
+`.Has(K) Bool`: check if key exists
 `.Keys() [K]`: get all keys
 `.Remove(K) Void`: remove entry by key
 `.Set(K, V) Void`: set value at key
@@ -192,8 +192,8 @@ struct Missing {
 
 This struct is returned from a spawn expression to the parent thread.
 
-`.Alive?() Bool`: Checks if the coroutine is running.
-`.Cancel() Void`: Sets the `.Cancelled?()` flag on the context.
+`.Alive() Bool`: Checks if the coroutine is running.
+`.Cancel() Void`: Sets the `.Cancelled()` flag on the context.
 `.Term() Void`: Immediately kills the thread, use with caution.
 `.Wait() T | Error`: Blocks until completion, returns the `Exit()` value.
 
@@ -201,7 +201,7 @@ This struct is returned from a spawn expression to the parent thread.
 
 This struct is available inside a spawn block.
 
-`.Cancelled?() Bool`: Polling method to see if the parent called `.Cancel()`
+`.Cancelled() Bool`: Polling method to see if the parent called `.Cancel()`
 `.Exit(T) Void`: Terminates the coroutine and sets the return value
 `.Send(T) Void`: Push into the task channel. Blocks when the buffer is
 full until a consumer drains an element (or the channel is closed).

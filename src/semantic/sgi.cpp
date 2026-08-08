@@ -582,14 +582,11 @@ struct SgiParser {
       ++pos; // skip newline
   }
 
-  /// Read a word (alphanumeric + underscore, with optional trailing '?').
+  /// Read a word (alphanumeric + underscore).
   std::string read_word() {
     skip_whitespace();
     size_t start = pos;
     while (!at_end() && (std::isalnum(content[pos]) || content[pos] == '_'))
-      ++pos;
-    // Include trailing '?' for boolean-convention names like Key?.
-    if (!at_end() && content[pos] == '?')
       ++pos;
     return content.substr(start, pos - start);
   }

@@ -274,11 +274,6 @@ Token Lexer::scan_identifier() {
     next();
   }
 
-  // allow trailing question marks in identifiers
-  if (peek() == '?') {
-    next();
-  }
-
   auto literal = source.substr(offset, reading_offset - offset);
   auto kind = kind_for_alphanumeric(literal);
   return accept(kind);

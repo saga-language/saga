@@ -92,8 +92,7 @@ syntax region sagaMultilineString
 syntax match sagaOperator  "[-+*/%!<>&|^~=]"
 syntax match sagaOperator
       \ "\.\.\.\|:=\|+=\|-=\|\*=\|/=\|==\|!=\|<=\|>=\|&&\|||\|\*\*\|<<\|>>\|++\|--\|\.\."
-" Safe-access '?' in x?.f / x?[i] / x?() — leaves the trailing token alone.
-syntax match sagaOperator  "?\ze[.[(]"
+syntax match sagaOperator  "?"
 
 " ── Default highlight links ───────────────────────────────────────────────────
 
