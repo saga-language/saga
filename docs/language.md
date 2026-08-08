@@ -1999,6 +1999,18 @@ Today "can evaluate" means a compile-time constant. Narrowing a variable from a
 preceding `if d == 0` guard is flow analysis and is not implemented, so a
 checked variable still needs `or`.
 
+**Float division never fails.** All of this is about integers, where the
+hardware faults and there is no answer to return. IEEE 754 defines the float
+answers — `±inf`, and `nan` for `0.0 / 0.0` — and the hardware produces them
+without trapping, so `float / float` is a plain `float`. An error alternative
+there could never be delivered, which is the same reason a known non-zero
+divisor drops it.
+
+```
+x := 1.0 / 0.0   // inf, and x is float — no `or` to write
+y := 0.0 / 0.0   // nan
+```
+
 Note what this does **not** cover: signed overflow. `INT64_MIN / -1` has no
 representable answer and still faults, as does `+` or `*` past the end of the
 range — Saga has no overflow story yet, and division is not the place to invent

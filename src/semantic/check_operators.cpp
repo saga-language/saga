@@ -237,13 +237,16 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     return common_type(lhs, rhs);
   }
 
-  // Division and remainder: `T | error`. Both have no answer for a zero
-  // divisor, and the machine instruction faults rather than producing one, so
-  // the type is what forces the caller to say what should happen instead.
+  // Integer division and remainder: `T | error`. Neither has an answer for a
+  // zero divisor, and the machine instruction faults rather than producing
+  // one, so the type is what forces the caller to say what should happen
+  // instead.
   //
-  // A divisor the compiler can evaluate to something non-zero cannot fail, and
-  // a union that can never hold its error is noise the reader has to handle
-  // anyway — so `n % 2` stays an `int` and `n % 2 == 0` keeps working.
+  // Float division is not in that position: IEEE 754 defines the zero-divisor
+  // results (±inf, and nan for 0.0/0.0), the hardware produces them without
+  // trapping, and so an error alternative there could never be delivered. The
+  // same reasoning already exempts a divisor the compiler can see is non-zero,
+  // which is what keeps `n % 2 == 0` working.
   case K::Divide:
   case K::Modulo: {
     if (!is_numeric(lhs) || !is_numeric(rhs)) {
@@ -253,7 +256,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       return builtins.invalid_type;
     }
     auto result = common_type(lhs, rhs);
-    if (divisor_is_known_nonzero(*node.rhs))
+    if (result->kind == TypeKind::Float || divisor_is_known_nonzero(*node.rhs))
       return result;
     return make_union_type({result, builtins.error_base});
   }

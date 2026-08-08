@@ -1,0 +1,24 @@
+// Spec: integer division by zero faults and so carries an error in its type;
+// float division does not. IEEE 754 defines every result, the hardware returns
+// it without trapping, and an error alternative that can never be delivered is
+// the same noise a known non-zero divisor already avoids — so `float / float`
+// is a plain `float`, with no `or` to write.
+import "std/io"
+
+pub fn Main() void {
+  one := 1.0
+  zero := 0.0
+
+  io.Println((one / zero).String())
+  io.Println((-one / zero).String())
+  io.Println((7.5 / 2.5).String())
+
+  // A float result is a float, so it goes straight into a float slot.
+  ratio float = one / zero
+  io.Println(ratio.String())
+
+  // Integers keep the error: the same shape still needs `or`.
+  n := 7
+  d := 0
+  io.Println((n / d or { -1 }).String())
+}
