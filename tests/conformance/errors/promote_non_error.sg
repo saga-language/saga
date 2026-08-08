@@ -1,0 +1,9 @@
+// Rule: `?` resolves an error alternative, so there has to be one. On a plain
+// value it has nothing to do and is rejected rather than ignored.
+import "std/io"
+
+pub fn Main() void {
+  n := 1
+  m := n?
+  io.Println(m.String())
+}

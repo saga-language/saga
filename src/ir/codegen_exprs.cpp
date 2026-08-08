@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -137,6 +138,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const DecrementNode &n) -> llvm::Value * {
             emit_decrement(n);
             return nullptr;
+          },
+          [&](const PromoteExprNode &n) -> llvm::Value * {
+            return emit_promote_expr(n);
           },
           [&](const auto &) -> llvm::Value * {
             return nullptr;
@@ -399,7 +403,7 @@ TypePtr CodeGen::semantic_type(const Node &node) const {
 }
 
 TypePtr CodeGen::block_result_type(const BlockNode &block) const {
-  return block.stmts.empty() ? nullptr : semantic_type(*block.stmts.back());
+  return block.stmts.empty() ? nullptr : root_expr_type(*block.stmts.back());
 }
 
 TypePtr CodeGen::body_result_type(const Node &body) const {

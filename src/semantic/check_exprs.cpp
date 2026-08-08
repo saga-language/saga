@@ -54,6 +54,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_unary_expr(n);
           },
           [&](const IsExpr &n) -> TypePtr { return check_is_expr(n); },
+          [&](const PromoteExprNode &n) -> TypePtr {
+            return check_promote_expr(n);
+          },
           [&](const GroupExprNode &n) -> TypePtr {
             return check_group_expr(n);
           },

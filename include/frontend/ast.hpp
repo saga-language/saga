@@ -290,6 +290,13 @@ struct IsExpr {
   NodePtr type;  // the type tested against (a Type node)
 };
 
+// PromoteExpr = PrimaryExpr "?"   — resolve the error alternative so the chain
+// can continue; the error travels to the enclosing root expression.
+struct PromoteExprNode {
+  Span span;
+  NodePtr operand;
+};
+
 // "(" Expression ")"
 struct GroupExprNode {
   Span span;
@@ -636,6 +643,7 @@ struct Node {
 
     // --- Expressions ---
     BinaryExprNode,     UnaryExprNode,     IsExpr,            GroupExprNode,
+    PromoteExprNode,
     CallExprNode,       IndexExprNode,     SliceNode,          SelectorNode,
     IfExprNode,         SwitchExprNode,
     ForExprNode,        ForRangeClauseNode, ForIterClauseNode,

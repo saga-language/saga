@@ -872,6 +872,32 @@ private:
   /// Strip Error alternatives from a union, returning the purified type.
   TypePtr strip_error_from_union(const TypePtr &t) const;
 
+  /// The value left once the error alternatives are gone, typed as
+  /// strip_error_from_union(union_sem). `tag` is the already-loaded tag.
+  llvm::Value *emit_union_purified(llvm::Value *union_ptr, llvm::Value *tag,
+                                   const TypePtr &union_sem);
+
+  // ── Error promotion ──────────────────────────────────────────────────
+
+  /// Where a `?` that found an error jumps, and the slot it leaves the error
+  /// in. One per root expression that contains a promotion.
+  struct PromoteLanding {
+    llvm::BasicBlock *err_bb;
+    llvm::Value *slot;
+    TypePtr result_type;
+  };
+  std::vector<PromoteLanding> promote_landings_;
+
+  llvm::Value *emit_promote_expr(const PromoteExprNode &node);
+
+  /// Emit an expression that a `?` inside it can escape from. Without a
+  /// promotion this is plain emit_expr.
+  llvm::Value *emit_root_expr(const Node &node);
+
+  /// The type a root expression hands its consumer: with the promoted errors
+  /// put back, if any fired.
+  TypePtr root_expr_type(const Node &node) const;
+
   // ── String helpers ───────────────────────────────────────────────────
 
   llvm::Value *make_string_constant(const std::string &text);

@@ -502,7 +502,7 @@ TypePtr Analyzer::or_error_type(const TypePtr &union_type) {
 }
 
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
-  auto expr_type = check_expr(*node.expr);
+  auto expr_type = check_root_expr(*node.expr);
 
   if (is_invalid_type(expr_type)) {
     // Still check the fallback block for internal errors.

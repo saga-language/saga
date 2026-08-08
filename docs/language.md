@@ -562,6 +562,38 @@ data := parse(raw) or |err| {
 types first, then an optional `Null`, then the error. This is only a convention:
 errors are nominal and carry no positional requirement, so any order is legal.
 
+#### Promoting an error (`?`)
+
+A `T | error` in a receiver position — before a `.`, a `[` or a `(` — cannot be
+used as it stands, because the error alternative has no members. Writing `?`
+resolves it: the rest of the chain sees the `T`, and the removed error travels
+to the enclosing expression, which carries it on its own type.
+
+```
+struct Inner { b int }
+
+xs := [Inner{b: 7}]
+
+n := xs[0]?.b or { -1 }  // n is int; the Missing from xs[0] lands at `or`
+m := xs[0]?.b            // m is int | error — nothing resolved it
+```
+
+The error goes to the nearest enclosing variable initializer, assignment,
+return value or `or` subject. When nothing there resolves it, it stays in the
+type, which is how a method returns it:
+
+```
+fn first(xs array{Inner}) int | error {
+  xs[0]?.b
+}
+```
+
+Evaluation stops at the `?` that found an error: nothing further along the
+chain runs.
+
+`?` needs an error to resolve. On a value that cannot be one it is an error,
+not a no-op.
+
 ### Generics
 
 A generic parameterises a declaration over a type. Structs and functions take

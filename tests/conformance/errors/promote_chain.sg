@@ -1,0 +1,34 @@
+// Spec: a `T | error` in receiver position needs `?` to continue. The `?`
+// resolves the error so the rest of the chain sees a `T`, and the error it
+// removed reappears on the type of the enclosing root expression — where an
+// `or`, or the function's own return type, takes delivery of it.
+import "std/io"
+
+struct Inner {
+  b int
+}
+
+fn first(xs array{Inner}) int | error {
+  xs[0]?.b
+}
+
+pub fn Main() void {
+  xs := [Inner{b: 7}]
+  empty array{Inner} = []
+
+  // Resolved on the spot by `or`.
+  io.Println((xs[0]?.b or { -1 }).String())
+  io.Println((xs[9]?.b or { -1 }).String())
+
+  // Left unresolved: the binding takes the error with it.
+  n := xs[0]?.b
+  io.Println((n or { -1 }).String())
+
+  // The tail expression carries the error out as the declared return type.
+  io.Println((first(xs) or { -1 }).String())
+  io.Println((first(empty) or { -1 }).String())
+
+  // A declared union slot holds the promoted error just the same.
+  held int | error = xs[9]?.b
+  io.Println((held or { -2 }).String())
+}

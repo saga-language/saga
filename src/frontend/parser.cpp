@@ -580,6 +580,7 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::Dot:
   case Token::Kind::LeftBracket:
   case Token::Kind::LeftParenthesis:
+  case Token::Kind::QuestionMark:
     return 100;
 
   // 2. Power (right-associative — handled in parse_infix via bp - 1)
@@ -1363,6 +1364,7 @@ NodePtr Parser::parse_prefix() {
 //   Dot             → selector (member access)
 //   LeftParenthesis → call expression
 //   LeftBracket     → index or slice expression
+//   QuestionMark    → error promotion
 //   Or              → or-clause (error resolution)
 //   DotDot          → binary range operator (inside index/slice context)
 //   Pow             → right-associative binary operator
@@ -1382,6 +1384,10 @@ NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
 
   case Token::Kind::LeftBracket:
     return parse_index_or_slice(std::move(lhs));
+
+  case Token::Kind::QuestionMark:
+    advance();
+    return make_node<PromoteExprNode>(span_from(start_offset), std::move(lhs));
 
   case Token::Kind::Or:
     return parse_or_expr(std::move(lhs));

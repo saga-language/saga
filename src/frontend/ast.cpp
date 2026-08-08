@@ -452,6 +452,10 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_ptr(n.value, os, c);
             dump_ptr(n.type, os, c);
           },
+          [&](const PromoteExprNode &n) {
+            os << pad(indent) << "PromoteExprNode\n";
+            dump_ptr(n.operand, os, c);
+          },
           [&](const GroupExprNode &n) {
             os << pad(indent) << "GroupExprNode\n";
             dump_ptr(n.inner, os, c);

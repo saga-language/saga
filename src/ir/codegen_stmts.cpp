@@ -335,10 +335,7 @@ void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
     llvm::Type *struct_ty = resolve_type_node(*fn.signature.return_type);
     llvm::Value *src = tail_val;
     if (auto union_sem = union_sem_for_llvm(struct_ty)) {
-      TypePtr tail_sem = block.stmts.empty()
-                             ? nullptr
-                             : semantic_type(*block.stmts.back());
-      src = as_union_ptr(tail_val, tail_sem, union_sem);
+      src = as_union_ptr(tail_val, block_result_type(block), union_sem);
     }
     if (src && struct_ty && struct_ty->isStructTy() &&
         src->getType()->isPointerTy()) {
@@ -408,7 +405,7 @@ llvm::Value *CodeGen::emit_block(const BlockNode &block) {
     // If we already have a terminator (e.g. from a return), stop.
     if (builder.GetInsertBlock()->getTerminator())
       break;
-    last = emit_expr(*stmt);
+    last = emit_root_expr(*stmt);
   }
   return last;
 }
@@ -517,10 +514,10 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   llvm::Type *var_type = storage_type(sem_type_ptr);
 
   if (node.init) {
-    auto *val = emit_expr(**node.init);
+    auto *val = emit_root_expr(**node.init);
     // Interface boxing: declared type is interface, init is a concrete struct.
     if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Interface) {
-      auto init_sem = semantic_type(**node.init);
+      auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind == TypeKind::Struct) {
         // We need the struct pointer, not the loaded value.
         // Check if the init expression is an identifier referencing
@@ -546,7 +543,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
     // Union boxing: declared type is a union, init is a concrete type.
     if (val && sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
-      auto init_sem = semantic_type(**node.init);
+      auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind != TypeKind::Union) {
         auto *wrapped = emit_union_wrap(val, init_sem, sem_type_ptr);
         if (wrapped && llvm::isa<llvm::AllocaInst>(wrapped)) {
@@ -572,7 +569,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     // semantics.  RHS may be either a pointer (alloca / sret slot) or a
     // struct SSA value.
     {
-      auto sem = semantic_type(**node.init);
+      auto sem = root_expr_type(**node.init);
       // Errors are boxed (pointer rep); bind the box pointer, don't copy the
       // struct by value (which would overflow an 8-byte union payload later).
       bool boxed_error =
@@ -601,7 +598,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
     // If the init produces a union alloca, alias it.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
-      auto init_sem = semantic_type(**node.init);
+      auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind == TypeKind::Union) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
@@ -680,9 +677,9 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 }
 
 void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
-  auto *val = emit_expr(*node.value);
+  auto *val = emit_root_expr(*node.value);
   auto *func = builder.GetInsertBlock()->getParent();
-  auto val_sem = semantic_type(*node.value);
+  auto val_sem = root_expr_type(*node.value);
 
   // ── Single value assignment ──────────────────────────────────────────
   for (auto &ident : node.targets.identifiers) {
@@ -692,7 +689,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     // semantics under D1 ABI. Source may be a pointer (alloca/sret slot)
     // or an SSA struct value.
     {
-      auto sem = semantic_type(*node.value);
+      auto sem = root_expr_type(*node.value);
       // Errors are boxed (llvm_type is a pointer), so they bind like a
       // string/array local — the box pointer is stored, not copied by value.
       bool boxed_error =
@@ -722,7 +719,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     // Union and closure alloca: alias directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
       auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-      auto sem = semantic_type(*node.value);
+      auto sem = root_expr_type(*node.value);
       if (sem && sem->kind == TypeKind::Union) {
         alloca->setName(name);
         locals[name] = alloca;
@@ -774,7 +771,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
 
 void CodeGen::emit_assign(const AssignNode &node) {
   for (size_t i = 0; i < node.targets.size() && i < node.values.size(); ++i) {
-    auto *rhs = emit_expr(*node.values[i]);
+    auto *rhs = emit_root_expr(*node.values[i]);
     if (!rhs)
       continue;
 
@@ -825,7 +822,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
       // Reassigning a union variable to a bare member value: wrap it so the
       // tag is set (mirrors the var-decl / struct-field union stores).
       if (target_sem && target_sem->kind == TypeKind::Union) {
-        auto val_sem = semantic_type(*node.values[i]);
+        auto val_sem = root_expr_type(*node.values[i]);
         if (val_sem && val_sem->kind != TypeKind::Union) {
           if (auto *wrapped = emit_union_wrap(rhs, val_sem, target_sem);
               wrapped && wrapped->getType()->isPointerTy()) {
@@ -944,7 +941,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
     emit_release_locals();
     builder.CreateRetVoid();
   } else {
-    auto *val = emit_expr(*node.value);
+    auto *val = emit_root_expr(*node.value);
     auto *func = builder.GetInsertBlock()->getParent();
     auto *ret_type = func->getReturnType();
 
@@ -956,7 +953,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
       auto *struct_ty = func->getParamStructRetType(0);
       llvm::Value *src = val;
       if (auto union_sem = union_sem_for_llvm(struct_ty))
-        src = as_union_ptr(val, semantic_type(*node.value), union_sem);
+        src = as_union_ptr(val, root_expr_type(*node.value), union_sem);
       if (src && struct_ty) {
         if (src->getType()->isPointerTy()) {
           auto sz = size_of(struct_ty);
@@ -993,7 +990,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
           st->getElementType(0)->isIntegerTy(8) &&
           st->getElementType(1)->isArrayTy()) {
         // Need to find the semantic return type and value type.
-        auto val_sem = semantic_type(*node.value);
+        auto val_sem = root_expr_type(*node.value);
         // Look up the function's semantic return type from the scope.
         TypePtr ret_sem = nullptr;
         for (auto &[key, union_st] : union_llvm_types) {

@@ -83,6 +83,7 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const BinaryExprNode &n) { resolve_binary_expr(n); },
           [&](const UnaryExprNode &n) { resolve_unary_expr(n); },
           [&](const IsExpr &n) { resolve_expr(*n.value); },
+          [&](const PromoteExprNode &n) { resolve_expr(*n.operand); },
           [&](const GroupExprNode &n) { resolve_group_expr(n); },
           [&](const CallExprNode &n) { resolve_call_expr(n); },
           [&](const IndexExprNode &n) { resolve_index_expr(n); },

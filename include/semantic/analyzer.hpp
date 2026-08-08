@@ -156,6 +156,10 @@ struct Analyzer {
   /// Maps each identifier AST node to the Symbol it resolves to.
   std::unordered_map<const Node *, Symbol> node_symbols;
 
+  /// Root expressions a `?` sent an error to, mapped to the type carrying it.
+  /// Present only where a landing has to be built.
+  std::unordered_map<const Node *, TypePtr> promotion_root_types;
+
   /// Maps each generic instantiation site to its type-argument bindings.
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
@@ -398,6 +402,11 @@ struct Analyzer {
   std::vector<const Node *> spawn_node_stack_;
   /// Pointer to the current spawn node being resolved (top of stack).
   const Node *pending_spawn_node_ = nullptr;
+
+  // ── Error promotion state ────────────────────────────────────────────
+  /// One frame per root expression; `?` deposits the error alternatives it
+  /// resolved so the root can re-attach them to its own type.
+  std::vector<std::vector<TypePtr>> bubble_frames_;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -764,6 +773,16 @@ private:
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
   TypePtr reject_type_as_value(const Node &node);
+
+  // ── Error promotion ─────────────────────────────────────────────────
+  TypePtr check_promote_expr(const PromoteExprNode &node);
+  TypePtr reject_promotion(Span span, const TypePtr &operand);
+  /// Check an expression that begins a root: errors `?` resolved inside it
+  /// re-attach to the type this returns.
+  TypePtr check_root_expr(const Node &node);
+  TypePtr check_root_expr_expecting(const Node &node, const TypePtr &expected);
+  TypePtr finish_root(const Node &node, TypePtr type);
+  TypePtr attach_bubbled_errors(TypePtr type);
 
   // ── check_selector helpers ──────────────────────────────────────────
   TypePtr resolve_module_selector(const ModuleTypeInfo &mod,

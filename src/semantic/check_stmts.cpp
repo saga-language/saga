@@ -44,7 +44,7 @@ void Analyzer::check_var_decl(const VarDeclNode &var, const Node &parent) {
       init_type = check_for_expr(*for_node, declared_type);
       record_type(**var.init, init_type);
     } else {
-      init_type = check_expr_expecting(**var.init, declared_type);
+      init_type = check_root_expr_expecting(**var.init, declared_type);
     }
     // An empty `[]` / `{}` adopts the declared type — its element type is a
     // hole and the declaration is the context that fills it. The hole only
@@ -95,7 +95,7 @@ TypePtr Analyzer::resolve_binding_type(TypePtr type, Span span) {
 
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   auto rhs_type = resolve_binding_type(
-      materialize_untyped(check_expr(*decl.value)), decl.value->span);
+      materialize_untyped(check_root_expr(*decl.value)), decl.value->span);
 
   for (auto &ident : decl.targets.identifiers) {
     std::string name(ident.name);
@@ -169,7 +169,7 @@ void Analyzer::check_assign(const AssignNode &node) {
 
     auto target_type = check_expr(*node.targets[i]);
     if (i < node.values.size()) {
-      auto val_type = check_expr(*node.values[i]);
+      auto val_type = check_root_expr(*node.values[i]);
 
       if (node.op == Token::Kind::Assignment) {
         expect_assignable(node.values[i]->span, target_type, val_type,
@@ -250,7 +250,7 @@ void Analyzer::check_return(const ReturnNode &node) {
     return;
   }
 
-  auto val_type = check_expr_expecting(*node.value, expected[0]);
+  auto val_type = check_root_expr_expecting(*node.value, expected[0]);
   expect_assignable(node.value->span, expected[0], val_type, "return value");
 }
 
@@ -277,7 +277,7 @@ void Analyzer::check_next(const NextNode &) {
 TypePtr Analyzer::check_block(const BlockNode &block) {
   TypePtr last_type = builtins.void_type;
   for (auto &stmt : block.stmts) {
-    last_type = check_expr(*stmt);
+    last_type = check_root_expr(*stmt);
   }
   return last_type;
 }

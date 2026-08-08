@@ -44,13 +44,83 @@ llvm::Value *CodeGen::fallback_as_union(llvm::Value *val,
   return slot ? builder.CreateLoad(target_st, slot, "or.fb.union") : val;
 }
 
+// Extracting the non-error value is not a load when more than one value
+// alternative survives: the tag indexes the *original* union, so each surviving
+// alternative has to be re-tagged into the purified one before the payload is
+// copied across.
+llvm::Value *CodeGen::emit_union_purified(llvm::Value *union_ptr,
+                                          llvm::Value *tag,
+                                          const TypePtr &union_sem) {
+  TypePtr purified = strip_error_from_union(union_sem);
+  if (!purified)
+    return nullptr;
+
+  auto *union_st = get_union_llvm_type(union_sem);
+  if (purified->kind != TypeKind::Union)
+    return emit_union_extract(union_ptr, purified, union_sem);
+
+  auto &info = std::get<UnionTypeInfo>(union_sem->detail);
+  auto &pur_info = std::get<UnionTypeInfo>(purified->detail);
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *i8_ty = llvm::Type::getInt8Ty(context);
+  auto *purified_st = get_union_llvm_type(purified);
+  auto *purified_alloca = create_entry_alloca(func, "pur.union", purified_st);
+  builder.CreateStore(llvm::Constant::getNullValue(purified_st),
+                      purified_alloca);
+
+  std::vector<int> value_tags;
+  for (size_t i = 0; i < info.alternatives.size(); ++i) {
+    if (!is_error_valued(info.alternatives[i]))
+      value_tags.push_back(static_cast<int>(i));
+  }
+
+  auto *remap_default = llvm::BasicBlock::Create(context, "pur.remap.def");
+  auto *remap_merge = llvm::BasicBlock::Create(context, "pur.remap.merge");
+  auto *sw = builder.CreateSwitch(tag, remap_default, value_tags.size());
+
+  for (int orig_tag : value_tags) {
+    auto *case_bb = llvm::BasicBlock::Create(
+        context, "pur.remap." + std::to_string(orig_tag), func);
+    sw->addCase(llvm::ConstantInt::get(i8_ty, orig_tag), case_bb);
+    builder.SetInsertPoint(case_bb);
+
+    int new_tag = 0;
+    for (size_t pi = 0; pi < pur_info.alternatives.size(); ++pi) {
+      if (types_equal(pur_info.alternatives[pi], info.alternatives[orig_tag])) {
+        new_tag = static_cast<int>(pi);
+        break;
+      }
+    }
+
+    auto *ptag_gep =
+        builder.CreateStructGEP(purified_st, purified_alloca, 0, "pur.tag");
+    builder.CreateStore(llvm::ConstantInt::get(i8_ty, new_tag), ptag_gep);
+
+    auto *src_payload =
+        builder.CreateStructGEP(union_st, union_ptr, 1, "src.payload");
+    auto *dst_payload =
+        builder.CreateStructGEP(purified_st, purified_alloca, 1, "dst.payload");
+    builder.CreateMemCpy(dst_payload, llvm::Align(1), src_payload,
+                         llvm::Align(1), union_payload_size(purified));
+    builder.CreateBr(remap_merge);
+  }
+
+  func->insert(func->end(), remap_default);
+  builder.SetInsertPoint(remap_default);
+  builder.CreateBr(remap_merge);
+
+  func->insert(func->end(), remap_merge);
+  builder.SetInsertPoint(remap_merge);
+  return builder.CreateLoad(purified_st, purified_alloca, "pur.val");
+}
+
 llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   // Emit the expression that may produce a union with Error.
-  auto *expr_val = emit_expr(*node.expr);
+  auto *expr_val = emit_root_expr(*node.expr);
   if (!expr_val)
     return nullptr;
 
-  auto expr_sem = semantic_type(*node.expr);
+  auto expr_sem = root_expr_type(*node.expr);
   if (!expr_sem)
     return expr_val;
 
@@ -88,12 +158,9 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   // Find which tag values correspond to Error types.
   auto &info = std::get<UnionTypeInfo>(expr_sem->detail);
   std::vector<int> error_tags;
-  std::vector<int> non_error_tags;
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
     if (is_error_valued(info.alternatives[i]))
       error_tags.push_back(static_cast<int>(i));
-    else
-      non_error_tags.push_back(static_cast<int>(i));
   }
 
   // Create basic blocks.
@@ -128,81 +195,8 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   // ── OK block: extract the non-error value ──────────────────────────
   builder.SetInsertPoint(ok_bb);
 
-  // Determine the purified result type.
   TypePtr purified = strip_error_from_union(expr_sem);
-  llvm::Value *ok_val = nullptr;
-
-  if (purified && purified->kind == TypeKind::Union) {
-    // Multiple non-error alternatives remain — result is still a union.
-    // Re-wrap into the purified union type.
-    auto *purified_st = get_union_llvm_type(purified);
-    auto *purified_alloca = create_entry_alloca(func, "or.purified",
-                                                 purified_st);
-    builder.CreateStore(llvm::Constant::getNullValue(purified_st),
-                        purified_alloca);
-
-    // We need to remap the tag. The original tag corresponds to the position
-    // in the full union; we need the position in the purified union.
-    auto &pur_info = std::get<UnionTypeInfo>(purified->detail);
-    auto *i8_ty = llvm::Type::getInt8Ty(context);
-
-    // Build a switch to remap tags and copy the payload.
-    auto *remap_default = llvm::BasicBlock::Create(context, "or.remap.def");
-    auto *remap_merge = llvm::BasicBlock::Create(context, "or.remap.merge");
-    auto *sw = builder.CreateSwitch(tag, remap_default, non_error_tags.size());
-
-    std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> phi_entries;
-
-    for (int orig_tag : non_error_tags) {
-      auto *case_bb = llvm::BasicBlock::Create(
-          context, "or.remap." + std::to_string(orig_tag), func);
-      sw->addCase(llvm::ConstantInt::get(i8_ty, orig_tag), case_bb);
-
-      builder.SetInsertPoint(case_bb);
-
-      // Find the new tag index in the purified union.
-      int new_tag = -1;
-      for (size_t pi = 0; pi < pur_info.alternatives.size(); ++pi) {
-        if (types_equal(pur_info.alternatives[pi],
-                        info.alternatives[orig_tag])) {
-          new_tag = static_cast<int>(pi);
-          break;
-        }
-      }
-      if (new_tag < 0) new_tag = 0;
-
-      // Set the new tag.
-      auto *ptag_gep = builder.CreateStructGEP(purified_st, purified_alloca,
-                                                 0, "pur.tag");
-      builder.CreateStore(llvm::ConstantInt::get(i8_ty, new_tag), ptag_gep);
-
-      // Copy the payload bytes.
-      auto *src_payload = builder.CreateStructGEP(union_st, union_ptr, 1,
-                                                   "src.payload");
-      auto *dst_payload = builder.CreateStructGEP(purified_st,
-                                                   purified_alloca, 1,
-                                                   "dst.payload");
-      uint64_t pay_sz = union_payload_size(purified);
-      builder.CreateMemCpy(dst_payload, llvm::Align(1),
-                           src_payload, llvm::Align(1), pay_sz);
-
-      builder.CreateBr(remap_merge);
-      phi_entries.push_back({purified_alloca, builder.GetInsertBlock()});
-    }
-
-    func->insert(func->end(), remap_default);
-    builder.SetInsertPoint(remap_default);
-    builder.CreateBr(remap_merge);
-
-    func->insert(func->end(), remap_merge);
-    builder.SetInsertPoint(remap_merge);
-
-    // Load the purified union struct for the PHI.
-    ok_val = builder.CreateLoad(purified_st, purified_alloca, "or.ok.val");
-  } else if (purified) {
-    // Single non-error alternative — extract it directly.
-    ok_val = emit_union_extract(union_ptr, purified, expr_sem);
-  }
+  llvm::Value *ok_val = emit_union_purified(union_ptr, tag, expr_sem);
 
   if (!ok_val)
     ok_val = llvm::Constant::getNullValue(
