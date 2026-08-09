@@ -200,6 +200,11 @@ private:
 
   NodePtr parse_statement();
   NodePtr parse_decl_assign(); // IdentifierList ":=" ExpressionList
+  /// Whether what follows an already-parsed header expression turns it into a
+  /// binding: a `:=`, or a type after an identifier.
+  bool starts_init_clause(const Node &leading) const;
+  /// Finish an init clause whose leading expression is `leading`.
+  NodePtr parse_init_clause(const Node &leading, size_t start);
   NodePtr parse_assignment(NodePtr target); // target = ... | += ... | ...
   NodePtr parse_return();
   NodePtr parse_break();

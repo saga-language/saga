@@ -331,17 +331,20 @@ struct SelectorNode {
   IdentifierNode field;
 };
 
-// IfExpr = "if" Expression Block [ "else" Block ]
+// IfExpr = "if" [ InitClause ";" ] Expression Block [ "else" Block ]
+// InitClause = Identifier ":=" Expression | Identifier Type [ "=" Expression ]
 struct IfExprNode {
   Span span;
+  std::optional<NodePtr> init;       // VarDeclNode or DeclAssignNode
   NodePtr condition;
   NodePtr then_block;                // BlockNode
   std::optional<NodePtr> else_block; // BlockNode only — "else if" is not valid
 };
 
-// SwitchExpr = "switch" Expression SwitchBlock
+// SwitchExpr = "switch" [ InitClause ";" ] Expression SwitchBlock
 struct SwitchExprNode {
   Span span;
+  std::optional<NodePtr> init; // VarDeclNode or DeclAssignNode
   NodePtr subject;
   std::vector<CaseArmNode> arms;
   std::optional<NodePtr> else_body; // expression or BlockNode

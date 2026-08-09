@@ -49,6 +49,9 @@ llvm::AllocaInst *CodeGen::narrow_local(const std::string &name,
 }
 
 llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
+  if (node.init)
+    emit_expr(**node.init);
+
   auto *cond = emit_expr(*node.condition);
   if (!cond)
     return nullptr;
@@ -232,6 +235,9 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
 
 llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node,
                                        const Node &parent) {
+  if (node.init)
+    emit_expr(**node.init);
+
   auto *subject_val = emit_expr(*node.subject);
   if (!subject_val)
     return nullptr;

@@ -2718,6 +2718,42 @@ NodePtr Parser::parse_next() {
 // Block and Statement Parsing (Group 2)
 // ============================================================================
 
+// An init clause binds a name in a header — `for`'s iterator, and the optional
+// slot before the `;` in an `if` or `switch`. Both callers have already parsed
+// the leading expression, so the decision is made on what follows it: a `:=`,
+// or a type where an identifier has just been read.
+bool Parser::starts_init_clause(const Node &leading) const {
+  if (check(Token::Kind::DeclAssignment))
+    return true;
+  return std::holds_alternative<IdentifierNode>(leading.data) &&
+         is_type_start(current.kind) &&
+         current.kind != Token::Kind::BitwiseOr;
+}
+
+NodePtr Parser::parse_init_clause(const Node &leading, size_t start) {
+  auto *id = std::get_if<IdentifierNode>(&leading.data);
+  if (!id)
+    error_at(leading.span, "an init clause requires an identifier to bind");
+  IdentifierNode name = id ? *id : IdentifierNode{leading.span, ""};
+
+  if (check(Token::Kind::DeclAssignment)) {
+    advance();
+    return make_node<DeclAssignNode>(
+        span_from(start), IdentifierListNode{leading.span, {name}},
+        parse_expression());
+  }
+
+  NodePtr type_node = parse_type();
+  std::optional<NodePtr> init_val;
+  if (check(Token::Kind::Assignment)) {
+    advance();
+    init_val = parse_expression();
+  }
+  return make_node<VarDeclNode>(span_from(start), name,
+                                std::make_optional(std::move(type_node)),
+                                std::move(init_val));
+}
+
 // parse_decl_assign — DeclAssign = IdentifierList ":=" ExpressionList
 //
 // Standalone entry point: called when `current` is the first identifier of
@@ -2983,12 +3019,22 @@ NodePtr Parser::parse_if_expr() {
   auto start = mark();
   expect(Token::Kind::If);
 
-  // ── Condition ────────────────────────────────────────────────────────────
+  // ── Optional init clause, then the condition ─────────────────────────────
   // parse_expr_bp(1) stops before "{" (infix_bp == 1), preventing the
   // opening brace of the then-block from being consumed as a struct literal.
+  auto init_start = mark();
   NodePtr condition = parse_expr_bp(1);
   if (!condition)
     return nullptr;
+
+  std::optional<NodePtr> init;
+  if (starts_init_clause(*condition)) {
+    init = parse_init_clause(*condition, init_start);
+    expect(Token::Kind::Semicolon);
+    condition = parse_expr_bp(1);
+    if (!condition)
+      return nullptr;
+  }
 
   // ── Then block ───────────────────────────────────────────────────────────
   skip_terminators();
@@ -3019,8 +3065,9 @@ NodePtr Parser::parse_if_expr() {
     previous = saved_previous;
   }
 
-  return make_node<IfExprNode>(span_from(start), std::move(condition),
-                               std::move(then_block), std::move(else_block));
+  return make_node<IfExprNode>(span_from(start), std::move(init),
+                               std::move(condition), std::move(then_block),
+                               std::move(else_block));
 }
 
 // parse_case_arm — CaseArm = "case" Expression ("," Expression)* ":"
@@ -3069,12 +3116,22 @@ NodePtr Parser::parse_switch_expr() {
   auto start = mark();
   expect(Token::Kind::Switch);
 
-  // ── Subject expression ────────────────────────────────────────────────────
+  // ── Optional init clause, then the subject ────────────────────────────────
   // parse_expr_bp(1): stop before "{" so the switch block is not mistaken
   // for a struct literal opened by the subject expression.
+  auto init_start = mark();
   NodePtr subject = parse_expr_bp(1);
   if (!subject)
     return nullptr;
+
+  std::optional<NodePtr> init;
+  if (starts_init_clause(*subject)) {
+    init = parse_init_clause(*subject, init_start);
+    expect(Token::Kind::Semicolon);
+    subject = parse_expr_bp(1);
+    if (!subject)
+      return nullptr;
+  }
 
   // ── Switch block ──────────────────────────────────────────────────────────
   skip_terminators();
@@ -3104,8 +3161,9 @@ NodePtr Parser::parse_switch_expr() {
 
   expect(Token::Kind::RightBrace);
 
-  return make_node<SwitchExprNode>(span_from(start), std::move(subject),
-                                   std::move(arms), std::move(else_body));
+  return make_node<SwitchExprNode>(span_from(start), std::move(init),
+                                   std::move(subject), std::move(arms),
+                                   std::move(else_body));
 }
 
 // ============================================================================
@@ -3159,46 +3217,12 @@ NodePtr Parser::parse_for_expr() {
     NodePtr leading = parse_expr_bp(1);
 
     auto *leading_id = std::get_if<IdentifierNode>(&leading->data);
-    bool typed_init_form =
-        leading_id != nullptr && is_type_start(current.kind) &&
-        current.kind != Token::Kind::BitwiseOr;
 
-    if (typed_init_form || check(Token::Kind::DeclAssignment)) {
+    if (starts_init_clause(*leading)) {
       // ── IteratorClause ─────────────────────────────────────────────────
-      // Two shapes:
-      //   typed:    Identifier Type [ "=" Expression ] ";" Cond ";" Update
-      //   inferred: Identifier ":=" Expression          ";" Cond ";" Update
-      auto *id_ptr = leading_id;
-      NodePtr init;
-      if (typed_init_form) {
-        if (!id_ptr)
-          error_at(leading->span,
-                   "for-iterator typed init requires an identifier");
-        NodePtr type_node = parse_type();
-        std::optional<NodePtr> init_val;
-        if (check(Token::Kind::Assignment)) {
-          advance();
-          init_val = parse_expression();
-        }
-        init = make_node<VarDeclNode>(
-            span_from(mode_start),
-            id_ptr ? *id_ptr : IdentifierNode{leading->span, ""},
-            std::make_optional(std::move(type_node)),
-            std::move(init_val));
-      } else {
-        if (!id_ptr)
-          error_at(leading->span,
-                   "for-iterator init requires an identifier before ':='");
-
-        IdentifierListNode id_list{leading->span,
-                                   id_ptr ? std::vector<IdentifierNode>{*id_ptr}
-                                          : std::vector<IdentifierNode>{}};
-
-        advance(); // consume ":="
-        NodePtr init_val = parse_expression();
-        init = make_node<DeclAssignNode>(
-            span_from(mode_start), std::move(id_list), std::move(init_val));
-      }
+      //   Identifier Type [ "=" Expression ] ";" Cond ";" Update
+      //   Identifier ":=" Expression          ";" Cond ";" Update
+      NodePtr init = parse_init_clause(*leading, mode_start);
       expect(Token::Kind::Semicolon);
       NodePtr condition = parse_expression();
       expect(Token::Kind::Semicolon);

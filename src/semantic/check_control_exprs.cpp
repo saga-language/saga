@@ -10,7 +10,20 @@
 
 namespace saga {
 
+// The init binding lives in a scope of its own so it is visible to the
+// condition and both blocks and to nothing after them.
 TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
+  if (!node.init)
+    return check_if_arms(node);
+
+  push_scope(ScopeKind::Block);
+  check_root_expr(**node.init);
+  auto result = check_if_arms(node);
+  pop_scope();
+  return result;
+}
+
+TypePtr Analyzer::check_if_arms(const IfExprNode &node) {
   auto cond_type = check_expr(*node.condition);
   expect_bool(node.condition->span, cond_type);
 
@@ -60,6 +73,17 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
 }
 
 TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
+  if (!node.init)
+    return check_switch_arms(node);
+
+  push_scope(ScopeKind::Block);
+  check_root_expr(**node.init);
+  auto result = check_switch_arms(node);
+  pop_scope();
+  return result;
+}
+
+TypePtr Analyzer::check_switch_arms(const SwitchExprNode &node) {
   auto subject_type = check_expr(*node.subject);
   TypePtr result_type = nullptr;
 

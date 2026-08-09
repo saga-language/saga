@@ -1695,6 +1695,29 @@ x := if y > 10 {
 x := if y > 10 { 0 } else { y }
 ```
 
+Either conditional can bind a name in its header, before a `;`. The binding is
+a declaration — `x := e` or `x T = e`, nothing else — and it belongs to the
+whole conditional: the condition or subject, every arm, and the else. After the
+conditional ends the name is gone.
+
+```
+if v := lookup(key); v is int {
+  Use(v)              // v is int here
+} else {
+  Report()            // and the error alternative here
+}
+
+switch r := parse(text); r {
+case int:    r + 1
+case string: r.Size()
+}
+```
+
+This is how you test a value you also need: without it the binding has to leak
+into the surrounding scope to be reachable from the arms. Assignment is a
+statement in Saga, so `if (x = f())` cannot be written at all and the `;` never
+has to disambiguate anything.
+
 Switches handle multiple branches, performing a value comparison. The first
 branch determines the type when used as an expression and the left hand
 value is being initialized without a declared type. The right hand side of

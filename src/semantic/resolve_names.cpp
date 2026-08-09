@@ -313,7 +313,13 @@ void Analyzer::resolve_struct_literal(const StructLiteralNode &node) {
   }
 }
 
+// The init binding is scoped to the whole conditional — condition, both
+// blocks — so the scope it lives in opens before the condition is resolved and
+// closes after the last arm.
 void Analyzer::resolve_if_expr(const IfExprNode &node) {
+  push_scope(ScopeKind::Block);
+  if (node.init)
+    resolve_block_stmt(**node.init);
   resolve_expr(*node.condition);
 
   push_scope(ScopeKind::Block);
@@ -327,9 +333,13 @@ void Analyzer::resolve_if_expr(const IfExprNode &node) {
     resolve_block(else_block);
     pop_resolve_scope();
   }
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
+  push_scope(ScopeKind::Block);
+  if (node.init)
+    resolve_block_stmt(**node.init);
   resolve_expr(*node.subject);
   for (auto &arm : node.arms) {
     for (auto &pat : arm.patterns)
@@ -352,6 +362,7 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
       resolve_expr(**node.else_body);
     }
   }
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_for_expr(const ForExprNode &node) {

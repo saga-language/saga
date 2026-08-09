@@ -832,7 +832,9 @@ private:
   TypePtr resolve_union_method(const TypePtr &union_type,
                                const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
+  TypePtr check_if_arms(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
+  TypePtr check_switch_arms(const SwitchExprNode &node);
   TypePtr check_for_expr(const ForExprNode &node,
                          TypePtr accumulator_hint = nullptr);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
