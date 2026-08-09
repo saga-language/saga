@@ -164,6 +164,9 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   if (is_invalid_type(lhs) || is_invalid_type(rhs))
     return builtins.invalid_type;
 
+  lhs = bubble_operand(*node.lhs, std::move(lhs));
+  rhs = bubble_operand(*node.rhs, std::move(rhs));
+
   // Errors compare by value: `==`/`!=` on two errors is structural (same type
   // and equal fields). Errors have no methods, so they never reach the struct
   // operator-overload path below. Structural comparison needs a concrete layout,

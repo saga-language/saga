@@ -1,0 +1,32 @@
+// Spec: outside a receiver chain an error needs no marker. An operand or an
+// argument that can be an error hands it to the enclosing root and the
+// operation proceeds on the value, so `?` is reserved for the one position
+// where the reader needs telling that the rest of the chain may not run.
+import "std/io"
+
+fn take(n int) int {
+  n * 10
+}
+
+fn loud(n int) int {
+  io.Println("evaluated")
+  n
+}
+
+pub fn Main() void {
+  xs := [3, 4]
+  d := 0
+
+  io.Println((xs[0] + 1 or { -1 }).String())
+  io.Println((xs[9] + 1 or { -1 }).String())
+  io.Println((10 / d or { -1 }).String())
+
+  // Several bubbling operands in one expression, any of which can end it.
+  io.Println((1 + 10 / d - xs[0] or { -99 }).String())
+
+  io.Println((take(xs[0]) or { -1 }).String())
+  io.Println((take(xs[9]) or { -1 }).String())
+
+  // Evaluation stops where the error appears: `loud` never runs.
+  io.Println((xs[9] + loud(2) or { -1 }).String())
+}

@@ -38,15 +38,11 @@ TypePtr CodeGen::root_expr_type(const Node &node) const {
   return semantic_type(node);
 }
 
-llvm::Value *CodeGen::emit_promote_expr(const PromoteExprNode &node) {
-  auto operand_sem = semantic_type(*node.operand);
-  auto *operand = emit_expr(*node.operand);
-  if (!operand || !operand_sem || operand_sem->kind != TypeKind::Union)
+llvm::Value *CodeGen::emit_error_escape(llvm::Value *operand,
+                                        const TypePtr &operand_sem) {
+  if (!operand || !operand_sem || operand_sem->kind != TypeKind::Union ||
+      !is_impure_union(operand_sem) || promote_landings_.empty())
     return operand;
-
-  if (promote_landings_.empty())
-    internal_error("'?' reached codegen with no landing, which the analyzer "
-                   "should have rejected");
 
   auto &landing = promote_landings_.back();
   auto *func = builder.GetInsertBlock()->getParent();
@@ -81,6 +77,21 @@ llvm::Value *CodeGen::emit_promote_expr(const PromoteExprNode &node) {
 
   builder.SetInsertPoint(ok_bb);
   return emit_union_purified(union_ptr, tag, operand_sem);
+}
+
+llvm::Value *CodeGen::emit_operand(const Node &node) {
+  auto *val = emit_expr(node);
+  if (!analyzer.bubbled_operands.count(&node))
+    return val;
+  return emit_error_escape(val, semantic_type(node));
+}
+
+llvm::Value *CodeGen::emit_promote_expr(const PromoteExprNode &node) {
+  if (promote_landings_.empty())
+    internal_error("'?' reached codegen with no landing, which the analyzer "
+                   "should have rejected");
+  return emit_error_escape(emit_expr(*node.operand),
+                           semantic_type(*node.operand));
 }
 
 llvm::Value *CodeGen::emit_root_expr(const Node &node) {

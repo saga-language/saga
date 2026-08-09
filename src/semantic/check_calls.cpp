@@ -86,7 +86,9 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
   std::vector<TypePtr> arg_types;
   for (size_t i = 0; i < node.args.size(); ++i) {
     TypePtr expected = (params && i < params->size()) ? (*params)[i] : nullptr;
-    arg_types.push_back(check_expr_expecting(*node.args[i], expected));
+    arg_types.push_back(bubble_into(
+        *node.args[i], check_expr_expecting(*node.args[i], expected),
+        expected));
   }
 
   // If the callee contains type parameters, attempt generic instantiation.

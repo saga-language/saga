@@ -76,6 +76,35 @@ TypePtr Analyzer::check_promote_expr(const PromoteExprNode &node) {
   return collapse(std::move(values));
 }
 
+// Outside a receiver chain the error needs no marker: an operand or argument
+// that can be an error hands the error onward and the operation proceeds on the
+// value. Receivers are the exception because there `?` is what tells the reader
+// the rest of the chain may not run.
+// A slot that declares it can hold the error is not a place the error is
+// escaping from — passing `int | error` to an `int | error` parameter is an
+// ordinary argument, not a promotion.
+TypePtr Analyzer::bubble_into(const Node &expr, TypePtr type,
+                              const TypePtr &expected) {
+  if (expected && is_assignable_to(type, expected))
+    return type;
+  return bubble_operand(expr, std::move(type));
+}
+
+TypePtr Analyzer::bubble_operand(const Node &expr, TypePtr type) {
+  if (bubble_frames_.empty() || !type || type->kind != TypeKind::Union)
+    return type;
+
+  auto errors = error_alternatives(type);
+  auto values = value_alternatives(type);
+  if (errors.empty() || values.empty())
+    return type;
+
+  auto &frame = bubble_frames_.back();
+  frame.insert(frame.end(), errors.begin(), errors.end());
+  bubbled_operands.insert(&expr);
+  return collapse(std::move(values));
+}
+
 TypePtr Analyzer::attach_bubbled_errors(TypePtr type) {
   auto errors = std::move(bubble_frames_.back());
   bubble_frames_.pop_back();

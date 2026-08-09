@@ -472,7 +472,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       args.push_back(variadic_packed);
       break;
     }
-    auto *val = emit_expr(*node.args[i]);
+    auto *val = emit_operand(*node.args[i]);
     if (!val)
       continue;
     // Spec docs/language.md:51 — values that escape their scope are

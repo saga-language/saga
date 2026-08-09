@@ -160,6 +160,11 @@ struct Analyzer {
   /// Present only where a landing has to be built.
   std::unordered_map<const Node *, TypePtr> promotion_root_types;
 
+  /// Operands whose error alternatives were sent to the enclosing root without
+  /// a `?`. Codegen must escape through the landing at exactly these nodes, so
+  /// the decision is recorded here rather than re-derived from the types.
+  std::unordered_set<const Node *> bubbled_operands;
+
   /// Maps each generic instantiation site to its type-argument bindings.
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
@@ -777,6 +782,10 @@ private:
   // ── Error promotion ─────────────────────────────────────────────────
   TypePtr check_promote_expr(const PromoteExprNode &node);
   TypePtr reject_promotion(Span span, const TypePtr &operand);
+  /// Send an operand's error alternatives to the enclosing root and continue
+  /// on what remains. No-op outside a root, or on a type carrying no error.
+  TypePtr bubble_operand(const Node &expr, TypePtr type);
+  TypePtr bubble_into(const Node &expr, TypePtr type, const TypePtr &expected);
   /// Check an expression that begins a root: errors `?` resolved inside it
   /// re-attach to the type this returns.
   TypePtr check_root_expr(const Node &node);

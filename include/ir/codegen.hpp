@@ -890,6 +890,16 @@ private:
 
   llvm::Value *emit_promote_expr(const PromoteExprNode &node);
 
+  /// Leave the enclosing root through its landing if `operand` holds an error,
+  /// otherwise continue with the value it holds. Returns `operand` untouched
+  /// where there is no landing or no error to escape with.
+  llvm::Value *emit_error_escape(llvm::Value *operand,
+                                 const TypePtr &operand_sem);
+
+  /// Emit an operand, escaping through the landing at exactly the nodes the
+  /// analyzer bubbled. Plain emit_expr everywhere else.
+  llvm::Value *emit_operand(const Node &node);
+
   /// Emit an expression that a `?` inside it can escape from. Without a
   /// promotion this is plain emit_expr.
   llvm::Value *emit_root_expr(const Node &node);

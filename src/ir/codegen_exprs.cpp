@@ -805,8 +805,8 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
   }
 
   // ── Numeric / bool operations ────────────────────────────────────────
-  auto *lhs = emit_expr(*node.lhs);
-  auto *rhs = emit_expr(*node.rhs);
+  auto *lhs = emit_operand(*node.lhs);
+  auto *rhs = emit_operand(*node.rhs);
   if (!lhs || !rhs)
     return nullptr;
 
