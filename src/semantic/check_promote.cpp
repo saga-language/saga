@@ -71,8 +71,7 @@ TypePtr Analyzer::check_promote_expr(const PromoteExprNode &node) {
     return builtins.invalid_type;
   }
 
-  auto &frame = bubble_frames_.back();
-  frame.insert(frame.end(), errors.begin(), errors.end());
+  deposit_errors(errors, node.span);
   return collapse(std::move(values));
 }
 
@@ -103,20 +102,21 @@ TypePtr Analyzer::bubble_operand(const Node &expr, TypePtr type) {
   if (errors.empty() || values.empty())
     return type;
 
-  auto &frame = bubble_frames_.back();
-  frame.insert(frame.end(), errors.begin(), errors.end());
+  deposit_errors(errors, expr.span);
   auto purified = collapse(std::move(values));
   bubbled_operands[&expr] = purified;
   return purified;
 }
 
-TypePtr Analyzer::attach_bubbled_errors(TypePtr type) {
-  auto errors = std::move(bubble_frames_.back());
-  bubble_frames_.pop_back();
+void Analyzer::deposit_errors(const std::vector<TypePtr> &errors, Span origin) {
+  auto &frame = bubble_frames_.back();
+  if (frame.errors.empty())
+    frame.origin = origin;
+  frame.errors.insert(frame.errors.end(), errors.begin(), errors.end());
+}
 
-  if (errors.empty() || is_invalid_type(type))
-    return type;
-
+TypePtr Analyzer::attach_bubbled_errors(TypePtr type,
+                                        const std::vector<TypePtr> &errors) {
   std::vector<TypePtr> alts;
   if (type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(type->detail);
@@ -139,10 +139,23 @@ TypePtr Analyzer::attach_bubbled_errors(TypePtr type) {
 // `?` fired, which is what every emitter inside the root reads. The type with
 // the errors put back is what the root's *consumer* sees, so it goes in a table
 // of its own for codegen to find the landing it has to build.
+//
+// A root that evaluates to nothing is the end of the line: a statement has no
+// value, so there is nothing for the error to travel in.
 TypePtr Analyzer::finish_root(const Node &node, TypePtr type) {
-  bool promoted = !bubble_frames_.back().empty();
-  auto attached = attach_bubbled_errors(std::move(type));
-  if (promoted && !is_invalid_type(attached))
+  auto frame = std::move(bubble_frames_.back());
+  bubble_frames_.pop_back();
+
+  if (frame.errors.empty() || is_invalid_type(type))
+    return type;
+
+  if (!type || type->kind == TypeKind::Void) {
+    error(frame.origin, "the error has nowhere to go here; handle it with 'or'");
+    return builtins.invalid_type;
+  }
+
+  auto attached = attach_bubbled_errors(std::move(type), frame.errors);
+  if (!is_invalid_type(attached))
     promotion_root_types[&node] = attached;
   return attached;
 }

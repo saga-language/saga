@@ -411,8 +411,14 @@ struct Analyzer {
 
   // ── Error promotion state ────────────────────────────────────────────
   /// One frame per root expression; `?` deposits the error alternatives it
-  /// resolved so the root can re-attach them to its own type.
-  std::vector<std::vector<TypePtr>> bubble_frames_;
+  /// resolved so the root can re-attach them to its own type. `origin` is
+  /// where the first one left, which is where a root with no type to attach
+  /// them to reports.
+  struct BubbleFrame {
+    std::vector<TypePtr> errors;
+    Span origin{};
+  };
+  std::vector<BubbleFrame> bubble_frames_;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -792,7 +798,9 @@ private:
   TypePtr check_root_expr(const Node &node);
   TypePtr check_root_expr_expecting(const Node &node, const TypePtr &expected);
   TypePtr finish_root(const Node &node, TypePtr type);
-  TypePtr attach_bubbled_errors(TypePtr type);
+  void deposit_errors(const std::vector<TypePtr> &errors, Span origin);
+  TypePtr attach_bubbled_errors(TypePtr type,
+                                const std::vector<TypePtr> &errors);
 
   // ── check_selector helpers ──────────────────────────────────────────
   TypePtr resolve_module_selector(const ModuleTypeInfo &mod,

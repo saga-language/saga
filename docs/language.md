@@ -623,6 +623,30 @@ n := xs[0]               // n is int | error — the name takes what it is given
 c := Cell{value: xs[0]}  // a type parameter takes it too
 ```
 
+**A statement is the end of the line.** The error re-attaches to the type of
+the root it travelled to, so a root that evaluates to nothing has nothing to
+carry it. Discarding the call, or hiding it in a condition, is rejected rather
+than dropped:
+
+```
+sink(xs[9])           // Error: the error has nowhere to go here
+if xs[0]?.b > 3 { }   // the `if` is a statement, so the same holds
+
+sink(xs[9] or { 0 })  // say what happens instead
+```
+
+`or` is not the only answer. A `switch` or an `is` reads the union as it
+stands, which is what makes the error alternative an ordinary one:
+
+```
+switch xs[9] {
+case 3: "three"
+else:   "nothing there"
+}
+
+if v is int { ... }
+```
+
 ### Generics
 
 A generic parameterises a declaration over a type. Structs and functions take

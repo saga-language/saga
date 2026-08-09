@@ -1,0 +1,38 @@
+// Spec: `or` is not the only way to resolve an error. A switch or an `is` reads
+// the union directly, which is what makes the error alternative ordinary. A `?`
+// inside a switch *expression* still travels to the root that switch sits in.
+import "std/io"
+
+struct Inner { b int }
+
+fn pick(xs array{Inner}, i int) string {
+  switch xs[i]?.b {
+  case 7: "seven"
+  else: "other"
+  } or { "missing" }
+}
+
+pub fn Main() void {
+  xs := [3, 4]
+
+  switch xs[9] {
+  case 3: io.Println("three")
+  else: io.Println("nothing there")
+  }
+
+  v := xs[9]
+  if v is int {
+    io.Println("an int")
+  } else {
+    io.Println("not an int")
+  }
+
+  switch v {
+  case int: io.Println("int arm")
+  case Missing: io.Println("missing arm")
+  }
+
+  ys := [Inner{b: 7}]
+  io.Println(pick(ys, 0))
+  io.Println(pick(ys, 9))
+}
