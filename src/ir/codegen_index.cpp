@@ -52,8 +52,15 @@ CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
   builder.CreateBr(merge_bb);
 
   builder.SetInsertPoint(ok_bb);
-  auto *loaded = builder.CreateLoad(elem_ll, elem_ptr, "elem");
-  auto *ok_wrapped = emit_union_wrap(loaded, val_type, result_union);
+  // Unions flatten, so a union element is not one alternative of the result —
+  // its alternatives are spread through it and its tag has to be remapped.
+  llvm::Value *ok_wrapped = nullptr;
+  if (val_type && val_type->kind == TypeKind::Union) {
+    ok_wrapped = emit_union_convert(elem_ptr, val_type, result_union);
+  } else {
+    auto *loaded = builder.CreateLoad(elem_ll, elem_ptr, "elem");
+    ok_wrapped = emit_union_wrap(loaded, val_type, result_union);
+  }
   auto *ok_end_bb = builder.GetInsertBlock();
   builder.CreateBr(merge_bb);
 

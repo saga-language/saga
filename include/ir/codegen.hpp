@@ -639,8 +639,23 @@ private:
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node,
                                 const Node &parent);
-  llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
-  llvm::Value *emit_map_literal(const MapLiteralNode &node);
+  llvm::Value *emit_array_literal(const ArrayLiteralNode &node,
+                                  const Node &parent);
+  llvm::Value *emit_map_literal(const MapLiteralNode &node,
+                                const Node &parent);
+  /// Bytes the runtime copies for one element/key/value of `ll`.
+  int64_t element_size_of(llvm::Type *ll);
+  enum class Slot { Element, Key, Value };
+  /// The type of one slot of an array or map literal, read off the literal's
+  /// own type. `fallback` is the first entry, for a literal whose type was
+  /// never recorded.
+  TypePtr collection_slot_type(const Node &parent, Slot slot,
+                               const Node *fallback);
+  /// Emit one element/key/value and hand back its address, wrapping into the
+  /// slot's union first when the slot is one.
+  llvm::Value *collection_slot_value(llvm::Type *slot_ll,
+                                     const TypePtr &slot_sem,
+                                     const Node &value_node);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                                   llvm::Type *elem_ll,
