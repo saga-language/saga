@@ -501,38 +501,53 @@ TypePtr Analyzer::or_error_type(const TypePtr &union_type) {
   return make_union_type(std::move(errs));
 }
 
+// The handler is checked even when the subject is rejected, so a mistake
+// inside it is reported on the same run as the one around it.
+TypePtr Analyzer::check_or_fallback(const OrExprNode &node,
+                                    const TypePtr &err_type) {
+  push_scope(ScopeKind::Block);
+  if (node.pipe) {
+    current_scope->symbols.emplace(
+        std::string(node.pipe->name),
+        Symbol::variable(std::string(node.pipe->name), err_type,
+                         node.pipe->span));
+  }
+  auto type = check_block(std::get<BlockNode>(node.fallback->data));
+  pop_scope();
+  return type;
+}
+
+bool Analyzer::can_be_error(const TypePtr &type) const {
+  if (!type)
+    return false;
+  if (is_error_valued(type))
+    return true;
+  if (type->kind != TypeKind::Union)
+    return false;
+  for (auto &alt : std::get<UnionTypeInfo>(type->detail).alternatives)
+    if (is_error_valued(alt))
+      return true;
+  return false;
+}
+
 TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
   auto expr_type = check_root_expr(*node.expr);
 
   if (is_invalid_type(expr_type)) {
-    // Still check the fallback block for internal errors.
-    push_scope(ScopeKind::Block);
-    if (node.pipe) {
-      current_scope->symbols.emplace(
-          std::string(node.pipe->name),
-          Symbol::variable(std::string(node.pipe->name), builtins.error_base,
-                           node.pipe->span));
-    }
-    auto &block = std::get<BlockNode>(node.fallback->data);
-    check_block(block);
-    pop_scope();
+    check_or_fallback(node, builtins.error_base);
     return builtins.invalid_type;
   }
 
-  // The or-clause strips the error from the union.
-  push_scope(ScopeKind::Block);
-
-  if (node.pipe) {
-    current_scope->symbols.emplace(
-        std::string(node.pipe->name),
-        Symbol::variable(std::string(node.pipe->name),
-                         or_error_type(expr_type), node.pipe->span));
+  if (!can_be_error(expr_type)) {
+    check_or_fallback(node, builtins.error_base);
+    error(node.expr->span,
+          std::format("'or' expects a value that can be an error, got {}",
+                      type_to_string(expr_type)));
+    return builtins.invalid_type;
   }
 
+  auto fallback_type = check_or_fallback(node, or_error_type(expr_type));
   auto &block = std::get<BlockNode>(node.fallback->data);
-  auto fallback_type = check_block(block);
-
-  pop_scope();
 
   // Strip error members from the union to get the purified type.
   if (expr_type->kind == TypeKind::Union) {

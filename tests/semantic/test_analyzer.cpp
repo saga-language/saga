@@ -555,9 +555,9 @@ TEST(Analyzer, ResolveForIterClause) {
 TEST(Analyzer, ResolveOrExprPipe) {
   // The |err| pipe variable should be visible inside the or block.
   auto r = AnalysisResult::from(
-      "fn foo() {\n"
-      "  x := 1\n"
-      "  x or |err| { err }\n"
+      "fn foo(d int) {\n"
+      "  x := 10 / d\n"
+      "  _ := x or |err| { _ := err\n    0 }\n"
       "}");
   EXPECT_TRUE(r.has_no_errors());
 }

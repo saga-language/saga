@@ -529,7 +529,9 @@ uses `is` (same error type) and `==` (same type and fields); the message is a
 plain `.message` field.
 
 The `or` clause resolves the error before the value is used: it strips the error
-alternative(s) and yields the remaining type — a value, or a smaller union.
+alternative(s) and yields the remaining type — a value, or a smaller union. It
+needs an error to strip: on a value that cannot be one the handler could never
+run, and that is an error rather than a no-op.
 
 ```
 value int | error = 0

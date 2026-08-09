@@ -839,6 +839,10 @@ private:
   TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);
   TypePtr or_error_type(const TypePtr &union_type);
+  TypePtr check_or_fallback(const OrExprNode &node, const TypePtr &err_type);
+  /// Whether a value could arrive as an error — an error type, or a union with
+  /// an error alternative. What `or` and `?` both need to have anything to do.
+  bool can_be_error(const TypePtr &type) const;
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
