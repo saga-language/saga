@@ -332,7 +332,7 @@ llvm::Value *CodeGen::emit_error_singleton(const StructTypeInfo &info,
 void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
                                  const TypePtr &field_sem,
                                  const Node &value_node) {
-  auto *val = emit_expr(value_node);
+  auto *val = emit_operand(value_node);
   if (!val)
     return;
 
@@ -341,7 +341,7 @@ void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
   // `optional String | Missing` field given `Missing{}` would memcpy zero
   // bytes into a 9-byte slot, leaving the tag at 0 (an empty String).
   if (field_sem && field_sem->kind == TypeKind::Union) {
-    auto val_sem = semantic_type(value_node);
+    auto val_sem = operand_type(value_node);
     if (val_sem && val_sem->kind != TypeKind::Union) {
       auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
       if (wrapped) val = wrapped;

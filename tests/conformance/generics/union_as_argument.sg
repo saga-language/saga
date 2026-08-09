@@ -1,0 +1,25 @@
+// Spec: a union is a value like any other, so a generic parameter takes one.
+// The instantiation must lower it the way a declared function does — by
+// pointer — or the caller and the specialisation disagree on how it arrives.
+import "std/io"
+
+struct Cell<T> {
+  value T
+}
+
+fn keep<T>(x T) T { x }
+
+pub fn Main() void {
+  u int | string = 7
+  kept := keep(u)
+  if kept is int {
+    io.Println("int survived the round trip")
+  }
+
+  xs := [3, 4]
+  io.Println((keep(xs[0]) or { -1 }).String())
+  io.Println((keep(xs[9]) or { -1 }).String())
+
+  c := Cell{value: xs[9]}
+  io.Println((c.value or { -2 }).String())
+}

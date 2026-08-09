@@ -481,7 +481,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // Extern (C) callees are the low-level boundary where Push/Pop/Set
     // intentionally mutate the backing buffer; skip the clone there so
     // the C runtime can operate on the actual array.
-    auto arg_sem = semantic_type(*node.args[i]);
+    auto arg_sem = operand_type(*node.args[i]);
     if (arg_sem && arg_sem->kind == TypeKind::Array && !callee_is_extern) {
       val = builder.CreateCall(module->getFunction("saga_array_clone"),
                                {val}, "arg.clone");
@@ -491,7 +491,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // in a fat pointer { data, vtable }.
     if (fi && i < fi->params.size() && fi->params[i] &&
         fi->params[i]->kind == TypeKind::Interface) {
-      auto arg_sem = semantic_type(*node.args[i]);
+      auto arg_sem = operand_type(*node.args[i]);
       if (arg_sem && arg_sem->kind == TypeKind::Struct) {
         llvm::Value *struct_ptr = val;
         if (val->getType()->isStructTy()) {
@@ -511,7 +511,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // address `7` → segfault.
     if (fi && i < fi->params.size() && fi->params[i] &&
         fi->params[i]->kind == TypeKind::Union) {
-      auto arg_sem = semantic_type(*node.args[i]);
+      auto arg_sem = operand_type(*node.args[i]);
       if (arg_sem && arg_sem->kind != TypeKind::Union) {
         auto *wrapped =
             emit_union_wrap(val, arg_sem, fi->params[i]);

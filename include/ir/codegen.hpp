@@ -346,6 +346,11 @@ private:
   llvm::AllocaInst *bind_value_slot(llvm::Function *fn, const std::string &name,
                                     llvm::Value *arg, llvm::Type *slot_type);
 
+  /// Give an aggregate a stable address: an SSA struct value is spilled to a
+  /// frame slot, anything already addressed is handed back untouched. The
+  /// store lands in the current block, so call it where the value is live.
+  llvm::Value *spill_aggregate(llvm::Value *val, const std::string &name);
+
   // ── Visitors ─────────────────────────────────────────────────────────
 
   void emit_source(const SourceNode &node);
@@ -899,6 +904,10 @@ private:
   /// Emit an operand, escaping through the landing at exactly the nodes the
   /// analyzer bubbled. Plain emit_expr everywhere else.
   llvm::Value *emit_operand(const Node &node);
+
+  /// What an operand is left holding: the purified type where the error
+  /// escaped, the recorded type everywhere else.
+  TypePtr operand_type(const Node &node) const;
 
   /// Emit an expression that a `?` inside it can escape from. Without a
   /// promotion this is plain emit_expr.

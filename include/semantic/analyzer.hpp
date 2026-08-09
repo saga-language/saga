@@ -161,9 +161,10 @@ struct Analyzer {
   std::unordered_map<const Node *, TypePtr> promotion_root_types;
 
   /// Operands whose error alternatives were sent to the enclosing root without
-  /// a `?`. Codegen must escape through the landing at exactly these nodes, so
-  /// the decision is recorded here rather than re-derived from the types.
-  std::unordered_set<const Node *> bubbled_operands;
+  /// a `?`, mapped to what the operand is left holding. Codegen must escape at
+  /// exactly these nodes and read the purified type after it does, so both are
+  /// recorded here rather than re-derived from `node_types`.
+  std::unordered_map<const Node *, TypePtr> bubbled_operands;
 
   /// Maps each generic instantiation site to its type-argument bindings.
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>

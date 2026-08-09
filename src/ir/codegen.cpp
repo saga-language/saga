@@ -516,6 +516,16 @@ llvm::AllocaInst *CodeGen::bind_value_slot(llvm::Function *fn,
   return slot;
 }
 
+llvm::Value *CodeGen::spill_aggregate(llvm::Value *val,
+                                      const std::string &name) {
+  if (!val || !val->getType()->isStructTy())
+    return val;
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *slot = create_entry_alloca(func, name, val->getType());
+  builder.CreateStore(val, slot);
+  return slot;
+}
+
 // ===========================================================================
 // Entry point
 // ===========================================================================

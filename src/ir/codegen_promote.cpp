@@ -86,6 +86,13 @@ llvm::Value *CodeGen::emit_operand(const Node &node) {
   return emit_error_escape(val, semantic_type(node));
 }
 
+TypePtr CodeGen::operand_type(const Node &node) const {
+  auto it = analyzer.bubbled_operands.find(&node);
+  if (it != analyzer.bubbled_operands.end())
+    return unwrap_structural_alias(it->second);
+  return semantic_type(node);
+}
+
 llvm::Value *CodeGen::emit_promote_expr(const PromoteExprNode &node) {
   if (promote_landings_.empty())
     internal_error("'?' reached codegen with no landing, which the analyzer "

@@ -82,10 +82,14 @@ TypePtr Analyzer::check_promote_expr(const PromoteExprNode &node) {
 // the rest of the chain may not run.
 // A slot that declares it can hold the error is not a place the error is
 // escaping from — passing `int | error` to an `int | error` parameter is an
-// ordinary argument, not a promotion.
+// ordinary argument, not a promotion. Neither is a slot whose type is still
+// being inferred: a type parameter takes whatever it is given, so the error
+// stays in the value the same way `x := xs[0]` keeps it.
 TypePtr Analyzer::bubble_into(const Node &expr, TypePtr type,
                               const TypePtr &expected) {
-  if (expected && is_assignable_to(type, expected))
+  if (!expected || has_type_params(expected))
+    return type;
+  if (is_assignable_to(type, expected))
     return type;
   return bubble_operand(expr, std::move(type));
 }
@@ -101,8 +105,9 @@ TypePtr Analyzer::bubble_operand(const Node &expr, TypePtr type) {
 
   auto &frame = bubble_frames_.back();
   frame.insert(frame.end(), errors.begin(), errors.end());
-  bubbled_operands.insert(&expr);
-  return collapse(std::move(values));
+  auto purified = collapse(std::move(values));
+  bubbled_operands[&expr] = purified;
+  return purified;
 }
 
 TypePtr Analyzer::attach_bubbled_errors(TypePtr type) {

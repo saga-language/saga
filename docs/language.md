@@ -597,7 +597,8 @@ not a no-op.
 **Everywhere else the error travels on its own.** A receiver is the only
 position that asks for a marker, because it is the only one where the reader
 would otherwise not see that the rest of the chain can be skipped. In operand
-and argument position the error goes to the same place with nothing written:
+position, argument position and field position the error goes to the same
+place with nothing written:
 
 ```
 xs := [3, 4]
@@ -606,12 +607,21 @@ d := readDivisor()
 a := xs[0] + 1 or { -1 }          // Missing from the index
 b := 1 + 10 / d - xs[0] or { -1 } // whichever fails first ends the expression
 c := take(xs[0]) or { -1 }        // an argument travels the same way
+p := Point{x: xs[0], y: 2} or { Point{x: -1, y: -1} }
 ```
 
 Evaluation is lazy on that path too: once a subexpression yields an error the
 rest of the expression is not evaluated, so `xs[9] + loud()` never calls
-`loud`. A slot that declares it holds the error is not an escape — passing an
-`int | error` to an `int | error` parameter is an ordinary argument.
+`loud`.
+
+The error leaves only where the slot it is headed for refuses it. A parameter
+or field declared `int | error` takes it as an ordinary value, and so does a
+slot whose type is read off the value itself:
+
+```
+n := xs[0]               // n is int | error — the name takes what it is given
+c := Cell{value: xs[0]}  // a type parameter takes it too
+```
 
 ### Generics
 

@@ -342,7 +342,8 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   for (auto &fa : node.fields) {
     auto it = field_type_by_name.find(std::string(fa.name.name));
     TypePtr expected = it != field_type_by_name.end() ? it->second : nullptr;
-    auto val_type = check_expr_expecting(*fa.value, expected);
+    auto val_type = bubble_into(
+        *fa.value, check_expr_expecting(*fa.value, expected), expected);
     field_vals.push_back({std::string(fa.name.name), val_type});
   }
 

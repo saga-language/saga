@@ -235,6 +235,17 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   if (fallback_val && ok_val && fallback_val->getType() != ok_val->getType()) {
     if (purified && purified->kind == TypeKind::Union)
       fallback_val = fallback_as_union(fallback_val, fallback_block, purified);
+    // A struct payload leaves the union as a value and leaves the handler as
+    // an address, so the two branches settle on the address. This runs after
+    // the union conversion above, never before: once both sides are pointers
+    // their LLVM types are equal and a missing conversion looks like a match.
+    if (fallback_val->getType() != ok_val->getType()) {
+      auto saved = builder.saveIP();
+      builder.SetInsertPoint(ok_end_bb->getTerminator());
+      ok_val = spill_aggregate(ok_val, "or.ok.spill");
+      builder.restoreIP(saved);
+      fallback_val = spill_aggregate(fallback_val, "or.fallback.spill");
+    }
     if (fallback_val->getType() != ok_val->getType())
       internal_error("`or` handler produced a value the result type cannot "
                      "hold, which the analyzer should have rejected");
