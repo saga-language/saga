@@ -55,6 +55,22 @@ Open:
   type-name operand and suppress it while parsing a statement header, rather
   than encoding the restriction as a binding power that applies everywhere.
 
+- **`arr[i] = v` is a silent no-op** (found 2026-08-16). Every element type,
+  not just structs: `xs := [1, 2, 3]` then `xs[0] = 99` leaves `xs[0]` at 1,
+  with no error and no diagnostic. `emit_assign`'s array branch is an empty
+  `else if` carrying `// TODO: implement saga_runtime_array_set when
+  available`. The map branch beside it is implemented, which is why
+  `m[k] = v` works.
+
+  **The TODO is stale — the runtime function has been available.**
+  `saga_array_set` is defined at `src/runtime/runtime.c:1990` and already
+  declared into the module by `codegen_runtime.cpp:171`. The reason it is not
+  simply a call is its signature: it *returns* an array, because a shared
+  backing buffer is copied on write, so the result has to be written back to
+  whatever holds the array — a local, a field, or another element. That
+  write-back is the actual work, and it is the same question `Push`/`Append`
+  already answer for the method spelling.
+
 Fixed:
 - **A nominal alias of a struct read as empty** (filed 2026-08-15, fixed
   2026-08-16). Codegen's `semantic_type` unwrapped *structural* aliases only,

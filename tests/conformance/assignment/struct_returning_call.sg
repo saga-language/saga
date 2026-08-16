@@ -1,0 +1,29 @@
+// Spec: a call returning a struct hands back the address of its sret slot, so
+// assigning one has to copy the struct rather than store the address. Rebinding
+// a variable through its own method — `c = c.Bump()` — is the shape that makes
+// a value receiver usable at all.
+import "std/io"
+
+struct Inner { n int }
+struct Outer { at Inner  tag string }
+
+fn make(n int) Inner { Inner{n: n} }
+
+pub fn (i Inner) Bump() Inner { Inner{n: i.n + 1} }
+
+pub fn Main() void {
+  c := Inner{n: 5}
+  c = c.Bump()
+  io.Println("self {c.n}")
+
+  other := Inner{n: 1}
+  c = other.Bump()
+  io.Println("other {c.n}")
+
+  c = make(42)
+  io.Println("plain {c.n}")
+
+  o := Outer{at: Inner{n: 2}, tag: "t"}
+  o.at = make(9)
+  io.Println("field {o.at.n} {o.tag}")
+}

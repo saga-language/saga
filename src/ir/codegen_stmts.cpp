@@ -786,6 +786,19 @@ void CodeGen::emit_destructure(const DestructureNode &node) {
   }
 }
 
+// A call returning a struct hands back the address of its sret slot, and a
+// struct literal hands back its alloca — neither is a loaded value, so a plain
+// store would write the pointer into the slot's first field.
+void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
+                              llvm::Value *value) {
+  if (slot_ll && slot_ll->isStructTy() && value->getType()->isPointerTy()) {
+    auto al = align_of(slot_ll);
+    builder.CreateMemCpy(slot, al, value, al, size_of(slot_ll));
+    return;
+  }
+  builder.CreateStore(value, slot);
+}
+
 void CodeGen::emit_assign(const AssignNode &node) {
   for (size_t i = 0; i < node.targets.size() && i < node.values.size(); ++i) {
     auto *rhs = emit_root_expr(*node.values[i]);
@@ -843,10 +856,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
         if (val_sem && val_sem->kind != TypeKind::Union) {
           if (auto *wrapped = emit_union_wrap(rhs, val_sem, target_sem);
               wrapped && wrapped->getType()->isPointerTy()) {
-            auto *ut = alloca->getAllocatedType();
-                    auto al = align_of(ut);
-            builder.CreateMemCpy(alloca, al, wrapped, al,
-                                 size_of(ut));
+            store_into_slot(alloca, alloca->getAllocatedType(), wrapped);
             continue;
           }
         }
@@ -858,7 +868,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
         auto *old = builder.CreateLoad(alloca->getAllocatedType(), alloca);
         emit_release(old, target_sem);
       }
-      builder.CreateStore(rhs, alloca);
+      store_into_slot(alloca, alloca->getAllocatedType(), rhs);
     } else {
       auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
       builder.CreateStore(emit_compound_op(node.op, cur, rhs, target_sem),
@@ -893,7 +903,7 @@ void CodeGen::emit_field_assign(const Node &target, Token::Kind op,
     return;
 
   if (op == Token::Kind::Assignment) {
-    builder.CreateStore(rhs, addr);
+    store_into_slot(addr, ftype, rhs);
     return;
   }
 

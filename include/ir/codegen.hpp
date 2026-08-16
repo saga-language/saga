@@ -814,6 +814,11 @@ private:
   /// it goes directly. Caller and callee must answer this identically.
   llvm::Type *byval_param_type(const TypePtr &param);
 
+  /// Write `value` into `slot`. A struct-shaped value can arrive as an address
+  /// rather than a loaded value, and the two need different instructions.
+  void store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
+                       llvm::Value *value);
+
   /// The shape an AST node's value has, which is what every lowering decision
   /// is asking about. Aliases are transparent here: they name a type, they do
   /// not change one.
