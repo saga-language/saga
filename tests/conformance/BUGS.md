@@ -39,6 +39,22 @@ Open:
   an inline partial replica that only gathers methods from a `Struct` source,
   and says so in a comment.
 
+- **A struct literal cannot be a bare binary operand** (found 2026-08-16).
+  `a + Money{cents: 7}` reports "cannot use type 'Money' as a value"; the
+  literal has to be parenthesised. The `{` that opens a struct literal is an
+  infix operator at binding power 1 — the lowest non-zero, chosen so a context
+  that must stop before a `{ body }` block can do it with `parse_expr_bp(1)` —
+  and every real infix operator parses its right side well above that, so the
+  `{` is never reached.
+
+  Precedence is the wrong instrument: the question is not how tightly `{`
+  binds but *where* a literal is allowed, and those are different axes. Go
+  answers it with a parser flag (`exprLev`) that forbids composite literals
+  only in `if`/`for`/`switch` headers and allows them everywhere else,
+  including as binary operands. Fix shape: make `{` an ordinary suffix on a
+  type-name operand and suppress it while parsing a statement header, rather
+  than encoding the restriction as a binding power that applies everywhere.
+
 Fixed:
 - **A nominal alias of a struct read as empty** (filed 2026-08-15, fixed
   2026-08-16). Codegen's `semantic_type` unwrapped *structural* aliases only,

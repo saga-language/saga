@@ -246,40 +246,41 @@ When a type wants to allow being looped over it can implement the [Iterator iter
 
 ### Operator overloading
 
-Any type, including intrinsic types, can implement a compliment of iterfaces that map to operators.
+A struct gives an operator meaning by declaring the method that operator looks
+for. There is no interface to implement — the compiler looks the method up by
+name on the struct, so the operator is available exactly when the method is.
 
 ```
 // Operator: +
-pub interface Adder {
-  fn |T| Add(T) T
-}
-
-// Operator: /
-pub interface Divisable {
-  fn |T| Div(T) T | Error
-}
-
-// Operator: *
-pub interface Multiplier {
-  fn |T| Mul(T) T
-}
+pub fn (t T) Add(o T) T
 
 // Operator: -
-pub interface Subber {
-  fn |T| Sub(T) T
-}
+pub fn (t T) Sub(o T) T
+
+// Operator: *
+pub fn (t T) Mul(o T) T
+
+// Operator: /
+pub fn (t T) Div(o T) T | error
 
 // Operators: ==, !=
-pub interface Equality {
-  fn |T| Equal(T) Bool
-}
+pub fn (t T) Equals(o T) bool
 
 // Operators: <, >, <=, >=
-pub interface Comparable {
-  fn |T| Compare(T) Comparison
-}
+pub fn (t T) Compare(o T) Comparison
 ```
 
-Equality and Comparble have overlap. Since the Comparison enumeration has Equals, if a type does not implement `Equals` the compiler will fall back to calling `Compare` instead when performing comparison.
+`Div` is the one that can fail, so it returns `T | error` and its result needs
+an `or` like any other division.
 
-_Note: Intrinsic types are optimized to remove call expressions and replace them with direct IR operations. To maintain speed and efficiency. User types may not always benefit from these enhancements._
+Equality and ordering overlap. Since the Comparison enumeration has an `Equal`
+variant, a type that declares `Compare` but not `Equals` gets `==` and `!=`
+from `Compare` as well.
+
+Only structs overload operators. Enums and errors are identity types and are
+rejected outright, and the intrinsic types already lower to machine
+instructions — the note below is about the gap that leaves.
+
+_Note: operators on the intrinsic types lower to IR operations directly, with no
+call to emit. An overload on a user type is a real method call, so it does not
+start from the same place._

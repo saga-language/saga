@@ -2089,8 +2089,56 @@ operator.
 
 Arithmetic operators apply to numeric types (`+` also concatenates strings).
 Enums and errors are identity/data types: they support equality but no
-arithmetic, and they cannot overload it. Structs may overload the operators
-through methods (`Add`, `Sub`, `Mul`, `Div`, `Equals`, `Compare`).
+arithmetic, and they cannot overload it.
+
+### Operator overloading
+
+A struct gives an operator meaning by declaring the method that operator looks
+for. There is no interface to implement and nothing to opt into: the compiler
+looks for the method by name on the struct, and the operator is available when
+the method is there.
+
+| Operator | Method | Returns |
+|---|---|---|
+| `+` | `Add(T) T` | `T` |
+| `-` | `Sub(T) T` | `T` |
+| `*` | `Mul(T) T` | `T` |
+| `/` | `Div(T) T \| error` | `T \| error` |
+| `==`, `!=` | `Equals(T) bool` | `bool` |
+| `<`, `<=`, `>`, `>=` | `Compare(T) Comparison` | `bool` |
+
+```
+struct Money { cents int }
+
+pub fn (m Money) Add(o Money) Money { Money{cents: m.cents + o.cents} }
+pub fn (m Money) Compare(o Money) Comparison { m.cents.Compare(o.cents) }
+
+price := Money{cents: 500}
+tax := Money{cents: 250}
+total := price + tax          // Add
+if total > price { ... }      // Compare
+```
+
+Both operands are the same type. The right-hand side must be assignable to the
+left-hand side's type, so an overload cannot mix `Money + int` — a method that
+takes something else is an ordinary method, called by name.
+
+`Compare` returns a `Comparison` (`Less`, `Equal`, `Greater`), and the four
+ordering operators read it. A type that declares `Compare` but not `Equals`
+gets `==` and `!=` from it as well, comparing against `Comparison.Equal` — so
+ordering alone is enough, and `Equals` is worth declaring only when equality is
+cheaper than ordering or means something narrower.
+
+`Div` returns `T | error` rather than `T`, because division is the operator
+that can fail; see [Division by zero](#division-by-zero). The other arithmetic
+methods return `T`, and a method whose return type does not match the table is
+reported where the operator is used, not where the method is declared.
+
+Four things are deliberately not overloadable. `%`, `**`, the bitwise
+operators, and `&&` / `||` have no method to declare — the logical operators
+because there is no truthiness to redefine, the rest because no use has asked
+for them. Only structs may overload at all: enums and errors are identity
+types, and the intrinsic types already lower to machine operations.
 
 ### Division by zero
 
