@@ -2549,24 +2549,18 @@ NodePtr Parser::parse_import_expr() {
 
 // parse_group_expr — GroupExpr = "(" Expression ")"
 //
-// The inner expression is parsed with parse_expr_bp(25) so the Pratt loop
-// stops before "or" (bp 20), letting it be admitted explicitly as a
-// continuation — the spec uses `(6 / 0 or { 0 }) + 1` (language.md:1399).
+// Parentheses fence nothing themselves: the ")" ends the expression, so the
+// inner one is parsed whole. The Pratt loop admits the "or" of the spec's
+// `(6 / 0 or { 0 }) + 1` (language.md:1399), and a binding power low enough to
+// reach a struct literal's "{" (bp 1) is the only one that can.
 NodePtr Parser::parse_group_expr() {
   auto start = mark();
   expect(Token::Kind::LeftParenthesis);
   skip_terminators();
 
-  NodePtr first = parse_expr_bp(25);
+  NodePtr first = parse_expression();
   if (!first)
     return nullptr;
-
-  skip_terminators();
-
-  if (check(Token::Kind::Or)) {
-    first = parse_or_expr(std::move(first));
-    skip_terminators();
-  }
 
   skip_terminators_before(Token::Kind::RightParenthesis);
   expect(Token::Kind::RightParenthesis);
