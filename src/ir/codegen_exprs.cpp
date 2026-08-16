@@ -590,9 +590,7 @@ llvm::Value *CodeGen::finish_operator_result(const BinaryExprNode &node,
     }
   }
 
-  // "Equal" is a second spelling the analyzer still accepts; both sides have to
-  // list it or `!=` comes back un-negated.
-  if ((method == "Equals" || method == "Equal") && node.op == K::NotEqual)
+  if (method == "Equals" && node.op == K::NotEqual)
     return builder.CreateNot(result, "ne");
 
   return result;

@@ -99,24 +99,18 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
   // ── Equality ──────────────────────────────────────────────────────────────
   case K::Equal:
   case K::NotEqual:
-    // Prefer Equals (runtime convention), then Equal (interface name),
-    // then Compare as a fallback (Comparison.Equal == 1).
+    // Prefer Equals, then Compare as a fallback (Comparison.Equal == 1).
     if (has_method("Equals")) {
       expect_assignable(node.rhs->span, lhs, rhs, "Equals argument");
       return resolve("Equals", builtins.bool_type);
     }
-    if (has_method("Equal")) {
-      expect_assignable(node.rhs->span, lhs, rhs, "Equal argument");
-      return resolve("Equal", builtins.bool_type);
-    }
     if (has_method("Compare")) {
-      // Fall back: Compare() == Comparison.Equal (1) → Bool.
       expect_assignable(node.rhs->span, lhs, rhs, "Compare argument");
       return resolve("Compare", builtins.bool_type);
     }
     error(node.span,
-          std::format("type {} does not support equality (no Equals, Equal, "
-                      "or Compare method)",
+          std::format("type {} does not support equality (no Equals or "
+                      "Compare method)",
                       type_to_string(lhs)));
     return builtins.invalid_type;
 
