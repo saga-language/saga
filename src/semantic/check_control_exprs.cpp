@@ -218,8 +218,47 @@ TypePtr Analyzer::check_switch_arms(const SwitchExprNode &node) {
   return result_type ? result_type : builtins.void_type;
 }
 
+// The accumulator's type comes from the pipe when the pipe says, and from
+// whatever the loop's value lands in when it does not.  Both silent leaves a
+// loop with no type to build an accumulator out of.
+TypePtr Analyzer::check_accumulator_type(const AccumulatorNode &acc,
+                                         const TypePtr &hint) {
+  TypePtr declared;
+  if (acc.type) {
+    declared = resolve_type(**acc.type);
+    if (declared)
+      record_type(**acc.type, declared);
+  }
+
+  if (acc.init) {
+    auto init_type = check_root_expr_expecting(**acc.init, declared);
+    if (!declared)
+      return init_type;
+    if (!is_invalid_type(init_type))
+      expect_assignable((*acc.init)->span, declared, init_type,
+                        "accumulator initializer");
+    return declared;
+  }
+
+  if (declared)
+    return declared;
+  if (hint)
+    return hint;
+
+  error(acc.span, "the accumulator needs a type: give it one here, or type "
+                  "the variable the loop's value lands in");
+  return builtins.invalid_type;
+}
+
 TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                                  TypePtr accumulator_hint) {
+  // Before the loop scope: the initializer is evaluated once, outside, so the
+  // loop variables are not in view.
+  TypePtr acc_type =
+      node.accumulator
+          ? check_accumulator_type(*node.accumulator, accumulator_hint)
+          : builtins.void_type;
+
   push_scope(ScopeKind::Loop);
   break_value_types_.emplace_back();
 
@@ -376,13 +415,12 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                (*node.mode)->data);
   }
 
-  // Accumulator pipe — typed from the variable declaration's type hint.
-  TypePtr acc_type = accumulator_hint ? accumulator_hint : builtins.void_type;
   if (node.accumulator) {
+    auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
     current_scope->symbols.emplace(
-        std::string(node.accumulator->name),
-        Symbol::variable(std::string(node.accumulator->name), acc_type,
-                         node.accumulator->span));
+        std::string(ident.name),
+        Symbol::variable(std::string(ident.name), acc_type, ident.span));
+    record_type(*node.accumulator->name, acc_type);
   }
 
   auto &body_block = std::get<BlockNode>(node.body->data);
@@ -397,6 +435,14 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
   pop_scope();
 
   if (!break_types.empty()) {
+    // Two answers to "what is this loop's value", and the break wins — which
+    // leaves nothing to ever read the accumulator. A local declared ahead of
+    // the loop carries state across iterations just as well.
+    if (node.accumulator)
+      error(node.accumulator->span,
+            "the accumulator can never be read: a 'break' with a value is "
+            "what this loop evaluates to");
+
     std::vector<TypePtr> alts;
     for (auto &bt : break_types) {
       bool seen = false;

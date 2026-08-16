@@ -182,7 +182,7 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else if (node.op == Token::Kind::DivAssignment) {
         // Division assignment: x /= y — division can fail (div by zero),
         // so validate numeric but note the impure semantics.
-        if (!is_numeric(target_type)) {
+        if (!is_invalid_type(target_type) && !is_numeric(target_type)) {
           error(node.targets[i]->span,
                 std::format("/= requires numeric type, got {}",
                             type_to_string(target_type)));
@@ -194,7 +194,7 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else {
         // Compound assignment: +=, -=, *=
         // Target must be numeric.
-        if (!is_numeric(target_type)) {
+        if (!is_invalid_type(target_type) && !is_numeric(target_type)) {
           error(node.targets[i]->span,
                 std::format("compound assignment requires numeric type, "
                             "got {}",

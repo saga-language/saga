@@ -646,12 +646,22 @@ TEST(Analyzer, ResolveAccumulator) {
   auto r = AnalysisResult::from(
       "fn foo() {\n"
       "  arr := [1, 2, 3]\n"
-      "  for i : arr |acc| {\n"
-      "    _ := i\n"
-      "    acc\n"
+      "  for i : arr |acc int| {\n"
+      "    acc += i\n"
       "  }\n"
       "}");
   EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, ResolveAccumulatorWithoutType) {
+  auto r = AnalysisResult::from(
+      "fn foo() {\n"
+      "  arr := [1, 2, 3]\n"
+      "  for i : arr |acc| {\n"
+      "    acc += i\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.has_error_containing("the accumulator needs a type"));
 }
 
 TEST(Analyzer, DuplicateTopLevelDecl) {

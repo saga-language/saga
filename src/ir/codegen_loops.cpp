@@ -26,26 +26,49 @@ llvm::Value *to_bool(llvm::IRBuilder<> &b, llvm::Value *v) {
 
 } // namespace
 
+// An accumulator with no initializer starts at the zero value of its type,
+// which is what makes `|acc| { acc += x }` a sum.
+void CodeGen::seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
+                               const TypePtr &sem, llvm::Type *ll) {
+  llvm::Value *val = acc.init ? emit_root_expr(**acc.init) : nullptr;
+  if (!val) {
+    zero_fill(slot, sem, ll);
+    return;
+  }
+
+  if (sem && sem->kind == TypeKind::Union) {
+    auto init_sem = root_expr_type(**acc.init);
+    if (init_sem && init_sem->kind != TypeKind::Union)
+      if (auto *wrapped = emit_union_wrap(val, init_sem, sem))
+        val = wrapped;
+  }
+
+  if (val->getType()->isPointerTy() && ll->isStructTy())
+    val = builder.CreateLoad(ll, val, "acc.seed");
+  builder.CreateStore(val, slot);
+}
+
 llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
                                     const Node &parent) {
   auto *func = builder.GetInsertBlock()->getParent();
 
   auto for_sem = semantic_type(parent);
 
-  // Accumulator setup: when the for-expression has `|acc|`, allocate a
-  // local zero-initialised to the for-expression's recorded type, bind
-  // it as `acc`, and load+return it after the loop exits.  Without
-  // this, every for-expression returns null and `sum := for ... |acc|
-  // {...}` would always be 0.
+  // Accumulator setup: allocate a local seeded to the accumulator's own type,
+  // bind it as `acc`, and load+return it after the loop exits.  Its type is
+  // not the for-expression's — an accumulator names a slot the loop writes
+  // across iterations, and a `break` value would give the loop a wider type
+  // than that slot holds.
   llvm::AllocaInst *acc_alloca = nullptr;
   llvm::Type *acc_ll = nullptr;
   if (node.accumulator) {
-    // A for-expression in statement position has no accumulator slot to fill.
-    if (for_sem && for_sem->kind != TypeKind::Void) {
-      acc_ll = storage_type(for_sem);
-      std::string acc_name(node.accumulator->name);
+    auto acc_sem = semantic_type(*node.accumulator->name);
+    acc_ll = storage_type(acc_sem);
+    if (acc_ll) {
+      auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
+      std::string acc_name(ident.name);
       acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
-      builder.CreateStore(llvm::Constant::getNullValue(acc_ll), acc_alloca);
+      seed_accumulator(acc_alloca, *node.accumulator, acc_sem, acc_ll);
       locals[acc_name] = acc_alloca;
     }
   }

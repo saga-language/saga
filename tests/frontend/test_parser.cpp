@@ -22,6 +22,10 @@
 
 namespace saga {
 
+static std::string_view accumulator_name(const ForExprNode &node) {
+  return std::get<IdentifierNode>(node.accumulator->name->data).name;
+}
+
 // ---------------------------------------------------------------------------
 // ParseResult — owns the FileSet (and therefore all string_view lifetimes),
 // the AST root, and the error list.  Use ParseResult::from() in every test
@@ -1367,7 +1371,7 @@ TEST_F(ParserForTest, For_Infinite_WithAccumulator) {
   ASSERT_NE(n, nullptr);
   EXPECT_FALSE(n->mode.has_value());
   ASSERT_TRUE(n->accumulator.has_value());
-  EXPECT_EQ(n->accumulator->name, "acc");
+  EXPECT_EQ(accumulator_name(*n), "acc");
 }
 
 // ── Bare condition (while-style) ─────────────────────────────────────────────
@@ -2643,7 +2647,30 @@ TEST_F(ParserExprCoverageTest, ForExpr_Range_WithAccumulator) {
   ASSERT_EQ(rng->vars.size(), 1);
   EXPECT_EQ(rng->vars[0].name, "i");
   ASSERT_TRUE(n->accumulator.has_value());
-  EXPECT_EQ(n->accumulator->name, "acc");
+  EXPECT_EQ(accumulator_name(*n), "acc");
+}
+
+TEST_F(ParserExprCoverageTest, ForExpr_Accumulator_TypedWithInitializer) {
+  auto r = ExprResult::from("for i : arr |acc int = 1| { acc *= i }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<ForExprNode>();
+  ASSERT_NE(n, nullptr);
+  ASSERT_TRUE(n->accumulator.has_value());
+  EXPECT_EQ(accumulator_name(*n), "acc");
+  EXPECT_TRUE(n->accumulator->type.has_value());
+  ASSERT_TRUE(n->accumulator->init.has_value());
+  EXPECT_NE(std::get_if<IntegerLiteralNode>(&(*n->accumulator->init)->data),
+            nullptr);
+}
+
+TEST_F(ParserExprCoverageTest, ForExpr_Accumulator_InitializerOnly) {
+  auto r = ExprResult::from("for i : arr |acc = 1| { acc *= i }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<ForExprNode>();
+  ASSERT_NE(n, nullptr);
+  ASSERT_TRUE(n->accumulator.has_value());
+  EXPECT_FALSE(n->accumulator->type.has_value());
+  EXPECT_TRUE(n->accumulator->init.has_value());
 }
 
 TEST_F(ParserExprCoverageTest, ForExpr_Iterator_Decrement) {

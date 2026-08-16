@@ -835,6 +835,8 @@ private:
   TypePtr check_if_arms(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
   TypePtr check_switch_arms(const SwitchExprNode &node);
+  TypePtr check_accumulator_type(const AccumulatorNode &acc,
+                                 const TypePtr &hint);
   TypePtr check_for_expr(const ForExprNode &node,
                          TypePtr accumulator_hint = nullptr);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);

@@ -688,27 +688,29 @@ NodePtr Parser::parse_type() { return parse_union_type(); }
 // returned directly — no UnionTypeNode wrapper is created. UnionTypeNode is
 // only produced when at least one "|" is actually consumed.
 //
-// The "|" loop is safe in all type-annotation contexts because the grammar
-// guarantees that the token following a complete type in every position where
-// parse_type is called (parameter lists, return lists, field declarations,
-// etc.) is never "|":  it is always a delimiter such as ")", "}", "]", ",", or
-// a line terminator.  parse_generic is the one other user of "|", but it parses
-// type parameters as bare identifiers (matching the AST's IdentifierNode
-// annotation) and never calls parse_type, so there is no ambiguity.
+// A "|" continues the union only when a type follows it.  In every position
+// that annotates a type the next token is a delimiter — ")", "}", "]", ",", a
+// line terminator — so the guard never fires there.  It earns its keep in the
+// accumulator pipe, `|acc int|`, the one context where a "|" closes a type
+// rather than extending it.
 NodePtr Parser::parse_union_type() {
   auto start = mark();
 
   NodePtr first = parse_single_type();
 
-  // Fast path — no "|" follows, so this is a plain single type.
-  if (!check(Token::Kind::BitwiseOr))
+  auto continues_union = [&] {
+    return check(Token::Kind::BitwiseOr) && is_type_start(peek().kind);
+  };
+
+  // Fast path — no alternative follows, so this is a plain single type.
+  if (!continues_union())
     return first;
 
   // Slow path — at least one "|" follows; collect all alternatives.
   std::vector<NodePtr> types;
   types.push_back(std::move(first));
 
-  while (check(Token::Kind::BitwiseOr)) {
+  while (continues_union()) {
     advance(); // consume "|"
     types.push_back(parse_single_type());
   }
@@ -2339,13 +2341,47 @@ NodePtr Parser::parse_string_literal() {
 // Sub-expression Helpers (Group 1)
 // ============================================================================
 
+// parse_accumulator_pipe — AccumulatorPipe =
+//     "|" Identifier [ Type ] [ "=" Expression ] "|"
+//
+// The accumulator is a declaration, so it takes the forms every other
+// declaration does — a type, an initializer, or both.  A bare `|acc|` leaves
+// both to whatever the loop's value lands in.
+std::optional<AccumulatorNode> Parser::parse_accumulator_pipe() {
+  if (!check(Token::Kind::BitwiseOr))
+    return std::nullopt;
+
+  auto start = mark();
+  advance(); // consume opening "|"
+
+  auto name_start = mark();
+  Token id = expect(Token::Kind::Identifier);
+  NodePtr name = make_node<IdentifierNode>(span_from(name_start), id.literal);
+
+  std::optional<NodePtr> type;
+  if (!check(Token::Kind::BitwiseOr) && !check(Token::Kind::Assignment))
+    type = parse_type();
+
+  std::optional<NodePtr> init;
+  if (check(Token::Kind::Assignment)) {
+    advance();
+    // parse_expr_bp(60) stops before the closing "|", which is an infix
+    // bitwise-or at that power.  Parenthesise one that is genuinely wanted.
+    init = parse_expr_bp(60);
+  }
+
+  expect(Token::Kind::BitwiseOr); // consume closing "|"
+
+  return AccumulatorNode{span_from(start), std::move(name), std::move(type),
+                         std::move(init)};
+}
+
 // parse_pipe — IdentifierPipe = "|" Identifier "|"
 //
-// Tries to consume the optional pipe notation used in or-clauses, for-loops,
-// and spawn expressions:
+// Tries to consume the optional pipe notation used in or-clauses and spawn
+// expressions:
 //
 //   expr or |err| { ... }
-//   for x : items |acc| { ... }
 //   spawn |task| { ... }
 //
 // Returns the captured IdentifierNode on success, or std::nullopt when the
@@ -3206,7 +3242,7 @@ NodePtr Parser::parse_for_expr() {
   expect(Token::Kind::For);
 
   std::optional<NodePtr> mode;
-  std::optional<IdentifierNode> accumulator;
+  std::optional<AccumulatorNode> accumulator;
 
   // ── ForMode ──────────────────────────────────────────────────────────────
   // Skip mode parsing if the next token already starts the pipe or block.
@@ -3300,9 +3336,9 @@ NodePtr Parser::parse_for_expr() {
     }
   }
 
-  // ── Optional accumulator pipe: "|" Identifier "|" ──────────────────────
+  // ── Optional accumulator pipe ──────────────────────────────────────────
   skip_terminators();
-  accumulator = parse_pipe();
+  accumulator = parse_accumulator_pipe();
 
   // ── Body block ───────────────────────────────────────────────────────────
   skip_terminators();

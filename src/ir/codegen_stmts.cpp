@@ -494,6 +494,23 @@ void CodeGen::emit_union_leftmost_zero(llvm::Value *alloca,
   builder.CreateStore(zv, payload);
 }
 
+// The language's zero value, which is not always LLVM's: a reference-typed
+// zero is the empty container, not the null pointer that would crash on use.
+void CodeGen::zero_fill(llvm::Value *slot, const TypePtr &sem,
+                        llvm::Type *ll) {
+  if (sem && sem->kind == TypeKind::String) {
+    builder.CreateStore(make_string_constant(""), slot);
+  } else if (sem && sem->kind == TypeKind::Array) {
+    builder.CreateStore(emit_empty_array(sem), slot);
+  } else if (sem && sem->kind == TypeKind::Map) {
+    builder.CreateStore(emit_empty_map(sem), slot);
+  } else {
+    builder.CreateStore(llvm::Constant::getNullValue(ll), slot);
+    if (sem && sem->kind == TypeKind::Union)
+      emit_union_leftmost_zero(slot, sem);
+  }
+}
+
 void CodeGen::emit_var_decl(const VarDeclNode &node) {
   std::string name(node.name.name);
   auto *func = builder.GetInsertBlock()->getParent();
@@ -623,53 +640,19 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     if (val)
       builder.CreateStore(val, alloca);
   } else {
-    // Zero-initialize with proper language zero values.
-    // The language specifies: Int=0, Float=0.0, Bool=false, String="",
-    // [T]=[], {K:V}={}, Struct=all-fields-zero.
-    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::String) {
-      // String zero value: empty string ""
-      auto *empty_str = make_string_constant("");
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(empty_str, alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Array) {
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(emit_empty_array(sem_type_ptr), alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Map) {
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(emit_empty_map(sem_type_ptr), alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
-      // Zero = tag 0 (leftmost); materialize a reference-typed leftmost's value.
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
-      emit_union_leftmost_zero(alloca, sem_type_ptr);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
-               !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
-      // Struct zero value: allocate struct, zero-initialize all fields.
-      // (Errors are boxed pointers — they fall to the scalar path below,
-      // yielding a null box pointer.)
-      auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
-      std::string skey = struct_cache_key(info);
-      auto st_it = struct_types.find(skey);
-      if (st_it != struct_types.end()) {
-        auto *st_type = st_it->second;
-        auto *alloca = create_entry_alloca(func, name, st_type);
-        locals[name] = alloca;
-        builder.CreateStore(llvm::Constant::getNullValue(st_type), alloca);
-      } else {
-        auto *alloca = create_entry_alloca(func, name, var_type);
-        locals[name] = alloca;
-        builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
-      }
-    } else {
-      // Scalar types (Int, Float, Bool, Enum, etc.): getNullValue is correct.
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
+    // A struct local is shaped by the cached LLVM struct; an error is a boxed
+    // pointer, and storage_type already answers for everything else.
+    auto *slot_ll = var_type;
+    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
+        !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
+      auto st_it = struct_types.find(
+          struct_cache_key(std::get<StructTypeInfo>(sem_type_ptr->detail)));
+      if (st_it != struct_types.end())
+        slot_ll = st_it->second;
     }
+    auto *alloca = create_entry_alloca(func, name, slot_ll);
+    locals[name] = alloca;
+    zero_fill(alloca, sem_type_ptr, slot_ll);
   }
 
   // Track for release at scope exit.

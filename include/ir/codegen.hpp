@@ -500,6 +500,7 @@ private:
   void emit_var_decl(const VarDeclNode &node);
   llvm::Value *emit_empty_array(const TypePtr &array_sem);
   llvm::Value *emit_empty_map(const TypePtr &map_sem);
+  void zero_fill(llvm::Value *slot, const TypePtr &sem, llvm::Type *ll);
   void emit_union_leftmost_zero(llvm::Value *alloca, const TypePtr &union_sem);
   void emit_decl_assign(const DeclAssignNode &node);
   void emit_assign(const AssignNode &node);
@@ -580,6 +581,8 @@ private:
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
+  void seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
+                        const TypePtr &sem, llvm::Type *ll);
 
   // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
   struct ForLoopBlocks {

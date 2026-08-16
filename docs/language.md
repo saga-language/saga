@@ -1882,59 +1882,59 @@ satisfied the `Error` interface.
 
 ### Accumulation
 
-This is the secret superpower of `for`. When using `for` as an expression, the
-compiler uses the type of the left-hand value to initialize an internal
-accumulator. This accumulator is initialized to the zero value of the type. The
-result of the expression is the accumulator. 
+This is the secret superpower of `for`. A `for` used as an expression carries a
+value across its iterations, and that value is what the expression evaluates
+to. Name it with the pipe syntax — `acc` will probably be common.
 
-A user can name the accumulator anything they want, though `acc` will probably
-be common. To access the accumulator, use the pipe syntax.
+The accumulator is a declaration, so it is written like one: a type, an
+initializer, or both.
 
 ```
-arr := [1, 2, 3]
-sum := for i : arr |acc| {
- acc += i 
+arr := [1, 2, 3, 4]
+
+sum := for i : arr |acc int| { acc += i }              // => 10
+product := for i : arr |acc = 1| { acc *= i }          // => 24
+offset := for i : arr |acc int = 100| { acc += i }     // => 110
+```
+
+Without an initializer it starts at the zero value of its type, which for a
+collection is the empty one and not a null:
+
+```
+evens := for i : arr |acc array{int}| {
+  if i % 2 == 0 { acc = acc.Append(i) }                // => [2, 4]
 }
+doubles := for i : arr |acc array{int}| { acc = acc.Append(i * 2) }
 ```
 
-If `break` is present anywhere in the block, the expression becomes impure,
-returning from the loop immediately, and returning a `Missing` error. This
-allows for search patterns. The return type of the `for` expression becomes
-`T | Error` and the value from the accumulator is ignored.
+A pipe that gives neither takes its type from the declaration the loop's value
+lands in. That is the only other place a type can come from, so a loop assigned
+with `:=` has to say:
 
 ```
-arr := [1, 2, 3]
-sum := for i : arr |acc| {
-  if i == 2 { break 1 } // sum => 1
-  acc += i
-}
+total int = for i : arr |acc| { acc += i }  // the declaration types it
+total := for i : arr |acc| { acc += i }     // invalid, nothing says what acc is
 ```
 
-The type determines the behaviour of the accumulator. Types not listed here do 
-not generate an accumulator.
+The initializer is evaluated once, before the first iteration, so it cannot
+name the loop variable.
+
+### Breaking out
+
+`break` with a value is what the loop evaluates to, and a loop that finishes
+without breaking has no such value — so the type of the expression is
+`T | error` and not finding is an ordinary `Missing`. This is the search
+pattern:
 
 ```
-// Filtering
-array := [1, 2, 3, 4]
-// The left hand type is an integer array, so that's the type of the accumulator
-evens Int[] = for i : array |acc| { if i % 2 == 0 { acc.Push(i) } } // => [2, 4]
-
-// Mapping
-array := [1, 2, 3, 4]
-doubles Int[] = for i : array |acc| { acc.Push(i * 2) } // => [2, 4, 6, 8]
-
-// Reducing
-array := [1, 2, 3, 4]
-sum Int = for i : array |acc| { acc += i } // => 10
-
-// Searching
-array := ["a", "b", "c"]
-result := for word : array { if word < "b" { break word } } // => "a"
+found := for word : ["a", "b", "c"] {
+  if word > "a" { break word }
+}                                             // => "b"
 ```
 
-For finding the product, difference, or quotient, the user must handle that
-themselves. A future consideration is to allow an `acc` or `accumulator`
-variable to be injected into the loop's scope.
+A loop cannot both break with a value and accumulate. The break value is the
+loop's value, which leaves nothing that would ever read the accumulator; carry
+state across iterations in a local declared ahead of the loop instead.
 
 _Performance Note: If the accumulator isn't asked for, the compiler does not
 generate any code for it._

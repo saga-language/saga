@@ -366,14 +366,25 @@ struct ForIterClauseNode {
   NodePtr update;    // AssignNode, IncrementNode, or DecrementNode
 };
 
-// ForExpr = "for" [ ForMode ] [ IdentifierPipe ] Block
+// AccumulatorPipe = "|" Identifier [ Type ] [ "=" Expression ] "|"
+//
+// The loop's value. With neither a type nor an initializer the type comes from
+// whatever the loop's value lands in.
+struct AccumulatorNode {
+  Span span;
+  NodePtr name; // IdentifierNode
+  std::optional<NodePtr> type;
+  std::optional<NodePtr> init;
+};
+
+// ForExpr = "for" [ ForMode ] [ AccumulatorPipe ] Block
 struct ForExprNode {
   Span span;
   std::optional<NodePtr> mode; // ForRangeClauseNode, ForIterClauseNode,
                                // or bare condition expression;
                                // absent = infinite loop
-  std::optional<IdentifierNode> accumulator; // |acc| pipe name, if present
-  NodePtr body;                              // BlockNode
+  std::optional<AccumulatorNode> accumulator;
+  NodePtr body; // BlockNode
 };
 
 // SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block | Identifier )

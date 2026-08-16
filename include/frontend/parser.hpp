@@ -195,6 +195,8 @@ private:
   NodePtr parse_selector(NodePtr object);       // after "."
   NodePtr parse_or_expr(NodePtr expr);          // after "or"
   std::optional<IdentifierNode> parse_pipe();   // "|" ident "|"
+  /// `|acc T = e|` — the accumulator's name with its optional declaration.
+  std::optional<AccumulatorNode> parse_accumulator_pipe();
 
   // ── Statement Parsing ────────────────────────────────────────────────
 

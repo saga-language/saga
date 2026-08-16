@@ -366,6 +366,15 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
 }
 
 void Analyzer::resolve_for_expr(const ForExprNode &node) {
+  // The accumulator's initializer runs once before the loop starts, so it is
+  // resolved where the loop stands and not where the loop variables are.
+  if (node.accumulator) {
+    if (node.accumulator->type)
+      resolve_type(**node.accumulator->type);
+    if (node.accumulator->init)
+      resolve_expr(**node.accumulator->init);
+  }
+
   push_scope(ScopeKind::Loop);
 
   // Resolve the mode (condition, range clause, or iter clause).
@@ -398,8 +407,9 @@ void Analyzer::resolve_for_expr(const ForExprNode &node) {
 
   // Declare the accumulator pipe if present.
   if (node.accumulator) {
-    std::string acc(node.accumulator->name);
-    declare_local(Symbol::variable(acc, nullptr, node.accumulator->span));
+    auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
+    std::string acc(ident.name);
+    declare_local(Symbol::variable(acc, nullptr, ident.span));
     // The loop's value is the accumulator, so the expression reads it even
     // when the body only assigns to it — as `|acc| { acc += x }` does.
     current_scope->mark_read(acc);
