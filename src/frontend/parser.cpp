@@ -1346,7 +1346,7 @@ NodePtr Parser::parse_prefix() {
 
     // ── Compound expressions (Group 4 remainder) ─────────────────────────────
   case Token::Kind::LeftBrace:
-    return parse_map_or_block();
+    return parse_map_literal();
 
   default:
     error("unexpected token in expression: " +
@@ -2592,135 +2592,43 @@ NodePtr Parser::parse_array_literal() {
   return make_node<ArrayLiteralNode>(span_from(start), std::move(elements));
 }
 
-// parse_map_or_block — disambiguate "{" in expression prefix position.
+// parse_map_literal — MapLiteral = "{" [ KeyValuePair { "," KeyValuePair } ] "}"
 //
-// MapLiteral   = "{" { KeyValuePair } "}"
-// KeyValuePair = Expression ":" Expression
+// A "{" in expression position is a map literal.  A block is neither an
+// expression nor a statement, so anything else here is a syntax error rather
+// than code the compiler quietly drops.
 //
-// Disambiguation after consuming "{" and skipping terminators:
-//   "}"                      → empty map literal
-//   Expression then ":"      → map literal (key-value pair follows)
-//   anything else            → bare block (delegate to parse_block logic)
-//
-// The first expression is parsed with parse_expr_bp(1) so that "{" is not
-// consumed as a struct-literal infix operator.  If ":" follows, the
-// expression was a key and we continue as a map.  Otherwise, the expression
-// was the first statement of a block and we fall through to block parsing
-// with that expression already in hand.
-NodePtr Parser::parse_map_or_block() {
+// Keys are parsed with parse_expr_bp(1) so that "{" is not consumed as a
+// struct-literal infix operator.
+NodePtr Parser::parse_map_literal() {
   auto start = mark();
   expect(Token::Kind::LeftBrace);
   skip_terminators();
 
-  if (check(Token::Kind::RightBrace)) {
-    advance();
-    return make_node<MapLiteralNode>(span_from(start),
-                                     std::vector<KeyValueNode>{});
-  }
+  std::vector<KeyValueNode> entries;
 
-  size_t pos_before = current.offset;
-  NodePtr first = parse_expr_bp(1);
-  if (!first)
-    return nullptr;
-
-  if (check(Token::Kind::Colon)) {
-    advance();
-    NodePtr first_value = parse_expression();
-
-    std::vector<KeyValueNode> entries;
-    Span kv_span{first->span.start, first_value->span.end};
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    auto kv_start = mark();
+    NodePtr key = parse_expr_bp(1);
+    if (!key)
+      return nullptr;
+    expect(Token::Kind::Colon);
+    NodePtr value = parse_expression();
     entries.push_back(
-        KeyValueNode{kv_span, std::move(first), std::move(first_value)});
+        KeyValueNode{span_from(kv_start), std::move(key), std::move(value)});
 
+    // Entries are separated by a "," or by a line break, as struct-literal
+    // fields are.
     skip_terminators();
     if (check(Token::Kind::Comma)) {
       advance();
       skip_terminators();
     }
-
-    while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-      auto kv_start = mark();
-      NodePtr key = parse_expr_bp(1);
-      expect(Token::Kind::Colon);
-      NodePtr value = parse_expression();
-      entries.push_back(
-          KeyValueNode{span_from(kv_start), std::move(key), std::move(value)});
-
-      skip_terminators();
-      if (check(Token::Kind::Comma)) {
-        advance();
-        skip_terminators();
-      }
-    }
-
-    expect(Token::Kind::RightBrace);
-    return make_node<MapLiteralNode>(span_from(start), std::move(entries));
   }
 
-  // Block fallback: the first expression was already consumed. To properly
-  // handle statements that start with an expression (assignments, increments,
-  // VarDecl, etc.) we re-delegate to parse_block, but we need to "put back"
-  // the first expression. Instead, we complete the first statement inline
-  // using the same post-expression dispatch that parse_statement uses, then
-  // parse the remaining statements normally.
-  std::vector<NodePtr> stmts;
-
-  auto first_start = first->span.start;
-
-  if (check(Token::Kind::Increment)) {
-    advance();
-    stmts.push_back(
-        make_node<IncrementNode>(span_from(first_start), std::move(first)));
-  } else if (check(Token::Kind::Decrement)) {
-    advance();
-    stmts.push_back(
-        make_node<DecrementNode>(span_from(first_start), std::move(first)));
-  } else if (check(Token::Kind::DeclAssignment)) {
-    auto *id_ptr = std::get_if<IdentifierNode>(&first->data);
-    if (!id_ptr)
-      error("':=' requires an identifier on the left-hand side");
-    IdentifierListNode id_list{first->span,
-                               id_ptr ? std::vector<IdentifierNode>{*id_ptr}
-                                      : std::vector<IdentifierNode>{}};
-    advance();
-    NodePtr value = parse_expression();
-    stmts.push_back(make_node<DeclAssignNode>(span_from(first_start),
-                                              std::move(id_list),
-                                              std::move(value)));
-  } else if (is_assign_op(current.kind)) {
-    stmts.push_back(parse_assignment(std::move(first)));
-  } else if (auto *id_ptr = std::get_if<IdentifierNode>(&first->data);
-             id_ptr && is_type_start(current.kind) &&
-             current.kind != Token::Kind::BitwiseOr) {
-    IdentifierNode name = *id_ptr;
-    NodePtr type = parse_type();
-    std::optional<NodePtr> init;
-    if (check(Token::Kind::Assignment)) {
-      advance();
-      init = parse_expression();
-    }
-    stmts.push_back(make_node<VarDeclNode>(span_from(first_start), name,
-                                           std::make_optional(std::move(type)),
-                                           std::move(init)));
-  } else {
-    stmts.push_back(std::move(first));
-  }
-
-  skip_terminators();
-
-  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
-    size_t stmt_pos = current.offset;
-    NodePtr stmt = parse_statement();
-    if (stmt) {
-      stmts.push_back(std::move(stmt));
-    } else if (current.offset == stmt_pos) {
-      advance();
-    }
-    skip_terminators();
-  }
-
+  skip_terminators_before(Token::Kind::RightBrace);
   expect(Token::Kind::RightBrace);
-  return make_node<BlockNode>(span_from(start), std::move(stmts));
+  return make_node<MapLiteralNode>(span_from(start), std::move(entries));
 }
 
 // ============================================================================

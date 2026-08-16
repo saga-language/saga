@@ -174,7 +174,7 @@ private:
   void apply_block_margin(std::vector<NodePtr> &fragments,
                           std::span<const RawFragment> raws);
   NodePtr parse_array_literal();  // "[" ... "]"
-  NodePtr parse_map_or_block();   // disambiguate "{" — map literal vs block
+  NodePtr parse_map_literal();    // "{" in expression position
 
   NodePtr parse_struct_literal(NodePtr type_expr); // after type identifier
   NodePtr parse_group_expr(); // "(" Expression ")"

@@ -2267,16 +2267,12 @@ TEST_F(ParserMapLiteralTest, ExpressionKeys) {
   EXPECT_EQ(key->op, Token::Kind::Add);
 }
 
-TEST_F(ParserMapLiteralTest, BlockFallback) {
-  // A "{" followed by a non-key-value expression falls back to a block.
+// A block is neither an expression nor a statement, so "{" in expression
+// position is a map literal and nothing else. There is no bespoke diagnostic —
+// the missing ":" is an ordinary syntax error.
+TEST_F(ParserMapLiteralTest, BareBlockIsNotAnExpression) {
   auto r = ExprResult::from("{ 42 }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<BlockNode>();
-  ASSERT_NE(n, nullptr);
-  ASSERT_EQ(n->stmts.size(), 1);
-  auto *val = std::get_if<IntegerLiteralNode>(&n->stmts[0]->data);
-  ASSERT_NE(val, nullptr);
-  EXPECT_EQ(val->literal, "42");
+  EXPECT_FALSE(r.errors.empty());
 }
 
 // =============================================================================
@@ -2706,9 +2702,9 @@ class ParserStmtCoverageTest : public ::testing::Test {};
 
 TEST_F(ParserStmtCoverageTest, Assignment_SelectorTarget) {
   // a.b = 1 inside a block
-  auto r = ExprResult::from("{ a.b = 1 }");
+  auto r = BlockResult::from("{ a.b = 1 }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *asgn = std::get_if<AssignNode>(&blk->stmts[0]->data);
@@ -2721,9 +2717,9 @@ TEST_F(ParserStmtCoverageTest, Assignment_SelectorTarget) {
 
 TEST_F(ParserStmtCoverageTest, Assignment_IndexTarget) {
   // a[0] = 1 inside a block
-  auto r = ExprResult::from("{ a[0] = 1 }");
+  auto r = BlockResult::from("{ a[0] = 1 }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *asgn = std::get_if<AssignNode>(&blk->stmts[0]->data);
@@ -2742,9 +2738,9 @@ class ParserTypeCoverageTest : public ::testing::Test {};
 
 TEST_F(ParserTypeCoverageTest, UnionType) {
   // Use a VarDecl to exercise the type parser: x Int | String
-  auto r = ExprResult::from("{ x int | string }");
+  auto r = BlockResult::from("{ x int | string }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *vd = std::get_if<VarDeclNode>(&blk->stmts[0]->data);
@@ -2794,9 +2790,9 @@ TEST_F(ParserTypeCoverageTest, MapType) {
 
 TEST_F(ParserTypeCoverageTest, FuncType) {
   // VarDecl with function type: { cb fn(Int) String }
-  auto r = ExprResult::from("{ cb fn(x int) string }");
+  auto r = BlockResult::from("{ cb fn(x int) string }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *vd = std::get_if<VarDeclNode>(&blk->stmts[0]->data);
