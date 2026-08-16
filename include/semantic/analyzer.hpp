@@ -776,6 +776,8 @@ private:
   TypePtr check_float_literal(const FloatLiteralNode &node);
   TypePtr check_string_literal(const StringLiteralNode &node);
   TypePtr check_array_literal(const ArrayLiteralNode &node);
+  /// The type of the values a range produces, not of the range itself.
+  TypePtr check_range(const RangeNode &node);
   TypePtr check_map_literal(const MapLiteralNode &node);
   TypePtr check_struct_literal(const StructLiteralNode &node);
   TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);

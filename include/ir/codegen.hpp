@@ -597,6 +597,9 @@ private:
                         const ForLoopBlocks &bbs);
   void emit_for_condition(const ForExprNode &node, const Node &mode,
                           const ForLoopBlocks &bbs);
+  void emit_for_range_counted(const ForExprNode &node,
+                              const ForRangeClauseNode &range,
+                              const RangeNode &rng, const ForLoopBlocks &bbs);
   void emit_for_range(const ForExprNode &node,
                       const ForRangeClauseNode &range,
                       const ForLoopBlocks &bbs);
@@ -646,6 +649,8 @@ private:
                                   const Node &parent);
   llvm::Value *emit_map_literal(const MapLiteralNode &node,
                                 const Node &parent);
+  llvm::Value *emit_range_literal(const RangeNode &node);
+  void fill_range(llvm::Value *arr, llvm::Value *low, llvm::Value *high);
   /// Bytes the runtime copies for one element/key/value of `ll`.
   int64_t element_size_of(llvm::Type *ll);
   enum class Slot { Element, Key, Value };

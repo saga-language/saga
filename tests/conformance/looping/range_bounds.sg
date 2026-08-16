@@ -1,0 +1,21 @@
+// Spec: `low..high` is half-open — the low bound is produced, the high one is
+// not. As a for-range subject it counts; in expression position it is the
+// array those values make.
+import "std/io"
+
+pub fn Main() void {
+  for i : 0..3 { io.Println("i {i}") }
+
+  xs := [0..4]
+  io.Println("size {xs.Size()}")
+  for v : xs { io.Println("v {v}") }
+
+  // Nothing to produce when the low bound is not below the high one.
+  for i : 3..0 { io.Println("never {i}") }
+  io.Println("empty {[3..0].Size()}")
+
+  // The bounds are ordinary expressions.
+  n := 3
+  total := for i : 1..n + 1 |acc int| { acc += i }
+  io.Println("total {total}")
+}

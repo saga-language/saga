@@ -146,7 +146,6 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   int cmp = Parser::infix_binding_power(Token::Kind::Equal);
   int land = Parser::infix_binding_power(Token::Kind::LogicalAnd);
   int lor = Parser::infix_binding_power(Token::Kind::LogicalOr);
-  int range = Parser::infix_binding_power(Token::Kind::DotDot);
   int or_bp = Parser::infix_binding_power(Token::Kind::Or);
 
   EXPECT_GT(access, pow);
@@ -156,9 +155,14 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   EXPECT_GT(bitwise, cmp);
   EXPECT_GT(cmp, land);
   EXPECT_GT(land, lor);
-  EXPECT_GT(lor, range);
-  EXPECT_GT(range, or_bp);
+  EXPECT_GT(lor, or_bp);
   EXPECT_GT(or_bp, 0);
+}
+
+// ".." joins two bounds where the grammar puts a range, and is not an operator
+// anywhere else — so every bound expression parses at full binding power.
+TEST_F(ParserPrattTest, InfixBP_RangeIsNotAnOperator) {
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::DotDot), 0);
 }
 
 // ── Operators within the same level share the same binding power ──────────

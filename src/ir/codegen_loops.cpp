@@ -211,9 +211,56 @@ void CodeGen::emit_for_condition(const ForExprNode &node, const Node &mode,
   builder.CreateBr(bbs.cond_bb);
 }
 
+// The bounds of a counted loop, not a collection to build and then walk.
+void CodeGen::emit_for_range_counted(const ForExprNode &node,
+                                     const ForRangeClauseNode &range,
+                                     const RangeNode &rng,
+                                     const ForLoopBlocks &bbs) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *low = emit_expr(*rng.low);
+  auto *high = emit_expr(*rng.high);
+  if (!low || !high) {
+    builder.CreateBr(bbs.exit_bb);
+    return;
+  }
+
+  auto *counter_ll = low->getType();
+  auto *cur = create_entry_alloca(func, std::string(range.vars[0].name),
+                                  counter_ll);
+  builder.CreateStore(low, cur);
+  locals[std::string(range.vars[0].name)] = cur;
+
+  builder.CreateBr(bbs.cond_bb);
+  builder.SetInsertPoint(bbs.cond_bb);
+  auto *v = builder.CreateLoad(counter_ll, cur, "range.v");
+  builder.CreateCondBr(builder.CreateICmpSLT(v, high, "range.cmp"),
+                       bbs.body_bb, bbs.exit_bb);
+
+  func->insert(func->end(), bbs.body_bb);
+  builder.SetInsertPoint(bbs.body_bb);
+  tick_reduction(*this);
+  emit_block(std::get<BlockNode>(node.body->data));
+  if (!builder.GetInsertBlock()->getTerminator())
+    builder.CreateBr(bbs.update_bb);
+
+  func->insert(func->end(), bbs.update_bb);
+  builder.SetInsertPoint(bbs.update_bb);
+  auto *upd = builder.CreateLoad(counter_ll, cur, "range.v");
+  builder.CreateStore(
+      builder.CreateAdd(upd, llvm::ConstantInt::get(counter_ll, 1),
+                        "range.next"),
+      cur);
+  builder.CreateBr(bbs.cond_bb);
+}
+
 void CodeGen::emit_for_range(const ForExprNode &node,
                              const ForRangeClauseNode &range,
                              const ForLoopBlocks &bbs) {
+  if (auto *rng = std::get_if<RangeNode>(&range.iterable->data)) {
+    emit_for_range_counted(node, range, *rng, bbs);
+    return;
+  }
+
   auto *iterable = emit_expr(*range.iterable);
   if (!iterable) {
     builder.CreateBr(bbs.exit_bb);

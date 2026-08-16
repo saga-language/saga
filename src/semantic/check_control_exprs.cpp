@@ -266,6 +266,15 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
     std::visit(overloaded{
                    [&](const ForRangeClauseNode &range) {
                      auto iter_type = check_expr(*range.iterable);
+                     // A range's values are all it has: the position is the
+                     // value less the low bound, so there is no second thing
+                     // to bind.
+                     if (range.vars.size() > 1 &&
+                         std::holds_alternative<RangeNode>(
+                             range.iterable->data))
+                       error(range.vars[1].span,
+                             "a range gives values, not pairs; drop the "
+                             "second name");
                      // Infer loop variable types from the iterable.
                      TypePtr elem_type = builtins.invalid_type;
                      TypePtr key_type = builtins.int_type;

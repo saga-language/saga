@@ -369,6 +369,11 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             for (const auto &el : n.elements)
               dump_ptr(el, os, c);
           },
+          [&](const RangeNode &n) {
+            os << pad(indent) << "RangeNode\n";
+            dump_ptr(n.low, os, c);
+            dump_ptr(n.high, os, c);
+          },
           [&](const KeyValueNode &n) { dump_key_value(n, os, indent); },
           [&](const MapLiteralNode &n) {
             os << pad(indent) << "MapLiteralNode\n";

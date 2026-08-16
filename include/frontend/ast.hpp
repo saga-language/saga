@@ -125,6 +125,17 @@ struct ArrayLiteralNode {
   std::vector<NodePtr> elements;
 };
 
+// Range = Expression ".." Expression
+//
+// Half-open: the low bound is produced, the high bound is not, so `0..10` is
+// ten values and `10..0` is none.  As an expression it is the array those
+// values make; as a for-range subject it is the loop's bounds.
+struct RangeNode {
+  Span span;
+  NodePtr low;
+  NodePtr high;
+};
+
 // KeyValuePair = Expression ":" Expression  (one entry of a map literal)
 struct KeyValueNode {
   Span span;
@@ -644,7 +655,7 @@ struct Node {
     BoolLiteralNode,    EnumShorthandNode,
     IntegerLiteralNode,  FloatLiteralNode,
     StringLiteralNode,  StringFragmentNode,
-    ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,
+    ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,  RangeNode,
     StructLiteralNode,  FieldAssignmentNode,
 
     // --- Types ---

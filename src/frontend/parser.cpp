@@ -621,10 +621,6 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::LogicalOr:
     return 30;
 
-  // 8. Slice
-  case Token::Kind::DotDot:
-    return 25;
-
   // 9. Type test (`is`) — looser than logical, tighter than `or`
   case Token::Kind::Is:
     return 23;
@@ -1368,7 +1364,6 @@ NodePtr Parser::parse_prefix() {
 //   LeftBracket     → index or slice expression
 //   QuestionMark    → error promotion
 //   Or              → or-clause (error resolution)
-//   DotDot          → binary range operator (inside index/slice context)
 //   Pow             → right-associative binary operator
 //   all others      → left-associative binary operator
 NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
@@ -1471,6 +1466,8 @@ NodePtr Parser::parse_call_args(NodePtr callee) {
 // Disambiguation: after "[", if we immediately see ".." it is a slice with
 // an absent low bound.  Otherwise parse an expression; if ".." follows it
 // is a slice (the expression is the low bound), otherwise it is an index.
+// ".." is not an infix operator, so the bound expressions need no binding-power
+// fence — an index can carry an `or` clause, which is where errors come from.
 NodePtr Parser::parse_index_or_slice(NodePtr object) {
   auto start_offset = object->span.start;
   advance(); // consume "["
@@ -1494,7 +1491,7 @@ NodePtr Parser::parse_index_or_slice(NodePtr object) {
                                     std::move(slice));
   }
 
-  NodePtr first = parse_expr_bp(25);
+  NodePtr first = parse_expression();
   if (!first)
     return nullptr;
   skip_terminators();
@@ -2548,6 +2545,22 @@ NodePtr Parser::parse_group_expr() {
 // Elements are comma-separated.  Trailing commas and embedded newlines are
 // both tolerated: newlines are skipped after "[", after each ",", and before
 // the closing "]".
+// parse_range — Range = Expression ".." Expression
+//
+// The low bound is already in hand; the caller is positioned on the "..".
+// max_bp fences the high bound the same way the caller fenced the low one.
+NodePtr Parser::parse_range(NodePtr low, size_t start, int max_bp) {
+  advance(); // consume ".."
+  skip_terminators();
+
+  NodePtr high = parse_expr_bp(max_bp);
+  if (!high)
+    return nullptr;
+
+  return make_node<RangeNode>(span_from(start), std::move(low),
+                              std::move(high));
+}
+
 NodePtr Parser::parse_array_literal() {
   auto start = mark();
   expect(Token::Kind::LeftBracket);
@@ -2558,6 +2571,16 @@ NodePtr Parser::parse_array_literal() {
   while (!check(Token::Kind::RightBracket) && !is_at_end()) {
     elements.push_back(parse_expression());
     skip_terminators();
+
+    // `[0..10]` generates its elements rather than listing them, so a ".." at
+    // the first one is the whole literal.
+    if (elements.size() == 1 && check(Token::Kind::DotDot)) {
+      NodePtr range = parse_range(std::move(elements.front()), start, 0);
+      skip_terminators_before(Token::Kind::RightBracket);
+      expect(Token::Kind::RightBracket);
+      return range;
+    }
+
     if (!check(Token::Kind::Comma))
       break;
     advance(); // consume ","
@@ -3325,7 +3348,12 @@ NodePtr Parser::parse_for_expr() {
       // BitwiseOr would otherwise consume the accumulator pipe "|acc|" as
       // an infix operator.  Bitwise operations on iterables are not
       // meaningful; parenthesise if ever needed: `for i : (a | b) |acc|`.
+      auto iterable_start = mark();
       NodePtr iterable = parse_expr_bp(60);
+
+      // `for i : 0..10` counts instead of iterating a collection.
+      if (check(Token::Kind::DotDot))
+        iterable = parse_range(std::move(iterable), iterable_start, 60);
 
       mode = make_node<ForRangeClauseNode>(
           span_from(mode_start), std::move(vars), std::move(iterable));

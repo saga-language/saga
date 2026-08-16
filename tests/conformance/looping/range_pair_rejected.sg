@@ -1,0 +1,9 @@
+// Spec: a range's values are all it has. The position is the value less the
+// low bound, so there is no second thing to bind.
+import "std/io"
+
+pub fn Main() void {
+  for i, v : 0..3 {
+    io.Println("{i} {v}")
+  }
+}

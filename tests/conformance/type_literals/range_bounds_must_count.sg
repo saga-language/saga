@@ -1,0 +1,8 @@
+// Spec: a range counts, so both of its bounds have to be integers.
+import "std/io"
+
+pub fn Main() void {
+  for c : "a".."c" {
+    io.Println("{c}")
+  }
+}

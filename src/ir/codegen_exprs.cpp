@@ -62,6 +62,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const ArrayLiteralNode &n) -> llvm::Value * {
             return emit_array_literal(n, node);
           },
+          [&](const RangeNode &n) -> llvm::Value * {
+            return emit_range_literal(n);
+          },
           [&](const MapLiteralNode &n) -> llvm::Value * {
             return emit_map_literal(n, node);
           },

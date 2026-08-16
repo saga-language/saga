@@ -906,6 +906,23 @@ arr3 array{int}         // the empty value is already the zero value; `= []` is 
 arr4 := [1]             // type can be inferred
 ```
 
+### Range Literal
+
+`[low..high]` generates its elements instead of listing them. The range is
+half-open — the low bound is produced and the high one is not — so it reads as
+"how many" and a range whose low bound is not below its high one is empty.
+Both bounds must be integers.
+
+```
+xs := [0..4]            // [0, 1, 2, 3]
+ys := [3..0]            // []
+```
+
+`..` joins two bounds where the grammar has a range: this literal, a
+[slice](#Array-and-Map-Access), and a [for-range](#Looping) subject. It is not
+an operator, so it means nothing on its own — `0..4` without the brackets is a
+syntax error.
+
 ### Map Literal
 
 A map literal is a brace-delimited list of `key: value` pairs. Its type is
@@ -1865,6 +1882,16 @@ for k, v : map {} // ("a", 1) => ("b", 2) => ("c", 3)
 string := "abc"
 for k : string {} // "a" => "b" => "c"
 for k, v : string {} // (0, "a") => (1, "b") => (2, "c")
+```
+
+The subject can also be a [range](#Range-Literal), which counts rather than
+walking a collection — nothing is built to iterate over. It is half-open, like
+the literal, and a range has only values to give: the position is the value
+less the low bound, so the two-variable form does not apply.
+
+```
+for i : 0..10 {}        // 0 => 1 => ... => 9
+for i : 0..n {}         // bounds are ordinary expressions, evaluated once
 ```
 
 Any type could conceivable by adapted to be used in a `for` loop. It needs to

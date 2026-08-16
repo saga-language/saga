@@ -78,6 +78,10 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const StringLiteralNode &n) { resolve_string_literal(n); },
           [&](const StringFragmentNode &) { /* leaf */ },
           [&](const ArrayLiteralNode &n) { resolve_array_literal(n); },
+          [&](const RangeNode &n) {
+            resolve_expr(*n.low);
+            resolve_expr(*n.high);
+          },
           [&](const MapLiteralNode &n) { resolve_map_literal(n); },
           [&](const StructLiteralNode &n) { resolve_struct_literal(n); },
           [&](const BinaryExprNode &n) { resolve_binary_expr(n); },

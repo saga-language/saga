@@ -41,6 +41,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const ArrayLiteralNode &n) -> TypePtr {
             return check_array_literal(n);
           },
+          [&](const RangeNode &n) -> TypePtr {
+            return make_array_type(check_range(n));
+          },
           [&](const MapLiteralNode &n) -> TypePtr {
             return check_map_literal(n);
           },
@@ -257,6 +260,27 @@ TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
     check_stringable_recursive(t, frag->span, "interpolated expression");
   }
   return builtins.string_type;
+}
+
+// A range counts, so both bounds must be countable and agree on what they are
+// counting.  The answer is the type of the values it produces, not of the
+// range itself, which is an array in expression position and none in a loop.
+TypePtr Analyzer::check_range(const RangeNode &node) {
+  auto low = check_expr(*node.low);
+  auto high = check_expr(*node.high);
+
+  for (auto [type, bound] : {std::pair{low, node.low.get()},
+                             std::pair{high, node.high.get()}}) {
+    if (is_invalid_type(type))
+      return builtins.invalid_type;
+    if (!satisfies_constraint(type, TypeConstraint::Integer))
+      error(bound->span, std::format("a range counts, so its bounds must be "
+                                     "integers, got {}",
+                                     type_to_string(type)));
+  }
+
+  expect_assignable(node.high->span, low, high, "range bound");
+  return low;
 }
 
 TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {

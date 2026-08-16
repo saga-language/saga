@@ -94,6 +94,52 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node,
   return arr;
 }
 
+void CodeGen::fill_range(llvm::Value *arr, llvm::Value *low,
+                         llvm::Value *high) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *elem_ll = low->getType();
+  auto *cur = create_entry_alloca(func, "range.cur", elem_ll);
+  auto *slot = create_entry_alloca(func, "range.slot", elem_ll);
+  builder.CreateStore(low, cur);
+
+  auto *cond_bb = llvm::BasicBlock::Create(context, "range.cond", func);
+  auto *body_bb = llvm::BasicBlock::Create(context, "range.body", func);
+  auto *done_bb = llvm::BasicBlock::Create(context, "range.done", func);
+
+  builder.CreateBr(cond_bb);
+  builder.SetInsertPoint(cond_bb);
+  auto *v = builder.CreateLoad(elem_ll, cur, "range.v");
+  builder.CreateCondBr(builder.CreateICmpSLT(v, high, "range.cmp"), body_bb,
+                       done_bb);
+
+  builder.SetInsertPoint(body_bb);
+  builder.CreateStore(v, slot);
+  builder.CreateCall(module->getFunction("saga_array_builder_push"),
+                     {arr, slot});
+  builder.CreateStore(
+      builder.CreateAdd(v, llvm::ConstantInt::get(elem_ll, 1), "range.next"),
+      cur);
+  builder.CreateBr(cond_bb);
+
+  builder.SetInsertPoint(done_bb);
+}
+
+// `[0..10]` builds the array its bounds describe.
+llvm::Value *CodeGen::emit_range_literal(const RangeNode &node) {
+  auto *low = emit_expr(*node.low);
+  auto *high = emit_expr(*node.high);
+  if (!low || !high)
+    return nullptr;
+
+  auto *arr = builder.CreateCall(
+      module->getFunction("saga_array_new"),
+      {llvm::ConstantInt::get(i64_type, element_size_of(low->getType())),
+       llvm::ConstantInt::get(i64_type, 4)},
+      "range.arr");
+  fill_range(arr, low, high);
+  return arr;
+}
+
 // ===========================================================================
 // Map literals
 // ===========================================================================

@@ -192,6 +192,8 @@ private:
 
   NodePtr parse_call_args(NodePtr callee);      // after "("
   NodePtr parse_index_or_slice(NodePtr object); // after "["
+  /// `low ".." high`, positioned on the "..", fencing the high bound at max_bp.
+  NodePtr parse_range(NodePtr low, size_t start, int max_bp);
   NodePtr parse_selector(NodePtr object);       // after "."
   NodePtr parse_or_expr(NodePtr expr);          // after "or"
   std::optional<IdentifierNode> parse_pipe();   // "|" ident "|"
