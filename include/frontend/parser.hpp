@@ -75,6 +75,10 @@ private:
   /// Look at the next token without consuming it.
   Token peek() const;
 
+  /// From a current "{", whether the token past its matching "}" is ":=" —
+  /// the only thing that tells a destructure pattern from a map literal.
+  bool brace_closes_before_decl_assign() const;
+
   /// Skip Terminator tokens (newlines). Returns how many were skipped.
   int skip_terminators();
 
@@ -204,6 +208,8 @@ private:
 
   NodePtr parse_statement();
   NodePtr parse_decl_assign(); // IdentifierList ":=" ExpressionList
+  /// `{a, b: c} := expr`, positioned on the "{".
+  NodePtr parse_destructure(size_t start);
   /// Whether what follows an already-parsed header expression turns it into a
   /// binding: a `:=`, or a type after an identifier.
   bool starts_init_clause(const Node &leading) const;

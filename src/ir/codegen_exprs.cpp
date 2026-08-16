@@ -126,6 +126,10 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             emit_decl_assign(n);
             return nullptr;
           },
+          [&](const DestructureNode &n) -> llvm::Value * {
+            emit_destructure(n);
+            return nullptr;
+          },
           [&](const AssignNode &n) -> llvm::Value * {
             emit_assign(n);
             return nullptr;

@@ -1,0 +1,50 @@
+// Spec: `{a, b} := value` binds fields by name. A field may be renamed with
+// `field: name`, fields the pattern does not name are not bound, and each name
+// reaches exactly what `value.field` would — promoted fields included.
+import "std/io"
+
+struct Stamps {
+  created string
+}
+
+struct Point {
+  x int
+  y int
+}
+
+struct User {
+  Stamps
+  name string
+  at Point
+}
+
+fn user() User {
+  User{name: "jane", at: Point{x: 1, y: 2}, Stamps: Stamps{created: "now"}}
+}
+
+fn tagged() map{string: int} {
+  k := "a"
+  v := 1
+  {k: v}
+}
+
+pub fn Main() void {
+  // `created` is promoted through the embed; `mode` is simply not taken.
+  {created, name, at} := user()
+  io.Println("{created} {name} {at.x},{at.y}")
+
+  // Renaming, and a name the pattern binds but nothing reads.
+  {name: who, at: _spot} := user()
+  io.Println("who {who}")
+
+  // Written across lines.
+  {
+    name: again,
+    created: then
+  } := user()
+  io.Println("{again} {then}")
+
+  // `{k: v}` is the one spelling a pattern and a map literal share, and the
+  // ":=" is what tells them apart. Without one it is still a map.
+  io.Println("map {tagged().Size()}")
+}

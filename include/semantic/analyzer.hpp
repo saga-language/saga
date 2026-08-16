@@ -756,6 +756,7 @@ private:
   void resolve_stmt(const Node &node);
   void resolve_var_decl(const VarDeclNode &node, const Node &parent);
   void resolve_decl_assign(const DeclAssignNode &node, const Node &parent);
+  void resolve_destructure(const DestructureNode &node);
   void resolve_assign(const AssignNode &node);
   void resolve_return(const ReturnNode &node);
   void resolve_break(const BreakNode &node);
@@ -857,6 +858,9 @@ private:
   void check_stmt(const Node &node);
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
+  void check_destructure(const DestructureNode &node);
+  /// Give a `:=` target its type, whether it came from the value or a field.
+  void bind_declared_local(const IdentifierNode &ident, const TypePtr &type);
 
   /// Reports and poisons a binding whose type still holds an inference hole.
   TypePtr resolve_binding_type(TypePtr type, Span span);

@@ -503,6 +503,7 @@ private:
   void zero_fill(llvm::Value *slot, const TypePtr &sem, llvm::Type *ll);
   void emit_union_leftmost_zero(llvm::Value *alloca, const TypePtr &union_sem);
   void emit_decl_assign(const DeclAssignNode &node);
+  void emit_destructure(const DestructureNode &node);
   void emit_assign(const AssignNode &node);
 
   /// Address the storage an assignment target names, with the LLVM type held

@@ -15,6 +15,7 @@ void Analyzer::check_stmt(const Node &node) {
   std::visit(overloaded{
                  [&](const VarDeclNode &n) { check_var_decl(n, node); },
                  [&](const DeclAssignNode &n) { check_decl_assign(n); },
+      [&](const DestructureNode &n) { check_destructure(n); },
                  [&](const AssignNode &n) { check_assign(n); },
                  [&](const IncrementNode &n) { check_increment(n); },
                  [&](const DecrementNode &n) { check_decrement(n); },
@@ -93,24 +94,58 @@ TypePtr Analyzer::resolve_binding_type(TypePtr type, Span span) {
   return builtins.invalid_type;
 }
 
+void Analyzer::bind_declared_local(const IdentifierNode &ident,
+                                   const TypePtr &type) {
+  std::string name(ident.name);
+  reject_void_value(ident.span, type, "a variable");
+  if (is_ignored_name(name))
+    return;
+  auto sym_it = current_scope->symbols.find(name);
+  if (sym_it != current_scope->symbols.end()) {
+    sym_it->second.type = type;
+  } else {
+    // Symbol was declared during name resolution in a different scope
+    // tree.  Re-declare it here so type information propagates.
+    current_scope->symbols.emplace(name,
+                                   Symbol::variable(name, type, ident.span));
+  }
+}
+
 void Analyzer::check_decl_assign(const DeclAssignNode &decl) {
   auto rhs_type = resolve_binding_type(
       materialize_untyped(check_root_expr(*decl.value)), decl.value->span);
 
-  for (auto &ident : decl.targets.identifiers) {
-    std::string name(ident.name);
-    reject_void_value(ident.span, rhs_type, "a variable");
-    if (is_ignored_name(name))
-      continue;
-    auto sym_it = current_scope->symbols.find(name);
-    if (sym_it != current_scope->symbols.end()) {
-      sym_it->second.type = rhs_type;
-    } else {
-      // Symbol was declared during name resolution in a different scope
-      // tree.  Re-declare it here so type information propagates.
-      current_scope->symbols.emplace(
-          name, Symbol::variable(name, rhs_type, ident.span));
+  for (auto &ident : decl.targets.identifiers)
+    bind_declared_local(ident, rhs_type);
+}
+
+// A pattern binds the fields it names and leaves the rest, and each field
+// answers exactly as `value.field` would — embeds and all.
+void Analyzer::check_destructure(const DestructureNode &node) {
+  auto value_type = resolve_binding_type(
+      materialize_untyped(check_root_expr(*node.value)), node.value->span);
+  auto owner = unwrap_alias(value_type);
+
+  bool has_fields = owner && owner->kind == TypeKind::Struct;
+  if (!has_fields && !is_invalid_type(value_type))
+    error(node.value->span,
+          std::format("only a struct can be taken apart, got {}",
+                      type_to_string(value_type)));
+
+  for (auto &f : node.fields) {
+    TypePtr field_type = builtins.invalid_type;
+    if (has_fields) {
+      field_type = resolve_struct_member(owner, std::string(f.field.name),
+                                         f.field.span);
+      if (!field_type) {
+        error(f.field.span,
+              std::format("type {} has no member '{}'",
+                          type_to_string(value_type), f.field.name));
+        field_type = builtins.invalid_type;
+      }
     }
+    bind_declared_local(std::get<IdentifierNode>(f.name->data), field_type);
+    record_type(*f.name, field_type);
   }
 }
 

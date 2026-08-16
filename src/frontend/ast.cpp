@@ -369,6 +369,13 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             for (const auto &el : n.elements)
               dump_ptr(el, os, c);
           },
+          [&](const DestructureNode &n) {
+            os << pad(indent) << "DestructureNode\n";
+            for (const auto &f : n.fields)
+              os << pad(c) << "field " << f.field.name << " -> "
+                 << std::get<IdentifierNode>(f.name->data).name << "\n";
+            dump_ptr(n.value, os, c);
+          },
           [&](const RangeNode &n) {
             os << pad(indent) << "RangeNode\n";
             dump_ptr(n.low, os, c);

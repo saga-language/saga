@@ -408,6 +408,40 @@ Token Parser::peek() const {
   return next;
 }
 
+// A "{" opens a map literal or a destructure pattern, and only the ":=" past
+// the closing "}" tells them apart — `{a: b}` is a valid spelling of both.
+// Scans ahead for it without building anything, restoring the lexer after.
+bool Parser::brace_closes_before_decl_assign() const {
+  auto saved_offset = lexer.offset;
+  auto saved_reading_offset = lexer.reading_offset;
+  auto saved_state = lexer.state;
+  auto saved_errors = lexer.error_list.errors.size();
+
+  auto &mutable_lexer = const_cast<Lexer &>(lexer);
+  auto next = [&] {
+    Token t = mutable_lexer.scan();
+    while (t.kind == Token::Kind::Comment)
+      t = mutable_lexer.scan();
+    return t;
+  };
+
+  int depth = 1;
+  for (Token t = next(); depth > 0 && t.kind != Token::Kind::Eof; t = next()) {
+    if (t.kind == Token::Kind::LeftBrace)
+      ++depth;
+    else if (t.kind == Token::Kind::RightBrace && --depth == 0)
+      break;
+  }
+  bool found = depth == 0 && next().kind == Token::Kind::DeclAssignment;
+
+  mutable_lexer.offset = saved_offset;
+  mutable_lexer.reading_offset = saved_reading_offset;
+  mutable_lexer.state = saved_state;
+  mutable_lexer.error_list.errors.resize(saved_errors);
+
+  return found;
+}
+
 // Non-consuming test — is the current token of the given kind?
 bool Parser::check(Token::Kind kind) const { return current.kind == kind; }
 
@@ -2631,6 +2665,47 @@ NodePtr Parser::parse_map_literal() {
   return make_node<MapLiteralNode>(span_from(start), std::move(entries));
 }
 
+// parse_destructure — DeclAssign = DestructurePattern ":=" Expression
+//
+//   DestructurePattern = "{" DestructureField { "," DestructureField } "}"
+//   DestructureField   = Identifier [ ":" Identifier ]
+NodePtr Parser::parse_destructure(size_t start) {
+  expect(Token::Kind::LeftBrace);
+  skip_terminators();
+
+  std::vector<DestructureFieldNode> fields;
+
+  while (!check(Token::Kind::RightBrace) && !is_at_end()) {
+    auto field_start = mark();
+    Token field_tok = expect(Token::Kind::Identifier);
+    IdentifierNode field{span_from(field_start), field_tok.literal};
+    NodePtr name = make_node<IdentifierNode>(field.span, field.name);
+
+    if (check(Token::Kind::Colon)) {
+      advance();
+      auto name_start = mark();
+      Token bound = expect(Token::Kind::Identifier);
+      name = make_node<IdentifierNode>(span_from(name_start), bound.literal);
+    }
+
+    fields.push_back(DestructureFieldNode{span_from(field_start), field,
+                                          std::move(name)});
+
+    skip_terminators();
+    if (check(Token::Kind::Comma)) {
+      advance();
+      skip_terminators();
+    }
+  }
+
+  skip_terminators_before(Token::Kind::RightBrace);
+  expect(Token::Kind::RightBrace);
+  expect(Token::Kind::DeclAssignment);
+
+  return make_node<DestructureNode>(span_from(start), std::move(fields),
+                                    parse_expression());
+}
+
 // ============================================================================
 // Statement Helpers — partial (parse_statement / parse_block in Group 2)
 // ============================================================================
@@ -2835,6 +2910,9 @@ NodePtr Parser::parse_statement() {
   }
 
   auto start = mark();
+
+  if (check(Token::Kind::LeftBrace) && brace_closes_before_decl_assign())
+    return parse_destructure(start);
 
   // ── 2. Parse the leading expression ────────────────────────────────────
   NodePtr expr = parse_expression();

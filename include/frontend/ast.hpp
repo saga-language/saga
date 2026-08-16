@@ -447,6 +447,27 @@ struct DeclAssignNode {
   NodePtr value; // rhs expression (or TupleNode for multi-value)
 };
 
+// DestructureField = Identifier [ ":" Identifier ]
+//
+// `field` names it in the value and is only a lookup key; `name` is the
+// declaration it binds, so it is a node and carries the recorded type.  The
+// two are the same text when the field is not renamed.
+struct DestructureFieldNode {
+  Span span;
+  IdentifierNode field;
+  NodePtr name; // IdentifierNode
+};
+
+// DeclAssign = DestructurePattern ":=" Expression
+//
+// Fields the pattern does not name are not bound: a pattern takes what it
+// names and leaves the rest.
+struct DestructureNode {
+  Span span;
+  std::vector<DestructureFieldNode> fields;
+  NodePtr value;
+};
+
 // Assignment = AssignTargetList assignment_operator ExpressionList
 struct AssignNode {
   Span span;
@@ -676,7 +697,7 @@ struct Node {
     FuncExprNode,       ImportExprNode,
 
     // --- Statements ---
-    VarDeclNode,    DeclAssignNode,  AssignNode,
+    VarDeclNode,    DeclAssignNode,  DestructureNode,  AssignNode,
     IncrementNode,  DecrementNode,
     ReturnNode,     BreakNode,       NextNode,
 

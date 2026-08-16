@@ -107,6 +107,7 @@ void Analyzer::resolve_expr(const Node &node) {
           // Statements that can appear as expressions in blocks.
           [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
           [&](const DeclAssignNode &n) { resolve_decl_assign(n, node); },
+          [&](const DestructureNode &n) { resolve_destructure(n); },
           [&](const AssignNode &n) { resolve_assign(n); },
           [&](const ReturnNode &n) { resolve_return(n); },
           [&](const BreakNode &n) { resolve_break(n); },
@@ -216,6 +217,7 @@ void Analyzer::resolve_block_stmt(const Node &node) {
   std::visit(overloaded{
                  [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
                  [&](const DeclAssignNode &n) { resolve_decl_assign(n, node); },
+                 [&](const DestructureNode &n) { resolve_destructure(n); },
                  [&](const AssignNode &n) { resolve_assign(n); },
                  [&](const IncrementNode &n) { resolve_increment(n); },
                  [&](const DecrementNode &n) { resolve_decrement(n); },
@@ -568,6 +570,16 @@ void Analyzer::resolve_decl_assign(const DeclAssignNode &decl,
   resolve_expr(*decl.value);
   // Declare each target name.
   for (auto &ident : decl.targets.identifiers) {
+    declare_local(
+        Symbol::variable(std::string(ident.name), nullptr, ident.span));
+  }
+}
+
+void Analyzer::resolve_destructure(const DestructureNode &node) {
+  // The value first, so a bound name cannot refer to itself.
+  resolve_expr(*node.value);
+  for (auto &f : node.fields) {
+    auto &ident = std::get<IdentifierNode>(f.name->data);
     declare_local(
         Symbol::variable(std::string(ident.name), nullptr, ident.span));
   }

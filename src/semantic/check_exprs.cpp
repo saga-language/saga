@@ -102,6 +102,10 @@ TypePtr Analyzer::check_expr(const Node &node) {
             check_decl_assign(n);
             return builtins.void_type;
           },
+          [&](const DestructureNode &n) -> TypePtr {
+            check_destructure(n);
+            return builtins.void_type;
+          },
           [&](const AssignNode &n) -> TypePtr {
             check_assign(n);
             return builtins.void_type;

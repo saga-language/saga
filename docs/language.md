@@ -1979,6 +1979,36 @@ y := 1 // implicit type
 Using a variable before it is declared is an error. Redeclaring a variable
 (shadowing) is also an error. Declarations are statements.
 
+### Destructuring
+
+A `:=` can take a struct apart instead of binding it whole. The pattern names
+fields, and each name reaches exactly what `value.field` would — a promoted
+field through an [embed](#Struct-embedding-mix-ins) included.
+
+```
+struct Stat {
+  size int
+  mode int
+}
+
+{size, mode} := stat(path)      // two locals, from two fields
+{size: bytes} := stat(path)     // renamed on the way out
+```
+
+Fields the pattern does not name are not bound, so a pattern takes what it
+needs and leaves the rest. The names it does bind are ordinary locals: one
+nothing reads is the same error any [unread](#Unused-variables) local is.
+
+Only a struct has fields to take apart. A value that can still be an error is
+not one yet, so resolve it first:
+
+```
+{size} := stat(path) or { Stat{} }
+```
+
+`{k: v}` is the one spelling a pattern and a map literal share, and the `:=` is
+what tells them apart — without one it is a map.
+
 ### Unused variables
 
 A local that nothing ever reads is an error. It is dead code, a typo, or an

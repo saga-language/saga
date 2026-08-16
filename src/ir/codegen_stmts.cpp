@@ -415,6 +415,7 @@ void CodeGen::emit_stmt(const Node &node) {
       overloaded{
           [&](const VarDeclNode &n) { emit_var_decl(n); },
           [&](const DeclAssignNode &n) { emit_decl_assign(n); },
+          [&](const DestructureNode &n) { emit_destructure(n); },
           [&](const AssignNode &n) { emit_assign(n); },
           [&](const ReturnNode &n) { emit_return(n); },
           [&](const IncrementNode &n) { emit_increment(n); },
@@ -749,6 +750,39 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
       locals[ch_name] = pending_channel_alloca_;
       pending_channel_alloca_ = nullptr;
     }
+  }
+}
+
+// Each name is bound the way `x := value.field` binds one, so a struct field
+// is copied into its own slot rather than aliasing the value's storage.
+void CodeGen::emit_destructure(const DestructureNode &node) {
+  // unwrap_alias, because a nominal alias of a struct is one to take apart —
+  // the analyzer resolves the fields through it, so this must reach the same
+  // struct or it binds nothing at all.
+  auto sem = unwrap_alias(root_expr_type(*node.value));
+  auto *value = emit_root_expr(*node.value);
+  if (!value || !sem || sem->kind != TypeKind::Struct)
+    return;
+
+  auto *base = spill_aggregate(value, "destructure.src");
+  auto *func = builder.GetInsertBlock()->getParent();
+
+  for (auto &f : node.fields) {
+    std::string name(std::get<IdentifierNode>(f.name->data).name);
+    auto [gep, field_ll] =
+        struct_field_gep(base, sem, std::string(f.field.name));
+    if (!gep || !field_ll)
+      continue;
+
+    auto *slot = create_entry_alloca(func, name, field_ll);
+    if (field_ll->isStructTy()) {
+      auto al = align_of(field_ll);
+      builder.CreateMemCpy(slot, al, gep, al, size_of(field_ll));
+    } else {
+      builder.CreateStore(builder.CreateLoad(field_ll, gep, name), slot);
+    }
+    locals[name] = slot;
+    track_managed(slot, semantic_type(*f.name));
   }
 }
 
