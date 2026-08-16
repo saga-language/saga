@@ -1,0 +1,14 @@
+// Spec: an untyped literal flows into a nominal slot, so a `Choice` parameter
+// takes a bare 7 — and it has to arrive wrapped, because the slot is a union.
+import "std/io"
+
+type Choice int | string
+
+fn describe(c Choice) string {
+  if c is int { return "int" }
+  "other"
+}
+
+pub fn Main() void {
+  io.Println(describe(7))
+}

@@ -1,0 +1,32 @@
+// Spec: a nominal type "inherits the underlying's methods and operators"
+// (docs/language.md:822), so a nominal alias of a struct carries that struct's
+// fields wherever the struct itself would go.
+import "std/io"
+
+struct Point { x int  y int }
+type Coord Point
+
+pub fn (c Coord) Sum() int { c.x + c.y }
+pub fn (p Point) Scaled(n int) int { (p.x + p.y) * n }
+
+fn shift(c Coord) Coord {
+  Coord{x: c.x + 1, y: c.y + 1}
+}
+
+struct Holder { at Coord  tag string }
+
+pub fn Main() void {
+  c := Coord{x: 3, y: 4}
+  io.Println("field {c.x} {c.y}")
+  io.Println("own {c.Sum()}")
+  io.Println("inherited {c.Scaled(2)}")
+
+  d := shift(c)
+  io.Println("byvalue {d.x} {d.y}")
+
+  {x, y} := d
+  io.Println("apart {x} {y}")
+
+  h := Holder{at: c, tag: "h"}
+  io.Println("nested {h.at.x} {h.tag}")
+}

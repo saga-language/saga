@@ -488,6 +488,17 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   }
 }
 
+// The LLVM type is the whole rule, and it is the one the declaration side
+// applies (`apply_func_abi_attrs`). A caller that asks the semantic kind
+// instead disagrees with the callee about an alias, which lowers to a struct
+// without being one.
+llvm::Type *CodeGen::byval_param_type(const TypePtr &param) {
+  if (!param)
+    return nullptr;
+  auto *ll = llvm_type(param);
+  return ll && ll->isStructTy() ? ll : nullptr;
+}
+
 // The only CreateAlloca in the codebase, and so the one place every request for
 // stack storage passes through.
 llvm::AllocaInst *CodeGen::create_entry_alloca(llvm::Function *fn,

@@ -46,7 +46,10 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
   auto *sel = std::get_if<SelectorNode>(&node.callee->data);
   std::string method(sel->field.name);
 
-  auto obj_sem = semantic_type(*sel->object);
+  // declared_type, not semantic_type: an alias-bound method is found by the
+  // alias's own name, which is the one question lowering cannot answer from
+  // the shape.
+  auto obj_sem = declared_type(*sel->object);
   // Aliases: methods bound directly to the alias (`pub fn (u UserID)
   // Display()`) live in alias_info.methods and mangle as
   // `<AliasName>__<Method>`.  Look those up FIRST — only fall through
@@ -946,47 +949,35 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
     for (size_t i = 0; i < node.args.size(); ++i) {
       auto *val = emit_expr(*node.args[i]);
       if (!val) continue;
+      auto param = i < fn_info.params.size()
+                       ? unwrap_alias(fn_info.params[i])
+                       : nullptr;
+      auto arg_sem = semantic_type(*node.args[i]);
       // Union wrap: param is union, arg is concrete.
-      if (i < fn_info.params.size() &&
-          fn_info.params[i]->kind == TypeKind::Union) {
-        auto arg_sem = semantic_type(*node.args[i]);
-        if (arg_sem && arg_sem->kind != TypeKind::Union) {
-          auto *wrapped = emit_union_wrap(val, arg_sem, fn_info.params[i]);
-          if (wrapped)
-            val = wrapped;
-        }
+      if (param && param->kind == TypeKind::Union && arg_sem &&
+          arg_sem->kind != TypeKind::Union) {
+        if (auto *wrapped = emit_union_wrap(val, arg_sem, param))
+          val = wrapped;
       }
       // Interface boxing: param expects interface, arg is concrete struct.
-      if (i < fn_info.params.size() && fn_info.params[i] &&
-          fn_info.params[i]->kind == TypeKind::Interface) {
-        auto arg_sem = semantic_type(*node.args[i]);
-        if (arg_sem && arg_sem->kind == TypeKind::Struct) {
-          llvm::Value *struct_ptr = val;
-          if (val->getType()->isStructTy()) {
-            auto *p_ll = llvm_type(arg_sem);
-            auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill",
-                                             p_ll);
-            builder.CreateStore(val, tmp);
-            struct_ptr = tmp;
-          }
-          auto *boxed = emit_interface_box(struct_ptr, arg_sem,
-                                            fn_info.params[i]);
-          if (boxed)
-            val = boxed;
+      if (param && param->kind == TypeKind::Interface && arg_sem &&
+          arg_sem->kind == TypeKind::Struct) {
+        llvm::Value *struct_ptr = val;
+        if (val->getType()->isStructTy()) {
+          auto *p_ll = llvm_type(arg_sem);
+          auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill", p_ll);
+          builder.CreateStore(val, tmp);
+          struct_ptr = tmp;
         }
+        if (auto *boxed = emit_interface_box(struct_ptr, arg_sem, param))
+          val = boxed;
       }
       // Byval struct/union param: pass pointer to alloca, spill SSA values.
-      if (i < fn_info.params.size() && fn_info.params[i] &&
-          (fn_info.params[i]->kind == TypeKind::Struct ||
-           fn_info.params[i]->kind == TypeKind::Union)) {
-        auto *p_ll = llvm_type(fn_info.params[i]);
-        if (p_ll && p_ll->isStructTy()) {
-          if (val->getType()->isStructTy()) {
-            auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-            builder.CreateStore(val, tmp);
-            val = tmp;
-          }
-        }
+      if (auto *p_ll = byval_param_type(param);
+          p_ll && val->getType()->isStructTy()) {
+        auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+        builder.CreateStore(val, tmp);
+        val = tmp;
       }
       args.push_back(val);
     }
@@ -1006,17 +997,11 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
     ++idx;
   }
   for (size_t i = 0; i < fn_info.params.size(); ++i) {
-    if (fn_info.params[i] &&
-        (fn_info.params[i]->kind == TypeKind::Struct ||
-         fn_info.params[i]->kind == TypeKind::Union)) {
-      auto *p_ll = llvm_type(fn_info.params[i]);
-      if (p_ll && p_ll->isStructTy()) {
-        call->addParamAttr(idx,
-            llvm::Attribute::getWithByValType(context, p_ll));
-        call->addParamAttr(idx,
-            llvm::Attribute::getWithAlignment(context,
-                align_of(p_ll)));
-      }
+    if (auto *p_ll = byval_param_type(fn_info.params[i])) {
+      call->addParamAttr(idx,
+          llvm::Attribute::getWithByValType(context, p_ll));
+      call->addParamAttr(idx,
+          llvm::Attribute::getWithAlignment(context, align_of(p_ll)));
     }
     ++idx;
   }
@@ -1056,13 +1041,9 @@ llvm::Value *CodeGen::emit_receiver_call(
   args.push_back(self);
 
   auto is_byval_param = [&](size_t i) -> llvm::Type * {
-    if (!method_fi || i >= method_fi->params.size() || !method_fi->params[i])
+    if (!method_fi || i >= method_fi->params.size())
       return nullptr;
-    if (method_fi->params[i]->kind != TypeKind::Struct &&
-        method_fi->params[i]->kind != TypeKind::Union)
-      return nullptr;
-    auto *p_ll = llvm_type(method_fi->params[i]);
-    return (p_ll && p_ll->isStructTy()) ? p_ll : nullptr;
+    return byval_param_type(method_fi->params[i]);
   };
 
   for (size_t i = 0; i < arg_vals.size(); ++i) {

@@ -34,7 +34,7 @@ llvm::Value *tag_is_error(llvm::IRBuilder<> &builder, llvm::LLVMContext &context
 TypePtr CodeGen::root_expr_type(const Node &node) const {
   auto it = analyzer.promotion_root_types.find(&node);
   if (it != analyzer.promotion_root_types.end())
-    return unwrap_structural_alias(it->second);
+    return unwrap_alias(it->second);
   return semantic_type(node);
 }
 
@@ -89,7 +89,7 @@ llvm::Value *CodeGen::emit_operand(const Node &node) {
 TypePtr CodeGen::operand_type(const Node &node) const {
   auto it = analyzer.bubbled_operands.find(&node);
   if (it != analyzer.bubbled_operands.end())
-    return unwrap_structural_alias(it->second);
+    return unwrap_alias(it->second);
   return semantic_type(node);
 }
 
@@ -106,7 +106,7 @@ llvm::Value *CodeGen::emit_root_expr(const Node &node) {
   if (it == analyzer.promotion_root_types.end())
     return emit_expr(node);
 
-  auto root_type = unwrap_structural_alias(it->second);
+  auto root_type = unwrap_alias(it->second);
   auto *root_st = get_union_llvm_type(root_type);
   if (!root_st)
     return emit_expr(node);

@@ -799,8 +799,19 @@ private:
   /// because a `void` return is ordinary; a `void` variable is not.
   llvm::Type *storage_type(const TypePtr &t);
 
-  /// Look up the semantic type of an AST node (recorded by the analyzer).
+  /// The struct a parameter is passed indirectly as (ptr + byval), or null if
+  /// it goes directly. Caller and callee must answer this identically.
+  llvm::Type *byval_param_type(const TypePtr &param);
+
+  /// The shape an AST node's value has, which is what every lowering decision
+  /// is asking about. Aliases are transparent here: they name a type, they do
+  /// not change one.
   TypePtr semantic_type(const Node &node) const;
+
+  /// The type as the analyzer recorded it, aliases intact. Only method dispatch
+  /// wants this — a nominal alias carries its own method set, and that is the
+  /// one thing about it that outlives lowering.
+  TypePtr declared_type(const Node &node) const;
 
   /// The type a block evaluates to. The analyzer records it on the block's
   /// last statement, so asking the block node itself yields nothing — which is

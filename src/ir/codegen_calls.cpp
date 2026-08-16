@@ -486,47 +486,40 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
       val = builder.CreateCall(module->getFunction("saga_array_clone"),
                                {val}, "arg.clone");
     }
+    // The parameter's shape, not the name it was declared under: an alias is a
+    // second name for a union or a struct, and every question below is about
+    // the shape.
+    auto param =
+        fi && i < fi->params.size() ? unwrap_alias(fi->params[i]) : nullptr;
     // Interface boxing: param expects an interface, arg is a concrete
     // struct.  Spill struct SSA values, then wrap the struct pointer
     // in a fat pointer { data, vtable }.
-    if (fi && i < fi->params.size() && fi->params[i] &&
-        fi->params[i]->kind == TypeKind::Interface) {
-      auto arg_sem = operand_type(*node.args[i]);
-      if (arg_sem && arg_sem->kind == TypeKind::Struct) {
-        llvm::Value *struct_ptr = val;
-        if (val->getType()->isStructTy()) {
-          auto *p_ll = llvm_type(arg_sem);
-          auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill", p_ll);
-          builder.CreateStore(val, tmp);
-          struct_ptr = tmp;
-        }
-        auto *boxed = emit_interface_box(struct_ptr, arg_sem, fi->params[i]);
-        if (boxed)
-          val = boxed;
+    if (param && param->kind == TypeKind::Interface && arg_sem &&
+        arg_sem->kind == TypeKind::Struct) {
+      llvm::Value *struct_ptr = val;
+      if (val->getType()->isStructTy()) {
+        auto *p_ll = llvm_type(arg_sem);
+        auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill", p_ll);
+        builder.CreateStore(val, tmp);
+        struct_ptr = tmp;
       }
+      if (auto *boxed = emit_interface_box(struct_ptr, arg_sem, param))
+        val = boxed;
     }
     // Wrap a non-union arg into the union when the param expects one
     // (`f Int|Float = 7`).  Without this, the byval attribute attaches
     // to the raw scalar value and the callee's memcpy reads through
     // address `7` → segfault.
-    if (fi && i < fi->params.size() && fi->params[i] &&
-        fi->params[i]->kind == TypeKind::Union) {
-      auto arg_sem = operand_type(*node.args[i]);
-      if (arg_sem && arg_sem->kind != TypeKind::Union) {
-        auto *wrapped =
-            emit_union_wrap(val, arg_sem, fi->params[i]);
-        if (wrapped) val = wrapped;
-      }
+    if (param && param->kind == TypeKind::Union && arg_sem &&
+        arg_sem->kind != TypeKind::Union) {
+      if (auto *wrapped = emit_union_wrap(val, arg_sem, param))
+        val = wrapped;
     }
-    if (fi && i < fi->params.size() && fi->params[i] &&
-        (fi->params[i]->kind == TypeKind::Struct ||
-         fi->params[i]->kind == TypeKind::Union)) {
-      auto *p_ll = llvm_type(fi->params[i]);
-      if (p_ll && p_ll->isStructTy() && val->getType()->isStructTy()) {
-        auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-        builder.CreateStore(val, tmp);
-        val = tmp;
-      }
+    if (auto *p_ll = byval_param_type(param);
+        p_ll && val->getType()->isStructTy()) {
+      auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
+      builder.CreateStore(val, tmp);
+      val = tmp;
     }
     // Extern (C) callees: when the declared param is a pointer at the
     // LLVM level (e.g. TypeParam → void*) and the Saga value is a scalar,
@@ -563,17 +556,11 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   }
   if (fi) {
     for (size_t i = 0; i < fi->params.size(); ++i) {
-      if (fi->params[i] &&
-          (fi->params[i]->kind == TypeKind::Struct ||
-           fi->params[i]->kind == TypeKind::Union)) {
-        auto *p_ll = llvm_type(fi->params[i]);
-        if (p_ll && p_ll->isStructTy()) {
-          call->addParamAttr(cidx,
-              llvm::Attribute::getWithByValType(context, p_ll));
-          call->addParamAttr(cidx,
-              llvm::Attribute::getWithAlignment(context,
-                  align_of(p_ll)));
-        }
+      if (auto *p_ll = byval_param_type(fi->params[i])) {
+        call->addParamAttr(cidx,
+            llvm::Attribute::getWithByValType(context, p_ll));
+        call->addParamAttr(cidx,
+            llvm::Attribute::getWithAlignment(context, align_of(p_ll)));
       }
       ++cidx;
     }
