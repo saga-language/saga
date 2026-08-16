@@ -560,9 +560,20 @@ private:
   /// Emit a binary operator that was resolved to a struct method call
   /// (operator overloading). `method` is e.g. "Add", "Compare", "Equals".
   llvm::Value *emit_struct_binary_op(const BinaryExprNode &node,
-                                     const Node &parent,
                                      const TypePtr &lhs_sem,
                                      const std::string &method);
+
+  /// Turn an operator method's return value into the operator's result:
+  /// `Compare` yields a Comparison the ordering operators read, and `Equals`
+  /// is negated for `!=`.
+  llvm::Value *finish_operator_result(const BinaryExprNode &node,
+                                      const std::string &method,
+                                      llvm::Value *result);
+
+  /// The link symbol for a struct's method, preferring the recorded mapping
+  /// and falling back to current-package mangling for a cross-package callee.
+  std::string struct_method_link_name(const StructTypeInfo &info,
+                                      const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_is_expr(const IsExpr &node);
   llvm::Value *emit_error_is(const IsExpr &node, const TypePtr &value_sem,

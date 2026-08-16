@@ -1,0 +1,17 @@
+// Spec: `Compare` returns a Comparison and the four ordering operators read
+// it. A type that declares Compare but not Equals gets `==` and `!=` from it
+// too, by comparing against Comparison.Equal.
+import "std/io"
+
+struct Version { n int }
+
+pub fn (v Version) Compare(o Version) Comparison { v.n.Compare(o.n) }
+
+pub fn Main() void {
+  a := Version{n: 2}
+  b := Version{n: 5}
+  same := Version{n: 2}
+
+  io.Println("lt {a < b} le {a <= same} gt {a > b} ge {a >= same}")
+  io.Println("eq {a == same} ne {a != b}")
+}
