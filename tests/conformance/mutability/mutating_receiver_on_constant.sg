@@ -1,0 +1,20 @@
+// Spec: a method that writes through its receiver needs the receiver to be
+// somewhere the write can land. A constant is not, so the call is rejected
+// rather than compiling into a write that is discarded. The write here sits
+// inside a loop and a branch, which is where a shallow scan would miss it.
+import "std/io"
+
+struct Counter { n int }
+
+const Fixed = Counter{n: 5}
+
+pub fn (c Counter) Climb() void {
+  for i : [0..3] {
+    if i > 1 { c.n += i }
+  }
+}
+
+pub fn Main() void {
+  Fixed.Climb()
+  io.Println("{Fixed.n}")
+}

@@ -756,4 +756,11 @@ void dump_ast(const Node &node, std::ostream &os, int indent = 0);
 // ---------------------------------------------------------------------------
 std::optional<std::string_view> type_param_name(const Node &node);
 
+// ---------------------------------------------------------------------------
+// True when `node` assigns through the binding `name` — to the binding itself,
+// to one of its fields at any depth, or to one of its elements. Structural: it
+// answers what this body writes, not what anything it calls might write.
+// ---------------------------------------------------------------------------
+bool writes_through_binding(const Node &node, std::string_view name);
+
 } // namespace saga

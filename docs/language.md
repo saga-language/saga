@@ -1123,19 +1123,26 @@ fn (f Foo) Named(value string) Foo {
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
 
-The receiver is a value, exactly like a parameter, so the rules under
-[Mutability](#mutability-memory-model) apply to it. Assigning to one of its
-fields rewrites the method's own copy and the caller never sees it:
+The receiver names the value the caller passed, not a copy of it, so writing one
+of its fields changes that value:
 
 ```
-fn (c Counter) Bump() int {
-  c.n += 1 // scratch: local to this call
-  c.n
+fn (c Counter) Bump() void {
+  c.n += 1
 }
+
+c := Counter{n: 1}
+c.Bump()   // c.n is now 2
 ```
 
-A method that changes a struct therefore returns the new value rather than
-mutating in place — there is no by-reference receiver.
+There is one receiver spelling. Languages that mark the receiver — Go's
+`*Counter`, Rust's `&mut self`, Swift's `mutating func` — do so because they
+also offer the other choice and need to say which one is meant. With nothing to
+choose between, a write can only mean the caller's value; the alternative is a
+write that compiles and does nothing.
+
+The functional form is unchanged and often the better one — a method that
+builds a new value rather than editing one in place composes more freely:
 
 ```
 fn (c Counter) Incremented() Counter {
@@ -1144,6 +1151,19 @@ fn (c Counter) Incremented() Counter {
 
 c = c.Incremented()
 ```
+
+Because the write has to land somewhere, a method that writes through its
+receiver cannot be called on a constant:
+
+```
+const Fixed = Counter{n: 5}
+
+Fixed.Bump()  // error: cannot call mutating method 'Bump' on constant 'Fixed'
+```
+
+Whether a method mutates is read off its body — no keyword declares it. The
+cost is that `c.Bump()` and `c.Total()` look alike at the call site, which is
+the same trade every language with unmarked receivers makes.
 
 ### Self-referential structs
 

@@ -41,6 +41,25 @@ bool is_kind_method_mutating(const FuncDeclNode &fn) {
   return false;
 }
 
+// The receiver's own method set, which is where the declaration recorded
+// whether the body writes through it.
+const std::vector<MethodInfo> *receiver_methods(const TypePtr &type) {
+  if (!type) return nullptr;
+  if (type->kind == TypeKind::Struct)
+    return &std::get<StructTypeInfo>(type->detail).methods;
+  if (type->kind == TypeKind::Alias)
+    return &std::get<AliasTypeInfo>(type->detail).methods;
+  return nullptr;
+}
+
+bool method_mutates_receiver(const TypePtr &type, std::string_view name) {
+  const auto *methods = receiver_methods(type);
+  if (!methods) return false;
+  for (auto &m : *methods)
+    if (m.name == name) return m.mutates_receiver;
+  return false;
+}
+
 } // namespace
 
 static std::string callee_display_name(const Node &callee) {
@@ -49,6 +68,28 @@ static std::string callee_display_name(const Node &callee) {
   if (auto *sel = std::get_if<SelectorNode>(&callee.data))
     return std::string(sel->field.name);
   return "function";
+}
+
+// A method that writes through its receiver needs the receiver to be somewhere
+// the write can land. A constant is not, and the call would otherwise compile
+// into a write to a temporary that is discarded.
+void Analyzer::reject_mutating_call_on_constant(const CallExprNode &node,
+                                                const SelectorNode &sel) {
+  auto *recv_id = std::get_if<IdentifierNode>(&sel.object->data);
+  if (!recv_id)
+    return;
+  auto sym = lookup(std::string(recv_id->name));
+  if (!sym || sym->kind != SymbolKind::Constant)
+    return;
+
+  auto it = node_types.find(sel.object.get());
+  if (it == node_types.end() ||
+      !method_mutates_receiver(it->second, sel.field.name))
+    return;
+
+  error(node.span,
+        std::format("cannot call mutating method '{}' on constant '{}'",
+                    sel.field.name, recv_id->name));
 }
 
 TypePtr Analyzer::check_call_expr(const CallExprNode &node,
@@ -133,6 +174,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       }
     }
   } else if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
+    reject_mutating_call_on_constant(node, *sel);
     // kind_methods_ call (Array/Map receiver) where the substituted
     // signature is already concrete, but the body must be re-checked
     // with concrete K/V bindings because it dispatches through a named

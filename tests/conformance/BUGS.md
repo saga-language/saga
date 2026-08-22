@@ -39,6 +39,18 @@ Open:
   an inline partial replica that only gathers methods from a `Struct` source,
   and says so in a comment.
 
+- **`docs/language.md` is half-migrated to the current type syntax** (found
+  2026-08-21). The file mixes two spellings of every primitive — 87 capitalised
+  (`Int`, `String`, `Bool`, `Float`, `Void`) against 139 lowercase — and the
+  capitalised ones no longer resolve: `xs Int[] = [1, 2, 3]` reports `undefined
+  name 'Int'`. Eight sites also use the `Type[]` array form, which the parser
+  no longer accepts; the current spellings are `array{int}` and
+  `map{string: int}`. §374-419 ("The array type form is deliberately a
+  *suffix* — `Int[]`, not `[Int]`") argues for a syntax the language does not
+  have, so it needs rewriting rather than search-and-replace. Distinct from the
+  Phase 8 doc sweep, which lists the *other* `docs/*.md` files and not
+  `language.md` itself.
+
 - **A struct literal cannot be a bare binary operand** (found 2026-08-16).
   `a + Money{cents: 7}` reports "cannot use type 'Money' as a value"; the
   literal has to be parenthesised. The `{` that opens a struct literal is an
@@ -69,6 +81,10 @@ Open:
   changes `xs[0]`. That contradicts the value semantics in
   `docs/language.md` §Mutability. Maps have shown this since `m[k] = v`
   started working; arrays show it now that `xs[i] = v` does.
+
+  Boxing shows the same hole: `b Bumper = c` stores `c`'s address in the
+  interface box instead of a copy, so a method that writes through the receiver
+  changes `c`. Under value semantics the box should hold its own copy.
 
   Root cause is that codegen has no ownership convention. `emit_expr` hands
   back a fresh +1 reference for a constructor (`saga_array_new`) and a borrowed

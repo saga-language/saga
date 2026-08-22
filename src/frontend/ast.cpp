@@ -696,6 +696,88 @@ void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
 }
 
+namespace {
+
+// The binding an assignment target ultimately names: `c`, `c.at.n` and
+// `c.xs[0]` all root at `c`. Anything else (a call result, a literal) has no
+// root and cannot be written through.
+std::string_view assignment_root(const Node &target) {
+  for (const Node *cur = &target; cur;) {
+    if (auto *id = std::get_if<IdentifierNode>(&cur->data))
+      return id->name;
+    if (auto *sel = std::get_if<SelectorNode>(&cur->data)) {
+      cur = sel->object.get();
+      continue;
+    }
+    if (auto *idx = std::get_if<IndexExprNode>(&cur->data)) {
+      cur = idx->object.get();
+      continue;
+    }
+    break;
+  }
+  return {};
+}
+
+bool any_writes(const std::vector<NodePtr> &nodes, std::string_view name) {
+  for (auto &n : nodes)
+    if (n && writes_through_binding(*n, name))
+      return true;
+  return false;
+}
+
+bool assign_writes(const AssignNode &node, std::string_view name) {
+  for (auto &t : node.targets)
+    if (t && assignment_root(*t) == name)
+      return true;
+  return any_writes(node.values, name);
+}
+
+bool for_writes(const ForExprNode &node, std::string_view name) {
+  if (node.mode)
+    if (auto *iter = std::get_if<ForIterClauseNode>(&(*node.mode)->data))
+      if (iter->update && writes_through_binding(*iter->update, name))
+        return true;
+  return node.body && writes_through_binding(*node.body, name);
+}
+
+bool switch_writes(const SwitchExprNode &node, std::string_view name) {
+  for (auto &arm : node.arms)
+    if (arm.body && writes_through_binding(*arm.body, name))
+      return true;
+  return node.else_body && writes_through_binding(**node.else_body, name);
+}
+
+} // namespace
+
+// `if`, `switch` and `for` are expressions here, so a write can sit in a block
+// that is itself an operand — the descent follows values as well as statements.
+bool writes_through_binding(const Node &node, std::string_view name) {
+  if (name.empty())
+    return false;
+  if (auto *n = std::get_if<AssignNode>(&node.data))
+    return assign_writes(*n, name);
+  if (auto *n = std::get_if<IncrementNode>(&node.data))
+    return assignment_root(*n->operand) == name;
+  if (auto *n = std::get_if<DecrementNode>(&node.data))
+    return assignment_root(*n->operand) == name;
+  if (auto *n = std::get_if<BlockNode>(&node.data))
+    return any_writes(n->stmts, name);
+  if (auto *n = std::get_if<IfExprNode>(&node.data))
+    return writes_through_binding(*n->then_block, name) ||
+           (n->else_block && writes_through_binding(**n->else_block, name));
+  if (auto *n = std::get_if<SwitchExprNode>(&node.data))
+    return switch_writes(*n, name);
+  if (auto *n = std::get_if<ForExprNode>(&node.data))
+    return for_writes(*n, name);
+  if (auto *n = std::get_if<VarDeclNode>(&node.data))
+    return n->init && writes_through_binding(**n->init, name);
+  if (auto *n = std::get_if<DeclAssignNode>(&node.data))
+    return n->value && writes_through_binding(*n->value, name);
+  if (auto *n = std::get_if<ReturnNode>(&node.data))
+    return n->value && writes_through_binding(*n->value, name);
+  return false;
+}
+
 std::optional<std::string_view> type_param_name(const Node &node) {
   if (auto *tp = std::get_if<TypeParamNode>(&node.data))
     return tp->name.name;

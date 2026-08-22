@@ -784,6 +784,11 @@ private:
   TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);
   TypePtr check_unary_expr(const UnaryExprNode &node);
   TypePtr check_is_expr(const IsExpr &node);
+  /// Reject a call whose method writes through its receiver when that
+  /// receiver is a constant.
+  void reject_mutating_call_on_constant(const CallExprNode &node,
+                                        const SelectorNode &sel);
+
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);

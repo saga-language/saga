@@ -679,17 +679,14 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       }
     }
 
-    // A struct receiver arrives by pointer (build_method_signature) but is a
-    // value like any parameter, so it is copied into the frame: writes stay
-    // local to the method (docs/language.md §Mutability).
+    // A struct receiver holds the caller's address, not a copy of it: there is
+    // no second spelling to choose between, so a method that writes a field has
+    // to reach the value the caller named. `struct_slot_address` loads a slot
+    // that holds a pointer, which is what makes the reads work unchanged.
     std::string recv_name(fn->receiver->name.name);
     auto *self_arg = func->getArg(arg_idx++);
-    auto recv_st = struct_types.find(mangle(package_name, struct_name));
-    auto *recv_slot_type = self_arg->getType();
-    if (recv_st != struct_types.end() && self_arg->getType()->isPointerTy())
-      recv_slot_type = recv_st->second;
     locals[recv_name] =
-        bind_value_slot(func, recv_name, self_arg, recv_slot_type);
+        bind_value_slot(func, recv_name, self_arg, self_arg->getType());
 
     for (auto &param : fn->signature.params) {
       auto *ll_type = resolve_type_node(*param.type);

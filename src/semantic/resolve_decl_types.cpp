@@ -174,6 +174,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // receiver types like [T] can resolve T as the function's type parameter.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
+    const bool writes_recv =
+        fn.body && writes_through_binding(*fn.body, fn.receiver->name.name);
     // Helper: check D4 — cannot bind a receiver to a type from another package.
     auto check_recv_origin = [&](const std::string &origin,
                                  const std::string &type_name) -> bool {
@@ -239,7 +241,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
               func_decl_by_type_[stored_sig.get()] = &fn;
             struct_info.methods.push_back(
                 {std::string(fn.name.name), stored_sig, fn.is_public,
-                 current_package_name()});
+                 current_package_name(), writes_recv});
           }
         }
       }
@@ -257,7 +259,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                                        struct_info.name)) {
             struct_info.methods.push_back(
                 {std::string(fn.name.name), fn_type, fn.is_public,
-                 current_package_name()});
+                 current_package_name(), writes_recv});
           }
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
@@ -270,7 +272,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
           } else {
             alias_info.methods.push_back(
                 {std::string(fn.name.name), fn_type, fn.is_public,
-                 current_package_name()});
+                 current_package_name(), writes_recv});
           }
         } else if (recv_sym->type->kind == TypeKind::Enum) {
           // Enums can also have methods bound to them.
