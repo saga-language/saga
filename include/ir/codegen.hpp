@@ -516,6 +516,16 @@ private:
   /// Store `rhs` into the field named by the selector `target`.
   void emit_field_assign(const Node &target, Token::Kind op, llvm::Value *rhs);
 
+  /// Store `rhs` into the element named by the index `target`.
+  void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
+                         const TypePtr &rhs_sem);
+  void emit_map_index_assign(const IndexExprNode &target,
+                             const MapTypeInfo &info, llvm::Value *rhs,
+                             const TypePtr &rhs_sem);
+  void emit_array_index_assign(const IndexExprNode &target,
+                               const ArrayTypeInfo &info, llvm::Value *rhs,
+                               const TypePtr &rhs_sem);
+
   /// Step the integer target by one in place, shared by `++` and `--`.
   void emit_step(const Node &target, bool increment);
 
@@ -676,6 +686,12 @@ private:
   llvm::Value *collection_slot_value(llvm::Type *slot_ll,
                                      const TypePtr &slot_sem,
                                      const Node &value_node);
+  /// The address an already-emitted value is written to a collection slot
+  /// from. A null `val_sem` means the value cannot need a union wrap.
+  llvm::Value *collection_slot_address(llvm::Type *slot_ll,
+                                       const TypePtr &slot_sem,
+                                       llvm::Value *val,
+                                       const TypePtr &val_sem);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                                   llvm::Type *elem_ll,

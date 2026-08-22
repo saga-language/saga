@@ -1,0 +1,6 @@
+int 99 2 7
+string a zz
+struct 8 9
+field 5
+loop 0 1 4 9
+map 4 5

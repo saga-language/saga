@@ -799,6 +799,61 @@ void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
   builder.CreateStore(value, slot);
 }
 
+void CodeGen::emit_map_index_assign(const IndexExprNode &target,
+                                    const MapTypeInfo &info, llvm::Value *rhs,
+                                    const TypePtr &rhs_sem) {
+  auto *map = emit_expr(*target.object);
+  auto *key = emit_expr(*target.index);
+  if (!map || !key)
+    return;
+
+  auto *key_slot = collection_slot_address(llvm_type(info.key), info.key, key,
+                                           semantic_type(*target.index));
+  auto *val_slot =
+      collection_slot_address(llvm_type(info.value), info.value, rhs, rhs_sem);
+  if (!key_slot || !val_slot)
+    return;
+
+  builder.CreateCall(module->getFunction("saga_map_set"),
+                     {map, key_slot, val_slot});
+}
+
+// A shared backing buffer is copied on write, so `saga_array_set` hands back
+// the array to keep, and it has to replace the one the object named. Dropping
+// that result is what made the write vanish.
+void CodeGen::emit_array_index_assign(const IndexExprNode &target,
+                                      const ArrayTypeInfo &info,
+                                      llvm::Value *rhs,
+                                      const TypePtr &rhs_sem) {
+  auto [holder, holder_ll] = assign_target_address(*target.object);
+  if (!holder)
+    return;
+
+  auto *idx = emit_expr(*target.index);
+  auto *elem = collection_slot_address(llvm_type(info.element), info.element,
+                                       rhs, rhs_sem);
+  if (!idx || !elem)
+    return;
+
+  auto *arr = builder.CreateLoad(holder_ll, holder, "arr.cur");
+  builder.CreateStore(builder.CreateCall(module->getFunction("saga_array_set"),
+                                         {arr, idx, elem}, "arr.set"),
+                      holder);
+}
+
+void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
+                                const TypePtr &rhs_sem) {
+  auto obj_sem = unwrap_alias(semantic_type(*target.object));
+  if (!obj_sem)
+    return;
+  if (obj_sem->kind == TypeKind::Map)
+    emit_map_index_assign(target, std::get<MapTypeInfo>(obj_sem->detail), rhs,
+                          rhs_sem);
+  else if (obj_sem->kind == TypeKind::Array)
+    emit_array_index_assign(target, std::get<ArrayTypeInfo>(obj_sem->detail),
+                            rhs, rhs_sem);
+}
+
 void CodeGen::emit_assign(const AssignNode &node) {
   for (size_t i = 0; i < node.targets.size() && i < node.values.size(); ++i) {
     auto *rhs = emit_root_expr(*node.values[i]);
@@ -807,26 +862,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
 
     // Target can be an identifier, selector, or index expression.
     if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data)) {
-      // Index assignment: obj[key] = rhs
-      auto *obj = emit_expr(*idx_expr->object);
-      auto *key = emit_expr(*idx_expr->index);
-      if (!obj || !key)
-        continue;
-
-      auto obj_sem = semantic_type(*idx_expr->object);
-      if (obj_sem && obj_sem->kind == TypeKind::Map) {
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *key_tmp = create_entry_alloca(func, "map.asgn.key", key->getType());
-        builder.CreateStore(key, key_tmp);
-        auto *val_tmp = create_entry_alloca(func, "map.asgn.val", rhs->getType());
-        builder.CreateStore(rhs, val_tmp);
-
-        auto *set_fn = module->getFunction("saga_map_set");
-        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp});
-      } else if (obj_sem && obj_sem->kind == TypeKind::Array) {
-        // Array index assignment: arr[idx] = rhs
-        // TODO: implement saga_runtime_array_set when available
-      }
+      emit_index_assign(*idx_expr, rhs, root_expr_type(*node.values[i]));
       continue;
     }
 

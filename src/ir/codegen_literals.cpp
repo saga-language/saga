@@ -48,19 +48,17 @@ TypePtr CodeGen::collection_slot_type(const Node &parent, Slot slot,
 // The runtime copies a fixed number of bytes from a void*, so every element is
 // written to an address first. A union slot takes its alternative through the
 // wrap so the tag is set, exactly as a union struct field does.
-llvm::Value *CodeGen::collection_slot_value(llvm::Type *slot_ll,
-                                            const TypePtr &slot_sem,
-                                            const Node &value_node) {
-  auto *val = emit_operand(value_node);
+llvm::Value *CodeGen::collection_slot_address(llvm::Type *slot_ll,
+                                              const TypePtr &slot_sem,
+                                              llvm::Value *val,
+                                              const TypePtr &val_sem) {
   if (!val)
     return nullptr;
 
-  if (slot_sem && slot_sem->kind == TypeKind::Union) {
-    auto val_sem = operand_type(value_node);
-    if (val_sem && val_sem->kind != TypeKind::Union)
-      if (auto *wrapped = emit_union_wrap(val, val_sem, slot_sem))
-        val = wrapped;
-  }
+  if (slot_sem && slot_sem->kind == TypeKind::Union && val_sem &&
+      val_sem->kind != TypeKind::Union)
+    if (auto *wrapped = emit_union_wrap(val, val_sem, slot_sem))
+      val = wrapped;
 
   if (slot_ll && slot_ll->isStructTy())
     return spill_aggregate(val, "elem.tmp");
@@ -69,6 +67,13 @@ llvm::Value *CodeGen::collection_slot_value(llvm::Type *slot_ll,
   auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
   builder.CreateStore(val, tmp);
   return tmp;
+}
+
+llvm::Value *CodeGen::collection_slot_value(llvm::Type *slot_ll,
+                                            const TypePtr &slot_sem,
+                                            const Node &value_node) {
+  return collection_slot_address(slot_ll, slot_sem, emit_operand(value_node),
+                                 operand_type(value_node));
 }
 
 llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node,

@@ -55,23 +55,44 @@ Open:
   type-name operand and suppress it while parsing a statement header, rather
   than encoding the restriction as a binding power that applies everywhere.
 
-- **`arr[i] = v` is a silent no-op** (found 2026-08-16). Every element type,
-  not just structs: `xs := [1, 2, 3]` then `xs[0] = 99` leaves `xs[0]` at 1,
-  with no error and no diagnostic. `emit_assign`'s array branch is an empty
-  `else if` carrying `// TODO: implement saga_runtime_array_set when
-  available`. The map branch beside it is implemented, which is why
-  `m[k] = v` works.
+- **Binding a collection to a second name does not retain it** (found
+  2026-08-21, while implementing the `arr[i] = v` write-back below). `ys := xs`
+  copies the array pointer and emits no `saga_retain_array`, but both names are
+  registered with `track_managed`, so scope exit releases the buffer twice. In
+  `cow.sg` the IR is one `saga_array_new`, zero retains, two
+  `saga_release_array` — a use-after-free that currently goes unnoticed because
+  it happens as `Main` returns.
 
-  **The TODO is stale — the runtime function has been available.**
-  `saga_array_set` is defined at `src/runtime/runtime.c:1990` and already
-  declared into the module by `codegen_runtime.cpp:171`. The reason it is not
-  simply a call is its signature: it *returns* an array, because a shared
-  backing buffer is copied on write, so the result has to be written back to
-  whatever holds the array — a local, a field, or another element. That
-  write-back is the actual work, and it is the same question `Push`/`Append`
-  already answer for the method spelling.
+  The same missing retain is why copy-on-write never fires.
+  `saga_array_make_unique` clones only when `refcount != 1`, so with the count
+  stuck at 1 a write through either name is seen through both: `ys[0] = 99`
+  changes `xs[0]`. That contradicts the value semantics in
+  `docs/language.md` §Mutability. Maps have shown this since `m[k] = v`
+  started working; arrays show it now that `xs[i] = v` does.
+
+  Root cause is that codegen has no ownership convention. `emit_expr` hands
+  back a fresh +1 reference for a constructor (`saga_array_new`) and a borrowed
+  +0 one for an identifier, field or element read, and nothing distinguishes
+  them, so the binder retains neither. Fix shape: pick the convention — every
+  producer returns +1 and every binder consumes it — and retain where a
+  borrowed read becomes a binding. That is a codegen-wide change touching
+  strings, arrays and maps alike, which is why it is not folded into the
+  write-back.
 
 Fixed:
+- **`arr[i] = v` was a silent no-op** (filed 2026-08-16, fixed 2026-08-21).
+  `emit_assign`'s array branch was an empty `else if` carrying a stale TODO —
+  `saga_array_set` had been available at `src/runtime/runtime.c:1990` all
+  along. What it needed was the write-back: the function *returns* an array,
+  because a shared buffer is copied on write, so the result has to replace the
+  one the object expression named. Index assignment now resolves its holder
+  through `assign_target_address`, the same helper field assignment uses, and
+  both collection kinds write their slot through `collection_slot_address` —
+  which incidentally fixed a map whose value is a struct, where the old branch
+  stored the pointer instead of the struct. Nested (`xss[0][1]`) and compound
+  (`xs[0] += 1`) forms need no handling: both are already analyzer errors,
+  because an element read is typed `T | error`.
+
 - **A nominal alias of a struct read as empty** (filed 2026-08-15, fixed
   2026-08-16). Codegen's `semantic_type` unwrapped *structural* aliases only,
   so every `kind == Struct` test in codegen — 40 of them — had to finish the
