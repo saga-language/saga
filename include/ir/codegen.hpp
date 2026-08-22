@@ -520,10 +520,10 @@ private:
   void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
                          const TypePtr &rhs_sem);
   void emit_map_index_assign(const IndexExprNode &target,
-                             const MapTypeInfo &info, llvm::Value *rhs,
+                             const TypePtr &obj_sem, llvm::Value *rhs,
                              const TypePtr &rhs_sem);
   void emit_array_index_assign(const IndexExprNode &target,
-                               const ArrayTypeInfo &info, llvm::Value *rhs,
+                               const TypePtr &obj_sem, llvm::Value *rhs,
                                const TypePtr &rhs_sem);
 
   /// Step the integer target by one in place, shared by `++` and `--`.
@@ -998,6 +998,15 @@ private:
 
   /// Emit retain call for a value based on its semantic type.
   void emit_retain(llvm::Value *val, const TypePtr &sem);
+
+  /// Whether the expression hands back a reference an existing slot still
+  /// owns, rather than one produced for this binding.
+  static bool is_borrowed_expr(const Node &node);
+
+  /// Give `val` its own count when `source` only borrowed it, so the slot it
+  /// is about to land in can release it like any other.
+  void retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
+                          const Node &source);
 
   /// Emit release call for a value based on its semantic type.
   void emit_release(llvm::Value *val, const TypePtr &sem);

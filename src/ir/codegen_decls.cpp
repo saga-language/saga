@@ -702,6 +702,11 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     auto *tail_val = emit_block(block);
 
     if (!builder.GetInsertBlock()->getTerminator()) {
+      // The tail expression is the return value, so it has to survive the
+      // release of the locals it may well be one of.
+      if (!block.stmts.empty())
+        retain_if_borrowed(tail_val, block_result_type(block),
+                           *block.stmts.back());
       emit_release_locals();
       emit_tail_return(*fn, func, tail_val, block, has_sret);
     }

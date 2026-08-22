@@ -798,6 +798,23 @@ void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
   }
 }
 
+// A value read out of an existing binding is borrowed: the slot it came from
+// still owns it, so a second slot holding it needs a count of its own.
+// Everything else — a literal, a call, a copy-on-write method — hands back a
+// reference the runtime has already counted for this binding.
+bool CodeGen::is_borrowed_expr(const Node &node) {
+  if (auto *group = std::get_if<GroupExprNode>(&node.data))
+    return group->inner && is_borrowed_expr(*group->inner);
+  return std::holds_alternative<IdentifierNode>(node.data) ||
+         std::holds_alternative<SelectorNode>(node.data);
+}
+
+void CodeGen::retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
+                                 const Node &source) {
+  if (val && is_borrowed_expr(source))
+    emit_retain(val, sem);
+}
+
 void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
   if (!val || !sem) return;
   if (sem->kind == TypeKind::String) {

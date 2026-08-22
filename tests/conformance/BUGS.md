@@ -67,6 +67,67 @@ Open:
   type-name operand and suppress it while parsing a statement header, rather
   than encoding the restriction as a binding power that applies everywhere.
 
+- **A managed value held by a struct field or a collection element is
+  unowned** (found 2026-08-21, narrowed 2026-08-22 when local bindings were
+  fixed). `B{xs: xs}` stores the array into the field without retaining it, and
+  nothing releases it when the struct dies. That balances by accident while the
+  source local outlives the struct and dangles when it does not — return a
+  struct holding an array and the field points at freed memory. Array elements
+  and map values have the same hole.
+
+  Interface boxing is the same gap for structs: `b Bumper = c` stores `c`'s
+  address rather than a copy, so a method that writes through the receiver
+  changes `c`. Structs are not refcounted at all, so the local-binding retain
+  does not reach this.
+
+  Fixing it needs the reference convention extended past locals — a struct or
+  collection that owns managed values needs a release when it dies, which is
+  the recursive-destructor question the local-slot fix deliberately stopped
+  short of.
+
+- **A map is not copy-on-write** (found 2026-08-22). `m2 := m1` retains, and
+  `m2["a"] = 99` is still visible through `m1`, because the machinery an array
+  has is missing entirely: there is no `saga_map_clone` and no
+  `saga_map_make_unique`, and `saga_map_set` writes in place and returns void.
+  This is not the retain bug — the retain is emitted, there is just nothing
+  reading the count. `docs/language.md` §Mutability promises copy-on-write for
+  "large/complex types" without qualifying it to arrays.
+
+  Fix shape: mirror the array path — a clone, a `make_unique`, and a
+  `saga_map_set` that returns the map to keep. Codegen is already shaped for
+  it: `emit_map_index_assign` resolves its holder the same way
+  `emit_array_index_assign` does, so it only needs the write-back and the
+  matching release. Note `kMutatingIntrinsics` treats `saga_map_set` as an
+  in-place mutation for the stdlib's own use; that path wants to stay in-place.
+
+- **`docs/language.md` is half-migrated to the current type syntax** (found
+  2026-08-21). The file mixes two spellings of every primitive — 87 capitalised
+  (`Int`, `String`, `Bool`, `Float`, `Void`) against 139 lowercase — and the
+  capitalised ones no longer resolve: `xs Int[] = [1, 2, 3]` reports `undefined
+  name 'Int'`. Eight sites also use the `Type[]` array form, which the parser
+  no longer accepts; the current spellings are `array{int}` and
+  `map{string: int}`. §374-419 ("The array type form is deliberately a
+  *suffix* — `Int[]`, not `[Int]`") argues for a syntax the language does not
+  have, so it needs rewriting rather than search-and-replace. Distinct from the
+  Phase 8 doc sweep, which lists the *other* `docs/*.md` files and not
+  `language.md` itself.
+
+- **A struct literal cannot be a bare binary operand** (found 2026-08-16).
+  `a + Money{cents: 7}` reports "cannot use type 'Money' as a value"; the
+  literal has to be parenthesised. The `{` that opens a struct literal is an
+  infix operator at binding power 1 — the lowest non-zero, chosen so a context
+  that must stop before a `{ body }` block can do it with `parse_expr_bp(1)` —
+  and every real infix operator parses its right side well above that, so the
+  `{` is never reached.
+
+  Precedence is the wrong instrument: the question is not how tightly `{`
+  binds but *where* a literal is allowed, and those are different axes. Go
+  answers it with a parser flag (`exprLev`) that forbids composite literals
+  only in `if`/`for`/`switch` headers and allows them everywhere else,
+  including as binary operands. Fix shape: make `{` an ordinary suffix on a
+  type-name operand and suppress it while parsing a statement header, rather
+  than encoding the restriction as a binding power that applies everywhere.
+
 - **Binding a collection to a second name does not retain it** (found
   2026-08-21, while implementing the `arr[i] = v` write-back below). `ys := xs`
   copies the array pointer and emits no `saga_retain_array`, but both names are
@@ -96,6 +157,25 @@ Open:
   write-back.
 
 Fixed:
+- **A second name for a collection did not take a reference** (filed
+  2026-08-21, fixed 2026-08-22). `ys := xs` copied the pointer and emitted no
+  `saga_retain_array`, so the count stayed at 1: `saga_array_make_unique` read
+  that as uniquely owned and wrote in place, making `ys[0] = 99` visible
+  through `xs`, and scope exit released the buffer twice.
+
+  The convention now is that a managed local slot owns exactly one reference.
+  A value read out of an existing binding is borrowed — `is_borrowed_expr`
+  covers an identifier, a field selector and a parenthesised one — so the
+  binding retains it; everything else (a literal, a call, a copy-on-write
+  method) already hands back a counted reference. Two matching holes closed
+  with it: a returned local was released before the `ret` that handed out the
+  freed pointer (`fn build() array{int} { xs := [1,2,3]  xs }` exited 1), and
+  the `arr[i] = v` write-back dropped the slot's old reference on the floor
+  because `saga_array_set` returns its own +1.
+
+  Not covered: struct fields, collection elements and interface boxes, which
+  are open above.
+
 - **`MultiFileImportTest` and friends shared one temp directory** (found and
   fixed 2026-08-22). Three fixtures in `tests/semantic/test_modules.cpp` built
   their scratch path from a fixed name and `remove_all`-ed it in `SetUp`, so

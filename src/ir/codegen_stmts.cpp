@@ -308,6 +308,11 @@ void CodeGen::emit_function_body_inner(
 
   // If the block didn't already terminate, release locals and return.
   if (!builder.GetInsertBlock()->getTerminator()) {
+    // The tail expression is the return value, so it has to survive the
+    // release of the locals it may well be one of.
+    if (!is_main && !block.stmts.empty())
+      retain_if_borrowed(tail_val, block_result_type(block),
+                         *block.stmts.back());
     emit_release_locals();
     if (is_main) {
       if (has_spawn)
@@ -533,6 +538,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
   if (node.init) {
     auto *val = emit_root_expr(**node.init);
+    retain_if_borrowed(val, sem_type_ptr, **node.init);
     // Interface boxing: declared type is interface, init is a concrete struct.
     if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Interface) {
       auto init_sem = root_expr_type(**node.init);
@@ -664,6 +670,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   auto *val = emit_root_expr(*node.value);
   auto *func = builder.GetInsertBlock()->getParent();
   auto val_sem = root_expr_type(*node.value);
+  retain_if_borrowed(val, val_sem, *node.value);
 
   // ── Single value assignment ──────────────────────────────────────────
   for (auto &ident : node.targets.identifiers) {
@@ -800,8 +807,9 @@ void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
 }
 
 void CodeGen::emit_map_index_assign(const IndexExprNode &target,
-                                    const MapTypeInfo &info, llvm::Value *rhs,
+                                    const TypePtr &obj_sem, llvm::Value *rhs,
                                     const TypePtr &rhs_sem) {
+  auto &info = std::get<MapTypeInfo>(obj_sem->detail);
   auto *map = emit_expr(*target.object);
   auto *key = emit_expr(*target.index);
   if (!map || !key)
@@ -822,13 +830,13 @@ void CodeGen::emit_map_index_assign(const IndexExprNode &target,
 // the array to keep, and it has to replace the one the object named. Dropping
 // that result is what made the write vanish.
 void CodeGen::emit_array_index_assign(const IndexExprNode &target,
-                                      const ArrayTypeInfo &info,
-                                      llvm::Value *rhs,
+                                      const TypePtr &obj_sem, llvm::Value *rhs,
                                       const TypePtr &rhs_sem) {
   auto [holder, holder_ll] = assign_target_address(*target.object);
   if (!holder)
     return;
 
+  auto &info = std::get<ArrayTypeInfo>(obj_sem->detail);
   auto *idx = emit_expr(*target.index);
   auto *elem = collection_slot_address(llvm_type(info.element), info.element,
                                        rhs, rhs_sem);
@@ -839,6 +847,9 @@ void CodeGen::emit_array_index_assign(const IndexExprNode &target,
   builder.CreateStore(builder.CreateCall(module->getFunction("saga_array_set"),
                                          {arr, idx, elem}, "arr.set"),
                       holder);
+  // `saga_array_set` hands back its own +1, whether it cloned or wrote in
+  // place, so the reference the slot held before this is one too many.
+  emit_release(arr, obj_sem);
 }
 
 void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
@@ -847,11 +858,9 @@ void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
   if (!obj_sem)
     return;
   if (obj_sem->kind == TypeKind::Map)
-    emit_map_index_assign(target, std::get<MapTypeInfo>(obj_sem->detail), rhs,
-                          rhs_sem);
+    emit_map_index_assign(target, obj_sem, rhs, rhs_sem);
   else if (obj_sem->kind == TypeKind::Array)
-    emit_array_index_assign(target, std::get<ArrayTypeInfo>(obj_sem->detail),
-                            rhs, rhs_sem);
+    emit_array_index_assign(target, obj_sem, rhs, rhs_sem);
 }
 
 void CodeGen::emit_assign(const AssignNode &node) {
@@ -859,6 +868,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
     auto *rhs = emit_root_expr(*node.values[i]);
     if (!rhs)
       continue;
+    retain_if_borrowed(rhs, root_expr_type(*node.values[i]), *node.values[i]);
 
     // Target can be an identifier, selector, or index expression.
     if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data)) {
@@ -1005,6 +1015,8 @@ void CodeGen::emit_return(const ReturnNode &node) {
     builder.CreateRetVoid();
   } else {
     auto *val = emit_root_expr(*node.value);
+    // Handed to the caller, so it outlives the release of this frame's locals.
+    retain_if_borrowed(val, root_expr_type(*node.value), *node.value);
     auto *func = builder.GetInsertBlock()->getParent();
     auto *ret_type = func->getReturnType();
 

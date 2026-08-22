@@ -1,0 +1,5 @@
+decl 1 99
+assign 2 55
+const 10 77
+field 4 42
+returned 7 3
