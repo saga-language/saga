@@ -323,7 +323,11 @@ protected:
   std::filesystem::path test_dir;
 
   void SetUp() override {
-    test_dir = std::filesystem::temp_directory_path() / "saga_test_pkg";
+    test_dir = std::filesystem::temp_directory_path() /
+               ("saga_test_pkg_" +
+                std::to_string(::testing::UnitTest::GetInstance()
+                                   ->current_test_info()
+                                   ->line()));
     std::filesystem::create_directories(test_dir);
   }
 
@@ -437,7 +441,11 @@ protected:
   std::filesystem::path lib_dir;
 
   void SetUp() override {
-    root_dir = std::filesystem::temp_directory_path() / "saga_import_test";
+    root_dir = std::filesystem::temp_directory_path() /
+               ("saga_import_test_" +
+                std::to_string(::testing::UnitTest::GetInstance()
+                                   ->current_test_info()
+                                   ->line()));
     main_dir = root_dir / "main";
     lib_dir = root_dir / "mylib";
     std::filesystem::create_directories(main_dir);
@@ -661,7 +669,11 @@ protected:
   std::filesystem::path root_dir;
 
   void SetUp() override {
-    root_dir = std::filesystem::temp_directory_path() / "saga_mfi_test";
+    root_dir = std::filesystem::temp_directory_path() /
+               ("saga_mfi_test_" +
+                std::to_string(::testing::UnitTest::GetInstance()
+                                   ->current_test_info()
+                                   ->line()));
     std::filesystem::remove_all(root_dir);
   }
 

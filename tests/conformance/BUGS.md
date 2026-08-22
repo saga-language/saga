@@ -96,6 +96,14 @@ Open:
   write-back.
 
 Fixed:
+- **`MultiFileImportTest` and friends shared one temp directory** (found and
+  fixed 2026-08-22). Three fixtures in `tests/semantic/test_modules.cpp` built
+  their scratch path from a fixed name and `remove_all`-ed it in `SetUp`, so
+  under `ctest -j8` — where each case is its own process — one test wiped
+  another's package files mid-run. A different subset failed on each run and
+  every one passed alone. Now suffixed with the test's line number, the pattern
+  `test_manifest.cpp` and `test_build_graph.cpp` already used.
+
 - **`arr[i] = v` was a silent no-op** (filed 2026-08-16, fixed 2026-08-21).
   `emit_assign`'s array branch was an empty `else if` carrying a stale TODO —
   `saga_array_set` had been available at `src/runtime/runtime.c:1990` all
