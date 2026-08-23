@@ -124,10 +124,11 @@ struct CodeGen {
   /// Tracks which locals need release at scope exit and their kind. Holds the
   /// slot rather than the name: an ignored name binds nothing, so several may
   /// share one `locals` entry and a name would release the wrong slot twice.
-  enum class ManagedKind { String, Array, Map, Task, Closeable };
+  enum class ManagedKind { Counted, Task, Closeable };
   struct ManagedLocal {
     llvm::AllocaInst *slot;
     ManagedKind kind;
+    TypePtr sem;
   };
   std::vector<ManagedLocal> managed_locals;
 
@@ -1013,6 +1014,12 @@ private:
 
   /// Emit release calls for all managed locals in the current function.
   void emit_release_locals();
+
+  /// A struct is released by closing it, which needs the link name its own
+  /// method table records rather than one derived from the LLVM type.
+  static bool has_close_method(const StructTypeInfo &info);
+  std::string close_link_name(llvm::Type *struct_ll) const;
+  void emit_close_call(llvm::AllocaInst *slot);
 };
 
 } // namespace saga
