@@ -271,12 +271,11 @@ void CodeGen::emit_function_body_inner(
   // param_ll has one entry per flattened parameter name so variadic /
   // multi-name params are already expanded.
   //
-  // Array params are owned by the callee — emit_call_expr clones array
-  // args at the call boundary (spec value semantics, docs/language.md:51).
-  // Tracking them as managed locals releases the clone at function exit.
+  // An array parameter is a binding, so its slot owns a reference the caller
+  // took for it (emit_call_expr) and this frame gives back on the way out.
   size_t ll_idx = 0;
   for (auto &param : fn.signature.params) {
-    auto param_sem = semantic_type(*param.type);
+    auto param_sem = lookup_sem_type(*param.type);
     for (auto &ident : param.names.identifiers) {
       auto *ll_type = ll_idx < param_ll.size()
                           ? param_ll[ll_idx]
@@ -308,6 +307,11 @@ void CodeGen::emit_function_body_inner(
 
   // If the block didn't already terminate, release locals and return.
   if (!builder.GetInsertBlock()->getTerminator()) {
+    // The tail expression is the return value, so it has to survive the
+    // release of the locals it may well be one of.
+    if (!is_main && !block.stmts.empty())
+      retain_if_borrowed(tail_val, block_result_type(block),
+                         *block.stmts.back());
     emit_release_locals();
     if (is_main) {
       if (has_spawn)
@@ -335,10 +339,7 @@ void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
     llvm::Type *struct_ty = resolve_type_node(*fn.signature.return_type);
     llvm::Value *src = tail_val;
     if (auto union_sem = union_sem_for_llvm(struct_ty)) {
-      TypePtr tail_sem = block.stmts.empty()
-                             ? nullptr
-                             : semantic_type(*block.stmts.back());
-      src = as_union_ptr(tail_val, tail_sem, union_sem);
+      src = as_union_ptr(tail_val, block_result_type(block), union_sem);
     }
     if (src && struct_ty && struct_ty->isStructTy() &&
         src->getType()->isPointerTy()) {
@@ -408,7 +409,7 @@ llvm::Value *CodeGen::emit_block(const BlockNode &block) {
     // If we already have a terminator (e.g. from a return), stop.
     if (builder.GetInsertBlock()->getTerminator())
       break;
-    last = emit_expr(*stmt);
+    last = emit_root_expr(*stmt);
   }
   return last;
 }
@@ -418,6 +419,7 @@ void CodeGen::emit_stmt(const Node &node) {
       overloaded{
           [&](const VarDeclNode &n) { emit_var_decl(n); },
           [&](const DeclAssignNode &n) { emit_decl_assign(n); },
+          [&](const DestructureNode &n) { emit_destructure(n); },
           [&](const AssignNode &n) { emit_assign(n); },
           [&](const ReturnNode &n) { emit_return(n); },
           [&](const IncrementNode &n) { emit_increment(n); },
@@ -497,6 +499,23 @@ void CodeGen::emit_union_leftmost_zero(llvm::Value *alloca,
   builder.CreateStore(zv, payload);
 }
 
+// The language's zero value, which is not always LLVM's: a reference-typed
+// zero is the empty container, not the null pointer that would crash on use.
+void CodeGen::zero_fill(llvm::Value *slot, const TypePtr &sem,
+                        llvm::Type *ll) {
+  if (sem && sem->kind == TypeKind::String) {
+    builder.CreateStore(make_string_constant(""), slot);
+  } else if (sem && sem->kind == TypeKind::Array) {
+    builder.CreateStore(emit_empty_array(sem), slot);
+  } else if (sem && sem->kind == TypeKind::Map) {
+    builder.CreateStore(emit_empty_map(sem), slot);
+  } else {
+    builder.CreateStore(llvm::Constant::getNullValue(ll), slot);
+    if (sem && sem->kind == TypeKind::Union)
+      emit_union_leftmost_zero(slot, sem);
+  }
+}
+
 void CodeGen::emit_var_decl(const VarDeclNode &node) {
   std::string name(node.name.name);
   auto *func = builder.GetInsertBlock()->getParent();
@@ -517,10 +536,11 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   llvm::Type *var_type = storage_type(sem_type_ptr);
 
   if (node.init) {
-    auto *val = emit_expr(**node.init);
+    auto *val = emit_root_expr(**node.init);
+    retain_if_borrowed(val, sem_type_ptr, **node.init);
     // Interface boxing: declared type is interface, init is a concrete struct.
     if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Interface) {
-      auto init_sem = semantic_type(**node.init);
+      auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind == TypeKind::Struct) {
         // We need the struct pointer, not the loaded value.
         // Check if the init expression is an identifier referencing
@@ -546,7 +566,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
     // Union boxing: declared type is a union, init is a concrete type.
     if (val && sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
-      auto init_sem = semantic_type(**node.init);
+      auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind != TypeKind::Union) {
         auto *wrapped = emit_union_wrap(val, init_sem, sem_type_ptr);
         if (wrapped && llvm::isa<llvm::AllocaInst>(wrapped)) {
@@ -572,7 +592,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     // semantics.  RHS may be either a pointer (alloca / sret slot) or a
     // struct SSA value.
     {
-      auto sem = semantic_type(**node.init);
+      auto sem = root_expr_type(**node.init);
       // Errors are boxed (pointer rep); bind the box pointer, don't copy the
       // struct by value (which would overflow an 8-byte union payload later).
       bool boxed_error =
@@ -601,7 +621,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
     // If the init produces a union alloca, alias it.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
-      auto init_sem = semantic_type(**node.init);
+      auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind == TypeKind::Union) {
         auto *alloca = llvm::cast<llvm::AllocaInst>(val);
         alloca->setName(name);
@@ -626,53 +646,19 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     if (val)
       builder.CreateStore(val, alloca);
   } else {
-    // Zero-initialize with proper language zero values.
-    // The language specifies: Int=0, Float=0.0, Bool=false, String="",
-    // [T]=[], {K:V}={}, Struct=all-fields-zero.
-    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::String) {
-      // String zero value: empty string ""
-      auto *empty_str = make_string_constant("");
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(empty_str, alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Array) {
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(emit_empty_array(sem_type_ptr), alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Map) {
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(emit_empty_map(sem_type_ptr), alloca);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
-      // Zero = tag 0 (leftmost); materialize a reference-typed leftmost's value.
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
-      emit_union_leftmost_zero(alloca, sem_type_ptr);
-    } else if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
-               !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
-      // Struct zero value: allocate struct, zero-initialize all fields.
-      // (Errors are boxed pointers — they fall to the scalar path below,
-      // yielding a null box pointer.)
-      auto &info = std::get<StructTypeInfo>(sem_type_ptr->detail);
-      std::string skey = struct_cache_key(info);
-      auto st_it = struct_types.find(skey);
-      if (st_it != struct_types.end()) {
-        auto *st_type = st_it->second;
-        auto *alloca = create_entry_alloca(func, name, st_type);
-        locals[name] = alloca;
-        builder.CreateStore(llvm::Constant::getNullValue(st_type), alloca);
-      } else {
-        auto *alloca = create_entry_alloca(func, name, var_type);
-        locals[name] = alloca;
-        builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
-      }
-    } else {
-      // Scalar types (Int, Float, Bool, Enum, etc.): getNullValue is correct.
-      auto *alloca = create_entry_alloca(func, name, var_type);
-      locals[name] = alloca;
-      builder.CreateStore(llvm::Constant::getNullValue(var_type), alloca);
+    // A struct local is shaped by the cached LLVM struct; an error is a boxed
+    // pointer, and storage_type already answers for everything else.
+    auto *slot_ll = var_type;
+    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
+        !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
+      auto st_it = struct_types.find(
+          struct_cache_key(std::get<StructTypeInfo>(sem_type_ptr->detail)));
+      if (st_it != struct_types.end())
+        slot_ll = st_it->second;
     }
+    auto *alloca = create_entry_alloca(func, name, slot_ll);
+    locals[name] = alloca;
+    zero_fill(alloca, sem_type_ptr, slot_ll);
   }
 
   // Track for release at scope exit.
@@ -680,9 +666,10 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 }
 
 void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
-  auto *val = emit_expr(*node.value);
+  auto *val = emit_root_expr(*node.value);
   auto *func = builder.GetInsertBlock()->getParent();
-  auto val_sem = semantic_type(*node.value);
+  auto val_sem = root_expr_type(*node.value);
+  retain_if_borrowed(val, val_sem, *node.value);
 
   // ── Single value assignment ──────────────────────────────────────────
   for (auto &ident : node.targets.identifiers) {
@@ -692,7 +679,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     // semantics under D1 ABI. Source may be a pointer (alloca/sret slot)
     // or an SSA struct value.
     {
-      auto sem = semantic_type(*node.value);
+      auto sem = root_expr_type(*node.value);
       // Errors are boxed (llvm_type is a pointer), so they bind like a
       // string/array local — the box pointer is stored, not copied by value.
       bool boxed_error =
@@ -722,7 +709,7 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
     // Union and closure alloca: alias directly.
     if (val && llvm::isa<llvm::AllocaInst>(val)) {
       auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-      auto sem = semantic_type(*node.value);
+      auto sem = root_expr_type(*node.value);
       if (sem && sem->kind == TypeKind::Union) {
         alloca->setName(name);
         locals[name] = alloca;
@@ -772,34 +759,119 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   }
 }
 
+// Each name is bound the way `x := value.field` binds one, so a struct field
+// is copied into its own slot rather than aliasing the value's storage.
+void CodeGen::emit_destructure(const DestructureNode &node) {
+  // unwrap_alias, because a nominal alias of a struct is one to take apart —
+  // the analyzer resolves the fields through it, so this must reach the same
+  // struct or it binds nothing at all.
+  auto sem = unwrap_alias(root_expr_type(*node.value));
+  auto *value = emit_root_expr(*node.value);
+  if (!value || !sem || sem->kind != TypeKind::Struct)
+    return;
+
+  auto *base = spill_aggregate(value, "destructure.src");
+  auto *func = builder.GetInsertBlock()->getParent();
+
+  for (auto &f : node.fields) {
+    std::string name(std::get<IdentifierNode>(f.name->data).name);
+    auto [gep, field_ll] =
+        struct_field_gep(base, sem, std::string(f.field.name));
+    if (!gep || !field_ll)
+      continue;
+
+    auto *slot = create_entry_alloca(func, name, field_ll);
+    if (field_ll->isStructTy()) {
+      auto al = align_of(field_ll);
+      builder.CreateMemCpy(slot, al, gep, al, size_of(field_ll));
+    } else {
+      builder.CreateStore(builder.CreateLoad(field_ll, gep, name), slot);
+    }
+    locals[name] = slot;
+    track_managed(slot, semantic_type(*f.name));
+  }
+}
+
+// A call returning a struct hands back the address of its sret slot, and a
+// struct literal hands back its alloca — neither is a loaded value, so a plain
+// store would write the pointer into the slot's first field.
+void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
+                              llvm::Value *value) {
+  if (slot_ll && slot_ll->isStructTy() && value->getType()->isPointerTy()) {
+    auto al = align_of(slot_ll);
+    builder.CreateMemCpy(slot, al, value, al, size_of(slot_ll));
+    return;
+  }
+  builder.CreateStore(value, slot);
+}
+
+void CodeGen::emit_map_index_assign(const IndexExprNode &target,
+                                    const TypePtr &obj_sem, llvm::Value *rhs,
+                                    const TypePtr &rhs_sem) {
+  auto &info = std::get<MapTypeInfo>(obj_sem->detail);
+  auto *map = emit_expr(*target.object);
+  auto *key = emit_expr(*target.index);
+  if (!map || !key)
+    return;
+
+  auto *key_slot = collection_slot_address(llvm_type(info.key), info.key, key,
+                                           semantic_type(*target.index));
+  auto *val_slot =
+      collection_slot_address(llvm_type(info.value), info.value, rhs, rhs_sem);
+  if (!key_slot || !val_slot)
+    return;
+
+  builder.CreateCall(module->getFunction("saga_map_set"),
+                     {map, key_slot, val_slot});
+}
+
+// A shared backing buffer is copied on write, so `saga_array_set` hands back
+// the array to keep, and it has to replace the one the object named. Dropping
+// that result is what made the write vanish.
+void CodeGen::emit_array_index_assign(const IndexExprNode &target,
+                                      const TypePtr &obj_sem, llvm::Value *rhs,
+                                      const TypePtr &rhs_sem) {
+  auto [holder, holder_ll] = assign_target_address(*target.object);
+  if (!holder)
+    return;
+
+  auto &info = std::get<ArrayTypeInfo>(obj_sem->detail);
+  auto *idx = emit_expr(*target.index);
+  auto *elem = collection_slot_address(llvm_type(info.element), info.element,
+                                       rhs, rhs_sem);
+  if (!idx || !elem)
+    return;
+
+  auto *arr = builder.CreateLoad(holder_ll, holder, "arr.cur");
+  builder.CreateStore(builder.CreateCall(module->getFunction("saga_array_set"),
+                                         {arr, idx, elem}, "arr.set"),
+                      holder);
+  // `saga_array_set` hands back its own +1, whether it cloned or wrote in
+  // place, so the reference the slot held before this is one too many.
+  emit_release(arr, obj_sem);
+}
+
+void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
+                                const TypePtr &rhs_sem) {
+  auto obj_sem = unwrap_alias(semantic_type(*target.object));
+  if (!obj_sem)
+    return;
+  if (obj_sem->kind == TypeKind::Map)
+    emit_map_index_assign(target, obj_sem, rhs, rhs_sem);
+  else if (obj_sem->kind == TypeKind::Array)
+    emit_array_index_assign(target, obj_sem, rhs, rhs_sem);
+}
+
 void CodeGen::emit_assign(const AssignNode &node) {
   for (size_t i = 0; i < node.targets.size() && i < node.values.size(); ++i) {
-    auto *rhs = emit_expr(*node.values[i]);
+    auto *rhs = emit_root_expr(*node.values[i]);
     if (!rhs)
       continue;
+    retain_if_borrowed(rhs, root_expr_type(*node.values[i]), *node.values[i]);
 
     // Target can be an identifier, selector, or index expression.
     if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data)) {
-      // Index assignment: obj[key] = rhs
-      auto *obj = emit_expr(*idx_expr->object);
-      auto *key = emit_expr(*idx_expr->index);
-      if (!obj || !key)
-        continue;
-
-      auto obj_sem = semantic_type(*idx_expr->object);
-      if (obj_sem && obj_sem->kind == TypeKind::Map) {
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *key_tmp = create_entry_alloca(func, "map.asgn.key", key->getType());
-        builder.CreateStore(key, key_tmp);
-        auto *val_tmp = create_entry_alloca(func, "map.asgn.val", rhs->getType());
-        builder.CreateStore(rhs, val_tmp);
-
-        auto *set_fn = module->getFunction("saga_map_set");
-        builder.CreateCall(set_fn, {obj, key_tmp, val_tmp});
-      } else if (obj_sem && obj_sem->kind == TypeKind::Array) {
-        // Array index assignment: arr[idx] = rhs
-        // TODO: implement saga_runtime_array_set when available
-      }
+      emit_index_assign(*idx_expr, rhs, root_expr_type(*node.values[i]));
       continue;
     }
 
@@ -825,26 +897,17 @@ void CodeGen::emit_assign(const AssignNode &node) {
       // Reassigning a union variable to a bare member value: wrap it so the
       // tag is set (mirrors the var-decl / struct-field union stores).
       if (target_sem && target_sem->kind == TypeKind::Union) {
-        auto val_sem = semantic_type(*node.values[i]);
+        auto val_sem = root_expr_type(*node.values[i]);
         if (val_sem && val_sem->kind != TypeKind::Union) {
           if (auto *wrapped = emit_union_wrap(rhs, val_sem, target_sem);
               wrapped && wrapped->getType()->isPointerTy()) {
-            auto *ut = alloca->getAllocatedType();
-                    auto al = align_of(ut);
-            builder.CreateMemCpy(alloca, al, wrapped, al,
-                                 size_of(ut));
+            store_into_slot(alloca, alloca->getAllocatedType(), wrapped);
             continue;
           }
         }
       }
-      // Release old value before overwriting if managed.
-      if (target_sem && (target_sem->kind == TypeKind::String ||
-                         target_sem->kind == TypeKind::Array ||
-                         target_sem->kind == TypeKind::Map)) {
-        auto *old = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-        emit_release(old, target_sem);
-      }
-      builder.CreateStore(rhs, alloca);
+      release_slot(alloca, alloca->getAllocatedType(), target_sem);
+      store_into_slot(alloca, alloca->getAllocatedType(), rhs);
     } else {
       auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
       builder.CreateStore(emit_compound_op(node.op, cur, rhs, target_sem),
@@ -879,7 +942,8 @@ void CodeGen::emit_field_assign(const Node &target, Token::Kind op,
     return;
 
   if (op == Token::Kind::Assignment) {
-    builder.CreateStore(rhs, addr);
+    release_slot(addr, ftype, semantic_type(target));
+    store_into_slot(addr, ftype, rhs);
     return;
   }
 
@@ -944,7 +1008,9 @@ void CodeGen::emit_return(const ReturnNode &node) {
     emit_release_locals();
     builder.CreateRetVoid();
   } else {
-    auto *val = emit_expr(*node.value);
+    auto *val = emit_root_expr(*node.value);
+    // Handed to the caller, so it outlives the release of this frame's locals.
+    retain_if_borrowed(val, root_expr_type(*node.value), *node.value);
     auto *func = builder.GetInsertBlock()->getParent();
     auto *ret_type = func->getReturnType();
 
@@ -956,7 +1022,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
       auto *struct_ty = func->getParamStructRetType(0);
       llvm::Value *src = val;
       if (auto union_sem = union_sem_for_llvm(struct_ty))
-        src = as_union_ptr(val, semantic_type(*node.value), union_sem);
+        src = as_union_ptr(val, root_expr_type(*node.value), union_sem);
       if (src && struct_ty) {
         if (src->getType()->isPointerTy()) {
           auto sz = size_of(struct_ty);
@@ -993,7 +1059,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
           st->getElementType(0)->isIntegerTy(8) &&
           st->getElementType(1)->isArrayTy()) {
         // Need to find the semantic return type and value type.
-        auto val_sem = semantic_type(*node.value);
+        auto val_sem = root_expr_type(*node.value);
         // Look up the function's semantic return type from the scope.
         TypePtr ret_sem = nullptr;
         for (auto &[key, union_st] : union_llvm_types) {

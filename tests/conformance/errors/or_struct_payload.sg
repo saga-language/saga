@@ -1,0 +1,19 @@
+// Spec: `or` yields the subject's value, whatever shape it has. A struct comes
+// out of the union as a value and out of the handler as an address, so the two
+// branches have to agree on one before they merge.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn Main() void {
+  ps := [Point{x: 1, y: 2}]
+
+  hit := ps[0] or { Point{x: -1, y: -1} }
+  io.Println(hit.x.String())
+
+  miss := ps[9] or { Point{x: -1, y: -1} }
+  io.Println(miss.x.String())
+}

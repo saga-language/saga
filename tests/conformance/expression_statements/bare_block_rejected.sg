@@ -1,0 +1,12 @@
+// Spec: a block is neither an expression nor a statement. `{` in expression
+// position opens a map literal, so a block on its own is a syntax error rather
+// than code the compiler drops.
+import "std/io"
+
+pub fn Main() void {
+  io.Println("before")
+  {
+    io.Println("inside")
+  }
+  io.Println("after")
+}

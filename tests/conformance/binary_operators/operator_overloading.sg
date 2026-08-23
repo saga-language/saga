@@ -1,0 +1,32 @@
+// Spec: a struct gives an operator meaning by declaring the method that
+// operator looks for (docs/language.md, "Operator overloading"). `Div` is the
+// one that returns `T | error`, so it needs an `or` like any other division.
+import "std/io"
+
+struct Money { cents int }
+
+pub fn (m Money) Add(o Money) Money { Money{cents: m.cents + o.cents} }
+pub fn (m Money) Sub(o Money) Money { Money{cents: m.cents - o.cents} }
+pub fn (m Money) Mul(o Money) Money { Money{cents: m.cents * o.cents} }
+pub fn (m Money) Equals(o Money) bool { m.cents == o.cents }
+pub fn (m Money) Div(o Money) Money | error {
+  if o.cents == 0 { return DivideByZero{} }
+  Money{cents: m.cents / o.cents or { 0 }}
+}
+
+pub fn Main() void {
+  a := Money{cents: 12}
+  b := Money{cents: 4}
+  zero := Money{cents: 0}
+
+  io.Println("add {(a + b).cents}")
+  io.Println("sub {(a - b).cents}")
+  io.Println("mul {(a * b).cents}")
+
+  q := a / b or { Money{cents: -1} }
+  io.Println("div {q.cents}")
+  bad := a / zero or { Money{cents: -1} }
+  io.Println("divzero {bad.cents}")
+
+  io.Println("eq {a == b} {a != b}")
+}

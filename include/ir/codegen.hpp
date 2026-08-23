@@ -124,10 +124,11 @@ struct CodeGen {
   /// Tracks which locals need release at scope exit and their kind. Holds the
   /// slot rather than the name: an ignored name binds nothing, so several may
   /// share one `locals` entry and a name would release the wrong slot twice.
-  enum class ManagedKind { String, Array, Map, Task, Closeable };
+  enum class ManagedKind { Counted, Struct, Task, Closeable };
   struct ManagedLocal {
     llvm::AllocaInst *slot;
     ManagedKind kind;
+    TypePtr sem;
   };
   std::vector<ManagedLocal> managed_locals;
 
@@ -346,6 +347,11 @@ private:
   llvm::AllocaInst *bind_value_slot(llvm::Function *fn, const std::string &name,
                                     llvm::Value *arg, llvm::Type *slot_type);
 
+  /// Give an aggregate a stable address: an SSA struct value is spilled to a
+  /// frame slot, anything already addressed is handed back untouched. The
+  /// store lands in the current block, so call it where the value is live.
+  llvm::Value *spill_aggregate(llvm::Value *val, const std::string &name);
+
   // ── Visitors ─────────────────────────────────────────────────────────
 
   void emit_source(const SourceNode &node);
@@ -495,8 +501,10 @@ private:
   void emit_var_decl(const VarDeclNode &node);
   llvm::Value *emit_empty_array(const TypePtr &array_sem);
   llvm::Value *emit_empty_map(const TypePtr &map_sem);
+  void zero_fill(llvm::Value *slot, const TypePtr &sem, llvm::Type *ll);
   void emit_union_leftmost_zero(llvm::Value *alloca, const TypePtr &union_sem);
   void emit_decl_assign(const DeclAssignNode &node);
+  void emit_destructure(const DestructureNode &node);
   void emit_assign(const AssignNode &node);
 
   /// Address the storage an assignment target names, with the LLVM type held
@@ -508,6 +516,16 @@ private:
 
   /// Store `rhs` into the field named by the selector `target`.
   void emit_field_assign(const Node &target, Token::Kind op, llvm::Value *rhs);
+
+  /// Store `rhs` into the element named by the index `target`.
+  void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
+                         const TypePtr &rhs_sem);
+  void emit_map_index_assign(const IndexExprNode &target,
+                             const TypePtr &obj_sem, llvm::Value *rhs,
+                             const TypePtr &rhs_sem);
+  void emit_array_index_assign(const IndexExprNode &target,
+                               const TypePtr &obj_sem, llvm::Value *rhs,
+                               const TypePtr &rhs_sem);
 
   /// Step the integer target by one in place, shared by `++` and `--`.
   void emit_step(const Node &target, bool increment);
@@ -540,15 +558,33 @@ private:
                                const Node &parent);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
+  /// Integer division or remainder that answers a zero divisor with an error
+  /// instead of faulting. Result is the `T | error` the analyzer gave the
+  /// expression.
+  llvm::Value *emit_checked_division(llvm::Value *lhs, llvm::Value *rhs,
+                                     Token::Kind op,
+                                     const TypePtr &result_union);
+
   llvm::Value *emit_int_pow(llvm::Value *base, llvm::Value *exp);
   llvm::Value *emit_float_pow(llvm::Value *base, llvm::Value *exp);
 
   /// Emit a binary operator that was resolved to a struct method call
   /// (operator overloading). `method` is e.g. "Add", "Compare", "Equals".
   llvm::Value *emit_struct_binary_op(const BinaryExprNode &node,
-                                     const Node &parent,
                                      const TypePtr &lhs_sem,
                                      const std::string &method);
+
+  /// Turn an operator method's return value into the operator's result:
+  /// `Compare` yields a Comparison the ordering operators read, and `Equals`
+  /// is negated for `!=`.
+  llvm::Value *finish_operator_result(const BinaryExprNode &node,
+                                      const std::string &method,
+                                      llvm::Value *result);
+
+  /// The link symbol for a struct's method, preferring the recorded mapping
+  /// and falling back to current-package mangling for a cross-package callee.
+  std::string struct_method_link_name(const StructTypeInfo &info,
+                                      const std::string &method);
   llvm::Value *emit_unary_expr(const UnaryExprNode &node);
   llvm::Value *emit_is_expr(const IsExpr &node);
   llvm::Value *emit_error_is(const IsExpr &node, const TypePtr &value_sem,
@@ -568,6 +604,8 @@ private:
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
+  void seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
+                        const TypePtr &sem, llvm::Type *ll);
 
   // ── for-loop dispatch helpers (codegen_loops.cpp) ───────────────────
   struct ForLoopBlocks {
@@ -582,6 +620,9 @@ private:
                         const ForLoopBlocks &bbs);
   void emit_for_condition(const ForExprNode &node, const Node &mode,
                           const ForLoopBlocks &bbs);
+  void emit_for_range_counted(const ForExprNode &node,
+                              const ForRangeClauseNode &range,
+                              const RangeNode &rng, const ForLoopBlocks &bbs);
   void emit_for_range(const ForExprNode &node,
                       const ForRangeClauseNode &range,
                       const ForLoopBlocks &bbs);
@@ -625,9 +666,33 @@ private:
   std::optional<std::string> const_error_message(const StructLiteralNode &node,
                                                  const StructTypeInfo &info);
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
-  llvm::Value *emit_switch_expr(const SwitchExprNode &node);
-  llvm::Value *emit_array_literal(const ArrayLiteralNode &node);
-  llvm::Value *emit_map_literal(const MapLiteralNode &node);
+  llvm::Value *emit_switch_expr(const SwitchExprNode &node,
+                                const Node &parent);
+  llvm::Value *emit_array_literal(const ArrayLiteralNode &node,
+                                  const Node &parent);
+  llvm::Value *emit_map_literal(const MapLiteralNode &node,
+                                const Node &parent);
+  llvm::Value *emit_range_literal(const RangeNode &node);
+  void fill_range(llvm::Value *arr, llvm::Value *low, llvm::Value *high);
+  /// Bytes the runtime copies for one element/key/value of `ll`.
+  int64_t element_size_of(llvm::Type *ll);
+  enum class Slot { Element, Key, Value };
+  /// The type of one slot of an array or map literal, read off the literal's
+  /// own type. `fallback` is the first entry, for a literal whose type was
+  /// never recorded.
+  TypePtr collection_slot_type(const Node &parent, Slot slot,
+                               const Node *fallback);
+  /// Emit one element/key/value and hand back its address, wrapping into the
+  /// slot's union first when the slot is one.
+  llvm::Value *collection_slot_value(llvm::Type *slot_ll,
+                                     const TypePtr &slot_sem,
+                                     const Node &value_node);
+  /// The address an already-emitted value is written to a collection slot
+  /// from. A null `val_sem` means the value cannot need a union wrap.
+  llvm::Value *collection_slot_address(llvm::Type *slot_ll,
+                                       const TypePtr &slot_sem,
+                                       llvm::Value *val,
+                                       const TypePtr &val_sem);
   llvm::Value *emit_index_expr(const IndexExprNode &node);
   llvm::Value *wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
                                                   llvm::Type *elem_ll,
@@ -762,13 +827,33 @@ private:
   /// because a `void` return is ordinary; a `void` variable is not.
   llvm::Type *storage_type(const TypePtr &t);
 
-  /// Look up the semantic type of an AST node (recorded by the analyzer).
+  /// The struct a parameter is passed indirectly as (ptr + byval), or null if
+  /// it goes directly. Caller and callee must answer this identically.
+  llvm::Type *byval_param_type(const TypePtr &param);
+
+  /// Write `value` into `slot`. A struct-shaped value can arrive as an address
+  /// rather than a loaded value, and the two need different instructions.
+  void store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
+                       llvm::Value *value);
+
+  /// The shape an AST node's value has, which is what every lowering decision
+  /// is asking about. Aliases are transparent here: they name a type, they do
+  /// not change one.
   TypePtr semantic_type(const Node &node) const;
+
+  /// The type as the analyzer recorded it, aliases intact. Only method dispatch
+  /// wants this — a nominal alias carries its own method set, and that is the
+  /// one thing about it that outlives lowering.
+  TypePtr declared_type(const Node &node) const;
 
   /// The type a block evaluates to. The analyzer records it on the block's
   /// last statement, so asking the block node itself yields nothing — which is
   /// a silent null, not an error, and reads as "this block has no type".
   TypePtr block_result_type(const BlockNode &block) const;
+
+  /// The type a switch arm or `or` handler evaluates to. Its body is either a
+  /// block or a bare expression, and the analyzer records those differently.
+  TypePtr body_result_type(const Node &body) const;
 
   // ── Per-instantiation accessors (Step 4) ─────────────────────────────
   //
@@ -860,6 +945,46 @@ private:
   /// Strip Error alternatives from a union, returning the purified type.
   TypePtr strip_error_from_union(const TypePtr &t) const;
 
+  /// The value left once the error alternatives are gone, typed as
+  /// strip_error_from_union(union_sem). `tag` is the already-loaded tag.
+  llvm::Value *emit_union_purified(llvm::Value *union_ptr, llvm::Value *tag,
+                                   const TypePtr &union_sem);
+
+  // ── Error promotion ──────────────────────────────────────────────────
+
+  /// Where a `?` that found an error jumps, and the slot it leaves the error
+  /// in. One per root expression that contains a promotion.
+  struct PromoteLanding {
+    llvm::BasicBlock *err_bb;
+    llvm::Value *slot;
+    TypePtr result_type;
+  };
+  std::vector<PromoteLanding> promote_landings_;
+
+  llvm::Value *emit_promote_expr(const PromoteExprNode &node);
+
+  /// Leave the enclosing root through its landing if `operand` holds an error,
+  /// otherwise continue with the value it holds. Returns `operand` untouched
+  /// where there is no landing or no error to escape with.
+  llvm::Value *emit_error_escape(llvm::Value *operand,
+                                 const TypePtr &operand_sem);
+
+  /// Emit an operand, escaping through the landing at exactly the nodes the
+  /// analyzer bubbled. Plain emit_expr everywhere else.
+  llvm::Value *emit_operand(const Node &node);
+
+  /// What an operand is left holding: the purified type where the error
+  /// escaped, the recorded type everywhere else.
+  TypePtr operand_type(const Node &node) const;
+
+  /// Emit an expression that a `?` inside it can escape from. Without a
+  /// promotion this is plain emit_expr.
+  llvm::Value *emit_root_expr(const Node &node);
+
+  /// The type a root expression hands its consumer: with the promoted errors
+  /// put back, if any fired.
+  TypePtr root_expr_type(const Node &node) const;
+
   // ── String helpers ───────────────────────────────────────────────────
 
   llvm::Value *make_string_constant(const std::string &text);
@@ -875,11 +1000,39 @@ private:
   /// Emit retain call for a value based on its semantic type.
   void emit_retain(llvm::Value *val, const TypePtr &sem);
 
+  /// Whether the expression hands back a reference an existing slot still
+  /// owns, rather than one produced for this binding.
+  static bool is_borrowed_expr(const Node &node);
+
+  /// Give `val` its own count when `source` only borrowed it, so the slot it
+  /// is about to land in can release it like any other.
+  void retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
+                          const Node &source);
+
   /// Emit release call for a value based on its semantic type.
   void emit_release(llvm::Value *val, const TypePtr &sem);
 
   /// Emit release calls for all managed locals in the current function.
   void emit_release_locals();
+
+  /// A struct is released by closing it, which needs the link name its own
+  /// method table records rather than one derived from the LLVM type.
+  static bool has_close_method(const StructTypeInfo &info);
+
+  /// A struct owns one reference to each managed value it holds, so a copy of
+  /// one retains them and its death releases them. The walk is generated per
+  /// struct type rather than inline, so a nested struct is one call.
+  bool owns_managed_fields(const TypePtr &sem);
+  void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
+  llvm::Function *struct_ownership_fn(const TypePtr &sem, bool retain);
+  void emit_slot_walk(llvm::StructType *st, const TypePtr &sem,
+                      llvm::Value *self, bool retain);
+  void emit_slot_ownership(llvm::StructType *st, llvm::Value *self,
+                           unsigned idx, const TypePtr &slot, bool retain);
+  void release_slot(llvm::Value *addr, llvm::Type *slot_ll,
+                    const TypePtr &sem);
+  std::string close_link_name(llvm::Type *struct_ll) const;
+  void emit_close_call(llvm::AllocaInst *slot);
 };
 
 } // namespace saga

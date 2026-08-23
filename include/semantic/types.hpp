@@ -152,6 +152,9 @@ struct MethodInfo {
   TypePtr signature;        // always a FuncTypeInfo inside
   bool is_public = false;
   std::string origin_package;
+  /// The body writes through the receiver, so the call needs somewhere for
+  /// the write to land — a constant has nowhere.
+  bool mutates_receiver = false;
 };
 
 struct StructTypeInfo {

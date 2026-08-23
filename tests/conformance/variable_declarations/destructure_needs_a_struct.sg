@@ -1,0 +1,15 @@
+// Spec: only a struct has fields to take apart. A value that can still be an
+// error is not one yet — resolve it with `or` first.
+import "std/io"
+
+struct Stat { size int }
+
+fn stat(d int) Stat | error {
+  if d == 0 { return Missing{message: "no"} }
+  Stat{size: d}
+}
+
+pub fn Main() void {
+  {size} := stat(2)
+  io.Println("{size}")
+}

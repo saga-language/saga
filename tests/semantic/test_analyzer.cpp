@@ -555,9 +555,9 @@ TEST(Analyzer, ResolveForIterClause) {
 TEST(Analyzer, ResolveOrExprPipe) {
   // The |err| pipe variable should be visible inside the or block.
   auto r = AnalysisResult::from(
-      "fn foo() {\n"
-      "  x := 1\n"
-      "  x or |err| { err }\n"
+      "fn foo(d int) {\n"
+      "  x := 10 / d\n"
+      "  _ := x or |err| { _ := err\n    0 }\n"
       "}");
   EXPECT_TRUE(r.has_no_errors());
 }
@@ -646,12 +646,22 @@ TEST(Analyzer, ResolveAccumulator) {
   auto r = AnalysisResult::from(
       "fn foo() {\n"
       "  arr := [1, 2, 3]\n"
-      "  for i : arr |acc| {\n"
-      "    _ := i\n"
-      "    acc\n"
+      "  for i : arr |acc int| {\n"
+      "    acc += i\n"
       "  }\n"
       "}");
   EXPECT_TRUE(r.has_no_errors());
+}
+
+TEST(Analyzer, ResolveAccumulatorWithoutType) {
+  auto r = AnalysisResult::from(
+      "fn foo() {\n"
+      "  arr := [1, 2, 3]\n"
+      "  for i : arr |acc| {\n"
+      "    acc += i\n"
+      "  }\n"
+      "}");
+  EXPECT_TRUE(r.has_error_containing("the accumulator needs a type"));
 }
 
 TEST(Analyzer, DuplicateTopLevelDecl) {

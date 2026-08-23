@@ -20,7 +20,7 @@ pub fn Main() Void {
 
 Idendifiers must start with either an upper or lowercase letter ("a" to "z")
 or an underscope. They can contain any number of alphanumeric characters,
-including underscores. A tailing question mark ("?") can be appended.
+including underscores.
 
 Identifiers that start with, or consist only of, an underscore are
 "ignored" variables. They can not be accessed once they are assigned a value
@@ -42,8 +42,7 @@ Identifier convensions are a work in progress. The current convensions for
 identifers are as follows but are subject to change:
 
 Public identifiers should be written in PascalCase or Capitalized_Snake_Case.
-Private identifiers should be written in camelCase or snake_case.  Only 
-boolean identifiers should have the "?" suffix.
+Private identifiers should be written in camelCase or snake_case.
 
 _Note: These preferences are applied by the formatter but are not strictly
 enforced by the language._
@@ -254,8 +253,8 @@ exits the outer-most block. It must contain the same number of expressions to
 match the return type.
 
 ```
-pub fn Greeting(evening? Bool) String {
-  if evening? {
+pub fn Greeting(evening Bool) String {
+  if evening {
     return "Goodnight"
   }
   
@@ -530,7 +529,9 @@ uses `is` (same error type) and `==` (same type and fields); the message is a
 plain `.message` field.
 
 The `or` clause resolves the error before the value is used: it strips the error
-alternative(s) and yields the remaining type — a value, or a smaller union.
+alternative(s) and yields the remaining type — a value, or a smaller union. It
+needs an error to strip: on a value that cannot be one the handler could never
+run, and that is an error rather than a no-op.
 
 ```
 value int | error = 0
@@ -562,6 +563,91 @@ data := parse(raw) or |err| {
 **Ordering convention.** Write a union as `T... | Null | error` — the value
 types first, then an optional `Null`, then the error. This is only a convention:
 errors are nominal and carry no positional requirement, so any order is legal.
+
+#### Promoting an error (`?`)
+
+A `T | error` in a receiver position — before a `.`, a `[` or a `(` — cannot be
+used as it stands, because the error alternative has no members. Writing `?`
+resolves it: the rest of the chain sees the `T`, and the removed error travels
+to the enclosing expression, which carries it on its own type.
+
+```
+struct Inner { b int }
+
+xs := [Inner{b: 7}]
+
+n := xs[0]?.b or { -1 }  // n is int; the Missing from xs[0] lands at `or`
+m := xs[0]?.b            // m is int | error — nothing resolved it
+```
+
+The error goes to the nearest enclosing variable initializer, assignment,
+return value or `or` subject. When nothing there resolves it, it stays in the
+type, which is how a method returns it:
+
+```
+fn first(xs array{Inner}) int | error {
+  xs[0]?.b
+}
+```
+
+Evaluation stops at the `?` that found an error: nothing further along the
+chain runs.
+
+`?` needs an error to resolve. On a value that cannot be one it is an error,
+not a no-op.
+
+**Everywhere else the error travels on its own.** A receiver is the only
+position that asks for a marker, because it is the only one where the reader
+would otherwise not see that the rest of the chain can be skipped. In operand
+position, argument position and field position the error goes to the same
+place with nothing written:
+
+```
+xs := [3, 4]
+d := readDivisor()
+
+a := xs[0] + 1 or { -1 }          // Missing from the index
+b := 1 + 10 / d - xs[0] or { -1 } // whichever fails first ends the expression
+c := take(xs[0]) or { -1 }        // an argument travels the same way
+p := Point{x: xs[0], y: 2} or { Point{x: -1, y: -1} }
+```
+
+Evaluation is lazy on that path too: once a subexpression yields an error the
+rest of the expression is not evaluated, so `xs[9] + loud()` never calls
+`loud`.
+
+The error leaves only where the slot it is headed for refuses it. A parameter
+or field declared `int | error` takes it as an ordinary value, and so does a
+slot whose type is read off the value itself:
+
+```
+n := xs[0]               // n is int | error — the name takes what it is given
+c := Cell{value: xs[0]}  // a type parameter takes it too
+```
+
+**A statement is the end of the line.** The error re-attaches to the type of
+the root it travelled to, so a root that evaluates to nothing has nothing to
+carry it. Discarding the call, or hiding it in a condition, is rejected rather
+than dropped:
+
+```
+sink(xs[9])           // Error: the error has nowhere to go here
+if xs[0]?.b > 3 { }   // the `if` is a statement, so the same holds
+
+sink(xs[9] or { 0 })  // say what happens instead
+```
+
+`or` is not the only answer. A `switch` or an `is` reads the union as it
+stands, which is what makes the error alternative an ordinary one:
+
+```
+switch xs[9] {
+case 3: "three"
+else:   "nothing there"
+}
+
+if v is int { ... }
+```
 
 ### Generics
 
@@ -820,6 +906,23 @@ arr3 array{int}         // the empty value is already the zero value; `= []` is 
 arr4 := [1]             // type can be inferred
 ```
 
+### Range Literal
+
+`[low..high]` generates its elements instead of listing them. The range is
+half-open — the low bound is produced and the high one is not — so it reads as
+"how many" and a range whose low bound is not below its high one is empty.
+Both bounds must be integers.
+
+```
+xs := [0..4]            // [0, 1, 2, 3]
+ys := [3..0]            // []
+```
+
+`..` joins two bounds where the grammar has a range: this literal, a
+[slice](#Array-and-Map-Access), and a [for-range](#Looping) subject. It is not
+an operator, so it means nothing on its own — `0..4` without the brackets is a
+syntax error.
+
 ### Map Literal
 
 A map literal is a brace-delimited list of `key: value` pairs. Its type is
@@ -1020,19 +1123,26 @@ fn (f Foo) Named(value string) Foo {
 A receiver method is a plain function namespaced to its type; there is no
 hidden receiver or privileged field access.
 
-The receiver is a value, exactly like a parameter, so the rules under
-[Mutability](#mutability-memory-model) apply to it. Assigning to one of its
-fields rewrites the method's own copy and the caller never sees it:
+The receiver names the value the caller passed, not a copy of it, so writing one
+of its fields changes that value:
 
 ```
-fn (c Counter) Bump() int {
-  c.n += 1 // scratch: local to this call
-  c.n
+fn (c Counter) Bump() void {
+  c.n += 1
 }
+
+c := Counter{n: 1}
+c.Bump()   // c.n is now 2
 ```
 
-A method that changes a struct therefore returns the new value rather than
-mutating in place — there is no by-reference receiver.
+There is one receiver spelling. Languages that mark the receiver — Go's
+`*Counter`, Rust's `&mut self`, Swift's `mutating func` — do so because they
+also offer the other choice and need to say which one is meant. With nothing to
+choose between, a write can only mean the caller's value; the alternative is a
+write that compiles and does nothing.
+
+The functional form is unchanged and often the better one — a method that
+builds a new value rather than editing one in place composes more freely:
 
 ```
 fn (c Counter) Incremented() Counter {
@@ -1041,6 +1151,19 @@ fn (c Counter) Incremented() Counter {
 
 c = c.Incremented()
 ```
+
+Because the write has to land somewhere, a method that writes through its
+receiver cannot be called on a constant:
+
+```
+const Fixed = Counter{n: 5}
+
+Fixed.Bump()  // error: cannot call mutating method 'Bump' on constant 'Fixed'
+```
+
+Whether a method mutates is read off its body — no keyword declares it. The
+cost is that `c.Bump()` and `c.Total()` look alike at the call site, which is
+the same trade every language with unmarked receivers makes.
 
 ### Self-referential structs
 
@@ -1609,6 +1732,29 @@ x := if y > 10 {
 x := if y > 10 { 0 } else { y }
 ```
 
+Either conditional can bind a name in its header, before a `;`. The binding is
+a declaration — `x := e` or `x T = e`, nothing else — and it belongs to the
+whole conditional: the condition or subject, every arm, and the else. After the
+conditional ends the name is gone.
+
+```
+if v := lookup(key); v is int {
+  Use(v)              // v is int here
+} else {
+  Report()            // and the error alternative here
+}
+
+switch r := parse(text); r {
+case int:    r + 1
+case string: r.Size()
+}
+```
+
+This is how you test a value you also need: without it the binding has to leak
+into the surrounding scope to be reachable from the arms. Assignment is a
+statement in Saga, so `if (x = f())` cannot be written at all and the `;` never
+has to disambiguate anything.
+
 Switches handle multiple branches, performing a value comparison. The first
 branch determines the type when used as an expression and the left hand
 value is being initialized without a declared type. The right hand side of
@@ -1758,6 +1904,16 @@ for k : string {} // "a" => "b" => "c"
 for k, v : string {} // (0, "a") => (1, "b") => (2, "c")
 ```
 
+The subject can also be a [range](#Range-Literal), which counts rather than
+walking a collection — nothing is built to iterate over. It is half-open, like
+the literal, and a range has only values to give: the position is the value
+less the low bound, so the two-variable form does not apply.
+
+```
+for i : 0..10 {}        // 0 => 1 => ... => 9
+for i : 0..n {}         // bounds are ordinary expressions, evaluated once
+```
+
 Any type could conceivable by adapted to be used in a `for` loop. It needs to
 satisfy the `Iterable` interface, which has the following signature:
 
@@ -1773,59 +1929,59 @@ satisfied the `Error` interface.
 
 ### Accumulation
 
-This is the secret superpower of `for`. When using `for` as an expression, the
-compiler uses the type of the left-hand value to initialize an internal
-accumulator. This accumulator is initialized to the zero value of the type. The
-result of the expression is the accumulator. 
+This is the secret superpower of `for`. A `for` used as an expression carries a
+value across its iterations, and that value is what the expression evaluates
+to. Name it with the pipe syntax — `acc` will probably be common.
 
-A user can name the accumulator anything they want, though `acc` will probably
-be common. To access the accumulator, use the pipe syntax.
+The accumulator is a declaration, so it is written like one: a type, an
+initializer, or both.
 
 ```
-arr := [1, 2, 3]
-sum := for i : arr |acc| {
- acc += i 
+arr := [1, 2, 3, 4]
+
+sum := for i : arr |acc int| { acc += i }              // => 10
+product := for i : arr |acc = 1| { acc *= i }          // => 24
+offset := for i : arr |acc int = 100| { acc += i }     // => 110
+```
+
+Without an initializer it starts at the zero value of its type, which for a
+collection is the empty one and not a null:
+
+```
+evens := for i : arr |acc array{int}| {
+  if i % 2 == 0 { acc = acc.Append(i) }                // => [2, 4]
 }
+doubles := for i : arr |acc array{int}| { acc = acc.Append(i * 2) }
 ```
 
-If `break` is present anywhere in the block, the expression becomes impure,
-returning from the loop immediately, and returning a `Missing` error. This
-allows for search patterns. The return type of the `for` expression becomes
-`T | Error` and the value from the accumulator is ignored.
+A pipe that gives neither takes its type from the declaration the loop's value
+lands in. That is the only other place a type can come from, so a loop assigned
+with `:=` has to say:
 
 ```
-arr := [1, 2, 3]
-sum := for i : arr |acc| {
-  if i == 2 { break 1 } // sum => 1
-  acc += i
-}
+total int = for i : arr |acc| { acc += i }  // the declaration types it
+total := for i : arr |acc| { acc += i }     // invalid, nothing says what acc is
 ```
 
-The type determines the behaviour of the accumulator. Types not listed here do 
-not generate an accumulator.
+The initializer is evaluated once, before the first iteration, so it cannot
+name the loop variable.
+
+### Breaking out
+
+`break` with a value is what the loop evaluates to, and a loop that finishes
+without breaking has no such value — so the type of the expression is
+`T | error` and not finding is an ordinary `Missing`. This is the search
+pattern:
 
 ```
-// Filtering
-array := [1, 2, 3, 4]
-// The left hand type is an integer array, so that's the type of the accumulator
-evens Int[] = for i : array |acc| { if i % 2 == 0 { acc.Push(i) } } // => [2, 4]
-
-// Mapping
-array := [1, 2, 3, 4]
-doubles Int[] = for i : array |acc| { acc.Push(i * 2) } // => [2, 4, 6, 8]
-
-// Reducing
-array := [1, 2, 3, 4]
-sum Int = for i : array |acc| { acc += i } // => 10
-
-// Searching
-array := ["a", "b", "c"]
-result := for word : array { if word < "b" { break word } } // => "a"
+found := for word : ["a", "b", "c"] {
+  if word > "a" { break word }
+}                                             // => "b"
 ```
 
-For finding the product, difference, or quotient, the user must handle that
-themselves. A future consideration is to allow an `acc` or `accumulator`
-variable to be injected into the loop's scope.
+A loop cannot both break with a value and accumulate. The break value is the
+loop's value, which leaves nothing that would ever read the accumulator; carry
+state across iterations in a local declared ahead of the loop instead.
 
 _Performance Note: If the accumulator isn't asked for, the compiler does not
 generate any code for it._
@@ -1842,6 +1998,36 @@ y := 1 // implicit type
 
 Using a variable before it is declared is an error. Redeclaring a variable
 (shadowing) is also an error. Declarations are statements.
+
+### Destructuring
+
+A `:=` can take a struct apart instead of binding it whole. The pattern names
+fields, and each name reaches exactly what `value.field` would — a promoted
+field through an [embed](#Struct-embedding-mix-ins) included.
+
+```
+struct Stat {
+  size int
+  mode int
+}
+
+{size, mode} := stat(path)      // two locals, from two fields
+{size: bytes} := stat(path)     // renamed on the way out
+```
+
+Fields the pattern does not name are not bound, so a pattern takes what it
+needs and leaves the rest. The names it does bind are ordinary locals: one
+nothing reads is the same error any [unread](#Unused-variables) local is.
+
+Only a struct has fields to take apart. A value that can still be an error is
+not one yet, so resolve it first:
+
+```
+{size} := stat(path) or { Stat{} }
+```
+
+`{k: v}` is the one spelling a pattern and a map literal share, and the `:=` is
+what tells them apart — without one it is a map.
 
 ### Unused variables
 
@@ -1923,38 +2109,115 @@ operator.
 
 Arithmetic operators apply to numeric types (`+` also concatenates strings).
 Enums and errors are identity/data types: they support equality but no
-arithmetic, and they cannot overload it. Structs may overload the operators
-through methods (`Add`, `Sub`, `Mul`, `Div`, `Equals`, `Compare`).
+arithmetic, and they cannot overload it.
+
+### Operator overloading
+
+A struct gives an operator meaning by declaring the method that operator looks
+for. There is no interface to implement and nothing to opt into: the compiler
+looks for the method by name on the struct, and the operator is available when
+the method is there.
+
+| Operator | Method | Returns |
+|---|---|---|
+| `+` | `Add(T) T` | `T` |
+| `-` | `Sub(T) T` | `T` |
+| `*` | `Mul(T) T` | `T` |
+| `/` | `Div(T) T \| error` | `T \| error` |
+| `==`, `!=` | `Equals(T) bool` | `bool` |
+| `<`, `<=`, `>`, `>=` | `Compare(T) Comparison` | `bool` |
+
+```
+struct Money { cents int }
+
+pub fn (m Money) Add(o Money) Money { Money{cents: m.cents + o.cents} }
+pub fn (m Money) Compare(o Money) Comparison { m.cents.Compare(o.cents) }
+
+price := Money{cents: 500}
+tax := Money{cents: 250}
+total := price + tax          // Add
+if total > price { ... }      // Compare
+```
+
+Both operands are the same type. The right-hand side must be assignable to the
+left-hand side's type, so an overload cannot mix `Money + int` — a method that
+takes something else is an ordinary method, called by name.
+
+`Compare` returns a `Comparison` (`Less`, `Equal`, `Greater`), and the four
+ordering operators read it. A type that declares `Compare` but not `Equals`
+gets `==` and `!=` from it as well, comparing against `Comparison.Equal` — so
+ordering alone is enough, and `Equals` is worth declaring only when equality is
+cheaper than ordering or means something narrower.
+
+`Div` returns `T | error` rather than `T`, because division is the operator
+that can fail; see [Division by zero](#division-by-zero). The other arithmetic
+methods return `T`, and a method whose return type does not match the table is
+reported where the operator is used, not where the method is declared.
+
+Four things are deliberately not overloadable. `%`, `**`, the bitwise
+operators, and `&&` / `||` have no method to declare — the logical operators
+because there is no truthiness to redefine, the rest because no use has asked
+for them. Only structs may overload at all: enums and errors are identity
+types, and the intrinsic types already lower to machine operations.
 
 ### Division by zero
 
-Division is special amongst operators in that it can exhibit exceptional
-behaviour. Namely, dividing by zero is an error. In most languages this would
-raise an exception but in this language it produces an impure type. There are
-two ways the type checker can be assured that a division operation is safe.
-
-The first, is to use an `or` expression to resolve the impure return type and
-return a zero value. The second is to pre-check that the divisor is safe
-(non-zero). If the divisor is checked to be non-zero and it can't be mutated
-between the check and the usage, then the compiler will allow the inline 
-division.
+`/` and `%` are special amongst operators in that they can exhibit exceptional
+behaviour. Namely, a zero divisor has no answer. In most languages this raises
+an exception or faults; in this language it produces an impure type, so the
+possibility is in the type and cannot be reached by accident.
 
 ```
-// wrapping the division in parenthesis is preferred but not manditory
-x := (6 / 0 or { 0 }) + 1 // => 1
+n := 10
+d := readDivisor()
 
-divisor := 1
-if divisor == 0 { 
-  // do some logging, return an error, etc
-  return BadCalculation{message: "Division by zero"}
+x := n / d or { 0 }   // n / d is `int | error`
+y := n % d or { 0 }   // so is n % d
+```
+
+The error is `DivideByZero`, a built-in error like `Missing`. It is nominal, so
+a handler can tell it apart from anything else the union carries:
+
+```
+v := n / d or |e| {
+  if e is DivideByZero { log.Warn(e.message) }
+  0
 }
-
-// divisor was checked and divisor is not zero and has not been mutated
-result := 42 / divisor + 10 // safe, no `or` check necessary
 ```
 
-This eliminates the possibility of a "div by zero" crashing a program. The
-compiler will warn you if the division is unsafe and not handled.
+**A divisor that cannot be zero needs no `or`.** When the compiler can evaluate
+the divisor and it is not zero, the operation cannot fail and its type is the
+plain result — a union carrying an error that can never arrive is noise the
+reader would have to handle anyway:
+
+```
+if n % 2 == 0 { ... }   // `%` by a literal: plain int, no `or`
+half int = n / 2        // likewise
+
+const Stride = 8
+i := offset / Stride    // a named constant is just as knowable
+```
+
+Today "can evaluate" means a compile-time constant. Narrowing a variable from a
+preceding `if d == 0` guard is flow analysis and is not implemented, so a
+checked variable still needs `or`.
+
+**Float division never fails.** All of this is about integers, where the
+hardware faults and there is no answer to return. IEEE 754 defines the float
+answers — `±inf`, and `nan` for `0.0 / 0.0` — and the hardware produces them
+without trapping, so `float / float` is a plain `float`. An error alternative
+there could never be delivered, which is the same reason a known non-zero
+divisor drops it.
+
+```
+x := 1.0 / 0.0   // inf, and x is float — no `or` to write
+y := 0.0 / 0.0   // nan
+```
+
+Note what this does **not** cover: signed overflow. `INT64_MIN / -1` has no
+representable answer and still faults, as does `+` or `*` past the end of the
+range — Saga has no overflow story yet, and division is not the place to invent
+one.
 
 ## Concurrency
 
@@ -1984,7 +2247,7 @@ passed in, like any other Generic type.
 
 ```
 t := spawn { ... }
-t.Alive?() // is thread running?
+t.Alive() // is thread running?
 t.Cancel() // ask the thread to stop
 t.Term() // terminate the thread immediately
 t.Wait() // block until the thread finishes
@@ -1992,7 +2255,7 @@ t.Wait() // block until the thread finishes
 
 From inside the thread, you get a context task.
 ```
-t.Cancelled?() // did the parent call Cancel()?
+t.Cancelled() // did the parent call Cancel()?
 t.Error() // exit with an error
 t.Exit() // exit with a value
 t.Send() // non-blocking, buffered

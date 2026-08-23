@@ -1,0 +1,12 @@
+// Spec: a `break` with a value is what the loop evaluates to, which leaves
+// nothing to ever read the accumulator. Carry state in a local instead.
+import "std/io"
+
+pub fn Main() void {
+  arr := [1, 2, 3]
+  found := for i : arr |acc int| {
+    if i == 2 { break i }
+    acc += i
+  }
+  io.Println("{found is int}")
+}

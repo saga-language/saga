@@ -101,14 +101,14 @@ TEST(Builtins, TaskAndContextTypes) {
 
   auto &task_info = std::get<StructTypeInfo>(types.task_type->detail);
   EXPECT_EQ(task_info.name, "Task");
-  EXPECT_GE(task_info.methods.size(), 4u); // Alive?, Cancel, Term, Wait
+  EXPECT_GE(task_info.methods.size(), 4u); // Alive, Cancel, Term, Wait
 
   EXPECT_NE(types.context_type, nullptr);
   EXPECT_EQ(types.context_type->kind, TypeKind::Struct);
 
   auto &ctx_info = std::get<StructTypeInfo>(types.context_type->detail);
   EXPECT_EQ(ctx_info.name, "Context");
-  EXPECT_GE(ctx_info.methods.size(), 3u); // Cancelled?, Exit, Send
+  EXPECT_GE(ctx_info.methods.size(), 3u); // Cancelled, Exit, Send
 }
 
 TEST(Builtins, RegisterPopulatesScope) {

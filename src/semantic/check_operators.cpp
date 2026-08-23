@@ -10,6 +10,22 @@
 
 namespace saga {
 
+// The spec's second route to a safe division: a divisor the compiler can see is
+// non-zero. Only a compile-time constant qualifies here; narrowing from a
+// preceding `if d == 0` guard is flow analysis and is not implemented, so a
+// checked variable still needs `or`.
+bool Analyzer::divisor_is_known_nonzero(const Node &rhs) {
+  auto cv = evaluate_constant(rhs);
+  if (!cv)
+    return false;
+  switch (cv->kind) {
+  case ConstValue::Kind::Int:   return cv->i != 0;
+  case ConstValue::Kind::Float: return cv->f != 0.0;
+  case ConstValue::Kind::Bool:  return false;
+  }
+  return false;
+}
+
 TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
                                             const Node &parent,
                                             const TypePtr &lhs,
@@ -83,24 +99,18 @@ TypePtr Analyzer::check_struct_binary_expr(const BinaryExprNode &node,
   // ── Equality ──────────────────────────────────────────────────────────────
   case K::Equal:
   case K::NotEqual:
-    // Prefer Equals (runtime convention), then Equal (interface name),
-    // then Compare as a fallback (Comparison.Equal == 1).
+    // Prefer Equals, then Compare as a fallback (Comparison.Equal == 1).
     if (has_method("Equals")) {
       expect_assignable(node.rhs->span, lhs, rhs, "Equals argument");
       return resolve("Equals", builtins.bool_type);
     }
-    if (has_method("Equal")) {
-      expect_assignable(node.rhs->span, lhs, rhs, "Equal argument");
-      return resolve("Equal", builtins.bool_type);
-    }
     if (has_method("Compare")) {
-      // Fall back: Compare() == Comparison.Equal (1) → Bool.
       expect_assignable(node.rhs->span, lhs, rhs, "Compare argument");
       return resolve("Compare", builtins.bool_type);
     }
     error(node.span,
-          std::format("type {} does not support equality (no Equals, Equal, "
-                      "or Compare method)",
+          std::format("type {} does not support equality (no Equals or "
+                      "Compare method)",
                       type_to_string(lhs)));
     return builtins.invalid_type;
 
@@ -147,6 +157,9 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
 
   if (is_invalid_type(lhs) || is_invalid_type(rhs))
     return builtins.invalid_type;
+
+  lhs = bubble_operand(*node.lhs, std::move(lhs));
+  rhs = bubble_operand(*node.rhs, std::move(rhs));
 
   // Errors compare by value: `==`/`!=` on two errors is structural (same type
   // and equal fields). Errors have no methods, so they never reach the struct
@@ -200,8 +213,7 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
   case K::Add:
   case K::Sub:
   case K::Multiply:
-  case K::Pow:
-  case K::Modulo: {
+  case K::Pow: {
     // String concatenation with +.
     if (node.op == K::Add && lhs->kind == TypeKind::String &&
         rhs->kind == TypeKind::String) {
@@ -222,8 +234,18 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     return common_type(lhs, rhs);
   }
 
-  // Division: returns T | Error (division by zero).
-  case K::Divide: {
+  // Integer division and remainder: `T | error`. Neither has an answer for a
+  // zero divisor, and the machine instruction faults rather than producing
+  // one, so the type is what forces the caller to say what should happen
+  // instead.
+  //
+  // Float division is not in that position: IEEE 754 defines the zero-divisor
+  // results (±inf, and nan for 0.0/0.0), the hardware produces them without
+  // trapping, and so an error alternative there could never be delivered. The
+  // same reasoning already exempts a divisor the compiler can see is non-zero,
+  // which is what keeps `n % 2 == 0` working.
+  case K::Divide:
+  case K::Modulo: {
     if (!is_numeric(lhs) || !is_numeric(rhs)) {
       error(node.span,
             std::format("division requires numeric types, got {} and {}",
@@ -231,6 +253,8 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
       return builtins.invalid_type;
     }
     auto result = common_type(lhs, rhs);
+    if (result->kind == TypeKind::Float || divisor_is_known_nonzero(*node.rhs))
+      return result;
     return make_union_type({result, builtins.error_base});
   }
 

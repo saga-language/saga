@@ -10,7 +10,20 @@
 
 namespace saga {
 
+// The init binding lives in a scope of its own so it is visible to the
+// condition and both blocks and to nothing after them.
 TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
+  if (!node.init)
+    return check_if_arms(node);
+
+  push_scope(ScopeKind::Block);
+  check_root_expr(**node.init);
+  auto result = check_if_arms(node);
+  pop_scope();
+  return result;
+}
+
+TypePtr Analyzer::check_if_arms(const IfExprNode &node) {
   auto cond_type = check_expr(*node.condition);
   expect_bool(node.condition->span, cond_type);
 
@@ -60,6 +73,17 @@ TypePtr Analyzer::check_if_expr(const IfExprNode &node) {
 }
 
 TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
+  if (!node.init)
+    return check_switch_arms(node);
+
+  push_scope(ScopeKind::Block);
+  check_root_expr(**node.init);
+  auto result = check_switch_arms(node);
+  pop_scope();
+  return result;
+}
+
+TypePtr Analyzer::check_switch_arms(const SwitchExprNode &node) {
   auto subject_type = check_expr(*node.subject);
   TypePtr result_type = nullptr;
 
@@ -194,8 +218,47 @@ TypePtr Analyzer::check_switch_expr(const SwitchExprNode &node) {
   return result_type ? result_type : builtins.void_type;
 }
 
+// The accumulator's type comes from the pipe when the pipe says, and from
+// whatever the loop's value lands in when it does not.  Both silent leaves a
+// loop with no type to build an accumulator out of.
+TypePtr Analyzer::check_accumulator_type(const AccumulatorNode &acc,
+                                         const TypePtr &hint) {
+  TypePtr declared;
+  if (acc.type) {
+    declared = resolve_type(**acc.type);
+    if (declared)
+      record_type(**acc.type, declared);
+  }
+
+  if (acc.init) {
+    auto init_type = check_root_expr_expecting(**acc.init, declared);
+    if (!declared)
+      return init_type;
+    if (!is_invalid_type(init_type))
+      expect_assignable((*acc.init)->span, declared, init_type,
+                        "accumulator initializer");
+    return declared;
+  }
+
+  if (declared)
+    return declared;
+  if (hint)
+    return hint;
+
+  error(acc.span, "the accumulator needs a type: give it one here, or type "
+                  "the variable the loop's value lands in");
+  return builtins.invalid_type;
+}
+
 TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                                  TypePtr accumulator_hint) {
+  // Before the loop scope: the initializer is evaluated once, outside, so the
+  // loop variables are not in view.
+  TypePtr acc_type =
+      node.accumulator
+          ? check_accumulator_type(*node.accumulator, accumulator_hint)
+          : builtins.void_type;
+
   push_scope(ScopeKind::Loop);
   break_value_types_.emplace_back();
 
@@ -203,6 +266,15 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
     std::visit(overloaded{
                    [&](const ForRangeClauseNode &range) {
                      auto iter_type = check_expr(*range.iterable);
+                     // A range's values are all it has: the position is the
+                     // value less the low bound, so there is no second thing
+                     // to bind.
+                     if (range.vars.size() > 1 &&
+                         std::holds_alternative<RangeNode>(
+                             range.iterable->data))
+                       error(range.vars[1].span,
+                             "a range gives values, not pairs; drop the "
+                             "second name");
                      // Infer loop variable types from the iterable.
                      TypePtr elem_type = builtins.invalid_type;
                      TypePtr key_type = builtins.int_type;
@@ -352,13 +424,12 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
                (*node.mode)->data);
   }
 
-  // Accumulator pipe — typed from the variable declaration's type hint.
-  TypePtr acc_type = accumulator_hint ? accumulator_hint : builtins.void_type;
   if (node.accumulator) {
+    auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
     current_scope->symbols.emplace(
-        std::string(node.accumulator->name),
-        Symbol::variable(std::string(node.accumulator->name), acc_type,
-                         node.accumulator->span));
+        std::string(ident.name),
+        Symbol::variable(std::string(ident.name), acc_type, ident.span));
+    record_type(*node.accumulator->name, acc_type);
   }
 
   auto &body_block = std::get<BlockNode>(node.body->data);
@@ -373,6 +444,14 @@ TypePtr Analyzer::check_for_expr(const ForExprNode &node,
   pop_scope();
 
   if (!break_types.empty()) {
+    // Two answers to "what is this loop's value", and the break wins — which
+    // leaves nothing to ever read the accumulator. A local declared ahead of
+    // the loop carries state across iterations just as well.
+    if (node.accumulator)
+      error(node.accumulator->span,
+            "the accumulator can never be read: a 'break' with a value is "
+            "what this loop evaluates to");
+
     std::vector<TypePtr> alts;
     for (auto &bt : break_types) {
       bool seen = false;
@@ -501,38 +580,53 @@ TypePtr Analyzer::or_error_type(const TypePtr &union_type) {
   return make_union_type(std::move(errs));
 }
 
-TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
-  auto expr_type = check_expr(*node.expr);
-
-  if (is_invalid_type(expr_type)) {
-    // Still check the fallback block for internal errors.
-    push_scope(ScopeKind::Block);
-    if (node.pipe) {
-      current_scope->symbols.emplace(
-          std::string(node.pipe->name),
-          Symbol::variable(std::string(node.pipe->name), builtins.error_base,
-                           node.pipe->span));
-    }
-    auto &block = std::get<BlockNode>(node.fallback->data);
-    check_block(block);
-    pop_scope();
-    return builtins.invalid_type;
-  }
-
-  // The or-clause strips the error from the union.
+// The handler is checked even when the subject is rejected, so a mistake
+// inside it is reported on the same run as the one around it.
+TypePtr Analyzer::check_or_fallback(const OrExprNode &node,
+                                    const TypePtr &err_type) {
   push_scope(ScopeKind::Block);
-
   if (node.pipe) {
     current_scope->symbols.emplace(
         std::string(node.pipe->name),
-        Symbol::variable(std::string(node.pipe->name),
-                         or_error_type(expr_type), node.pipe->span));
+        Symbol::variable(std::string(node.pipe->name), err_type,
+                         node.pipe->span));
+  }
+  auto type = check_block(std::get<BlockNode>(node.fallback->data));
+  pop_scope();
+  return type;
+}
+
+bool Analyzer::can_be_error(const TypePtr &type) const {
+  if (!type)
+    return false;
+  if (is_error_valued(type))
+    return true;
+  if (type->kind != TypeKind::Union)
+    return false;
+  for (auto &alt : std::get<UnionTypeInfo>(type->detail).alternatives)
+    if (is_error_valued(alt))
+      return true;
+  return false;
+}
+
+TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
+  auto expr_type = check_root_expr(*node.expr);
+
+  if (is_invalid_type(expr_type)) {
+    check_or_fallback(node, builtins.error_base);
+    return builtins.invalid_type;
   }
 
-  auto &block = std::get<BlockNode>(node.fallback->data);
-  auto fallback_type = check_block(block);
+  if (!can_be_error(expr_type)) {
+    check_or_fallback(node, builtins.error_base);
+    error(node.expr->span,
+          std::format("'or' expects a value that can be an error, got {}",
+                      type_to_string(expr_type)));
+    return builtins.invalid_type;
+  }
 
-  pop_scope();
+  auto fallback_type = check_or_fallback(node, or_error_type(expr_type));
+  auto &block = std::get<BlockNode>(node.fallback->data);
 
   // Strip error members from the union to get the purified type.
   if (expr_type->kind == TypeKind::Union) {

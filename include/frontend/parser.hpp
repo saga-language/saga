@@ -75,6 +75,10 @@ private:
   /// Look at the next token without consuming it.
   Token peek() const;
 
+  /// From a current "{", whether the token past its matching "}" is ":=" —
+  /// the only thing that tells a destructure pattern from a map literal.
+  bool brace_closes_before_decl_assign() const;
+
   /// Skip Terminator tokens (newlines). Returns how many were skipped.
   int skip_terminators();
 
@@ -174,7 +178,7 @@ private:
   void apply_block_margin(std::vector<NodePtr> &fragments,
                           std::span<const RawFragment> raws);
   NodePtr parse_array_literal();  // "[" ... "]"
-  NodePtr parse_map_or_block();   // disambiguate "{" — map literal vs block
+  NodePtr parse_map_literal();    // "{" in expression position
 
   NodePtr parse_struct_literal(NodePtr type_expr); // after type identifier
   NodePtr parse_group_expr(); // "(" Expression ")"
@@ -192,14 +196,25 @@ private:
 
   NodePtr parse_call_args(NodePtr callee);      // after "("
   NodePtr parse_index_or_slice(NodePtr object); // after "["
+  /// `low ".." high`, positioned on the "..", fencing the high bound at max_bp.
+  NodePtr parse_range(NodePtr low, size_t start, int max_bp);
   NodePtr parse_selector(NodePtr object);       // after "."
   NodePtr parse_or_expr(NodePtr expr);          // after "or"
   std::optional<IdentifierNode> parse_pipe();   // "|" ident "|"
+  /// `|acc T = e|` — the accumulator's name with its optional declaration.
+  std::optional<AccumulatorNode> parse_accumulator_pipe();
 
   // ── Statement Parsing ────────────────────────────────────────────────
 
   NodePtr parse_statement();
   NodePtr parse_decl_assign(); // IdentifierList ":=" ExpressionList
+  /// `{a, b: c} := expr`, positioned on the "{".
+  NodePtr parse_destructure(size_t start);
+  /// Whether what follows an already-parsed header expression turns it into a
+  /// binding: a `:=`, or a type after an identifier.
+  bool starts_init_clause(const Node &leading) const;
+  /// Finish an init clause whose leading expression is `leading`.
+  NodePtr parse_init_clause(const Node &leading, size_t start);
   NodePtr parse_assignment(NodePtr target); // target = ... | += ... | ...
   NodePtr parse_return();
   NodePtr parse_break();

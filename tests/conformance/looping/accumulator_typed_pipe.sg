@@ -1,0 +1,32 @@
+// Spec: the accumulator is a declaration. It takes a type, an initializer, or
+// both, in the pipe that names it — so a `:=` on the left needs no annotation.
+import "std/io"
+
+pub fn Main() void {
+  arr := [1, 2, 3, 4]
+
+  sum := for i : arr |acc int| { acc += i }
+  io.Println("sum {sum}")
+
+  // No type: the initializer says what it is, and where it starts.
+  product := for i : arr |acc = 1| { acc *= i }
+  io.Println("product {product}")
+
+  offset := for i : arr |acc int = 100| { acc += i }
+  io.Println("offset {offset}")
+
+  // A reference-typed accumulator starts empty, not null.
+  evens := for i : arr |acc array{int}| {
+    if i % 2 == 0 { acc = acc.Append(i) }
+  }
+  io.Println("evens {evens.Size()}")
+
+  joined := for i : arr |acc string = "n"| { acc += i.String() }
+  io.Println("joined {joined}")
+
+  // A union accumulator: the closing bar is not another alternative.
+  held := for i : arr |acc int | string = "start"| {
+    if i == 4 { acc = i }
+  }
+  io.Println("held {held is int}")
+}

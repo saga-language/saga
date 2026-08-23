@@ -156,6 +156,16 @@ struct Analyzer {
   /// Maps each identifier AST node to the Symbol it resolves to.
   std::unordered_map<const Node *, Symbol> node_symbols;
 
+  /// Root expressions a `?` sent an error to, mapped to the type carrying it.
+  /// Present only where a landing has to be built.
+  std::unordered_map<const Node *, TypePtr> promotion_root_types;
+
+  /// Operands whose error alternatives were sent to the enclosing root without
+  /// a `?`, mapped to what the operand is left holding. Codegen must escape at
+  /// exactly these nodes and read the purified type after it does, so both are
+  /// recorded here rather than re-derived from `node_types`.
+  std::unordered_map<const Node *, TypePtr> bubbled_operands;
+
   /// Maps each generic instantiation site to its type-argument bindings.
   std::unordered_map<const Node *, std::unordered_map<uint32_t, TypePtr>>
       node_type_args;
@@ -398,6 +408,17 @@ struct Analyzer {
   std::vector<const Node *> spawn_node_stack_;
   /// Pointer to the current spawn node being resolved (top of stack).
   const Node *pending_spawn_node_ = nullptr;
+
+  // ── Error promotion state ────────────────────────────────────────────
+  /// One frame per root expression; `?` deposits the error alternatives it
+  /// resolved so the root can re-attach them to its own type. `origin` is
+  /// where the first one left, which is where a root with no type to attach
+  /// them to reports.
+  struct BubbleFrame {
+    std::vector<TypePtr> errors;
+    Span origin{};
+  };
+  std::vector<BubbleFrame> bubble_frames_;
 
   // ── Construction ─────────────────────────────────────────────────────
 
@@ -735,6 +756,7 @@ private:
   void resolve_stmt(const Node &node);
   void resolve_var_decl(const VarDeclNode &node, const Node &parent);
   void resolve_decl_assign(const DeclAssignNode &node, const Node &parent);
+  void resolve_destructure(const DestructureNode &node);
   void resolve_assign(const AssignNode &node);
   void resolve_return(const ReturnNode &node);
   void resolve_break(const BreakNode &node);
@@ -755,15 +777,38 @@ private:
   TypePtr check_float_literal(const FloatLiteralNode &node);
   TypePtr check_string_literal(const StringLiteralNode &node);
   TypePtr check_array_literal(const ArrayLiteralNode &node);
+  /// The type of the values a range produces, not of the range itself.
+  TypePtr check_range(const RangeNode &node);
   TypePtr check_map_literal(const MapLiteralNode &node);
   TypePtr check_struct_literal(const StructLiteralNode &node);
   TypePtr check_binary_expr(const BinaryExprNode &node, const Node &parent);
   TypePtr check_unary_expr(const UnaryExprNode &node);
   TypePtr check_is_expr(const IsExpr &node);
+  /// Reject a call whose method writes through its receiver when that
+  /// receiver is a constant.
+  void reject_mutating_call_on_constant(const CallExprNode &node,
+                                        const SelectorNode &sel);
+
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);
   TypePtr reject_type_as_value(const Node &node);
+
+  // ── Error promotion ─────────────────────────────────────────────────
+  TypePtr check_promote_expr(const PromoteExprNode &node);
+  TypePtr reject_promotion(Span span, const TypePtr &operand);
+  /// Send an operand's error alternatives to the enclosing root and continue
+  /// on what remains. No-op outside a root, or on a type carrying no error.
+  TypePtr bubble_operand(const Node &expr, TypePtr type);
+  TypePtr bubble_into(const Node &expr, TypePtr type, const TypePtr &expected);
+  /// Check an expression that begins a root: errors `?` resolved inside it
+  /// re-attach to the type this returns.
+  TypePtr check_root_expr(const Node &node);
+  TypePtr check_root_expr_expecting(const Node &node, const TypePtr &expected);
+  TypePtr finish_root(const Node &node, TypePtr type);
+  void deposit_errors(const std::vector<TypePtr> &errors, Span origin);
+  TypePtr attach_bubbled_errors(TypePtr type,
+                                const std::vector<TypePtr> &errors);
 
   // ── check_selector helpers ──────────────────────────────────────────
   TypePtr resolve_module_selector(const ModuleTypeInfo &mod,
@@ -795,13 +840,21 @@ private:
   TypePtr resolve_union_method(const TypePtr &union_type,
                                const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
+  TypePtr check_if_arms(const IfExprNode &node);
   TypePtr check_switch_expr(const SwitchExprNode &node);
+  TypePtr check_switch_arms(const SwitchExprNode &node);
+  TypePtr check_accumulator_type(const AccumulatorNode &acc,
+                                 const TypePtr &hint);
   TypePtr check_for_expr(const ForExprNode &node,
                          TypePtr accumulator_hint = nullptr);
   TypePtr check_spawn_expr(const SpawnExprNode &node, const Node &parent);
   TypePtr instantiate_task_type(const TypePtr &chan_type);
   TypePtr check_or_expr(const OrExprNode &node);
   TypePtr or_error_type(const TypePtr &union_type);
+  TypePtr check_or_fallback(const OrExprNode &node, const TypePtr &err_type);
+  /// Whether a value could arrive as an error — an error type, or a union with
+  /// an error alternative. What `or` and `?` both need to have anything to do.
+  bool can_be_error(const TypePtr &type) const;
   TypePtr check_func_expr(const FuncExprNode &node, const Node &parent);
   TypePtr check_group_expr(const GroupExprNode &node);
   TypePtr check_import_expr(const ImportExprNode &node);
@@ -810,6 +863,9 @@ private:
   void check_stmt(const Node &node);
   void check_var_decl(const VarDeclNode &node, const Node &parent);
   void check_decl_assign(const DeclAssignNode &node);
+  void check_destructure(const DestructureNode &node);
+  /// Give a `:=` target its type, whether it came from the value or a field.
+  void bind_declared_local(const IdentifierNode &ident, const TypePtr &type);
 
   /// Reports and poisons a binding whose type still holds an inference hole.
   TypePtr resolve_binding_type(TypePtr type, Span span);
@@ -851,6 +907,11 @@ private:
   /// operation is undefined (divide/modulo by zero, shift out of
   /// range); other unreducible shapes return nullopt silently.
   std::optional<ConstValue> evaluate_constant(const Node &expr);
+
+  /// Whether a division's right operand is provably non-zero, in which case the
+  /// operation cannot fail and its type is the plain result rather than a union
+  /// carrying an error that can never arrive.
+  bool divisor_is_known_nonzero(const Node &rhs);
 
   // Struct operator overloading helper.
   TypePtr check_struct_binary_expr(const BinaryExprNode &node,

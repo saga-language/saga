@@ -90,15 +90,16 @@ TEST(Lexer, Scan_Identifier_SingleCharacter) {
   ASSERT_EQ(t.offset, 0);
 }
 
-TEST(Lexer, Scan_Identifier_WithQuestionMark) {
+TEST(Lexer, Scan_Identifier_StopsAtQuestionMark) {
   Lexer l;
   auto f = File::from_source("test.txt", "active?");
   l.init(f.get());
   auto t = l.scan();
 
   ASSERT_EQ(t.kind, Token::Kind::Identifier);
-  ASSERT_EQ(t.literal, "active?");
+  ASSERT_EQ(t.literal, "active");
   ASSERT_EQ(t.offset, 0);
+  ASSERT_EQ(l.scan().kind, Token::Kind::QuestionMark);
 }
 
 // Number literal tests

@@ -544,11 +544,10 @@ TEST(TypeCheck, ForIterClause) {
 // ===========================================================================
 
 TEST(TypeCheck, OrExprStripsError) {
-  // The or clause should work without errors on basic usage.
   auto r = TC::from(
-      "fn f() {\n"
-      "  x := 1\n"
-      "  x or { 0 }\n"
+      "fn f(d int) {\n"
+      "  x := 10 / d\n"
+      "  _ := x or { 0 }\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1068,18 +1067,18 @@ TEST(TypeCheck, UnionTypeVarDecl) {
 }
 
 TEST(TypeCheck, DivisionOrExprStripsToInt) {
-  // Division returns Int | Error, or should strip to Int.
+  // Division by a divisor that could be zero is int | error; or strips it.
   auto r = TC::from(
-      "fn f() int {\n"
-      "  10 / 2 or { 0 }\n"
+      "fn f(d int) int {\n"
+      "  10 / d or { 0 }\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
 
 TEST(TypeCheck, OrExprWithPipeVariable) {
   auto r = TC::from(
-      "fn f() int {\n"
-      "  10 / 2 or |err| { _ := err\n    0 }\n"
+      "fn f(d int) int {\n"
+      "  10 / d or |err| { _ := err\n    0 }\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
@@ -1087,21 +1086,21 @@ TEST(TypeCheck, OrExprWithPipeVariable) {
 TEST(TypeCheck, OrExprEmptyBlock) {
   // Empty or block returns zero value of the type.
   auto r = TC::from(
-      "fn f() {\n"
-      "  x := 10 / 2 or {}\n"
+      "fn f(d int) {\n"
+      "  x := 10 / d or {}\n"
       "  _ := x\n"
       "}");
   EXPECT_TRUE(r.ok());
 }
 
-TEST(TypeCheck, OrExprOnNonUnionPassesThrough) {
-  // Using or on a non-union type should not error (it's a no-op).
+TEST(TypeCheck, OrExprOnNonErrorRejected) {
+  // A handler that can never run is dead code the compiler can see.
   auto r = TC::from(
       "fn f() {\n"
       "  x := 42\n"
-      "  x or { 0 }\n"
+      "  _ := x or { 0 }\n"
       "}");
-  EXPECT_TRUE(r.ok());
+  EXPECT_FALSE(r.ok());
 }
 
 TEST(TypeCheck, PureUnionType) {
@@ -1129,8 +1128,8 @@ TEST(TypeCheck, OrExprStripsManyToUnion) {
   // We can't easily construct this without a function that returns it,
   // but we can verify the general analysis doesn't crash.
   auto r = TC::from(
-      "fn f() {\n"
-      "  x := 10 / 2\n"
+      "fn f(d int) {\n"
+      "  x := 10 / d\n"
       "  y := x or { 0 }\n"
       "  _ := y\n"
       "}");

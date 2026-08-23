@@ -1,0 +1,39 @@
+// Spec: a receiver names the value the caller passed, not a copy of it. Saga
+// has one receiver spelling, so a method that writes a field has to reach the
+// caller's value — the alternative is a write that compiles and does nothing.
+import "std/io"
+
+struct Counter { n int }
+struct Holder { c Counter }
+
+pub fn (c Counter) Bump() void { c.n = c.n + 1 }
+
+pub fn (c Counter) Advance(step int) int {
+  c.n += step
+  c.n
+}
+
+pub fn (c Counter) Reset() void {
+  if c.n > 0 { c.n = 0 }
+}
+
+pub fn (c Counter) Incremented() Counter { Counter{n: c.n + 1} }
+
+pub fn Main() void {
+  c := Counter{n: 1}
+  c.Bump()
+  io.Println("bump {c.n}")
+
+  io.Println("advance {c.Advance(5)} {c.n}")
+
+  h := Holder{c: Counter{n: 3}}
+  h.c.Bump()
+  io.Println("field {h.c.n}")
+
+  c.Reset()
+  io.Println("nested {c.n}")
+
+  d := Counter{n: 9}
+  e := d.Incremented()
+  io.Println("returned {d.n} {e.n}")
+}

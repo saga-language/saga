@@ -41,6 +41,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
           [&](const ArrayLiteralNode &n) -> TypePtr {
             return check_array_literal(n);
           },
+          [&](const RangeNode &n) -> TypePtr {
+            return make_array_type(check_range(n));
+          },
           [&](const MapLiteralNode &n) -> TypePtr {
             return check_map_literal(n);
           },
@@ -54,6 +57,9 @@ TypePtr Analyzer::check_expr(const Node &node) {
             return check_unary_expr(n);
           },
           [&](const IsExpr &n) -> TypePtr { return check_is_expr(n); },
+          [&](const PromoteExprNode &n) -> TypePtr {
+            return check_promote_expr(n);
+          },
           [&](const GroupExprNode &n) -> TypePtr {
             return check_group_expr(n);
           },
@@ -94,6 +100,10 @@ TypePtr Analyzer::check_expr(const Node &node) {
           },
           [&](const DeclAssignNode &n) -> TypePtr {
             check_decl_assign(n);
+            return builtins.void_type;
+          },
+          [&](const DestructureNode &n) -> TypePtr {
+            check_destructure(n);
             return builtins.void_type;
           },
           [&](const AssignNode &n) -> TypePtr {
@@ -256,6 +266,27 @@ TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
   return builtins.string_type;
 }
 
+// A range counts, so both bounds must be countable and agree on what they are
+// counting.  The answer is the type of the values it produces, not of the
+// range itself, which is an array in expression position and none in a loop.
+TypePtr Analyzer::check_range(const RangeNode &node) {
+  auto low = check_expr(*node.low);
+  auto high = check_expr(*node.high);
+
+  for (auto [type, bound] : {std::pair{low, node.low.get()},
+                             std::pair{high, node.high.get()}}) {
+    if (is_invalid_type(type))
+      return builtins.invalid_type;
+    if (!satisfies_constraint(type, TypeConstraint::Integer))
+      error(bound->span, std::format("a range counts, so its bounds must be "
+                                     "integers, got {}",
+                                     type_to_string(type)));
+  }
+
+  expect_assignable(node.high->span, low, high, "range bound");
+  return low;
+}
+
 TypePtr Analyzer::check_array_literal(const ArrayLiteralNode &node) {
   if (node.elements.empty()) {
     // The element type comes from the context. A hole that never meets one is
@@ -339,7 +370,8 @@ TypePtr Analyzer::check_struct_literal(const StructLiteralNode &node) {
   for (auto &fa : node.fields) {
     auto it = field_type_by_name.find(std::string(fa.name.name));
     TypePtr expected = it != field_type_by_name.end() ? it->second : nullptr;
-    auto val_type = check_expr_expecting(*fa.value, expected);
+    auto val_type = bubble_into(
+        *fa.value, check_expr_expecting(*fa.value, expected), expected);
     field_vals.push_back({std::string(fa.name.name), val_type});
   }
 

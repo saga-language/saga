@@ -1,0 +1,14 @@
+// Spec: ".." is not an infix operator, so an index expression is parsed at
+// full binding power — including the `or` that resolves a fallible index.
+import "std/io"
+
+fn pick(d int) int | error { 10 / d }
+
+pub fn Main() void {
+  xs := [1, 2, 3, 4, 5, 6]
+  v := xs[pick(0) or { 1 }] or { -1 }
+  io.Println("{v}")
+
+  w := xs[pick(5) or { 0 }] or { -1 }
+  io.Println("{w}")
+}

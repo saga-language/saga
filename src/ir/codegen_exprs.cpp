@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -50,7 +51,7 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_for_expr(n, node);
           },
           [&](const SwitchExprNode &n) -> llvm::Value * {
-            return emit_switch_expr(n);
+            return emit_switch_expr(n, node);
           },
           [&](const StructLiteralNode &n) -> llvm::Value * {
             return emit_struct_literal(n, node);
@@ -59,10 +60,13 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_selector(n, node);
           },
           [&](const ArrayLiteralNode &n) -> llvm::Value * {
-            return emit_array_literal(n);
+            return emit_array_literal(n, node);
+          },
+          [&](const RangeNode &n) -> llvm::Value * {
+            return emit_range_literal(n);
           },
           [&](const MapLiteralNode &n) -> llvm::Value * {
-            return emit_map_literal(n);
+            return emit_map_literal(n, node);
           },
           [&](const IndexExprNode &n) -> llvm::Value * {
             return emit_index_expr(n);
@@ -122,6 +126,10 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             emit_decl_assign(n);
             return nullptr;
           },
+          [&](const DestructureNode &n) -> llvm::Value * {
+            emit_destructure(n);
+            return nullptr;
+          },
           [&](const AssignNode &n) -> llvm::Value * {
             emit_assign(n);
             return nullptr;
@@ -137,6 +145,9 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
           [&](const DecrementNode &n) -> llvm::Value * {
             emit_decrement(n);
             return nullptr;
+          },
+          [&](const PromoteExprNode &n) -> llvm::Value * {
+            return emit_promote_expr(n);
           },
           [&](const auto &) -> llvm::Value * {
             return nullptr;
@@ -186,6 +197,50 @@ static double parse_float_literal(std::string_view lit) {
   double val = 0.0;
   std::from_chars(clean.data(), clean.data() + clean.size(), val);
   return val;
+}
+
+// `sdiv`/`srem` by zero does not produce a value — it faults, and the fault is
+// what the `T | error` type exists to prevent. The divisor is tested first and
+// the error path takes a shared rodata singleton, so a division that never
+// divides by zero costs one predictable branch and no allocation.
+llvm::Value *CodeGen::emit_checked_division(llvm::Value *lhs, llvm::Value *rhs,
+                                            Token::Kind op,
+                                            const TypePtr &result_union) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *zero = llvm::ConstantInt::get(rhs->getType(), 0);
+  auto *by_zero = builder.CreateICmpEQ(rhs, zero, "div.by_zero");
+
+  auto *err_bb = llvm::BasicBlock::Create(context, "div.err", func);
+  auto *ok_bb = llvm::BasicBlock::Create(context, "div.ok", func);
+  auto *merge_bb = llvm::BasicBlock::Create(context, "div.merge", func);
+  builder.CreateCondBr(by_zero, err_bb, ok_bb);
+
+  builder.SetInsertPoint(err_bb);
+  llvm_type(analyzer.builtins.divide_by_zero_type);
+  auto &err_info =
+      std::get<StructTypeInfo>(analyzer.builtins.divide_by_zero_type->detail);
+  auto *box = emit_error_singleton(err_info, op == Token::Kind::Modulo
+                                                ? "remainder by zero"
+                                                : "division by zero");
+  auto *err_val =
+      emit_union_wrap(box, analyzer.builtins.error_base, result_union);
+  auto *err_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(ok_bb);
+  llvm::Value *quotient = op == Token::Kind::Modulo
+                              ? builder.CreateSRem(lhs, rhs, "mod")
+                              : builder.CreateSDiv(lhs, rhs, "div");
+  auto *ok_val = emit_union_wrap(quotient, analyzer.builtins.int_type,
+                                 result_union);
+  auto *ok_end_bb = builder.GetInsertBlock();
+  builder.CreateBr(merge_bb);
+
+  builder.SetInsertPoint(merge_bb);
+  auto *phi = builder.CreatePHI(ok_val->getType(), 2, "div.result");
+  phi->addIncoming(err_val, err_end_bb);
+  phi->addIncoming(ok_val, ok_end_bb);
+  return phi;
 }
 
 llvm::Value *CodeGen::emit_int_literal(const IntegerLiteralNode &node) {
@@ -339,23 +394,28 @@ llvm::Value *CodeGen::make_string_constant(const std::string &text) {
 // Semantic type query
 // ===========================================================================
 
-TypePtr CodeGen::semantic_type(const Node &node) const {
-  // Structural aliases are transparent (no methods, same ABI), so unwrap them
-  // here: every codegen decision that branches on a type's kind (union, struct,
-  // …) then sees through a `type U = A | B` name. Nominal aliases are kept.
+TypePtr CodeGen::declared_type(const Node &node) const {
   if (current_instantiation_) {
     auto it = current_instantiation_->node_types.find(&node);
     if (it != current_instantiation_->node_types.end())
-      return unwrap_structural_alias(it->second);
+      return it->second;
   }
   auto it = analyzer.node_types.find(&node);
-  if (it != analyzer.node_types.end())
-    return unwrap_structural_alias(it->second);
-  return nullptr;
+  return it != analyzer.node_types.end() ? it->second : nullptr;
+}
+
+TypePtr CodeGen::semantic_type(const Node &node) const {
+  return unwrap_alias(declared_type(node));
 }
 
 TypePtr CodeGen::block_result_type(const BlockNode &block) const {
-  return block.stmts.empty() ? nullptr : semantic_type(*block.stmts.back());
+  return block.stmts.empty() ? nullptr : root_expr_type(*block.stmts.back());
+}
+
+TypePtr CodeGen::body_result_type(const Node &body) const {
+  if (auto *block = std::get_if<BlockNode>(&body.data))
+    return block_result_type(*block);
+  return semantic_type(body);
 }
 
 // ---------------------------------------------------------------------------
@@ -478,166 +538,86 @@ CodeGen::node_type_args_of(const Node &node) const {
 // Struct operator overloading
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
-                                             const Node &parent,
-                                             const TypePtr &lhs_sem,
+static const FuncTypeInfo *operator_method_signature(const StructTypeInfo &info,
+                                                    const std::string &method) {
+  for (auto &m : info.methods) {
+    if (m.name != method)
+      continue;
+    if (m.signature && m.signature->kind == TypeKind::Func)
+      return &std::get<FuncTypeInfo>(m.signature->detail);
+    return nullptr;
+  }
+  return nullptr;
+}
+
+std::string CodeGen::struct_method_link_name(const StructTypeInfo &info,
                                              const std::string &method) {
-  auto &info = std::get<StructTypeInfo>(lhs_sem->detail);
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  auto ml_it = struct_method_links.find(info.name);
+  if (ml_it != struct_method_links.end())
+    for (auto &[lname, mname] : ml_it->second)
+      if (mname == method)
+        return lname;
+  return mangle(info.name + "__" + method);
+}
 
-  // ── Resolve the mangled link name for the method ──────────────────────────
-  std::string link_name;
-  {
-    auto ml_it = struct_method_links.find(info.name);
-    if (ml_it != struct_method_links.end()) {
-      for (auto &[lname, mname] : ml_it->second) {
-        if (mname == method) {
-          link_name = lname;
-          break;
-        }
-      }
-    }
-    // If not found in links (e.g. cross-package), fall back to current-package
-    // mangling so the linker can resolve it.
-    if (link_name.empty())
-      link_name = mangle(info.name + "__" + method);
-  }
-
-  // ── Find or forward-declare the LLVM function ─────────────────────────────
-  auto *callee = module->getFunction(link_name);
-  if (!callee) {
-    // Determine the return LLVM type from the method name.
-    llvm::Type *ret_ll;
-    if (method == "Compare") {
-      ret_ll = i64_type; // Comparison enum
-    } else if (method == "Equals" || method == "Equal") {
-      ret_ll = i1_type; // Bool
-    } else if (method == "Div") {
-      // Div returns T | Error; we return the union struct ptr.
-      auto union_sem =
-          make_union_type({lhs_sem, analyzer.builtins.error_base});
-      auto *union_st = get_union_llvm_type(union_sem);
-      ret_ll = union_st ? static_cast<llvm::Type *>(union_st) : ptr_type;
-    } else {
-      // Add, Sub, Mul: returns same struct type as self.
-      auto st_it = struct_types.find(info.name);
-      ret_ll = (st_it != struct_types.end())
-                   ? static_cast<llvm::Type *>(st_it->second)
-                   : ptr_type;
-    }
-
-    // Determine the RHS parameter type.
-    auto rhs_sem = semantic_type(*node.rhs);
-    llvm::Type *rhs_ll;
-    if (rhs_sem && rhs_sem->kind == TypeKind::Struct) {
-      auto rhs_st_it = struct_types.find(
-          std::get<StructTypeInfo>(rhs_sem->detail).name);
-      rhs_ll = (rhs_st_it != struct_types.end())
-                   ? static_cast<llvm::Type *>(rhs_st_it->second)
-                   : ptr_type;
-    } else {
-      rhs_ll = rhs_sem ? llvm_type(rhs_sem) : ptr_type;
-    }
-
-    auto *fn_type =
-        llvm::FunctionType::get(ret_ll, {ptr_type, rhs_ll}, false);
-    callee = llvm::Function::Create(
-        fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
-  }
-  if (!callee)
-    return nullptr;
-
-  // ── Build self_ptr for the LHS ─────────────────────────────────────────────
-  // Prefer passing the alloca directly so the method gets a mutable ptr.
-  llvm::Value *self_ptr = nullptr;
-  if (auto *id = std::get_if<IdentifierNode>(&node.lhs->data)) {
-    auto local_it = locals.find(std::string(id->name));
-    if (local_it != locals.end()) {
-      auto *alloca = local_it->second;
-      auto st_it = struct_types.find(info.name);
-      if (st_it != struct_types.end() &&
-          alloca->getAllocatedType() == st_it->second) {
-        self_ptr = alloca; // direct struct alloca — ideal
-      }
-    }
-  }
-  if (!self_ptr) {
-    // Emit the expression and spill to a temp alloca.
-    auto *lhs_val = emit_expr(*node.lhs);
-    if (!lhs_val)
-      return nullptr;
-    auto st_it = struct_types.find(info.name);
-    if (st_it != struct_types.end() &&
-        lhs_val->getType() == st_it->second) {
-      auto *func = builder.GetInsertBlock()->getParent();
-      auto *tmp =
-          create_entry_alloca(func, "op.self.tmp", st_it->second);
-      builder.CreateStore(lhs_val, tmp);
-      self_ptr = tmp;
-    } else {
-      self_ptr = lhs_val; // already a pointer
-    }
-  }
-
-  // ── Emit the RHS argument ────────────────────────────────────────────────
-  auto *rhs_val = emit_expr(*node.rhs);
-  if (!rhs_val)
-    return nullptr;
-
-  // If the RHS is a struct value (not a pointer), spill it too.
-  {
-    auto rhs_sem = semantic_type(*node.rhs);
-    if (rhs_sem && rhs_sem->kind == TypeKind::Struct) {
-      auto &rinfo = std::get<StructTypeInfo>(rhs_sem->detail);
-      auto st_it = struct_types.find(rinfo.name);
-      if (st_it != struct_types.end() &&
-          rhs_val->getType() == st_it->second) {
-        auto *func = builder.GetInsertBlock()->getParent();
-        auto *tmp =
-            create_entry_alloca(func, "op.rhs.tmp", st_it->second);
-        builder.CreateStore(rhs_val, tmp);
-        rhs_val = tmp;
-      }
-    }
-  }
-
-  // ── Call the method ─────────────────────────────────────────────────────────
-  auto *result = builder.CreateCall(callee, {self_ptr, rhs_val}, "op.res");
-
-  // ── Post-process result based on the operator and method ────────────────
+llvm::Value *CodeGen::finish_operator_result(const BinaryExprNode &node,
+                                             const std::string &method,
+                                             llvm::Value *result) {
   using K = Token::Kind;
+  if (!result)
+    return nullptr;
 
   if (method == "Compare") {
-    // Compare returns Comparison enum: Less=0, Equal=1, Greater=2.
-    auto *zero = llvm::ConstantInt::get(i64_type, 0); // Less
-    auto *one  = llvm::ConstantInt::get(i64_type, 1); // Equal
-    auto *two  = llvm::ConstantInt::get(i64_type, 2); // Greater
+    // Comparison: Less=0, Equal=1, Greater=2.
+    auto *less = llvm::ConstantInt::get(i64_type, 0);
+    auto *equal = llvm::ConstantInt::get(i64_type, 1);
+    auto *greater = llvm::ConstantInt::get(i64_type, 2);
     switch (node.op) {
     case K::LessThan:
-      return builder.CreateICmpEQ(result, zero, "lt");
+      return builder.CreateICmpEQ(result, less, "lt");
     case K::LessThanEqual:
-      // Less or Equal ⇔ result != Greater
-      return builder.CreateICmpNE(result, two, "le");
+      return builder.CreateICmpNE(result, greater, "le");
     case K::GreaterThan:
-      return builder.CreateICmpEQ(result, two, "gt");
+      return builder.CreateICmpEQ(result, greater, "gt");
     case K::GreaterThanEqual:
-      // Greater or Equal ⇔ result != Less
-      return builder.CreateICmpNE(result, zero, "ge");
+      return builder.CreateICmpNE(result, less, "ge");
     case K::Equal:
-      return builder.CreateICmpEQ(result, one, "eq");
+      return builder.CreateICmpEQ(result, equal, "eq");
     case K::NotEqual:
-      return builder.CreateICmpNE(result, one, "ne");
+      return builder.CreateICmpNE(result, equal, "ne");
     default:
       return result;
     }
   }
 
-  // Equals / Equal return Bool (i1). Negate for !=.
-  if ((method == "Equals" || method == "Equal") && node.op == K::NotEqual)
+  if (method == "Equals" && node.op == K::NotEqual)
     return builder.CreateNot(result, "ne");
 
-  // Add, Sub, Mul, Div: result is already the correct type.
   return result;
+}
+
+// An overloaded operator is an ordinary receiver call, and is emitted as one.
+// Building the call here by hand is what broke it: the sret/byval ABI lives on
+// the declaration, so a call site that re-derives the return type from the
+// method name cannot agree with the definition it is calling.
+llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
+                                             const TypePtr &lhs_sem,
+                                             const std::string &method) {
+  auto &info = std::get<StructTypeInfo>(lhs_sem->detail);
+  const auto *method_fi = operator_method_signature(info, method);
+  if (!method_fi)
+    return nullptr;
+
+  auto *callee =
+      forward_declare_method(struct_method_link_name(info, method), *method_fi);
+  auto *self = emit_expr(*node.lhs);
+  auto *rhs_val = emit_expr(*node.rhs);
+  if (!callee || !self || !rhs_val)
+    return nullptr;
+
+  return finish_operator_result(
+      node, method,
+      emit_receiver_call(callee, lhs_sem, self, {rhs_val}, method_fi));
 }
 
 llvm::Value *CodeGen::emit_float_pow(llvm::Value *base, llvm::Value *exp) {
@@ -693,7 +673,7 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
   // ── Struct operator overloading ────────────────────────────────────────────
   if (lhs_sem && lhs_sem->kind == TypeKind::Struct) {
     if (auto *method = struct_operator_method_of(parent))
-      return emit_struct_binary_op(node, parent, lhs_sem, *method);
+      return emit_struct_binary_op(node, lhs_sem, *method);
   }
 
   // ── String operations ────────────────────────────────────────────────
@@ -751,8 +731,8 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
   }
 
   // ── Numeric / bool operations ────────────────────────────────────────
-  auto *lhs = emit_expr(*node.lhs);
-  auto *rhs = emit_expr(*node.rhs);
+  auto *lhs = emit_operand(*node.lhs);
+  auto *rhs = emit_operand(*node.rhs);
   if (!lhs || !rhs)
     return nullptr;
 
@@ -794,15 +774,17 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
   case K::Sub:      return builder.CreateSub(lhs, rhs, "sub");
   case K::Multiply: return builder.CreateMul(lhs, rhs, "mul");
   case K::Divide: {
-    auto *result = builder.CreateSDiv(lhs, rhs, "div");
     auto node_sem = semantic_type(parent);
-    if (node_sem && node_sem->kind == TypeKind::Union) {
-      auto val_t = analyzer.builtins.int_type;
-      return emit_union_wrap(result, val_t, node_sem);
-    }
-    return result;
+    if (node_sem && node_sem->kind == TypeKind::Union)
+      return emit_checked_division(lhs, rhs, K::Divide, node_sem);
+    return builder.CreateSDiv(lhs, rhs, "div");
   }
-  case K::Modulo:   return builder.CreateSRem(lhs, rhs, "mod");
+  case K::Modulo: {
+    auto node_sem = semantic_type(parent);
+    if (node_sem && node_sem->kind == TypeKind::Union)
+      return emit_checked_division(lhs, rhs, K::Modulo, node_sem);
+    return builder.CreateSRem(lhs, rhs, "mod");
+  }
   case K::Pow:
     return is_float ? emit_float_pow(lhs, rhs) : emit_int_pow(lhs, rhs);
 

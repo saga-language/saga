@@ -145,9 +145,9 @@
     },
 
     "function-call": {
-      "comment": "Identifier (opt trailing ?, opt generic cluster) immediately before '('. Covers defs, methods, and call sites. Must follow all keyword/type patterns.",
+      "comment": "Identifier (opt generic cluster) immediately before '('. Covers defs, methods, and call sites. Must follow all keyword/type patterns.",
       "name": "entity.name.function.saga",
-      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\??(?=\\s*(?:<[^<>]*>)?\\s*\\()"
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:<[^<>]*>)?\\s*\\()"
     },
 
     "constant-numeric": {
@@ -243,9 +243,9 @@
     "operator": {
       "patterns": [
         {
-          "comment": "Safe-access / error-promotion ?: before .[( (x?.f, x?[i], x?()) or postfix after ]/) (data[i]?). A trailing identifier ? is left as part of the identifier.",
+          "comment": "Error-promotion ?.",
           "name": "keyword.operator.saga",
-          "match": "\\?(?=[.\\[(])|(?<=[\\]\\)])\\?"
+          "match": "\\?"
         },
         {
           "comment": "Multi-character operators — matched before single-char to avoid splitting",

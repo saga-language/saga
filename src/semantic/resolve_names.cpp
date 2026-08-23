@@ -78,11 +78,16 @@ void Analyzer::resolve_expr(const Node &node) {
           [&](const StringLiteralNode &n) { resolve_string_literal(n); },
           [&](const StringFragmentNode &) { /* leaf */ },
           [&](const ArrayLiteralNode &n) { resolve_array_literal(n); },
+          [&](const RangeNode &n) {
+            resolve_expr(*n.low);
+            resolve_expr(*n.high);
+          },
           [&](const MapLiteralNode &n) { resolve_map_literal(n); },
           [&](const StructLiteralNode &n) { resolve_struct_literal(n); },
           [&](const BinaryExprNode &n) { resolve_binary_expr(n); },
           [&](const UnaryExprNode &n) { resolve_unary_expr(n); },
           [&](const IsExpr &n) { resolve_expr(*n.value); },
+          [&](const PromoteExprNode &n) { resolve_expr(*n.operand); },
           [&](const GroupExprNode &n) { resolve_group_expr(n); },
           [&](const CallExprNode &n) { resolve_call_expr(n); },
           [&](const IndexExprNode &n) { resolve_index_expr(n); },
@@ -102,6 +107,7 @@ void Analyzer::resolve_expr(const Node &node) {
           // Statements that can appear as expressions in blocks.
           [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
           [&](const DeclAssignNode &n) { resolve_decl_assign(n, node); },
+          [&](const DestructureNode &n) { resolve_destructure(n); },
           [&](const AssignNode &n) { resolve_assign(n); },
           [&](const ReturnNode &n) { resolve_return(n); },
           [&](const BreakNode &n) { resolve_break(n); },
@@ -211,6 +217,7 @@ void Analyzer::resolve_block_stmt(const Node &node) {
   std::visit(overloaded{
                  [&](const VarDeclNode &n) { resolve_var_decl(n, node); },
                  [&](const DeclAssignNode &n) { resolve_decl_assign(n, node); },
+                 [&](const DestructureNode &n) { resolve_destructure(n); },
                  [&](const AssignNode &n) { resolve_assign(n); },
                  [&](const IncrementNode &n) { resolve_increment(n); },
                  [&](const DecrementNode &n) { resolve_decrement(n); },
@@ -312,7 +319,13 @@ void Analyzer::resolve_struct_literal(const StructLiteralNode &node) {
   }
 }
 
+// The init binding is scoped to the whole conditional — condition, both
+// blocks — so the scope it lives in opens before the condition is resolved and
+// closes after the last arm.
 void Analyzer::resolve_if_expr(const IfExprNode &node) {
+  push_scope(ScopeKind::Block);
+  if (node.init)
+    resolve_block_stmt(**node.init);
   resolve_expr(*node.condition);
 
   push_scope(ScopeKind::Block);
@@ -326,9 +339,13 @@ void Analyzer::resolve_if_expr(const IfExprNode &node) {
     resolve_block(else_block);
     pop_resolve_scope();
   }
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
+  push_scope(ScopeKind::Block);
+  if (node.init)
+    resolve_block_stmt(**node.init);
   resolve_expr(*node.subject);
   for (auto &arm : node.arms) {
     for (auto &pat : arm.patterns)
@@ -351,9 +368,19 @@ void Analyzer::resolve_switch_expr(const SwitchExprNode &node) {
       resolve_expr(**node.else_body);
     }
   }
+  pop_resolve_scope();
 }
 
 void Analyzer::resolve_for_expr(const ForExprNode &node) {
+  // The accumulator's initializer runs once before the loop starts, so it is
+  // resolved where the loop stands and not where the loop variables are.
+  if (node.accumulator) {
+    if (node.accumulator->type)
+      resolve_type(**node.accumulator->type);
+    if (node.accumulator->init)
+      resolve_expr(**node.accumulator->init);
+  }
+
   push_scope(ScopeKind::Loop);
 
   // Resolve the mode (condition, range clause, or iter clause).
@@ -386,8 +413,9 @@ void Analyzer::resolve_for_expr(const ForExprNode &node) {
 
   // Declare the accumulator pipe if present.
   if (node.accumulator) {
-    std::string acc(node.accumulator->name);
-    declare_local(Symbol::variable(acc, nullptr, node.accumulator->span));
+    auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
+    std::string acc(ident.name);
+    declare_local(Symbol::variable(acc, nullptr, ident.span));
     // The loop's value is the accumulator, so the expression reads it even
     // when the body only assigns to it — as `|acc| { acc += x }` does.
     current_scope->mark_read(acc);
@@ -542,6 +570,16 @@ void Analyzer::resolve_decl_assign(const DeclAssignNode &decl,
   resolve_expr(*decl.value);
   // Declare each target name.
   for (auto &ident : decl.targets.identifiers) {
+    declare_local(
+        Symbol::variable(std::string(ident.name), nullptr, ident.span));
+  }
+}
+
+void Analyzer::resolve_destructure(const DestructureNode &node) {
+  // The value first, so a bound name cannot refer to itself.
+  resolve_expr(*node.value);
+  for (auto &f : node.fields) {
+    auto &ident = std::get<IdentifierNode>(f.name->data);
     declare_local(
         Symbol::variable(std::string(ident.name), nullptr, ident.span));
   }

@@ -22,6 +22,10 @@
 
 namespace saga {
 
+static std::string_view accumulator_name(const ForExprNode &node) {
+  return std::get<IdentifierNode>(node.accumulator->name->data).name;
+}
+
 // ---------------------------------------------------------------------------
 // ParseResult — owns the FileSet (and therefore all string_view lifetimes),
 // the AST root, and the error list.  Use ParseResult::from() in every test
@@ -142,7 +146,6 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   int cmp = Parser::infix_binding_power(Token::Kind::Equal);
   int land = Parser::infix_binding_power(Token::Kind::LogicalAnd);
   int lor = Parser::infix_binding_power(Token::Kind::LogicalOr);
-  int range = Parser::infix_binding_power(Token::Kind::DotDot);
   int or_bp = Parser::infix_binding_power(Token::Kind::Or);
 
   EXPECT_GT(access, pow);
@@ -152,9 +155,14 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   EXPECT_GT(bitwise, cmp);
   EXPECT_GT(cmp, land);
   EXPECT_GT(land, lor);
-  EXPECT_GT(lor, range);
-  EXPECT_GT(range, or_bp);
+  EXPECT_GT(lor, or_bp);
   EXPECT_GT(or_bp, 0);
+}
+
+// ".." joins two bounds where the grammar puts a range, and is not an operator
+// anywhere else — so every bound expression parses at full binding power.
+TEST_F(ParserPrattTest, InfixBP_RangeIsNotAnOperator) {
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::DotDot), 0);
 }
 
 // ── Operators within the same level share the same binding power ──────────
@@ -628,14 +636,6 @@ TEST_F(ParserPrefixTest, Atom_Identifier) {
   auto *n = r.as<IdentifierNode>();
   ASSERT_NE(n, nullptr);
   EXPECT_EQ(n->name, "myVar");
-}
-
-TEST_F(ParserPrefixTest, Atom_Identifier_WithQuestionMark) {
-  auto r = ExprResult::from("value?");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<IdentifierNode>();
-  ASSERT_NE(n, nullptr);
-  EXPECT_EQ(n->name, "value?");
 }
 
 TEST_F(ParserPrefixTest, Atom_String_Plain) {
@@ -1375,7 +1375,7 @@ TEST_F(ParserForTest, For_Infinite_WithAccumulator) {
   ASSERT_NE(n, nullptr);
   EXPECT_FALSE(n->mode.has_value());
   ASSERT_TRUE(n->accumulator.has_value());
-  EXPECT_EQ(n->accumulator->name, "acc");
+  EXPECT_EQ(accumulator_name(*n), "acc");
 }
 
 // ── Bare condition (while-style) ─────────────────────────────────────────────
@@ -2267,16 +2267,12 @@ TEST_F(ParserMapLiteralTest, ExpressionKeys) {
   EXPECT_EQ(key->op, Token::Kind::Add);
 }
 
-TEST_F(ParserMapLiteralTest, BlockFallback) {
-  // A "{" followed by a non-key-value expression falls back to a block.
+// A block is neither an expression nor a statement, so "{" in expression
+// position is a map literal and nothing else. There is no bespoke diagnostic —
+// the missing ":" is an ordinary syntax error.
+TEST_F(ParserMapLiteralTest, BareBlockIsNotAnExpression) {
   auto r = ExprResult::from("{ 42 }");
-  EXPECT_TRUE(r.errors.empty());
-  auto *n = r.as<BlockNode>();
-  ASSERT_NE(n, nullptr);
-  ASSERT_EQ(n->stmts.size(), 1);
-  auto *val = std::get_if<IntegerLiteralNode>(&n->stmts[0]->data);
-  ASSERT_NE(val, nullptr);
-  EXPECT_EQ(val->literal, "42");
+  EXPECT_FALSE(r.errors.empty());
 }
 
 // =============================================================================
@@ -2651,7 +2647,30 @@ TEST_F(ParserExprCoverageTest, ForExpr_Range_WithAccumulator) {
   ASSERT_EQ(rng->vars.size(), 1);
   EXPECT_EQ(rng->vars[0].name, "i");
   ASSERT_TRUE(n->accumulator.has_value());
-  EXPECT_EQ(n->accumulator->name, "acc");
+  EXPECT_EQ(accumulator_name(*n), "acc");
+}
+
+TEST_F(ParserExprCoverageTest, ForExpr_Accumulator_TypedWithInitializer) {
+  auto r = ExprResult::from("for i : arr |acc int = 1| { acc *= i }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<ForExprNode>();
+  ASSERT_NE(n, nullptr);
+  ASSERT_TRUE(n->accumulator.has_value());
+  EXPECT_EQ(accumulator_name(*n), "acc");
+  EXPECT_TRUE(n->accumulator->type.has_value());
+  ASSERT_TRUE(n->accumulator->init.has_value());
+  EXPECT_NE(std::get_if<IntegerLiteralNode>(&(*n->accumulator->init)->data),
+            nullptr);
+}
+
+TEST_F(ParserExprCoverageTest, ForExpr_Accumulator_InitializerOnly) {
+  auto r = ExprResult::from("for i : arr |acc = 1| { acc *= i }");
+  EXPECT_TRUE(r.errors.empty());
+  auto *n = r.as<ForExprNode>();
+  ASSERT_NE(n, nullptr);
+  ASSERT_TRUE(n->accumulator.has_value());
+  EXPECT_FALSE(n->accumulator->type.has_value());
+  EXPECT_TRUE(n->accumulator->init.has_value());
 }
 
 TEST_F(ParserExprCoverageTest, ForExpr_Iterator_Decrement) {
@@ -2683,9 +2702,9 @@ class ParserStmtCoverageTest : public ::testing::Test {};
 
 TEST_F(ParserStmtCoverageTest, Assignment_SelectorTarget) {
   // a.b = 1 inside a block
-  auto r = ExprResult::from("{ a.b = 1 }");
+  auto r = BlockResult::from("{ a.b = 1 }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *asgn = std::get_if<AssignNode>(&blk->stmts[0]->data);
@@ -2698,9 +2717,9 @@ TEST_F(ParserStmtCoverageTest, Assignment_SelectorTarget) {
 
 TEST_F(ParserStmtCoverageTest, Assignment_IndexTarget) {
   // a[0] = 1 inside a block
-  auto r = ExprResult::from("{ a[0] = 1 }");
+  auto r = BlockResult::from("{ a[0] = 1 }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *asgn = std::get_if<AssignNode>(&blk->stmts[0]->data);
@@ -2719,9 +2738,9 @@ class ParserTypeCoverageTest : public ::testing::Test {};
 
 TEST_F(ParserTypeCoverageTest, UnionType) {
   // Use a VarDecl to exercise the type parser: x Int | String
-  auto r = ExprResult::from("{ x int | string }");
+  auto r = BlockResult::from("{ x int | string }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *vd = std::get_if<VarDeclNode>(&blk->stmts[0]->data);
@@ -2771,9 +2790,9 @@ TEST_F(ParserTypeCoverageTest, MapType) {
 
 TEST_F(ParserTypeCoverageTest, FuncType) {
   // VarDecl with function type: { cb fn(Int) String }
-  auto r = ExprResult::from("{ cb fn(x int) string }");
+  auto r = BlockResult::from("{ cb fn(x int) string }");
   EXPECT_TRUE(r.errors.empty());
-  auto *blk = r.as<BlockNode>();
+  auto *blk = r.as_block();
   ASSERT_NE(blk, nullptr);
   ASSERT_EQ(blk->stmts.size(), 1);
   auto *vd = std::get_if<VarDeclNode>(&blk->stmts[0]->data);

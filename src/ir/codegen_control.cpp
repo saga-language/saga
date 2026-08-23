@@ -49,6 +49,9 @@ llvm::AllocaInst *CodeGen::narrow_local(const std::string &name,
 }
 
 llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
+  if (node.init)
+    emit_expr(**node.init);
+
   auto *cond = emit_expr(*node.condition);
   if (!cond)
     return nullptr;
@@ -230,10 +233,39 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
 // Switch expression
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
+llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node,
+                                       const Node &parent) {
+  if (node.init)
+    emit_expr(**node.init);
+
   auto *subject_val = emit_expr(*node.subject);
   if (!subject_val)
     return nullptr;
+
+  // When the switch is used as a union-typed value, its arms may each yield a
+  // different member type. Wrap each into union memory so they share a pointer
+  // type for the merge PHI — without this the arms disagree, no PHI is built,
+  // and every arm's value is lost.
+  auto switch_sem = semantic_type(parent);
+  bool yields_union = switch_sem && switch_sem->kind == TypeKind::Union;
+
+  auto emit_arm_body = [&](const Node &body) -> llvm::Value * {
+    llvm::Value *val = nullptr;
+    if (auto *block = std::get_if<BlockNode>(&body.data))
+      val = emit_block(*block);
+    else
+      val = emit_expr(body);
+
+    if (!yields_union || !val || val->getType()->isVoidTy())
+      return val;
+    // The arm returned or broke, so its value cannot reach the merge.
+    if (builder.GetInsertBlock()->getTerminator())
+      return val;
+    if (auto *wrapped =
+            as_union_ptr(val, body_result_type(body), switch_sem))
+      return wrapped;
+    return val;
+  };
 
   auto subject_sem = semantic_type(*node.subject);
   bool is_string = subject_sem && subject_sem->kind == TypeKind::String;
@@ -309,12 +341,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
         }
       }
 
-      llvm::Value *body_val = nullptr;
-      if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
-        body_val = emit_block(*block);
-      } else {
-        body_val = emit_expr(*arm.body);
-      }
+      llvm::Value *body_val = emit_arm_body(*arm.body);
 
       // Restore original local.
       if (saved)
@@ -330,12 +357,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
     func->insert(func->end(), default_bb);
     builder.SetInsertPoint(default_bb);
     if (node.else_body) {
-      llvm::Value *else_val = nullptr;
-      if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
-        else_val = emit_block(*block);
-      } else {
-        else_val = emit_expr(**node.else_body);
-      }
+      llvm::Value *else_val = emit_arm_body(**node.else_body);
       bool else_terminated =
           builder.GetInsertBlock()->getTerminator() != nullptr;
       if (!else_terminated)
@@ -378,12 +400,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 
       // Emit the case body.
       builder.SetInsertPoint(case_bb);
-      llvm::Value *body_val = nullptr;
-      if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
-        body_val = emit_block(*block);
-      } else {
-        body_val = emit_expr(*arm.body);
-      }
+      llvm::Value *body_val = emit_arm_body(*arm.body);
       bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
       if (!terminated)
         builder.CreateBr(merge_bb);
@@ -399,11 +416,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
     bool else_terminated = false;
     llvm::BasicBlock *else_end_bb = nullptr;
     if (node.else_body) {
-      if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
-        else_val = emit_block(*block);
-      } else {
-        else_val = emit_expr(**node.else_body);
-      }
+      else_val = emit_arm_body(**node.else_body);
       else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
       else_end_bb = builder.GetInsertBlock();
       if (!else_terminated)
@@ -458,12 +471,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
 
       // Emit the case body.
       builder.SetInsertPoint(case_bb);
-      llvm::Value *body_val = nullptr;
-      if (auto *block = std::get_if<BlockNode>(&arm.body->data)) {
-        body_val = emit_block(*block);
-      } else {
-        body_val = emit_expr(*arm.body);
-      }
+      llvm::Value *body_val = emit_arm_body(*arm.body);
       bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
       if (!terminated)
         builder.CreateBr(merge_bb);
@@ -476,11 +484,7 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node) {
     llvm::Value *else_val = nullptr;
     bool else_terminated = false;
     if (node.else_body) {
-      if (auto *block = std::get_if<BlockNode>(&(*node.else_body)->data)) {
-        else_val = emit_block(*block);
-      } else {
-        else_val = emit_expr(**node.else_body);
-      }
+      else_val = emit_arm_body(**node.else_body);
       else_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
     }
     if (!else_terminated)

@@ -1,0 +1,6 @@
+add 16
+sub 8
+mul 48
+div 3
+divzero -1
+eq false true

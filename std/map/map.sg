@@ -21,7 +21,7 @@ pub fn (m map{K: V}) At(key K) V {
   saga_map_get(m, key)
 }
 
-pub fn (m map{K: V}) Key?(key K) bool {
+pub fn (m map{K: V}) Has(key K) bool {
   saga_map_has(m, key)
 }
 

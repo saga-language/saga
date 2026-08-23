@@ -31,6 +31,6 @@ pub fn Main() void {
   m.Remove(u2)
   io.Println(m.Size().String())
   io.Println(m.At(u1))
-  io.Println(m.Key?(u2).String())
+  io.Println(m.Has(u2).String())
   io.Println(m.At(u3))
 }

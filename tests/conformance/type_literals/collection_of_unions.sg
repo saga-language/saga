@@ -1,0 +1,33 @@
+// Spec: a union is a value, so it is an element and a map value like any
+// other. The slot is as wide as the union, not as wide as whichever
+// alternative was written first, and reading one back has to re-tag it —
+// unions flatten, so `(int | string)` indexed is not one alternative of the
+// result but two of the three.
+import "std/io"
+
+pub fn Main() void {
+  a int | string = 7
+  b int | string = "hi"
+
+  list := [a, b]
+  first := list[0] or { 0 }
+  if first is int {
+    io.Println("first is {first}")
+  }
+  second := list[1] or { 0 }
+  if second is string {
+    io.Println("second is {second}")
+  }
+
+  m := {"n": a, "s": b}
+  v := m["s"] or { 0 }
+  if v is string {
+    io.Println("map value is {v}")
+  }
+
+  // An element that is itself an error union survives storage as one.
+  xs := [3, 4]
+  errs := [xs[0], xs[9]]
+  io.Println((errs[0] or { -1 }).String())
+  io.Println((errs[1] or { -1 }).String())
+}

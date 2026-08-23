@@ -1,0 +1,10 @@
+// Spec: a pattern names fields, and a name that is not one is the same error
+// reading it through a `.` would be.
+import "std/io"
+
+struct Stat { size int }
+
+pub fn Main() void {
+  {mode} := Stat{size: 1}
+  io.Println("{mode}")
+}

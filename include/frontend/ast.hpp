@@ -125,6 +125,17 @@ struct ArrayLiteralNode {
   std::vector<NodePtr> elements;
 };
 
+// Range = Expression ".." Expression
+//
+// Half-open: the low bound is produced, the high bound is not, so `0..10` is
+// ten values and `10..0` is none.  As an expression it is the array those
+// values make; as a for-range subject it is the loop's bounds.
+struct RangeNode {
+  Span span;
+  NodePtr low;
+  NodePtr high;
+};
+
 // KeyValuePair = Expression ":" Expression  (one entry of a map literal)
 struct KeyValueNode {
   Span span;
@@ -290,6 +301,13 @@ struct IsExpr {
   NodePtr type;  // the type tested against (a Type node)
 };
 
+// PromoteExpr = PrimaryExpr "?"   — resolve the error alternative so the chain
+// can continue; the error travels to the enclosing root expression.
+struct PromoteExprNode {
+  Span span;
+  NodePtr operand;
+};
+
 // "(" Expression ")"
 struct GroupExprNode {
   Span span;
@@ -324,17 +342,20 @@ struct SelectorNode {
   IdentifierNode field;
 };
 
-// IfExpr = "if" Expression Block [ "else" Block ]
+// IfExpr = "if" [ InitClause ";" ] Expression Block [ "else" Block ]
+// InitClause = Identifier ":=" Expression | Identifier Type [ "=" Expression ]
 struct IfExprNode {
   Span span;
+  std::optional<NodePtr> init;       // VarDeclNode or DeclAssignNode
   NodePtr condition;
   NodePtr then_block;                // BlockNode
   std::optional<NodePtr> else_block; // BlockNode only — "else if" is not valid
 };
 
-// SwitchExpr = "switch" Expression SwitchBlock
+// SwitchExpr = "switch" [ InitClause ";" ] Expression SwitchBlock
 struct SwitchExprNode {
   Span span;
+  std::optional<NodePtr> init; // VarDeclNode or DeclAssignNode
   NodePtr subject;
   std::vector<CaseArmNode> arms;
   std::optional<NodePtr> else_body; // expression or BlockNode
@@ -356,14 +377,25 @@ struct ForIterClauseNode {
   NodePtr update;    // AssignNode, IncrementNode, or DecrementNode
 };
 
-// ForExpr = "for" [ ForMode ] [ IdentifierPipe ] Block
+// AccumulatorPipe = "|" Identifier [ Type ] [ "=" Expression ] "|"
+//
+// The loop's value. With neither a type nor an initializer the type comes from
+// whatever the loop's value lands in.
+struct AccumulatorNode {
+  Span span;
+  NodePtr name; // IdentifierNode
+  std::optional<NodePtr> type;
+  std::optional<NodePtr> init;
+};
+
+// ForExpr = "for" [ ForMode ] [ AccumulatorPipe ] Block
 struct ForExprNode {
   Span span;
   std::optional<NodePtr> mode; // ForRangeClauseNode, ForIterClauseNode,
                                // or bare condition expression;
                                // absent = infinite loop
-  std::optional<IdentifierNode> accumulator; // |acc| pipe name, if present
-  NodePtr body;                              // BlockNode
+  std::optional<AccumulatorNode> accumulator;
+  NodePtr body; // BlockNode
 };
 
 // SpawnExpr = [ Generic ] "spawn" [ IdentifierPipe ] ( Block | Identifier )
@@ -413,6 +445,27 @@ struct DeclAssignNode {
   Span span;
   IdentifierListNode targets;
   NodePtr value; // rhs expression (or TupleNode for multi-value)
+};
+
+// DestructureField = Identifier [ ":" Identifier ]
+//
+// `field` names it in the value and is only a lookup key; `name` is the
+// declaration it binds, so it is a node and carries the recorded type.  The
+// two are the same text when the field is not renamed.
+struct DestructureFieldNode {
+  Span span;
+  IdentifierNode field;
+  NodePtr name; // IdentifierNode
+};
+
+// DeclAssign = DestructurePattern ":=" Expression
+//
+// Fields the pattern does not name are not bound: a pattern takes what it
+// names and leaves the rest.
+struct DestructureNode {
+  Span span;
+  std::vector<DestructureFieldNode> fields;
+  NodePtr value;
 };
 
 // Assignment = AssignTargetList assignment_operator ExpressionList
@@ -623,7 +676,7 @@ struct Node {
     BoolLiteralNode,    EnumShorthandNode,
     IntegerLiteralNode,  FloatLiteralNode,
     StringLiteralNode,  StringFragmentNode,
-    ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,
+    ArrayLiteralNode,   MapLiteralNode,      KeyValueNode,  RangeNode,
     StructLiteralNode,  FieldAssignmentNode,
 
     // --- Types ---
@@ -636,6 +689,7 @@ struct Node {
 
     // --- Expressions ---
     BinaryExprNode,     UnaryExprNode,     IsExpr,            GroupExprNode,
+    PromoteExprNode,
     CallExprNode,       IndexExprNode,     SliceNode,          SelectorNode,
     IfExprNode,         SwitchExprNode,
     ForExprNode,        ForRangeClauseNode, ForIterClauseNode,
@@ -643,7 +697,7 @@ struct Node {
     FuncExprNode,       ImportExprNode,
 
     // --- Statements ---
-    VarDeclNode,    DeclAssignNode,  AssignNode,
+    VarDeclNode,    DeclAssignNode,  DestructureNode,  AssignNode,
     IncrementNode,  DecrementNode,
     ReturnNode,     BreakNode,       NextNode,
 
@@ -701,5 +755,12 @@ void dump_ast(const Node &node, std::ostream &os, int indent = 0);
 // when the entry is neither shape.
 // ---------------------------------------------------------------------------
 std::optional<std::string_view> type_param_name(const Node &node);
+
+// ---------------------------------------------------------------------------
+// True when `node` assigns through the binding `name` — to the binding itself,
+// to one of its fields at any depth, or to one of its elements. Structural: it
+// answers what this body writes, not what anything it calls might write.
+// ---------------------------------------------------------------------------
+bool writes_through_binding(const Node &node, std::string_view name);
 
 } // namespace saga

@@ -1,0 +1,10 @@
+// Spec: the init binding belongs to the conditional. Reading it afterwards is
+// the same error as reading any name that is out of scope.
+import "std/io"
+
+pub fn Main() void {
+  if n := 3; n > 2 {
+    io.Println("inside {n}")
+  }
+  io.Println(n.String())
+}

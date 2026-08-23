@@ -320,6 +320,7 @@ void CodeGen::init_types() {
 uint64_t CodeGen::error_type_id(const StructTypeInfo &info) const {
   if (info.name == "Missing") return SAGA_ERR_ID_MISSING;
   if (info.name == "Trapped") return SAGA_ERR_ID_TRAPPED;
+  if (info.name == "DivideByZero") return SAGA_ERR_ID_DIVIDE_BY_ZERO;
   // FNV-1a over the mangled name — stable across packages, distinct per type.
   uint64_t h = 1469598103934665603ULL;
   for (char c : struct_cache_key(info)) {
@@ -487,6 +488,17 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   }
 }
 
+// The LLVM type is the whole rule, and it is the one the declaration side
+// applies (`apply_func_abi_attrs`). A caller that asks the semantic kind
+// instead disagrees with the callee about an alias, which lowers to a struct
+// without being one.
+llvm::Type *CodeGen::byval_param_type(const TypePtr &param) {
+  if (!param)
+    return nullptr;
+  auto *ll = llvm_type(param);
+  return ll && ll->isStructTy() ? ll : nullptr;
+}
+
 // The only CreateAlloca in the codebase, and so the one place every request for
 // stack storage passes through.
 llvm::AllocaInst *CodeGen::create_entry_alloca(llvm::Function *fn,
@@ -512,6 +524,16 @@ llvm::AllocaInst *CodeGen::bind_value_slot(llvm::Function *fn,
   } else {
     builder.CreateStore(arg, slot);
   }
+  return slot;
+}
+
+llvm::Value *CodeGen::spill_aggregate(llvm::Value *val,
+                                      const std::string &name) {
+  if (!val || !val->getType()->isStructTy())
+    return val;
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *slot = create_entry_alloca(func, name, val->getType());
+  builder.CreateStore(val, slot);
   return slot;
 }
 

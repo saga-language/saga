@@ -1,0 +1,13 @@
+// Spec: the error an expression sheds re-attaches to the type of the root it
+// sits in. A statement evaluates to nothing, so there is no type to attach it
+// to and no way for the error to leave — the call has to say what happens.
+import "std/io"
+
+fn sink(n int) void {
+  io.Println("sank {n}")
+}
+
+pub fn Main() void {
+  xs := [3, 4]
+  sink(xs[9])
+}

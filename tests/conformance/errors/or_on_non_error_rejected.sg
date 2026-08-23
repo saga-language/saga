@@ -1,0 +1,13 @@
+// Spec: `or` handles the error alternative, so a subject that has none leaves
+// the handler unreachable. A branch the compiler can prove never runs is an
+// error, not a no-op — the same standard `?` is held to.
+import "std/io"
+
+fn plain() int {
+  7
+}
+
+pub fn Main() void {
+  x := plain() or { -1 }
+  io.Println(x.String())
+}

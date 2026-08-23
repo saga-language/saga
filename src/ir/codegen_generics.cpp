@@ -186,34 +186,57 @@ llvm::Function *CodeGen::emit_specialisation(
   auto concrete = substitute(generic_fn_type, bindings);
   auto &fi = std::get<FuncTypeInfo>(concrete->detail);
 
-  auto to_param_ll = [&](const TypePtr &pt) -> llvm::Type * {
-    if (pt && pt->kind == TypeKind::Struct)
-      return llvm::PointerType::getUnqual(context);
-    return llvm_type(pt);
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+
+  // Same parameter ABI as a declared function: whatever still lowers to an
+  // LLVM struct — a union — arrives by pointer with `byval`, and the body
+  // copies it into its own frame. `param_ll` is what the body binds, `sig_ll`
+  // what the signature declares; they differ exactly there.
+  std::vector<llvm::Type *> param_ll;
+  std::vector<llvm::Type *> sig_ll;
+  std::vector<llvm::Type *> byval_ll;
+  auto add_param = [&](const TypePtr &pt) {
+    auto *slot = pt && pt->kind == TypeKind::Struct ? ptr_ty : llvm_type(pt);
+    if (!slot)
+      return false;
+    bool indirect = slot->isStructTy();
+    param_ll.push_back(slot);
+    sig_ll.push_back(indirect ? ptr_ty : slot);
+    byval_ll.push_back(indirect ? slot : nullptr);
+    return true;
   };
 
-  std::vector<llvm::Type *> param_ll;
   bool has_receiver = fn.receiver.has_value();
   std::string recv_struct_name;
   if (has_receiver) {
-    param_ll.push_back(llvm::PointerType::getUnqual(context));
+    param_ll.push_back(ptr_ty);
+    sig_ll.push_back(ptr_ty);
+    byval_ll.push_back(nullptr);
     if (auto *ri = std::get_if<IdentifierNode>(&fn.receiver->type->data))
       recv_struct_name = std::string(ri->name);
   }
-  for (auto &pt : fi.params) {
-    auto *ll = to_param_ll(pt);
-    if (!ll) return nullptr;
-    param_ll.push_back(ll);
-  }
+  for (auto &pt : fi.params)
+    if (!add_param(pt))
+      return nullptr;
+
   llvm::Type *ret_ll = void_ll_type;
   if (fi.return_type) {
-    ret_ll = to_param_ll(fi.return_type);
+    ret_ll = fi.return_type->kind == TypeKind::Struct ? ptr_ty
+                                                     : llvm_type(fi.return_type);
     if (!ret_ll) return nullptr;
   }
 
-  auto *ft = llvm::FunctionType::get(ret_ll, param_ll, /*isVarArg=*/false);
+  auto *ft = llvm::FunctionType::get(ret_ll, sig_ll, /*isVarArg=*/false);
   auto *func = llvm::Function::Create(
       ft, llvm::Function::LinkOnceODRLinkage, mangled, module.get());
+  for (size_t i = 0; i < byval_ll.size(); ++i) {
+    if (!byval_ll[i])
+      continue;
+    llvm::AttrBuilder ab(context);
+    ab.addByValAttr(byval_ll[i]);
+    ab.addAlignmentAttr(align_of(byval_ll[i]));
+    func->addParamAttrs(i, ab);
+  }
 
   // Name the arguments for IR readability.
   size_t arg_idx = 0;
@@ -277,13 +300,11 @@ llvm::Function *CodeGen::emit_specialisation(
       size_t ll_idx = 1;
       for (auto &param : fn.signature.params) {
         for (auto &ident : param.names.identifiers) {
-          auto *ll_type = ll_idx < param_ll.size()
-                              ? param_ll[ll_idx]
-                              : llvm::PointerType::getUnqual(context);
+          auto *ll_type =
+              ll_idx < param_ll.size() ? param_ll[ll_idx] : ptr_ty;
           std::string pname(ident.name);
-          auto *alloca = create_entry_alloca(func, pname, ll_type);
-          builder.CreateStore(func->getArg(pidx++), alloca);
-          locals[pname] = alloca;
+          locals[pname] = bind_value_slot(func, pname, func->getArg(pidx++),
+                                          ll_type);
           ++ll_idx;
         }
       }

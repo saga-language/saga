@@ -1,0 +1,40 @@
+// Spec: "Large/complex types are optimized to be copy-on-write"
+// (docs/language.md §Mutability). A second name for an array shares the buffer
+// until one of them writes, and the writer gets the copy — so neither name
+// sees the other's edit. That needs the second binding to take its own
+// reference; without it the buffer looks uniquely owned and is written in
+// place.
+import "std/io"
+
+struct Box { xs array{int} }
+
+const Fixed = [10, 20, 30]
+
+fn build() array{int} {
+  local := [7, 8, 9]
+  local
+}
+
+pub fn Main() void {
+  xs := [1, 2, 3]
+  ys := xs
+  ys[0] = 99
+  io.Println("decl {xs.At(0)} {ys.At(0)}")
+
+  zs := [0]
+  zs = xs
+  zs[1] = 55
+  io.Println("assign {xs.At(1)} {zs.At(1)}")
+
+  aliased := Fixed
+  aliased[0] = 77
+  io.Println("const {Fixed.At(0)} {aliased.At(0)}")
+
+  b := Box{xs: [4, 5, 6]}
+  field := b.xs
+  field[0] = 42
+  io.Println("field {b.xs.At(0)} {field.At(0)}")
+
+  returned := build()
+  io.Println("returned {returned.At(0)} {returned.Size()}")
+}

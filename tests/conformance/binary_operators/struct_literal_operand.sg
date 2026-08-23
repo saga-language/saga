@@ -1,0 +1,17 @@
+// Spec: parentheses fence nothing — the ")" ends the expression — so a struct
+// literal groups like any other operand. Bare, it does not: "{" binds at 1 and
+// every infix operator parses its right side above that.
+import "std/io"
+
+struct Money { cents int }
+
+pub fn (m Money) Add(o Money) Money { Money{cents: m.cents + o.cents} }
+
+fn divisor(n int) int { n }
+
+pub fn Main() void {
+  a := Money{cents: 5}
+  io.Println("sum {(a + (Money{cents: 7})).cents}")
+  io.Println("or {(6 / divisor(0) or { 0 }) + 1}")
+  io.Println("group {(2 + 3) * 4}")
+}

@@ -1,0 +1,31 @@
+// Spec: a struct field is a declared slot, so a field value that can be an
+// error bubbles exactly the way an argument does. A field declared to hold the
+// error takes it as an ordinary value instead.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+struct Slot {
+  v int | error
+}
+
+pub fn Main() void {
+  xs := [3, 4]
+
+  p := Point{x: xs[0], y: 2} or { Point{x: -1, y: -1} }
+  io.Println(p.x.String())
+
+  q := Point{x: xs[9], y: 2} or { Point{x: -1, y: -1} }
+  io.Println(q.x.String())
+
+  // Nested: the inner literal's field bubbles out through the outer one.
+  r := Point{x: Point{x: xs[9], y: 0}.x, y: 2} or { Point{x: -2, y: -2} }
+  io.Println(r.x.String())
+
+  // The field declares it holds the error, so nothing escapes.
+  s := Slot{v: xs[9]}
+  io.Println((s.v or { -3 }).String())
+}

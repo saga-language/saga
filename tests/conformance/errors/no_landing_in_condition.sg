@@ -1,0 +1,14 @@
+// Spec: a condition is not a landing point either. The `if` it belongs to is a
+// statement, so the error a `?` resolves there has nothing to travel in.
+struct Inner { b int }
+
+fn cond(xs array{Inner}) string {
+  if xs[0]?.b > 3 {
+    return "big"
+  }
+  "small"
+}
+
+pub fn Main() void {
+  _s := cond([Inner{b: 7}])
+}

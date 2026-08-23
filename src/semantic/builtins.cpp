@@ -54,6 +54,7 @@ void BuiltinTypes::init() {
   error_base = make_error_struct("error");
   missing_type = make_error_struct("Missing");
   trapped_type = make_error_struct("Trapped");
+  divide_by_zero_type = make_error_struct("DivideByZero");
 
   // -- Iterable interface: |T| Iterable { Next() T | error } --------------
   // Registered with a single type parameter; concrete instantiations are
@@ -76,7 +77,7 @@ void BuiltinTypes::init() {
   // -- Task (returned from spawn) ------------------------------------------
   task_type = make_struct_type(
       "Task", /*fields=*/{},
-      {MethodInfo{"Alive?", make_func_type({}, {bool_type}), true},
+      {MethodInfo{"Alive", make_func_type({}, {bool_type}), true},
        MethodInfo{"Cancel", make_func_type({}, {void_type}), true},
        MethodInfo{"Term", make_func_type({}, {void_type}), true},
        MethodInfo{"Wait",
@@ -89,7 +90,7 @@ void BuiltinTypes::init() {
   // -- Context (available inside spawn block) ------------------------------
   context_type = make_struct_type(
       "Context", /*fields=*/{},
-      {MethodInfo{"Cancelled?", make_func_type({}, {bool_type}), true},
+      {MethodInfo{"Cancelled", make_func_type({}, {bool_type}), true},
        MethodInfo{"Exit",
                   make_func_type({make_type_param(0, "T")}, {void_type}),
                   true},
@@ -176,6 +177,7 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   // -- Internal structs ----------------------------------------------------
   reg_type("Null", types.null_type);
   reg_type("Missing", types.missing_type);
+  reg_type("DivideByZero", types.divide_by_zero_type);
   reg_type("Task", types.task_type);
   reg_type("Context", types.context_type);
 

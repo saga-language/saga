@@ -1,0 +1,36 @@
+// Spec: `xs[i] = v` writes the element. A shared backing buffer is copied on
+// write, so the runtime hands back the array to keep, and the assignment has to
+// store it where the array lived — a local or a struct field.
+import "std/io"
+
+struct Point { x int  y int }
+struct Grid { cells array{int} }
+
+pub fn Main() void {
+  xs := [1, 2, 3]
+  xs[0] = 99
+  xs[2] = 7
+  io.Println("int {xs[0] or { -1 }} {xs[1] or { -1 }} {xs[2] or { -1 }}")
+
+  ss := ["a", "b"]
+  ss[1] = "zz"
+  io.Println("string {ss[0] or { "?" }} {ss[1] or { "?" }}")
+
+  ps := [Point{x: 1, y: 2}, Point{x: 3, y: 4}]
+  ps[1] = Point{x: 8, y: 9}
+  p := ps[1] or { Point{x: -1, y: -1} }
+  io.Println("struct {p.x} {p.y}")
+
+  g := Grid{cells: [0, 0, 0]}
+  g.cells[1] = 5
+  io.Println("field {g.cells[1] or { -1 }}")
+
+  ns := [0, 0, 0, 0]
+  for i : [0..4] { ns[i] = i * i }
+  io.Println("loop {ns[0] or { -1 }} {ns[1] or { -1 }} {ns[2] or { -1 }} {ns[3] or { -1 }}")
+
+  m := {"a": Point{x: 1, y: 1}}
+  m["a"] = Point{x: 4, y: 5}
+  q := m["a"] or { Point{x: -1, y: -1} }
+  io.Println("map {q.x} {q.y}")
+}

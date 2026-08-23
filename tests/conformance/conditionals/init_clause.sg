@@ -1,0 +1,43 @@
+// Spec: `if init; cond` and `switch init; subject` bind a name for the whole
+// conditional — the header, every arm, and the else. The binding is a
+// declaration, so it narrows per arm and is gone after the conditional ends.
+import "std/io"
+
+fn lookup(k string) int | error {
+  if k == "a" { return 1 }
+  Missing{message: "no such key"}
+}
+
+fn pick(k int) int | string {
+  if k == 0 { return 7 }
+  "text"
+}
+
+pub fn Main() void {
+  if v := lookup("a"); v is int {
+    io.Println("found {v}")
+  }
+
+  // The binding reaches the else block as well.
+  if v := lookup("z"); v is int {
+    io.Println("found {v}")
+  } else {
+    io.Println("not found")
+  }
+
+  // Typed form.
+  if n int = 3; n > 2 {
+    io.Println("typed {n}")
+  }
+
+  // The subject keeps its union type, so the arms are a closed set.
+  switch r := pick(1); r {
+  case int: io.Println("int {r}")
+  case string: io.Println("string {r}")
+  }
+
+  switch r := lookup("b"); r {
+  case int: io.Println("int {r}")
+  case Missing: io.Println("missing")
+  }
+}

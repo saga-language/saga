@@ -1,6 +1,8 @@
 // Spec: "Values that escape their scope are copied." (docs/language.md:51)
-// A function-call boundary is an escape; appending to the parameter inside
-// the callee must not be visible to the caller.
+// A function-call boundary is an escape; writing to the parameter inside the
+// callee must not be visible to the caller. The copy is the one copy-on-write
+// makes when the callee writes — the parameter slot holds a reference of its
+// own, so a callee that only reads shares the buffer.
 import "std/io"
 
 fn grow(a array{int}) int {
@@ -8,9 +10,19 @@ fn grow(a array{int}) int {
   bigger.Size()
 }
 
+fn overwrite(a array{int}) int {
+  a[0] = 99
+  a.At(0)
+}
+
+fn first(a array{int}) int { a.At(0) }
+
 pub fn Main() void {
   arr := [1, 2, 3]
   inner_size := grow(arr)
   io.Println(inner_size.String())
   io.Println(arr.Size().String())
+
+  io.Println("write {overwrite(arr)} {arr.At(0)}")
+  io.Println("read {first(arr)} {first([5, 6])}")
 }

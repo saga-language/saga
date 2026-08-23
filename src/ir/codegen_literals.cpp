@@ -17,63 +17,131 @@ namespace saga {
 // Array literals
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
-  // Determine element size from the semantic type.
-  auto sem = semantic_type(
-      *reinterpret_cast<const Node *>(&node)); // hack: node is embedded
-  // Try to get element type from the first element.
-  int64_t elem_size = 8; // default to i64 size
-  llvm::Type *elem_ll_type = i64_type;
+int64_t CodeGen::element_size_of(llvm::Type *ll) {
+  if (!ll)
+    return 8;
+  if (ll->isStructTy())
+    return size_of(ll);
+  return ll->isIntegerTy(1) ? 1 : 8;
+}
 
-  if (!node.elements.empty()) {
-    auto first_sem = semantic_type(*node.elements[0]);
-    if (first_sem) {
-      elem_ll_type = llvm_type(first_sem);
-      if (elem_ll_type->isStructTy())
-        elem_size = size_of(elem_ll_type);
-      else if (elem_ll_type->isIntegerTy(1))
-        elem_size = 1;
-      else
-        elem_size = 8;
-    }
-  }
+// The literal's own type, not the first element's: an element that is one
+// alternative of a union element type says nothing about how wide the slot is.
+// An empty literal answers `unknown`, which nothing is stored through anyway.
+TypePtr CodeGen::collection_slot_type(const Node &parent, Slot slot,
+                                      const Node *fallback) {
+  auto sem = unwrap_alias(semantic_type(parent));
+  TypePtr part;
+  if (sem && sem->kind == TypeKind::Array && slot == Slot::Element)
+    part = std::get<ArrayTypeInfo>(sem->detail).element;
+  else if (sem && sem->kind == TypeKind::Map) {
+    auto &info = std::get<MapTypeInfo>(sem->detail);
+    part = slot == Slot::Key ? info.key : info.value;
+  } else if (fallback)
+    part = operand_type(*fallback);
 
-  // Create the array: saga_array_new(elem_size, initial_cap)
+  if (part && part->kind == TypeKind::Unknown)
+    return nullptr;
+  return part;
+}
+
+// The runtime copies a fixed number of bytes from a void*, so every element is
+// written to an address first. A union slot takes its alternative through the
+// wrap so the tag is set, exactly as a union struct field does.
+llvm::Value *CodeGen::collection_slot_address(llvm::Type *slot_ll,
+                                              const TypePtr &slot_sem,
+                                              llvm::Value *val,
+                                              const TypePtr &val_sem) {
+  if (!val)
+    return nullptr;
+
+  if (slot_sem && slot_sem->kind == TypeKind::Union && val_sem &&
+      val_sem->kind != TypeKind::Union)
+    if (auto *wrapped = emit_union_wrap(val, val_sem, slot_sem))
+      val = wrapped;
+
+  if (slot_ll && slot_ll->isStructTy())
+    return spill_aggregate(val, "elem.tmp");
+
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
+  builder.CreateStore(val, tmp);
+  return tmp;
+}
+
+llvm::Value *CodeGen::collection_slot_value(llvm::Type *slot_ll,
+                                            const TypePtr &slot_sem,
+                                            const Node &value_node) {
+  return collection_slot_address(slot_ll, slot_sem, emit_operand(value_node),
+                                 operand_type(value_node));
+}
+
+llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node,
+                                         const Node &parent) {
+  auto elem_sem = collection_slot_type(
+      parent, Slot::Element,
+      node.elements.empty() ? nullptr : node.elements[0].get());
+  auto *elem_ll = elem_sem ? llvm_type(elem_sem) : i64_type;
+
   auto *new_fn = module->getFunction("saga_array_new");
   auto *arr = builder.CreateCall(
       new_fn,
-      {llvm::ConstantInt::get(i64_type, elem_size),
+      {llvm::ConstantInt::get(i64_type, element_size_of(elem_ll)),
        llvm::ConstantInt::get(i64_type,
                               std::max((int64_t)node.elements.size(), (int64_t)4))},
       "arr");
 
-  // Push each element.
   auto *push_fn = module->getFunction("saga_array_builder_push");
-  auto *func = builder.GetInsertBlock()->getParent();
-
-  for (auto &elem_node : node.elements) {
-    auto *val = emit_expr(*elem_node);
-    if (!val)
-      continue;
-
-    // saga_array_builder_push takes a void* to the element and memcpy's
-    // elem_size bytes from it.  For struct elements we pass the alloca
-    // pointer directly; for SSA values we spill to a temp first.
-    if (elem_ll_type->isStructTy()) {
-      llvm::Value *src = val;
-      if (val->getType()->isStructTy()) {
-        auto *tmp = create_entry_alloca(func, "elem.tmp", elem_ll_type);
-        builder.CreateStore(val, tmp);
-        src = tmp;
-      }
+  for (auto &elem_node : node.elements)
+    if (auto *src = collection_slot_value(elem_ll, elem_sem, *elem_node))
       builder.CreateCall(push_fn, {arr, src});
-    } else {
-      auto *tmp = create_entry_alloca(func, "elem.tmp", val->getType());
-      builder.CreateStore(val, tmp);
-      builder.CreateCall(push_fn, {arr, tmp});
-    }
-  }
 
+  return arr;
+}
+
+void CodeGen::fill_range(llvm::Value *arr, llvm::Value *low,
+                         llvm::Value *high) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *elem_ll = low->getType();
+  auto *cur = create_entry_alloca(func, "range.cur", elem_ll);
+  auto *slot = create_entry_alloca(func, "range.slot", elem_ll);
+  builder.CreateStore(low, cur);
+
+  auto *cond_bb = llvm::BasicBlock::Create(context, "range.cond", func);
+  auto *body_bb = llvm::BasicBlock::Create(context, "range.body", func);
+  auto *done_bb = llvm::BasicBlock::Create(context, "range.done", func);
+
+  builder.CreateBr(cond_bb);
+  builder.SetInsertPoint(cond_bb);
+  auto *v = builder.CreateLoad(elem_ll, cur, "range.v");
+  builder.CreateCondBr(builder.CreateICmpSLT(v, high, "range.cmp"), body_bb,
+                       done_bb);
+
+  builder.SetInsertPoint(body_bb);
+  builder.CreateStore(v, slot);
+  builder.CreateCall(module->getFunction("saga_array_builder_push"),
+                     {arr, slot});
+  builder.CreateStore(
+      builder.CreateAdd(v, llvm::ConstantInt::get(elem_ll, 1), "range.next"),
+      cur);
+  builder.CreateBr(cond_bb);
+
+  builder.SetInsertPoint(done_bb);
+}
+
+// `[0..10]` builds the array its bounds describe.
+llvm::Value *CodeGen::emit_range_literal(const RangeNode &node) {
+  auto *low = emit_expr(*node.low);
+  auto *high = emit_expr(*node.high);
+  if (!low || !high)
+    return nullptr;
+
+  auto *arr = builder.CreateCall(
+      module->getFunction("saga_array_new"),
+      {llvm::ConstantInt::get(i64_type, element_size_of(low->getType())),
+       llvm::ConstantInt::get(i64_type, 4)},
+      "range.arr");
+  fill_range(arr, low, high);
   return arr;
 }
 
@@ -81,85 +149,33 @@ llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node) {
 // Map literals
 // ===========================================================================
 
-llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node) {
-  // Determine key/value sizes from semantic types.
-  int64_t key_size = 8;  // default to i64 size
-  int64_t val_size = 8;
-  llvm::Type *key_ll_type = i64_type;
-  llvm::Type *val_ll_type = i64_type;
-  TypePtr key_sem;
+llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node,
+                                       const Node &parent) {
+  const Node *first_key =
+      node.entries.empty() ? nullptr : node.entries[0].key.get();
+  const Node *first_val =
+      node.entries.empty() ? nullptr : node.entries[0].value.get();
+  auto key_sem = collection_slot_type(parent, Slot::Key, first_key);
+  auto val_sem = collection_slot_type(parent, Slot::Value, first_val);
+  auto *key_ll = key_sem ? llvm_type(key_sem) : i64_type;
+  auto *val_ll = val_sem ? llvm_type(val_sem) : i64_type;
 
-  // Get semantic type of the map literal node itself.
-  // We look through the entries to determine types.
-  if (!node.entries.empty()) {
-    key_sem = semantic_type(*node.entries[0].key);
-    auto val_sem = semantic_type(*node.entries[0].value);
-    if (key_sem) {
-      key_ll_type = llvm_type(key_sem);
-      if (key_ll_type->isStructTy())
-        key_size = size_of(key_ll_type);
-      else if (key_ll_type->isIntegerTy(1))
-        key_size = 1;
-      else
-        key_size = 8;
-    }
-    if (val_sem) {
-      val_ll_type = llvm_type(val_sem);
-      if (val_ll_type->isStructTy())
-        val_size = size_of(val_ll_type);
-      else if (val_ll_type->isIntegerTy(1))
-        val_size = 1;
-      else
-        val_size = 8;
-    }
-  }
-
-  int64_t key_kind_tag =
-      static_cast<int64_t>(CodeGen::key_kind_for(key_sem));
-  llvm::Constant *ops_ptr = get_or_emit_key_ops(key_sem);
-
-  // Create the map: saga_map_new(key_size, val_size, key_kind, ops)
   auto *new_fn = module->getFunction("saga_map_new");
   auto *map = builder.CreateCall(
       new_fn,
-      {llvm::ConstantInt::get(i64_type, key_size),
-       llvm::ConstantInt::get(i64_type, val_size),
-       llvm::ConstantInt::get(i64_type, key_kind_tag),
-       ops_ptr},
+      {llvm::ConstantInt::get(i64_type, element_size_of(key_ll)),
+       llvm::ConstantInt::get(i64_type, element_size_of(val_ll)),
+       llvm::ConstantInt::get(
+           i64_type, static_cast<int64_t>(CodeGen::key_kind_for(key_sem))),
+       get_or_emit_key_ops(key_sem)},
       "map");
 
-  // Insert each entry.
   auto *set_fn = module->getFunction("saga_map_set");
-  auto *func = builder.GetInsertBlock()->getParent();
-
   for (auto &entry : node.entries) {
-    auto *key_val = emit_expr(*entry.key);
-    auto *val_val = emit_expr(*entry.value);
-    if (!key_val || !val_val)
-      continue;
-
-    // Key spill (struct keys not supported here yet; default scalar path).
-    auto *key_tmp = create_entry_alloca(func, "map.key.tmp", key_val->getType());
-    builder.CreateStore(key_val, key_tmp);
-
-    // Value: for struct values, pass the struct alloca pointer directly
-    // so the runtime memcpy's val_size bytes of struct contents.
-    llvm::Value *val_ptr = nullptr;
-    if (val_ll_type->isStructTy()) {
-      if (val_val->getType()->isStructTy()) {
-        auto *tmp = create_entry_alloca(func, "map.val.tmp", val_ll_type);
-        builder.CreateStore(val_val, tmp);
-        val_ptr = tmp;
-      } else {
-        val_ptr = val_val; // already a pointer to a struct alloca
-      }
-    } else {
-      auto *tmp = create_entry_alloca(func, "map.val.tmp", val_val->getType());
-      builder.CreateStore(val_val, tmp);
-      val_ptr = tmp;
-    }
-
-    builder.CreateCall(set_fn, {map, key_tmp, val_ptr});
+    auto *key_ptr = collection_slot_value(key_ll, key_sem, *entry.key);
+    auto *val_ptr = collection_slot_value(val_ll, val_sem, *entry.value);
+    if (key_ptr && val_ptr)
+      builder.CreateCall(set_fn, {map, key_ptr, val_ptr});
   }
 
   return map;
@@ -332,16 +348,17 @@ llvm::Value *CodeGen::emit_error_singleton(const StructTypeInfo &info,
 void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
                                  const TypePtr &field_sem,
                                  const Node &value_node) {
-  auto *val = emit_expr(value_node);
+  auto *val = emit_operand(value_node);
   if (!val)
     return;
+  retain_if_borrowed(val, unwrap_alias(field_sem), value_node);
 
   // Field is a union; the supplied value is one alternative. Wrap before
   // memcpy so the union's tag is set correctly. Without this an
   // `optional String | Missing` field given `Missing{}` would memcpy zero
   // bytes into a 9-byte slot, leaving the tag at 0 (an empty String).
   if (field_sem && field_sem->kind == TypeKind::Union) {
-    auto val_sem = semantic_type(value_node);
+    auto val_sem = operand_type(value_node);
     if (val_sem && val_sem->kind != TypeKind::Union) {
       auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
       if (wrapped) val = wrapped;

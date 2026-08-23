@@ -1,0 +1,9 @@
+// Spec: an accumulator with neither a type in the pipe nor a typed declaration
+// to land in has no type at all, and a loop cannot build one out of nothing.
+import "std/io"
+
+pub fn Main() void {
+  arr := [1, 2, 3]
+  sum := for i : arr |acc| { acc += i }
+  io.Println("{sum}")
+}

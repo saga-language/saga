@@ -1,0 +1,13 @@
+// Spec: `==` looks for Equals, then falls back to Compare. `Equal` is not a
+// spelling of either, so a type declaring only it has no equality.
+import "std/io"
+
+struct P { n int }
+
+pub fn (p P) Equal(o P) bool { p.n == o.n }
+
+pub fn Main() void {
+  a := P{n: 1}
+  b := P{n: 2}
+  io.Println("{a == b}")
+}

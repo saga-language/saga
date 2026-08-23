@@ -26,26 +26,49 @@ llvm::Value *to_bool(llvm::IRBuilder<> &b, llvm::Value *v) {
 
 } // namespace
 
+// An accumulator with no initializer starts at the zero value of its type,
+// which is what makes `|acc| { acc += x }` a sum.
+void CodeGen::seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
+                               const TypePtr &sem, llvm::Type *ll) {
+  llvm::Value *val = acc.init ? emit_root_expr(**acc.init) : nullptr;
+  if (!val) {
+    zero_fill(slot, sem, ll);
+    return;
+  }
+
+  if (sem && sem->kind == TypeKind::Union) {
+    auto init_sem = root_expr_type(**acc.init);
+    if (init_sem && init_sem->kind != TypeKind::Union)
+      if (auto *wrapped = emit_union_wrap(val, init_sem, sem))
+        val = wrapped;
+  }
+
+  if (val->getType()->isPointerTy() && ll->isStructTy())
+    val = builder.CreateLoad(ll, val, "acc.seed");
+  builder.CreateStore(val, slot);
+}
+
 llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
                                     const Node &parent) {
   auto *func = builder.GetInsertBlock()->getParent();
 
   auto for_sem = semantic_type(parent);
 
-  // Accumulator setup: when the for-expression has `|acc|`, allocate a
-  // local zero-initialised to the for-expression's recorded type, bind
-  // it as `acc`, and load+return it after the loop exits.  Without
-  // this, every for-expression returns null and `sum := for ... |acc|
-  // {...}` would always be 0.
+  // Accumulator setup: allocate a local seeded to the accumulator's own type,
+  // bind it as `acc`, and load+return it after the loop exits.  Its type is
+  // not the for-expression's — an accumulator names a slot the loop writes
+  // across iterations, and a `break` value would give the loop a wider type
+  // than that slot holds.
   llvm::AllocaInst *acc_alloca = nullptr;
   llvm::Type *acc_ll = nullptr;
   if (node.accumulator) {
-    // A for-expression in statement position has no accumulator slot to fill.
-    if (for_sem && for_sem->kind != TypeKind::Void) {
-      acc_ll = storage_type(for_sem);
-      std::string acc_name(node.accumulator->name);
+    auto acc_sem = semantic_type(*node.accumulator->name);
+    acc_ll = storage_type(acc_sem);
+    if (acc_ll) {
+      auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
+      std::string acc_name(ident.name);
       acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
-      builder.CreateStore(llvm::Constant::getNullValue(acc_ll), acc_alloca);
+      seed_accumulator(acc_alloca, *node.accumulator, acc_sem, acc_ll);
       locals[acc_name] = acc_alloca;
     }
   }
@@ -188,9 +211,56 @@ void CodeGen::emit_for_condition(const ForExprNode &node, const Node &mode,
   builder.CreateBr(bbs.cond_bb);
 }
 
+// The bounds of a counted loop, not a collection to build and then walk.
+void CodeGen::emit_for_range_counted(const ForExprNode &node,
+                                     const ForRangeClauseNode &range,
+                                     const RangeNode &rng,
+                                     const ForLoopBlocks &bbs) {
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *low = emit_expr(*rng.low);
+  auto *high = emit_expr(*rng.high);
+  if (!low || !high) {
+    builder.CreateBr(bbs.exit_bb);
+    return;
+  }
+
+  auto *counter_ll = low->getType();
+  auto *cur = create_entry_alloca(func, std::string(range.vars[0].name),
+                                  counter_ll);
+  builder.CreateStore(low, cur);
+  locals[std::string(range.vars[0].name)] = cur;
+
+  builder.CreateBr(bbs.cond_bb);
+  builder.SetInsertPoint(bbs.cond_bb);
+  auto *v = builder.CreateLoad(counter_ll, cur, "range.v");
+  builder.CreateCondBr(builder.CreateICmpSLT(v, high, "range.cmp"),
+                       bbs.body_bb, bbs.exit_bb);
+
+  func->insert(func->end(), bbs.body_bb);
+  builder.SetInsertPoint(bbs.body_bb);
+  tick_reduction(*this);
+  emit_block(std::get<BlockNode>(node.body->data));
+  if (!builder.GetInsertBlock()->getTerminator())
+    builder.CreateBr(bbs.update_bb);
+
+  func->insert(func->end(), bbs.update_bb);
+  builder.SetInsertPoint(bbs.update_bb);
+  auto *upd = builder.CreateLoad(counter_ll, cur, "range.v");
+  builder.CreateStore(
+      builder.CreateAdd(upd, llvm::ConstantInt::get(counter_ll, 1),
+                        "range.next"),
+      cur);
+  builder.CreateBr(bbs.cond_bb);
+}
+
 void CodeGen::emit_for_range(const ForExprNode &node,
                              const ForRangeClauseNode &range,
                              const ForLoopBlocks &bbs) {
+  if (auto *rng = std::get_if<RangeNode>(&range.iterable->data)) {
+    emit_for_range_counted(node, range, *rng, bbs);
+    return;
+  }
+
   auto *iterable = emit_expr(*range.iterable);
   if (!iterable) {
     builder.CreateBr(bbs.exit_bb);

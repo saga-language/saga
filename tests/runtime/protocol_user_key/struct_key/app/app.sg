@@ -20,11 +20,11 @@ pub fn Main() void {
   io.Println(m.At(u1))
   io.Println(m.At(u2))
   io.Println(m.At(UserId{raw: 1}))
-  io.Println(m.Key?(u1).String())
-  io.Println(m.Key?(UserId{raw: 99}).String())
+  io.Println(m.Has(u1).String())
+  io.Println(m.Has(UserId{raw: 99}).String())
 
   m.Remove(u1)
   io.Println(m.Size().String())
-  io.Println(m.Key?(u1).String())
+  io.Println(m.Has(u1).String())
   io.Println(m.At(u2))
 }
