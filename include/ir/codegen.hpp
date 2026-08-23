@@ -124,7 +124,7 @@ struct CodeGen {
   /// Tracks which locals need release at scope exit and their kind. Holds the
   /// slot rather than the name: an ignored name binds nothing, so several may
   /// share one `locals` entry and a name would release the wrong slot twice.
-  enum class ManagedKind { Counted, Task, Closeable };
+  enum class ManagedKind { Counted, Struct, Task, Closeable };
   struct ManagedLocal {
     llvm::AllocaInst *slot;
     ManagedKind kind;
@@ -1018,6 +1018,19 @@ private:
   /// A struct is released by closing it, which needs the link name its own
   /// method table records rather than one derived from the LLVM type.
   static bool has_close_method(const StructTypeInfo &info);
+
+  /// A struct owns one reference to each managed value it holds, so a copy of
+  /// one retains them and its death releases them. The walk is generated per
+  /// struct type rather than inline, so a nested struct is one call.
+  bool owns_managed_fields(const TypePtr &sem);
+  void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
+  llvm::Function *struct_ownership_fn(const TypePtr &sem, bool retain);
+  void emit_slot_walk(llvm::StructType *st, const TypePtr &sem,
+                      llvm::Value *self, bool retain);
+  void emit_slot_ownership(llvm::StructType *st, llvm::Value *self,
+                           unsigned idx, const TypePtr &slot, bool retain);
+  void release_slot(llvm::Value *addr, llvm::Type *slot_ll,
+                    const TypePtr &sem);
   std::string close_link_name(llvm::Type *struct_ll) const;
   void emit_close_call(llvm::AllocaInst *slot);
 };

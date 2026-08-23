@@ -67,23 +67,26 @@ Open:
   type-name operand and suppress it while parsing a statement header, rather
   than encoding the restriction as a binding power that applies everywhere.
 
-- **A managed value held by a struct field or a collection element is
-  unowned** (found 2026-08-21, narrowed 2026-08-22 when local bindings were
-  fixed). `B{xs: xs}` stores the array into the field without retaining it, and
-  nothing releases it when the struct dies. That balances by accident while the
-  source local outlives the struct and dangles when it does not — return a
-  struct holding an array and the field points at freed memory. Array elements
-  and map values have the same hole.
+- **A collection element and an interface box hold a managed value unowned**
+  (found 2026-08-21, narrowed twice: 2026-08-22 when local bindings were fixed,
+  2026-08-23 when struct fields were). `saga_array_clone` memcpys the element
+  bytes, so cloning an `array{string}` copies pointers without retaining and
+  nothing releases them when the array dies; map values have the same hole.
+  Both are leaks rather than wrong answers, because reading an element back
+  through a second name cannot be written through — a nested index assignment
+  is an analyzer error.
 
-  Interface boxing is the same gap for structs: `b Bumper = c` stores `c`'s
+  Interface boxing is the struct-shaped version: `b Bumper = c` stores `c`'s
   address rather than a copy, so a method that writes through the receiver
-  changes `c`. Structs are not refcounted at all, so the local-binding retain
-  does not reach this.
+  changes `c`.
 
-  Fixing it needs the reference convention extended past locals — a struct or
-  collection that owns managed values needs a release when it dies, which is
-  the recursive-destructor question the local-slot fix deliberately stopped
-  short of.
+  A container cannot release what it holds because it does not know what that
+  is: the header carries `elem_size` and nothing else, so `saga_release_array`
+  has no way to reach the elements. Either the header gains a per-element
+  release function that codegen fills in at construction — it is the side that
+  knows the type — or `T[]` is monomorphized, which is already filed below as a
+  performance deferral. The struct half needed no runtime change, because
+  codegen emits the walk per struct type.
 
 - **A map is not copy-on-write** (found 2026-08-22). `m2 := m1` retains, and
   `m2["a"] = 99` is still visible through `m1`, because the machinery an array
@@ -100,63 +103,25 @@ Open:
   matching release. Note `kMutatingIntrinsics` treats `saga_map_set` as an
   in-place mutation for the stdlib's own use; that path wants to stay in-place.
 
-- **`docs/language.md` is half-migrated to the current type syntax** (found
-  2026-08-21). The file mixes two spellings of every primitive — 87 capitalised
-  (`Int`, `String`, `Bool`, `Float`, `Void`) against 139 lowercase — and the
-  capitalised ones no longer resolve: `xs Int[] = [1, 2, 3]` reports `undefined
-  name 'Int'`. Eight sites also use the `Type[]` array form, which the parser
-  no longer accepts; the current spellings are `array{int}` and
-  `map{string: int}`. §374-419 ("The array type form is deliberately a
-  *suffix* — `Int[]`, not `[Int]`") argues for a syntax the language does not
-  have, so it needs rewriting rather than search-and-replace. Distinct from the
-  Phase 8 doc sweep, which lists the *other* `docs/*.md` files and not
-  `language.md` itself.
-
-- **A struct literal cannot be a bare binary operand** (found 2026-08-16).
-  `a + Money{cents: 7}` reports "cannot use type 'Money' as a value"; the
-  literal has to be parenthesised. The `{` that opens a struct literal is an
-  infix operator at binding power 1 — the lowest non-zero, chosen so a context
-  that must stop before a `{ body }` block can do it with `parse_expr_bp(1)` —
-  and every real infix operator parses its right side well above that, so the
-  `{` is never reached.
-
-  Precedence is the wrong instrument: the question is not how tightly `{`
-  binds but *where* a literal is allowed, and those are different axes. Go
-  answers it with a parser flag (`exprLev`) that forbids composite literals
-  only in `if`/`for`/`switch` headers and allows them everywhere else,
-  including as binary operands. Fix shape: make `{` an ordinary suffix on a
-  type-name operand and suppress it while parsing a statement header, rather
-  than encoding the restriction as a binding power that applies everywhere.
-
-- **Binding a collection to a second name does not retain it** (found
-  2026-08-21, while implementing the `arr[i] = v` write-back below). `ys := xs`
-  copies the array pointer and emits no `saga_retain_array`, but both names are
-  registered with `track_managed`, so scope exit releases the buffer twice. In
-  `cow.sg` the IR is one `saga_array_new`, zero retains, two
-  `saga_release_array` — a use-after-free that currently goes unnoticed because
-  it happens as `Main` returns.
-
-  The same missing retain is why copy-on-write never fires.
-  `saga_array_make_unique` clones only when `refcount != 1`, so with the count
-  stuck at 1 a write through either name is seen through both: `ys[0] = 99`
-  changes `xs[0]`. That contradicts the value semantics in
-  `docs/language.md` §Mutability. Maps have shown this since `m[k] = v`
-  started working; arrays show it now that `xs[i] = v` does.
-
-  Boxing shows the same hole: `b Bumper = c` stores `c`'s address in the
-  interface box instead of a copy, so a method that writes through the receiver
-  changes `c`. Under value semantics the box should hold its own copy.
-
-  Root cause is that codegen has no ownership convention. `emit_expr` hands
-  back a fresh +1 reference for a constructor (`saga_array_new`) and a borrowed
-  +0 one for an identifier, field or element read, and nothing distinguishes
-  them, so the binder retains neither. Fix shape: pick the convention — every
-  producer returns +1 and every binder consumes it — and retain where a
-  borrowed read becomes a binding. That is a codegen-wide change touching
-  strings, arrays and maps alike, which is why it is not folded into the
-  write-back.
-
 Fixed:
+- **A struct field held a managed value unowned** (filed 2026-08-21, fixed
+  2026-08-23). `Box{xs: xs}` stored the array into the field without retaining
+  it, so the field and the local both claimed the only reference: writing
+  through the field found a refcount of 1, took it for uniquely owned and
+  edited the buffer both names saw. Returning such a struct was worse — the
+  local was released on the way out and the field pointed at freed memory.
+
+  A struct now owns one reference to each managed value it holds, which is the
+  local convention one level down: a field initialised from a binding retains,
+  overwriting a field releases what it held, and a struct dying releases its
+  fields. The walk is a generated function per struct type rather than inline
+  IR, so a nested struct costs one call and a recursive shape terminates.
+  Copying a struct retains through the same walk, which is what makes
+  copy-on-write fire for a field.
+
+  Errors are excluded: an error box escapes through a union and is never freed,
+  so releasing its message would leave the box pointing at freed memory.
+
 - **A second name for a collection did not take a reference** (filed
   2026-08-21, fixed 2026-08-22). `ys := xs` copied the pointer and emitted no
   `saga_retain_array`, so the count stayed at 1: `saga_array_make_unique` read

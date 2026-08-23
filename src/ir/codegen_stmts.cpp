@@ -907,13 +907,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
           }
         }
       }
-      // Release old value before overwriting if managed.
-      if (target_sem && (target_sem->kind == TypeKind::String ||
-                         target_sem->kind == TypeKind::Array ||
-                         target_sem->kind == TypeKind::Map)) {
-        auto *old = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-        emit_release(old, target_sem);
-      }
+      release_slot(alloca, alloca->getAllocatedType(), target_sem);
       store_into_slot(alloca, alloca->getAllocatedType(), rhs);
     } else {
       auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
@@ -949,6 +943,7 @@ void CodeGen::emit_field_assign(const Node &target, Token::Kind op,
     return;
 
   if (op == Token::Kind::Assignment) {
+    release_slot(addr, ftype, semantic_type(target));
     store_into_slot(addr, ftype, rhs);
     return;
   }

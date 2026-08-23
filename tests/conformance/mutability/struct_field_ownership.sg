@@ -1,0 +1,34 @@
+// Spec: "Large/complex types are optimized to be copy-on-write"
+// (docs/language.md §Mutability). A struct field holds a managed value the same
+// way a local does, so it owns a reference: a field initialised from a binding
+// does not share that binding's buffer, a field outlives the local it was built
+// from, and overwriting a field drops what it held.
+import "std/io"
+
+struct Box { xs array{int}  tag string }
+struct Pair { left Box  right Box }
+
+fn escape() Box {
+  local := [7, 8, 9]
+  Box{xs: local, tag: "esc"}
+}
+
+pub fn Main() void {
+  xs := [1, 2, 3]
+  held := Box{xs: xs, tag: "one"}
+  held.xs[0] = 99
+  io.Println("field {xs.At(0)} {held.xs.At(0)}")
+
+  outlives := escape()
+  io.Println("escaped {outlives.xs.At(2)} {outlives.tag}")
+
+  both := Pair{left: held, right: outlives}
+  io.Println("nested {both.left.xs.At(0)} {both.right.tag}")
+
+  copied := held
+  copied.xs[1] = 55
+  io.Println("copy {held.xs.At(1)} {copied.xs.At(1)}")
+
+  held.xs = [4, 5]
+  io.Println("overwrite {held.xs.At(0)} {held.xs.Size()}")
+}

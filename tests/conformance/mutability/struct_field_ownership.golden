@@ -1,0 +1,5 @@
+field 1 99
+escaped 9 esc
+nested 99 esc
+copy 2 55
+overwrite 4 2

@@ -351,6 +351,7 @@ void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
   auto *val = emit_operand(value_node);
   if (!val)
     return;
+  retain_if_borrowed(val, unwrap_alias(field_sem), value_node);
 
   // Field is a union; the supplied value is one alternative. Wrap before
   // memcpy so the union's tag is set correctly. Without this an
