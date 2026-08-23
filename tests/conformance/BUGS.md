@@ -70,11 +70,11 @@ Open:
 - **A collection element and an interface box hold a managed value unowned**
   (found 2026-08-21, narrowed twice: 2026-08-22 when local bindings were fixed,
   2026-08-23 when struct fields were). `saga_array_clone` memcpys the element
-  bytes, so cloning an `array{string}` copies pointers without retaining and
-  nothing releases them when the array dies; map values have the same hole.
-  Both are leaks rather than wrong answers, because reading an element back
-  through a second name cannot be written through — a nested index assignment
-  is an analyzer error.
+  bytes and `saga_release_array` frees the buffer without touching them, so
+  `[[1, 2], [3, 4]]` leaks both inner arrays — measured under ASan. Map values
+  have the same hole. Both are leaks rather than wrong answers, because reading
+  an element back through a second name cannot be written through: a nested
+  index assignment is an analyzer error.
 
   Interface boxing is the struct-shaped version: `b Bumper = c` stores `c`'s
   address rather than a copy, so a method that writes through the receiver
@@ -84,9 +84,12 @@ Open:
   is: the header carries `elem_size` and nothing else, so `saga_release_array`
   has no way to reach the elements. Either the header gains a per-element
   release function that codegen fills in at construction — it is the side that
-  knows the type — or `T[]` is monomorphized, which is already filed below as a
-  performance deferral. The struct half needed no runtime change, because
-  codegen emits the walk per struct type.
+  knows the type, and the struct walkers already have the matching `void(ptr)`
+  signature — or `T[]` is monomorphized, which is already filed below as a
+  performance deferral. The sharp edge is the stdlib: an element codegen did
+  not retain reaching an array that does release is a double free, so the
+  runtime's own array paths need an audit alongside. The struct half needed no
+  runtime change, because codegen emits the walk per struct type.
 
 - **A map is not copy-on-write** (found 2026-08-22). `m2 := m1` retains, and
   `m2["a"] = 99` is still visible through `m1`, because the machinery an array
