@@ -104,6 +104,22 @@ Open:
   in-place mutation for the stdlib's own use; that path wants to stay in-place.
 
 Fixed:
+- **Every array argument was deep-copied, and the copy was never freed**
+  (found and fixed 2026-08-23, under the ASan run for the struct-field fix).
+  `emit_call_expr` called `saga_array_clone` on every array argument to a
+  non-extern callee, reading the spec's "values that escape their scope are
+  copied" as a copy at the boundary. The callee was meant to release the clone,
+  but the tracking asked `semantic_type` for the parameter's type and a type
+  node has no entry in `node_types`, so it silently never fired: every call
+  taking an array leaked one.
+
+  The clone predates copy-on-write working. A parameter slot is a binding like
+  any other, so it takes a reference the way `ys := xs` does, and a callee that
+  writes finds the buffer shared and gets the copy — the same one copy-on-write
+  would have made. A callee that only reads now pays an increment instead of a
+  full buffer copy. The resolver is `lookup_sem_type`, which asks the analyzer
+  rather than the node table.
+
 - **A struct field held a managed value unowned** (filed 2026-08-21, fixed
   2026-08-23). `Box{xs: xs}` stored the array into the field without retaining
   it, so the field and the local both claimed the only reference: writing

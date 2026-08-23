@@ -475,17 +475,15 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     auto *val = emit_operand(*node.args[i]);
     if (!val)
       continue;
-    // Spec docs/language.md:51 — values that escape their scope are
-    // copied. The function-call boundary is an escape, so deep-copy
-    // arrays before passing so the callee operates on its own copy.
-    // Extern (C) callees are the low-level boundary where Push/Pop/Set
-    // intentionally mutate the backing buffer; skip the clone there so
-    // the C runtime can operate on the actual array.
+    // Spec docs/language.md:51 — a value that escapes its scope is copied,
+    // and the call boundary is an escape. The parameter slot is a binding like
+    // any other, so a borrowed argument takes a reference for it: a callee that
+    // only reads pays an increment, and one that writes finds the buffer shared
+    // and gets the copy. Extern (C) callees are the runtime's own in-place path
+    // for Push/Pop/Set, which needs the actual array.
     auto arg_sem = operand_type(*node.args[i]);
-    if (arg_sem && arg_sem->kind == TypeKind::Array && !callee_is_extern) {
-      val = builder.CreateCall(module->getFunction("saga_array_clone"),
-                               {val}, "arg.clone");
-    }
+    if (arg_sem && arg_sem->kind == TypeKind::Array && !callee_is_extern)
+      retain_if_borrowed(val, arg_sem, *node.args[i]);
     // The parameter's shape, not the name it was declared under: an alias is a
     // second name for a union or a struct, and every question below is about
     // the shape.
