@@ -91,6 +91,15 @@ Open:
   runtime's own array paths need an audit alongside. The struct half needed no
   runtime change, because codegen emits the walk per struct type.
 
+- **A discarded temporary is never freed** (found 2026-08-23, under the ASan
+  run for the struct-field fix). Every `"{x}"` leaks its concat chain and its
+  `saga_int_to_string` result: the interpolation builds a string nothing binds,
+  so no slot owns it and no scope exit releases it. The same shape covers a
+  bare-statement `arr.Append(x)` whose copy-on-write result is dropped. Landing
+  task is Phase 8's Stage-B ARC, beside the element hole but independent of it —
+  this one needs a way to release an unbound expression result, not a way for a
+  container to know what it holds.
+
 - **A map is not copy-on-write** (found 2026-08-22). `m2 := m1` retains, and
   `m2["a"] = 99` is still visible through `m1`, because the machinery an array
   has is missing entirely: there is no `saga_map_clone` and no
@@ -105,6 +114,9 @@ Open:
   `emit_array_index_assign` does, so it only needs the write-back and the
   matching release. Note `kMutatingIntrinsics` treats `saga_map_set` as an
   in-place mutation for the stdlib's own use; that path wants to stay in-place.
+  Landing task is Phase 8's Stage-B ARC. This is the last wrong answer left on
+  the ownership axis — the element hole and the discarded temporary above are
+  both leaks.
 
 Fixed:
 - **Every array argument was deep-copied, and the copy was never freed**
