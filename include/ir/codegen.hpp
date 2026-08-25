@@ -1009,6 +1009,16 @@ private:
   void retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
                           const Node &source);
 
+  /// The receiver value for a method call, made unique first when the method
+  /// writes through it.
+  llvm::Value *emit_receiver(const Node &object, const TypePtr &obj_sem,
+                             const std::string &method);
+
+  /// Give the binding `object` names a collection no other name shares, so an
+  /// in-place write through it is invisible elsewhere. Falls back to the plain
+  /// value when there is no slot to write back to.
+  llvm::Value *make_binding_unique(const Node &object, const TypePtr &sem);
+
   /// Emit release call for a value based on its semantic type.
   void emit_release(llvm::Value *val, const TypePtr &sem);
 

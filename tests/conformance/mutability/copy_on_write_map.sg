@@ -1,0 +1,37 @@
+// Spec: "Large/complex types are optimized to be copy-on-write"
+// (docs/language.md §Mutability). The promise is not qualified to arrays — a
+// second name for a map shares its entries until one of them writes, and the
+// writer is the one that gets the copy.
+import "std/io"
+
+struct Box {
+  m map{string: int}
+}
+
+fn build() map{string: int} {
+  local := {"x": 7}
+  local
+}
+
+pub fn Main() void {
+  ka := "a"
+  kb := "b"
+
+  m1 := {"a": 1, "b": 2}
+  m2 := m1
+  m2["a"] = 99
+  io.Println("decl {m1.At(ka)} {m2.At(ka)}")
+
+  m3 := {"a": 0}
+  m3 = m1
+  m3["b"] = 55
+  io.Println("assign {m1.At(kb)} {m3.At(kb)}")
+
+  b := Box{m: {"a": 4}}
+  field := b.m
+  field["a"] = 42
+  io.Println("field {b.m.At(ka)} {field.At(ka)}")
+
+  returned := build()
+  io.Println("returned {returned.Size()}")
+}

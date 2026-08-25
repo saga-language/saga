@@ -173,3 +173,138 @@ TEST(CowTest, BarrierCopiesWhenShared) {
   saga_release_string(src);
   saga_runtime_arena_destroy(a);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// make_unique: the barrier an in-place write applies before it writes
+//
+// It hands back a +1 reference and leaves the source's count alone — the
+// caller drops the reference the slot held, so the slot owns exactly one
+// either way.
+// ─────────────────────────────────────────────────────────────────────────
+
+static saga_runtime_map *int_map() {
+  return saga_map_new(sizeof(int64_t), sizeof(int64_t), 1 /* INT64 */,
+                      nullptr);
+}
+
+static void map_put(saga_runtime_map *m, int64_t k, int64_t v) {
+  saga_map_set(m, &k, &v);
+}
+
+static int64_t map_at(saga_runtime_map *m, int64_t k) {
+  void *v = saga_map_get(m, &k);
+  return v ? *(int64_t *)v : -1;
+}
+
+static saga_runtime_array *int_array(std::initializer_list<int64_t> vals) {
+  saga_runtime_array *arr = heap_array(sizeof(int64_t), 8);
+  for (int64_t v : vals) {
+    memcpy((char *)arr->data + arr->len * sizeof(int64_t), &v, sizeof(int64_t));
+    arr->len++;
+  }
+  return arr;
+}
+
+TEST(MakeUniqueTest, MapSharedIsCloned) {
+  saga_runtime_map *m = int_map();
+  map_put(m, 1, 10);
+  map_put(m, 2, 20);
+  saga_retain_map(m); // a second name
+
+  saga_runtime_map *u = saga_map_make_unique(m);
+  ASSERT_NE(u, m);
+  EXPECT_EQ(u->refcount, 1);
+  EXPECT_EQ(m->refcount, 2);
+
+  map_put(u, 1, 99);
+  EXPECT_EQ(map_at(u, 1), 99);
+  EXPECT_EQ(map_at(m, 1), 10);
+  EXPECT_EQ(saga_map_size(u), 2);
+
+  saga_release_map(u);
+  saga_release_map(m);
+  saga_release_map(m);
+}
+
+TEST(MakeUniqueTest, MapUniqueIsRetainedInPlace) {
+  saga_runtime_map *m = int_map();
+  map_put(m, 1, 10);
+
+  saga_runtime_map *u = saga_map_make_unique(m);
+  EXPECT_EQ(u, m);
+  EXPECT_EQ(m->refcount, 2);
+
+  saga_release_map(m);
+  EXPECT_EQ(m->refcount, 1);
+  saga_release_map(m);
+}
+
+TEST(MakeUniqueTest, MapCloneOwnsItsEntryBlocks) {
+  // A struct-shallow copy would share the key/value allocations and free
+  // each of them twice.
+  saga_runtime_map *m = int_map();
+  map_put(m, 1, 10);
+
+  saga_runtime_map *c = saga_map_clone(m);
+  ASSERT_EQ(c->len, 1);
+  EXPECT_NE(c->entries[0].key, m->entries[0].key);
+  EXPECT_NE(c->entries[0].value, m->entries[0].value);
+  EXPECT_EQ(map_at(c, 1), 10);
+
+  saga_release_map(c);
+  saga_release_map(m);
+}
+
+TEST(MakeUniqueTest, MapStaticIsCloned) {
+  // refcount -1 marks storage the runtime must neither write nor free.
+  saga_runtime_map *m = int_map();
+  map_put(m, 1, 10);
+  m->refcount = -1;
+
+  saga_runtime_map *u = saga_map_make_unique(m);
+  ASSERT_NE(u, m);
+  EXPECT_EQ(u->refcount, 1);
+  map_put(u, 1, 99);
+  EXPECT_EQ(map_at(m, 1), 10);
+
+  saga_release_map(u);
+  m->refcount = 1;
+  saga_release_map(m);
+}
+
+TEST(MakeUniqueTest, ArraySharedIsCloned) {
+  saga_runtime_array *a = int_array({1, 2, 3});
+  saga_retain_array(a);
+
+  saga_runtime_array *u = saga_array_make_unique(a);
+  ASSERT_NE(u, a);
+  EXPECT_EQ(u->refcount, 1);
+  EXPECT_EQ(a->refcount, 2);
+
+  int64_t v = 99;
+  memcpy(u->data, &v, sizeof(int64_t));
+  EXPECT_EQ(*(int64_t *)u->data, 99);
+  EXPECT_EQ(*(int64_t *)a->data, 1);
+
+  saga_release_array(u);
+  saga_release_array(a);
+  saga_release_array(a);
+}
+
+TEST(MakeUniqueTest, ArrayUniqueIsRetainedInPlace) {
+  saga_runtime_array *a = int_array({1, 2, 3});
+
+  saga_runtime_array *u = saga_array_make_unique(a);
+  EXPECT_EQ(u, a);
+  EXPECT_EQ(a->refcount, 2);
+
+  saga_release_array(a);
+  EXPECT_EQ(a->refcount, 1);
+  saga_release_array(a);
+}
+
+TEST(MakeUniqueTest, NullIsPassedThrough) {
+  EXPECT_EQ(saga_map_make_unique(nullptr), nullptr);
+  EXPECT_EQ(saga_array_make_unique(nullptr), nullptr);
+  EXPECT_EQ(saga_map_clone(nullptr), nullptr);
+}

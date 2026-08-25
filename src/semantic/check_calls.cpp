@@ -6,40 +6,13 @@
 // recognises rather than against the AST node that happened to hold it.
 
 #include "semantic/analyzer.hpp"
+#include "semantic/analyzer_detail.hpp"
 #include <algorithm>
 #include <format>
-#include <unordered_set>
 
 namespace saga {
 
 namespace {
-
-// Methods whose body passes the receiver as the first argument to one of
-// these C runtime functions mutate the caller's collection in place, so they
-// cannot be applied to an immutable constant.  Value-returning copy-on-write
-// methods (Append/Insert/Set) are absent: they never write through the
-// receiver, so they are valid on a const (the result is a fresh array).
-const std::unordered_set<std::string> kMutatingIntrinsics{
-    "saga_array_pop", "saga_map_set", "saga_map_remove"};
-
-bool is_kind_method_mutating(const FuncDeclNode &fn) {
-  if (!fn.body || !fn.receiver) return false;
-  auto *blk = std::get_if<BlockNode>(&fn.body->data);
-  if (!blk) return false;
-  std::string_view recv = fn.receiver->name.name;
-
-  for (auto &stmt : blk->stmts) {
-    auto *call = std::get_if<CallExprNode>(&stmt->data);
-    if (!call) continue;
-    auto *id = std::get_if<IdentifierNode>(&call->callee->data);
-    if (!id) continue;
-    if (!kMutatingIntrinsics.count(std::string(id->name))) continue;
-    if (call->args.empty()) continue;
-    auto *recv_id = std::get_if<IdentifierNode>(&call->args[0]->data);
-    if (recv_id && recv_id->name == recv) return true;
-  }
-  return false;
-}
 
 // The receiver's own method set, which is where the declaration recorded
 // whether the body writes through it.
@@ -52,15 +25,24 @@ const std::vector<MethodInfo> *receiver_methods(const TypePtr &type) {
   return nullptr;
 }
 
-bool method_mutates_receiver(const TypePtr &type, std::string_view name) {
-  const auto *methods = receiver_methods(type);
-  if (!methods) return false;
-  for (auto &m : *methods)
-    if (m.name == name) return m.mutates_receiver;
-  return false;
-}
-
 } // namespace
+
+// An alias-bound method wins over the underlying type's, the order method
+// dispatch uses. Array and Map keep theirs in `kind_method_decls_` rather than
+// on the type, because the receiver is a type kind and not a declaration — and
+// an alias has to be unwrapped to reach it.
+bool Analyzer::method_mutates_receiver(const TypePtr &type,
+                                       std::string_view name) const {
+  if (!type) return false;
+  if (const auto *methods = receiver_methods(type))
+    for (auto &m : *methods)
+      if (m.name == name) return m.mutates_receiver;
+
+  auto km = kind_method_decls_.find(unwrap_alias(type)->kind);
+  if (km == kind_method_decls_.end()) return false;
+  auto m = km->second.find(std::string(name));
+  return m != km->second.end() && m->second.mutates_receiver;
+}
 
 static std::string callee_display_name(const Node &callee) {
   if (auto *id = std::get_if<IdentifierNode>(&callee.data))
@@ -74,17 +56,15 @@ static std::string callee_display_name(const Node &callee) {
 // the write can land. A constant is not, and the call would otherwise compile
 // into a write to a temporary that is discarded.
 void Analyzer::reject_mutating_call_on_constant(const CallExprNode &node,
-                                                const SelectorNode &sel) {
+                                                const SelectorNode &sel,
+                                                const TypePtr &recv) {
   auto *recv_id = std::get_if<IdentifierNode>(&sel.object->data);
   if (!recv_id)
     return;
   auto sym = lookup(std::string(recv_id->name));
   if (!sym || sym->kind != SymbolKind::Constant)
     return;
-
-  auto it = node_types.find(sel.object.get());
-  if (it == node_types.end() ||
-      !method_mutates_receiver(it->second, sel.field.name))
+  if (!method_mutates_receiver(recv, sel.field.name))
     return;
 
   error(node.span,
@@ -174,43 +154,31 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       }
     }
   } else if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
-    reject_mutating_call_on_constant(node, *sel);
+    auto obj_sem = node_types.count(sel->object.get())
+                       ? node_types[sel->object.get()]
+                       : nullptr;
+    auto recv_shape = unwrap_alias(obj_sem);
+    bool kind_recv = recv_shape && (recv_shape->kind == TypeKind::Array ||
+                                    recv_shape->kind == TypeKind::Map);
+    // Cross-package: the FuncDecl and dispatch flag are missing until we
+    // lazily load std/array or std/map source, and both the mutation check
+    // and the instantiation below read those tables.
+    if (kind_recv && !is_stdlib &&
+        kind_method_decls_.find(recv_shape->kind) == kind_method_decls_.end())
+      ensure_source_loaded(recv_shape->kind == TypeKind::Array ? "array"
+                                                              : "map");
+
+    reject_mutating_call_on_constant(node, *sel, obj_sem);
+
     // kind_methods_ call (Array/Map receiver) where the substituted
     // signature is already concrete, but the body must be re-checked
     // with concrete K/V bindings because it dispatches through a named
     // protocol on a TypeParam value.  Drive instantiation per concrete
     // K so codegen can specialise.
-    auto obj_sem = node_types.count(sel->object.get())
-                       ? node_types[sel->object.get()]
-                       : nullptr;
-    if (obj_sem && (obj_sem->kind == TypeKind::Array ||
-                    obj_sem->kind == TypeKind::Map)) {
-      // Cross-package: the FuncDecl and dispatch flag are missing until
-      // we lazily load std/array or std/map source.  Trigger that here
-      // so kind_method_decls_ / kind_method_uses_typeparam_dispatch_
-      // are populated before we look them up.
-      if (!is_stdlib && kind_method_decls_.find(obj_sem->kind) ==
-                            kind_method_decls_.end()) {
-        const char *origin = obj_sem->kind == TypeKind::Array
-                                  ? "array" : "map";
-        ensure_source_loaded(origin);
-      }
-      auto km_it = kind_method_decls_.find(obj_sem->kind);
+    if (kind_recv) {
+      auto km_it = kind_method_decls_.find(recv_shape->kind);
       if (km_it != kind_method_decls_.end()) {
         auto m_it = km_it->second.find(std::string(sel->field.name));
-        if (m_it != km_it->second.end() &&
-            is_kind_method_mutating(*m_it->second.decl)) {
-          if (auto *recv_id =
-                  std::get_if<IdentifierNode>(&sel->object->data)) {
-            auto sym = lookup(std::string(recv_id->name));
-            if (sym && sym->kind == SymbolKind::Constant) {
-              error(node.span,
-                    std::format("cannot call mutating method '{}' on "
-                                "constant '{}'",
-                                sel->field.name, recv_id->name));
-            }
-          }
-        }
         if (m_it != km_it->second.end() &&
             kind_method_uses_typeparam_dispatch_.count(m_it->second.decl)) {
           std::unordered_map<uint32_t, TypePtr> bindings;

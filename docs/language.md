@@ -58,6 +58,13 @@ they do not escape their current scope. Values that escape their scope are
 copied. Large/complex types are optimized to be copy-on-write for performance
 while small objects are just copied.
 
+Arrays and maps are the copy-on-write types. A second name shares the buffer
+until one of the names writes, and the writer is the one that gets the copy —
+so no name ever observes another's edit. That holds however the write is
+spelled: `xs[i] = v` and `m[k] = v` copy first, and so does an in-place method
+like `Pop`, `Set` or `Remove`. A parameter is a second name like any other, so
+a callee that writes leaves the caller's value alone.
+
 This applies to co-routines to prevent memory polution and resource
 contention. Each coroutine gets its own copy of memory it could conceivably
 touch when it is spawned.

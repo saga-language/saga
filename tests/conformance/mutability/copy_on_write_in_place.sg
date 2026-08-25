@@ -1,0 +1,45 @@
+// Spec: a method writes the value the caller named (docs/language.md
+// §Methods), and a second name for a collection is a separate value
+// (§Mutability). Both hold at once — the write lands on the receiver's own
+// entries, which copy-on-write separated from the ones another name still
+// sees. Pop, Set and Remove write in place rather than returning a new
+// collection, so the barrier is the call site's to apply.
+import "std/io"
+
+struct Box {
+  xs array{int}
+  m map{string: int}
+}
+
+type Stack = array{int}
+
+pub fn Main() void {
+  ka := "a"
+
+  xs := [1, 2, 3]
+  ys := xs
+  ys.Pop()
+  io.Println("pop {xs.Size()} {ys.Size()}")
+
+  m1 := {"a": 1}
+  m2 := m1
+  m2.Set("a", 77)
+  io.Println("set {m1.At(ka)} {m2.At(ka)}")
+
+  r1 := {"a": 1, "b": 2}
+  r2 := r1
+  r2.Remove("a")
+  io.Println("remove {r1.Size()} {r2.Size()}")
+
+  s1 Stack = [1, 2, 3]
+  s2 := s1
+  s2.Pop()
+  io.Println("alias {s1.Size()} {s2.Size()}")
+
+  b := Box{xs: [4, 5], m: {"a": 9}}
+  fxs := b.xs
+  fxs.Pop()
+  fm := b.m
+  fm.Set("a", 8)
+  io.Println("field {b.xs.Size()} {fxs.Size()} {b.m.At(ka)} {fm.At(ka)}")
+}

@@ -1,0 +1,11 @@
+// Spec: a method that writes in place is rejected on a constant, because the
+// write has nowhere to land (docs/language.md §Constants). An alias of a
+// collection is the same storage under another name, so it answers the same —
+// the check has to see through the alias to the receiver kind.
+type Stack = array{int}
+
+const Fixed Stack = [1, 2, 3]
+
+pub fn Main() void {
+  Fixed.Pop()
+}

@@ -164,6 +164,32 @@ void CodeGen::retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
     emit_retain(val, sem);
 }
 
+// A write that lands through the binding, rather than through a value the
+// caller stores, needs the buffer to itself first — otherwise a second name
+// sees the edit. The slot takes the unique collection and drops the reference
+// it held, so it still owns exactly one.
+llvm::Value *CodeGen::make_binding_unique(const Node &object,
+                                          const TypePtr &sem) {
+  const char *unique_fn = nullptr;
+  if (sem && sem->kind == TypeKind::Array)
+    unique_fn = "saga_array_make_unique";
+  else if (sem && sem->kind == TypeKind::Map)
+    unique_fn = "saga_map_make_unique";
+
+  auto [holder, holder_ll] =
+      unique_fn ? assign_target_address(object)
+                : std::pair<llvm::Value *, llvm::Type *>{nullptr, nullptr};
+  if (!holder || !holder_ll->isPointerTy())
+    return emit_expr(object);
+
+  auto *cur = builder.CreateLoad(holder_ll, holder, "cow.cur");
+  auto *uniq =
+      builder.CreateCall(module->getFunction(unique_fn), {cur}, "cow.uniq");
+  builder.CreateStore(uniq, holder);
+  emit_release(cur, sem);
+  return uniq;
+}
+
 void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
   if (!val || !sem) return;
   if (sem->kind == TypeKind::String)

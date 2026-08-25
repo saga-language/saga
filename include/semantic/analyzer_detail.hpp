@@ -31,4 +31,11 @@ std::optional<std::string> type_decl_name(const Node &node);
 /// method loader both need it, and they sit either side of the import split.
 TypePtr normalize_generic_receiver_sig(const TypePtr &t, TypeKind recv_kind);
 
+/// A receiver method on Array/Map whose body hands the receiver to a runtime
+/// function that writes it in place. The carve-out to `writes_through_binding`,
+/// which answers what a body writes and not what its callees write: these
+/// callees are C, so there is no body to read. Declaration registration records
+/// the answer and call checking reads it back.
+bool is_kind_method_mutating(const FuncDeclNode &fn);
+
 } // namespace saga

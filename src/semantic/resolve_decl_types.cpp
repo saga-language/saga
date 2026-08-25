@@ -324,7 +324,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         if (!dup) {
           vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
           kind_method_decls_[TypeKind::Array][std::string(fn.name.name)] =
-              KindMethodDecl{&fn, fn_type, generic_params};
+              KindMethodDecl{&fn, fn_type, generic_params,
+                             is_kind_method_mutating(fn)};
         }
       }
     } else if (auto *map_tn =
@@ -355,7 +356,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
         if (!dup) {
           vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
           kind_method_decls_[TypeKind::Map][std::string(fn.name.name)] =
-              KindMethodDecl{&fn, fn_type, generic_params};
+              KindMethodDecl{&fn, fn_type, generic_params,
+                             is_kind_method_mutating(fn)};
         }
       }
     }

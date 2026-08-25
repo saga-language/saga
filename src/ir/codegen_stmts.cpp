@@ -805,11 +805,14 @@ void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
   builder.CreateStore(value, slot);
 }
 
+// `saga_map_set` writes in place and stays that way — it is the stdlib's own
+// path through `map.Set`. Copy-on-write is the caller's to apply, so the map
+// the write lands in is made unique first.
 void CodeGen::emit_map_index_assign(const IndexExprNode &target,
                                     const TypePtr &obj_sem, llvm::Value *rhs,
                                     const TypePtr &rhs_sem) {
   auto &info = std::get<MapTypeInfo>(obj_sem->detail);
-  auto *map = emit_expr(*target.object);
+  auto *map = make_binding_unique(*target.object, obj_sem);
   auto *key = emit_expr(*target.index);
   if (!map || !key)
     return;

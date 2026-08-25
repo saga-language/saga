@@ -1465,7 +1465,7 @@ typedef struct {
 static saga_runtime_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap);
 static void saga_array_push_internal(saga_runtime_array *arr, const void *elem);
 saga_runtime_array *saga_array_clone(const saga_runtime_array *src);
-static saga_runtime_array *saga_array_make_unique(saga_runtime_array *arr);
+saga_runtime_array *saga_array_make_unique(saga_runtime_array *arr);
 
 int64_t saga_string_size(const saga_runtime_string *s) {
   return s ? s->len : 0;
@@ -2015,7 +2015,7 @@ saga_runtime_array *saga_array_clone(const saga_runtime_array *src) {
 /* Copy-on-write: hand back a uniquely-owned array carrying a +1 reference   */
 /* for the caller.  Uniquely owned (refcount == 1) is retained in place;     */
 /* shared (> 1) or static (-1, a rodata const) is cloned.                    */
-static saga_runtime_array *saga_array_make_unique(saga_runtime_array *arr) {
+saga_runtime_array *saga_array_make_unique(saga_runtime_array *arr) {
   if (!arr) return NULL;
   if (arr->refcount == 1) {
     saga_retain_array(arr);
@@ -2364,6 +2364,41 @@ void saga_release_map(saga_runtime_map *m) {
     free(m->indices);
     free(m);
   }
+}
+
+/* Shallow clone: new map with its own entry blocks, key and value bytes    */
+/* copied.  Matches saga_map_equals: a pointer key or value is shared by     */
+/* byte-copy, not deeply duplicated.                                        */
+saga_runtime_map *saga_map_clone(const saga_runtime_map *src) {
+  if (!src) return NULL;
+  saga_runtime_map *dst = (saga_runtime_map *)malloc(sizeof(*dst));
+  *dst = *src;
+  dst->refcount = 1;
+  dst->entries = (saga_runtime_map_entry *)malloc(
+      (size_t)src->entries_cap * sizeof(saga_runtime_map_entry));
+  dst->indices = (int64_t *)malloc((size_t)src->index_cap * sizeof(int64_t));
+  memcpy(dst->indices, src->indices,
+         (size_t)src->index_cap * sizeof(int64_t));
+  for (int64_t i = 0; i < src->len; i++) {
+    dst->entries[i].key = malloc((size_t)src->key_size);
+    memcpy(dst->entries[i].key, src->entries[i].key, (size_t)src->key_size);
+    dst->entries[i].value = malloc((size_t)src->val_size);
+    memcpy(dst->entries[i].value, src->entries[i].value,
+           (size_t)src->val_size);
+  }
+  return dst;
+}
+
+/* Copy-on-write: hand back a uniquely-owned map carrying a +1 reference for */
+/* the caller.  Uniquely owned (refcount == 1) is retained in place; shared  */
+/* (> 1) or arena-owned (-1) is cloned.                                     */
+saga_runtime_map *saga_map_make_unique(saga_runtime_map *m) {
+  if (!m) return NULL;
+  if (m->refcount == 1) {
+    saga_retain_map(m);
+    return m;
+  }
+  return saga_map_clone(m);
 }
 
 /* ── Public API ────────────────────────────────────────────────────────── */
