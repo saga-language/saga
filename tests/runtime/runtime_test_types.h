@@ -92,6 +92,29 @@ typedef struct {
   int64_t refcount;
 } saga_runtime_array;
 
+typedef struct {
+  void *key;
+  void *value;
+} saga_runtime_map_entry;
+
+typedef struct {
+  uint64_t (*hash)(const void *key);
+  int      (*equals)(const void *a, const void *b);
+} saga_runtime_key_ops;
+
+typedef struct {
+  saga_runtime_map_entry *entries;
+  int64_t *indices;
+  int64_t len;
+  int64_t entries_cap;
+  int64_t index_cap;
+  int64_t key_size;
+  int64_t val_size;
+  int64_t refcount;
+  int64_t key_kind;
+  const saga_runtime_key_ops *ops;
+} saga_runtime_map;
+
 saga_runtime_string  *saga_runtime_arena_alloc_string(saga_runtime_arena *a, const char *buf, int64_t len);
 saga_runtime_array   *saga_runtime_arena_alloc_array(saga_runtime_arena *a, int64_t elem_size,
                                  int64_t initial_cap);
@@ -101,12 +124,28 @@ saga_runtime_array   *saga_runtime_arena_alloc_array(saga_runtime_arena *a, int6
 saga_runtime_string  *saga_runtime_cow_copy_string(saga_runtime_arena *a, saga_runtime_string *src);
 saga_runtime_array   *saga_runtime_cow_copy_array(saga_runtime_arena *a, saga_runtime_array *src);
 
+/* ── Collection API ────────────────────────────────────────────────────── */
+
+saga_runtime_map     *saga_map_new(int64_t key_size, int64_t val_size,
+                                   int64_t key_kind,
+                                   const saga_runtime_key_ops *ops);
+void        saga_map_set(saga_runtime_map *m, const void *key,
+                         const void *value);
+void       *saga_map_get(saga_runtime_map *m, const void *key);
+int64_t     saga_map_size(saga_runtime_map *m);
+void        saga_map_remove(saga_runtime_map *m, const void *key);
+saga_runtime_map     *saga_map_clone(const saga_runtime_map *src);
+saga_runtime_map     *saga_map_make_unique(saga_runtime_map *m);
+saga_runtime_array   *saga_array_make_unique(saga_runtime_array *arr);
+
 /* ── Refcount helpers (for COW tests) ──────────────────────────────────── */
 
 void        saga_retain_string(saga_runtime_string *s);
 void        saga_release_string(saga_runtime_string *s);
 void        saga_retain_array(saga_runtime_array *arr);
 void        saga_release_array(saga_runtime_array *arr);
+void        saga_retain_map(saga_runtime_map *m);
+void        saga_release_map(saga_runtime_map *m);
 
 /* ── Actor API ─────────────────────────────────────────────────────────── */
 

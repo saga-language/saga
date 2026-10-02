@@ -15,6 +15,11 @@ fn overwrite(a array{int}) int {
   a.At(0)
 }
 
+fn shrink(a array{int}) int {
+  a.Pop()
+  a.Size()
+}
+
 fn first(a array{int}) int { a.At(0) }
 
 pub fn Main() void {
@@ -25,4 +30,5 @@ pub fn Main() void {
 
   io.Println("write {overwrite(arr)} {arr.At(0)}")
   io.Println("read {first(arr)} {first([5, 6])}")
+  io.Println("pop {shrink(arr)} {arr.Size()}")
 }

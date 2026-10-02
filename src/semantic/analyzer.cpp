@@ -11,6 +11,7 @@
 #include <charconv>
 #include <filesystem>
 #include <format>
+#include <unordered_set>
 
 namespace saga {
 
@@ -113,6 +114,36 @@ PackageResolver::list_source_files(const std::string &dir) const {
 // ===========================================================================
 // Generic receiver method helpers
 // ===========================================================================
+
+namespace {
+
+/// Runtime functions that write through their first argument. Their
+/// value-returning copy-on-write counterparts (`saga_array_append`, `_insert`,
+/// `_set`) are absent: those never write through the receiver, so they are
+/// valid on a constant and need no barrier at the call site.
+const std::unordered_set<std::string> kMutatingIntrinsics{
+    "saga_array_pop", "saga_map_set", "saga_map_remove"};
+
+} // namespace
+
+bool is_kind_method_mutating(const FuncDeclNode &fn) {
+  if (!fn.body || !fn.receiver) return false;
+  auto *blk = std::get_if<BlockNode>(&fn.body->data);
+  if (!blk) return false;
+  std::string_view recv = fn.receiver->name.name;
+
+  for (auto &stmt : blk->stmts) {
+    auto *call = std::get_if<CallExprNode>(&stmt->data);
+    if (!call) continue;
+    auto *id = std::get_if<IdentifierNode>(&call->callee->data);
+    if (!id) continue;
+    if (!kMutatingIntrinsics.count(std::string(id->name))) continue;
+    if (call->args.empty()) continue;
+    auto *recv_id = std::get_if<IdentifierNode>(&call->args[0]->data);
+    if (recv_id && recv_id->name == recv) return true;
+  }
+  return false;
+}
 
 /// Replace SGI stub types (Struct("T"), Struct("K"), Struct("V")) with the
 /// sentinel TypeParam placeholders that check_selector's substitution expects.

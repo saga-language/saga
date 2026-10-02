@@ -91,6 +91,19 @@ Open:
   runtime's own array paths need an audit alongside. The struct half needed no
   runtime change, because codegen emits the walk per struct type.
 
+- **Indexing does not see through a structural alias** (found 2026-08-24,
+  while checking whether the copy-on-write barrier reached aliased
+  collections). With `type Stack = array{int}` and `s Stack = [1, 2]`, both
+  `s[0]` and `s[0] = 9` report `type Stack does not support indexing`; the map
+  spelling answers the same. `check_index_expr` (`semantic/check_index.cpp`)
+  switches on `obj_type->kind`, which is `Alias`, and falls to the `default:`
+  arm — the same shape as the slice check just above it. Method calls already
+  work (`s.Pop()`, `s.At(0)`), so the alias is second-class only here.
+
+  A structural alias is its underlying type by definition, so unwrapping is
+  the whole fix. Distinct from the nominal-alias entry above: that one is a
+  question about identity, this one is a missing `unwrap_alias`.
+
 - **A discarded temporary is never freed** (found 2026-08-23, under the ASan
   run for the struct-field fix). Every `"{x}"` leaks its concat chain and its
   `saga_int_to_string` result: the interpolation builds a string nothing binds,
@@ -100,25 +113,34 @@ Open:
   this one needs a way to release an unbound expression result, not a way for a
   container to know what it holds.
 
-- **A map is not copy-on-write** (found 2026-08-22). `m2 := m1` retains, and
-  `m2["a"] = 99` is still visible through `m1`, because the machinery an array
-  has is missing entirely: there is no `saga_map_clone` and no
-  `saga_map_make_unique`, and `saga_map_set` writes in place and returns void.
-  This is not the retain bug — the retain is emitted, there is just nothing
-  reading the count. `docs/language.md` §Mutability promises copy-on-write for
-  "large/complex types" without qualifying it to arrays.
-
-  Fix shape: mirror the array path — a clone, a `make_unique`, and a
-  `saga_map_set` that returns the map to keep. Codegen is already shaped for
-  it: `emit_map_index_assign` resolves its holder the same way
-  `emit_array_index_assign` does, so it only needs the write-back and the
-  matching release. Note `kMutatingIntrinsics` treats `saga_map_set` as an
-  in-place mutation for the stdlib's own use; that path wants to stay in-place.
-  Landing task is Phase 8's Stage-B ARC. This is the last wrong answer left on
-  the ownership axis — the element hole and the discarded temporary above are
-  both leaks.
-
 Fixed:
+- **An in-place write skipped copy-on-write** (map half filed 2026-08-22,
+  array half found and both fixed 2026-08-24). `m2 := m1` retained and
+  `m2["a"] = 99` was still visible through `m1`, and the same held for
+  `m.Set`, `m.Remove` and — contrary to what this file recorded — `xs.Pop`,
+  through an alias, a struct field and a function parameter alike. The retain
+  was emitted; nothing read the count.
+
+  The filed fix shape does not work. Making `saga_map_set` copy and return the
+  map to keep breaks `map.Set`, whose body discards the result: on a shared map
+  it would write the clone and drop it, turning a visible-through-alias write
+  into a silent no-op exactly where the fix was aimed. Repairing that forces
+  `map.Set` from `void` to `map{K: V}` and still leaves `Remove` and `Pop`.
+
+  A callee holding a collection receives a pointer by value and cannot rebind
+  the caller's slot, so the barrier belongs to the caller, which is the only
+  side that knows the holder — the same place `emit_array_index_assign` already
+  puts it for `xs[i] = v`. `make_binding_unique` loads the slot, calls
+  `saga_{array,map}_make_unique`, stores the result back and releases what the
+  slot held; `emit_receiver` applies it when the analyzer recorded that the
+  method writes through its receiver. `saga_map_set` stays void and in-place
+  for the stdlib's own path, and `kMutatingIntrinsics` keeps its meaning.
+
+  Two alias holes closed with it, both from asking `kind_method_decls_` for a
+  type whose kind was `Alias`: the barrier did not fire on a collection reached
+  through a structural alias, and `Fixed.Pop()` on a constant of one was
+  accepted rather than rejected.
+
 - **Every array argument was deep-copied, and the copy was never freed**
   (found and fixed 2026-08-23, under the ASan run for the struct-field fix).
   `emit_call_expr` called `saga_array_clone` on every array argument to a

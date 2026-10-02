@@ -41,6 +41,26 @@ static std::string scalar_intrinsic_mangle_name(const TypePtr &t) {
   }
 }
 
+// A method that writes through its receiver needs somewhere for the write to
+// land that no second name can see, so the receiver is made unique before the
+// callee gets it. The callee takes the collection by value and cannot rebind
+// the caller's slot; only this side knows which slot that is.
+llvm::Value *CodeGen::emit_receiver(const Node &object, const TypePtr &obj_sem,
+                                    const std::string &method) {
+  // The shape, not the declared type: an alias of a collection reaches the
+  // same runtime buffer and needs the same barrier.
+  auto shape = unwrap_alias(obj_sem);
+  if (!shape)
+    return emit_expr(object);
+  auto kind_it = analyzer.kind_method_decls_.find(shape->kind);
+  if (kind_it == analyzer.kind_method_decls_.end())
+    return emit_expr(object);
+  auto m_it = kind_it->second.find(method);
+  if (m_it == kind_it->second.end() || !m_it->second.mutates_receiver)
+    return emit_expr(object);
+  return make_binding_unique(object, shape);
+}
+
 llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
                                                  const Node &parent) {
   auto *sel = std::get_if<SelectorNode>(&node.callee->data);
@@ -145,7 +165,7 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     }
   }
 
-  auto *obj = emit_expr(*sel->object);
+  auto *obj = emit_receiver(*sel->object, obj_sem, method);
   if (!obj)
     return nullptr;
 

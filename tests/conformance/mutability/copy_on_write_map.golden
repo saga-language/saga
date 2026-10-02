@@ -1,0 +1,4 @@
+decl 1 99
+assign 2 55
+field 4 42
+returned 1

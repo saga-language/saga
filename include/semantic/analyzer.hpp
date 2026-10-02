@@ -276,6 +276,9 @@ struct Analyzer {
     const FuncDeclNode *decl = nullptr;
     TypePtr original_signature;
     std::vector<TypeParam> type_params;  // original IDs
+    /// The body writes through the receiver, so the call needs somewhere for
+    /// the write to land that no second name can see.
+    bool mutates_receiver = false;
   };
   std::unordered_map<TypeKind, std::unordered_map<std::string, KindMethodDecl>>
       kind_method_decls_;
@@ -787,7 +790,13 @@ private:
   /// Reject a call whose method writes through its receiver when that
   /// receiver is a constant.
   void reject_mutating_call_on_constant(const CallExprNode &node,
-                                        const SelectorNode &sel);
+                                        const SelectorNode &sel,
+                                        const TypePtr &recv);
+
+  /// Whether `name` on `recv` writes through the receiver. Codegen asks the
+  /// same question of `kind_method_decls_` to place the copy-on-write barrier.
+  bool method_mutates_receiver(const TypePtr &type,
+                               std::string_view name) const;
 
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);

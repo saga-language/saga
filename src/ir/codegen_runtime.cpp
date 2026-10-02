@@ -178,10 +178,10 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(i64_type, {ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_equals", module.get());
 
-  // saga_runtime_array* saga_array_clone(const saga_runtime_array* src)
+  // saga_runtime_array* saga_array_make_unique(saga_runtime_array* arr)
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
-      llvm::Function::ExternalLinkage, "saga_array_clone", module.get());
+      llvm::Function::ExternalLinkage, "saga_array_make_unique", module.get());
 
   // saga_runtime_string* saga_string_at(saga_runtime_string* s, i64 index)
   llvm::Function::Create(
@@ -288,6 +288,11 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_retain_map", module.get());
+
+  // saga_runtime_map* saga_map_make_unique(saga_runtime_map* m)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_map_make_unique", module.get());
 
   // void saga_release_map(saga_runtime_map* m)
   llvm::Function::Create(
