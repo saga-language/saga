@@ -1,0 +1,29 @@
+// Spec: a union is "tagged so you can recover which one it is with `is`"
+// (docs/language.md:458). A narrower union flowing into a wider one keeps
+// telling the truth about what it holds, whether it is declared, passed,
+// assigned or returned — the tags of the two layouts need not line up.
+import "std/io"
+
+fn narrow(n int) int | string {
+  if n > 0 { return "pos" }
+  n
+}
+
+fn widened(n int) bool | int | string { narrow(n) }
+
+fn show(v bool | int | string) string {
+  if v is string { return "string {v}" }
+  if v is int { return "int {v}" }
+  "bool"
+}
+
+pub fn Main() void {
+  x bool | int | string = narrow(1)
+  io.Println("declared {show(x)}")
+  y := narrow(-3)
+  io.Println("passed {show(y)}")
+  w bool | int | string = true
+  w = y
+  io.Println("assigned {show(w)}")
+  io.Println("returned {show(widened(4))} {show(widened(-4))}")
+}

@@ -19,6 +19,31 @@ llvm::Value *CodeGen::coerce_to(llvm::Value *val, const TypePtr &from,
   return placed ? placed : val;
 }
 
+// Never adopts storage the value already has: that may be another local's slot.
+llvm::AllocaInst *CodeGen::bind_local(const std::string &name,
+                                      llvm::Value *val, const TypePtr &sem) {
+  auto *slot_ll = local_slot_type(sem, val);
+  auto *func = builder.GetInsertBlock()->getParent();
+  auto *slot = create_entry_alloca(func, name, slot_ll);
+  if (val)
+    store_into_slot(slot, slot_ll, val);
+  locals[name] = slot;
+  track_managed(slot, unwrap_alias(sem));
+  return slot;
+}
+
+// A local holds a closure or an interface as the fat pair itself; llvm_type
+// answers with the pointer to one that a parameter receives.
+llvm::Type *CodeGen::local_slot_type(const TypePtr &sem, llvm::Value *val) {
+  auto *held = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
+  if (held && held->getAllocatedType() == closure_fat_ptr_type)
+    return closure_fat_ptr_type;
+  auto s = unwrap_alias(sem);
+  if (s && s->kind == TypeKind::Interface)
+    return iface_fat_ptr_type;
+  return storage_type(s);
+}
+
 llvm::Value *CodeGen::as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
                                    const TypePtr &union_sem) {
   auto *union_ll = get_union_llvm_type(union_sem);

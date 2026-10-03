@@ -517,9 +517,6 @@ void CodeGen::zero_fill(llvm::Value *slot, const TypePtr &sem,
 }
 
 void CodeGen::emit_var_decl(const VarDeclNode &node) {
-  std::string name(node.name.name);
-  auto *func = builder.GetInsertBlock()->getParent();
-
   // Every VarDeclNode the parser builds carries a type node — `x := 1` is a
   // DeclAssignNode and lowers through emit_decl_assign — so there is nothing
   // here to infer from an initialiser, and no type worth defaulting to.
@@ -529,225 +526,38 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 
   // The analyzer records the resolved type on the annotation; resolve_type
   // covers the builtins it does not record.
-  TypePtr sem_type_ptr = semantic_type(**node.type);
-  if (!sem_type_ptr)
-    sem_type_ptr = lookup_sem_type(**node.type);
+  TypePtr sem = semantic_type(**node.type);
+  if (!sem)
+    sem = lookup_sem_type(**node.type);
 
-  llvm::Type *var_type = storage_type(sem_type_ptr);
-
-  if (node.init) {
-    auto *val = emit_root_expr(**node.init);
-    retain_if_borrowed(val, sem_type_ptr, **node.init);
-    // Interface boxing: declared type is interface, init is a concrete struct.
-    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Interface) {
-      auto init_sem = root_expr_type(**node.init);
-      if (init_sem && init_sem->kind == TypeKind::Struct) {
-        // We need the struct pointer, not the loaded value.
-        // Check if the init expression is an identifier referencing
-        // a local struct alloca.
-        llvm::Value *struct_ptr = val;
-        if (auto *id = std::get_if<IdentifierNode>(&(*node.init)->data)) {
-          auto local_it = locals.find(std::string(id->name));
-          if (local_it != locals.end())
-            struct_ptr = local_it->second; // The alloca pointer.
-        }
-        if (struct_ptr) {
-          auto *boxed = as_interface_ptr(struct_ptr, init_sem, sem_type_ptr);
-          if (boxed) {
-            if (auto *ba = llvm::dyn_cast<llvm::AllocaInst>(boxed)) {
-              ba->setName(name);
-              locals[name] = ba;
-            }
-            return;
-          }
-        }
-      }
-    }
-
-    // Union boxing: declared type is a union, init is a concrete type.
-    if (val && sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
-      auto init_sem = root_expr_type(**node.init);
-      if (init_sem && init_sem->kind != TypeKind::Union) {
-        auto *wrapped = coerce_to(val, init_sem, sem_type_ptr);
-        if (wrapped && llvm::isa<llvm::AllocaInst>(wrapped)) {
-          auto *alloca = llvm::cast<llvm::AllocaInst>(wrapped);
-          alloca->setName(name);
-          locals[name] = alloca;
-          track_managed(alloca, sem_type_ptr);
-          return;
-        }
-      }
-      // If the init already produces a union (e.g. from a call), alias it.
-      if (init_sem && init_sem->kind == TypeKind::Union &&
-          val && llvm::isa<llvm::AllocaInst>(val)) {
-        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-        alloca->setName(name);
-        locals[name] = alloca;
-        track_managed(alloca, sem_type_ptr);
-        return;
-      }
-    }
-
-    // Struct init: copy into a fresh local alloca to preserve value
-    // semantics.  RHS may be either a pointer (alloca / sret slot) or a
-    // struct SSA value.
-    {
-      auto sem = root_expr_type(**node.init);
-      // Errors are boxed (pointer rep); bind the box pointer, don't copy the
-      // struct by value (which would overflow an 8-byte union payload later).
-      bool boxed_error =
-          sem && sem->kind == TypeKind::Struct &&
-          std::get<StructTypeInfo>(sem->detail).is_error;
-      if (val && sem && sem->kind == TypeKind::Struct && !boxed_error) {
-        auto &sinfo = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = struct_cache_key(sinfo);
-        auto st_it = struct_types.find(skey);
-        if (st_it != struct_types.end()) {
-          auto *st_type = st_it->second;
-          auto *alloca = create_entry_alloca(func, name, st_type);
-          if (val->getType()->isPointerTy()) {
-            auto sz = size_of(st_type);
-            auto al = align_of(st_type);
-            builder.CreateMemCpy(alloca, al, val, al, sz);
-          } else if (val->getType() == st_type) {
-            builder.CreateStore(val, alloca);
-          }
-          locals[name] = alloca;
-          track_managed(alloca, sem);
-          return;
-        }
-      }
-    }
-
-    // If the init produces a union alloca, alias it.
-    if (val && llvm::isa<llvm::AllocaInst>(val)) {
-      auto init_sem = root_expr_type(**node.init);
-      if (init_sem && init_sem->kind == TypeKind::Union) {
-        auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-        alloca->setName(name);
-        locals[name] = alloca;
-        track_managed(alloca, sem_type_ptr);
-        return;
-      }
-    }
-
-    // If the init is a closure alloca, alias it directly.
-    if (val && llvm::isa<llvm::AllocaInst>(val)) {
-      auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-      if (alloca->getAllocatedType() == closure_fat_ptr_type) {
-        alloca->setName(name);
-        locals[name] = alloca;
-        return;
-      }
-    }
-
-    auto *alloca = create_entry_alloca(func, name, var_type);
-    locals[name] = alloca;
-    if (val)
-      builder.CreateStore(val, alloca);
-  } else {
-    // A struct local is shaped by the cached LLVM struct; an error is a boxed
-    // pointer, and storage_type already answers for everything else.
-    auto *slot_ll = var_type;
-    if (sem_type_ptr && sem_type_ptr->kind == TypeKind::Struct &&
-        !std::get<StructTypeInfo>(sem_type_ptr->detail).is_error) {
-      auto st_it = struct_types.find(
-          struct_cache_key(std::get<StructTypeInfo>(sem_type_ptr->detail)));
-      if (st_it != struct_types.end())
-        slot_ll = st_it->second;
-    }
-    auto *alloca = create_entry_alloca(func, name, slot_ll);
-    locals[name] = alloca;
-    zero_fill(alloca, sem_type_ptr, slot_ll);
+  std::string name(node.name.name);
+  if (!node.init) {
+    emit_zeroed_local(name, sem);
+    return;
   }
 
-  // Track for release at scope exit.
-  track_managed(locals[name], sem_type_ptr);
+  auto *val = emit_root_expr(**node.init);
+  retain_if_borrowed(val, sem, **node.init);
+  bind_local(name, coerce_to(val, root_expr_type(**node.init), sem), sem);
+}
+
+void CodeGen::emit_zeroed_local(const std::string &name, const TypePtr &sem) {
+  auto *slot_ll = local_slot_type(sem, nullptr);
+  auto *slot =
+      create_entry_alloca(builder.GetInsertBlock()->getParent(), name, slot_ll);
+  locals[name] = slot;
+  zero_fill(slot, sem, slot_ll);
+  track_managed(slot, sem);
 }
 
 void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
   auto *val = emit_root_expr(*node.value);
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto val_sem = root_expr_type(*node.value);
-  retain_if_borrowed(val, val_sem, *node.value);
+  auto sem = materialize_untyped(root_expr_type(*node.value));
+  retain_if_borrowed(val, sem, *node.value);
 
-  // ── Single value assignment ──────────────────────────────────────────
   for (auto &ident : node.targets.identifiers) {
     std::string name(ident.name);
-
-    // Struct values: copy into a fresh local alloca to preserve value
-    // semantics under D1 ABI. Source may be a pointer (alloca/sret slot)
-    // or an SSA struct value.
-    {
-      auto sem = root_expr_type(*node.value);
-      // Errors are boxed (llvm_type is a pointer), so they bind like a
-      // string/array local — the box pointer is stored, not copied by value.
-      bool boxed_error =
-          sem && sem->kind == TypeKind::Struct &&
-          std::get<StructTypeInfo>(sem->detail).is_error;
-      if (val && sem && sem->kind == TypeKind::Struct && !boxed_error) {
-        auto &sinfo = std::get<StructTypeInfo>(sem->detail);
-        std::string skey = struct_cache_key(sinfo);
-        auto st_it = struct_types.find(skey);
-        if (st_it != struct_types.end()) {
-          auto *st_type = st_it->second;
-          auto *alloca = create_entry_alloca(func, name, st_type);
-          if (val->getType()->isPointerTy()) {
-            auto sz = size_of(st_type);
-            auto al = align_of(st_type);
-            builder.CreateMemCpy(alloca, al, val, al, sz);
-          } else if (val->getType() == st_type) {
-            builder.CreateStore(val, alloca);
-          }
-          locals[name] = alloca;
-          track_managed(alloca, sem);
-          continue;
-        }
-      }
-    }
-
-    // Union and closure alloca: alias directly.
-    if (val && llvm::isa<llvm::AllocaInst>(val)) {
-      auto *alloca = llvm::cast<llvm::AllocaInst>(val);
-      auto sem = root_expr_type(*node.value);
-      if (sem && sem->kind == TypeKind::Union) {
-        alloca->setName(name);
-        locals[name] = alloca;
-        track_managed(alloca, sem);
-        continue;
-      }
-      if (alloca->getAllocatedType() == closure_fat_ptr_type) {
-        alloca->setName(name);
-        locals[name] = alloca;
-        continue;
-      }
-    }
-
-    // Union RHS via pointer (e.g. `result := for ... { break v }`):
-    // emit_for_expr returns a ptr to a union struct.  Allocate a
-    // struct-typed local and memcpy through.
-    if (val && val_sem && val_sem->kind == TypeKind::Union &&
-        val->getType()->isPointerTy()) {
-      auto *union_st = get_union_llvm_type(val_sem);
-      if (union_st) {
-        auto *alloca = create_entry_alloca(func, name, union_st);
-        auto sz = size_of(union_st);
-        auto al = align_of(union_st);
-        builder.CreateMemCpy(alloca, al, val, al, sz);
-        locals[name] = alloca;
-        track_managed(alloca, val_sem);
-        continue;
-      }
-    }
-
-    llvm::Type *var_type = val ? val->getType() : i64_type;
-    auto *alloca = create_entry_alloca(func, name, var_type);
-    locals[name] = alloca;
-    if (val)
-      builder.CreateStore(val, alloca);
-
-    // Track managed types for release at scope exit.
-    track_managed(alloca, val_sem);
+    bind_local(name, val, sem);
 
     // If a pending channel alloca exists from a spawn expression,
     // create a companion local "<name>.channel" for for-range iteration.
@@ -870,52 +680,13 @@ void CodeGen::emit_assign(const AssignNode &node) {
     auto *rhs = emit_root_expr(*node.values[i]);
     if (!rhs)
       continue;
-    retain_if_borrowed(rhs, root_expr_type(*node.values[i]), *node.values[i]);
+    auto rhs_sem = root_expr_type(*node.values[i]);
+    retain_if_borrowed(rhs, rhs_sem, *node.values[i]);
 
-    // Target can be an identifier, selector, or index expression.
-    if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data)) {
-      emit_index_assign(*idx_expr, rhs, root_expr_type(*node.values[i]));
-      continue;
-    }
-
-    if (std::holds_alternative<SelectorNode>(node.targets[i]->data)) {
-      emit_field_assign(*node.targets[i], node.op, rhs);
-      continue;
-    }
-
-    auto *ident = std::get_if<IdentifierNode>(&node.targets[i]->data);
-    if (!ident)
-      continue;
-
-    auto it = locals.find(std::string(ident->name));
-    if (it == locals.end())
-      continue;
-
-    auto *alloca = it->second;
-
-    auto target_sem = semantic_type(*node.targets[i]);
-
-    using K = Token::Kind;
-    if (node.op == K::Assignment) {
-      // Reassigning a union variable to a bare member value: wrap it so the
-      // tag is set (mirrors the var-decl / struct-field union stores).
-      if (target_sem && target_sem->kind == TypeKind::Union) {
-        auto val_sem = root_expr_type(*node.values[i]);
-        if (val_sem && val_sem->kind != TypeKind::Union) {
-          if (auto *wrapped = coerce_to(rhs, val_sem, target_sem);
-              wrapped && wrapped->getType()->isPointerTy()) {
-            store_into_slot(alloca, alloca->getAllocatedType(), wrapped);
-            continue;
-          }
-        }
-      }
-      release_slot(alloca, alloca->getAllocatedType(), target_sem);
-      store_into_slot(alloca, alloca->getAllocatedType(), rhs);
-    } else {
-      auto *cur = builder.CreateLoad(alloca->getAllocatedType(), alloca);
-      builder.CreateStore(emit_compound_op(node.op, cur, rhs, target_sem),
-                          alloca);
-    }
+    if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data))
+      emit_index_assign(*idx_expr, rhs, rhs_sem);
+    else
+      emit_slot_assign(*node.targets[i], node.op, rhs, rhs_sem);
   }
 }
 
@@ -938,21 +709,22 @@ CodeGen::assign_target_address(const Node &target) {
   return {nullptr, nullptr};
 }
 
-void CodeGen::emit_field_assign(const Node &target, Token::Kind op,
-                                llvm::Value *rhs) {
-  auto [addr, ftype] = assign_target_address(target);
+void CodeGen::emit_slot_assign(const Node &target, Token::Kind op,
+                               llvm::Value *rhs, const TypePtr &rhs_sem) {
+  auto [addr, slot_ll] = assign_target_address(target);
   if (!addr)
     return;
 
+  auto target_sem = semantic_type(target);
   if (op == Token::Kind::Assignment) {
-    release_slot(addr, ftype, semantic_type(target));
-    store_into_slot(addr, ftype, rhs);
+    auto *placed = coerce_to(rhs, rhs_sem, target_sem);
+    release_slot(addr, slot_ll, target_sem);
+    store_into_slot(addr, slot_ll, placed);
     return;
   }
 
-  auto *cur = builder.CreateLoad(ftype, addr);
-  builder.CreateStore(emit_compound_op(op, cur, rhs, semantic_type(target)),
-                      addr);
+  auto *cur = builder.CreateLoad(slot_ll, addr);
+  builder.CreateStore(emit_compound_op(op, cur, rhs, target_sem), addr);
 }
 
 llvm::Value *CodeGen::emit_compound_op(Token::Kind op, llvm::Value *cur,

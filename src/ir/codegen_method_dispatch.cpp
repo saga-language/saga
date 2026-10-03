@@ -973,8 +973,7 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
                        ? unwrap_alias(fn_info.params[i])
                        : nullptr;
       auto arg_sem = semantic_type(*node.args[i]);
-      if (arg_sem && arg_sem->kind != TypeKind::Union)
-        val = coerce_to(val, arg_sem, param);
+      val = coerce_to(val, arg_sem, param);
       // Byval struct/union param: pass pointer to alloca, spill SSA values.
       if (auto *p_ll = byval_param_type(param);
           p_ll && val->getType()->isStructTy()) {

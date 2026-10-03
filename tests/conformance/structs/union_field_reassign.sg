@@ -1,0 +1,23 @@
+// Spec: a union is "tagged so you can recover which one it is with `is`"
+// (docs/language.md:458). Assigning an alternative to a union-typed field sets
+// the field's tag, the same as initialising the field does.
+import "std/io"
+
+struct Slot {
+  v int | string
+}
+
+fn show(v int | string) string {
+  if v is string { return "string {v}" }
+  if v is int { return "int {v}" }
+  "none"
+}
+
+pub fn Main() void {
+  s := Slot{v: 1}
+  io.Println(show(s.v))
+  s.v = "hi"
+  io.Println(show(s.v))
+  s.v = 7
+  io.Println(show(s.v))
+}

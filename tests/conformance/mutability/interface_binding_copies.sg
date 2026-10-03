@@ -1,0 +1,31 @@
+// Spec: "no name ever observes another's edit" (docs/language.md:63). An
+// interface value holds a copy of what it was given, so a method that writes
+// through the interface changes that copy and not the value it came from —
+// whether the interface is a declared variable or a parameter.
+import "std/io"
+
+interface Bumper {
+  Bump() void
+  Count() int
+}
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Bump() void { c.n = c.n + 1 }
+pub fn (c Counter) Count() int { c.n }
+
+fn bumped(b Bumper) int {
+  b.Bump()
+  b.Count()
+}
+
+pub fn Main() void {
+  c := Counter{n: 1}
+  b Bumper = c
+  b.Bump()
+  b.Bump()
+  io.Println("declared: b={b.Count()} c={c.n}")
+  io.Println("argument: callee={bumped(c)} c={c.n}")
+}

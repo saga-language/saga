@@ -499,6 +499,7 @@ private:
   // ── Statement emitters ───────────────────────────────────────────────
 
   void emit_var_decl(const VarDeclNode &node);
+  void emit_zeroed_local(const std::string &name, const TypePtr &sem);
   llvm::Value *emit_empty_array(const TypePtr &array_sem);
   llvm::Value *emit_empty_map(const TypePtr &map_sem);
   void zero_fill(llvm::Value *slot, const TypePtr &sem, llvm::Type *ll);
@@ -514,8 +515,10 @@ private:
   std::pair<llvm::Value *, llvm::Type *>
   assign_target_address(const Node &target);
 
-  /// Store `rhs` into the field named by the selector `target`.
-  void emit_field_assign(const Node &target, Token::Kind op, llvm::Value *rhs);
+  /// Store `rhs` into the local or field an identifier or selector `target`
+  /// names, in the representation the slot's type takes.
+  void emit_slot_assign(const Node &target, Token::Kind op, llvm::Value *rhs,
+                        const TypePtr &rhs_sem);
 
   /// Store `rhs` into the element named by the index `target`.
   void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
@@ -908,6 +911,14 @@ private:
   /// Any other value comes back as it was.
   llvm::Value *coerce_to(llvm::Value *val, const TypePtr &from,
                          const TypePtr &to);
+
+  /// Bind `name` to a fresh slot of type `sem` holding `val`, which must
+  /// already be in that type's representation (see coerce_to).
+  llvm::AllocaInst *bind_local(const std::string &name, llvm::Value *val,
+                               const TypePtr &sem);
+
+  /// The LLVM type of a local slot holding a value of type `sem`.
+  llvm::Type *local_slot_type(const TypePtr &sem, llvm::Value *val);
 
   /// Produce a pointer to union memory holding `val`: a union passes through
   /// (converting if its layout differs); a concrete/error member value is

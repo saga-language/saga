@@ -1,0 +1,4 @@
+declared string pos
+passed int -3
+assigned int -3
+returned string pos int -4

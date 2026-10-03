@@ -1,0 +1,11 @@
+// Spec: "no name ever observes another's edit" (docs/language.md:63). Binding
+// a function value to a second name and then reassigning that name leaves the
+// first name calling what it always called.
+import "std/io"
+
+pub fn Main() void {
+  f := fn(n int) int { n + 100 }
+  g := f
+  g = fn(n int) int { n + 2 }
+  io.Println("f={f(1)} g={g(1)}")
+}

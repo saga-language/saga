@@ -489,8 +489,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // the shape.
     auto param =
         fi && i < fi->params.size() ? unwrap_alias(fi->params[i]) : nullptr;
-    if (arg_sem && arg_sem->kind != TypeKind::Union)
-      val = coerce_to(val, arg_sem, param);
+    val = coerce_to(val, arg_sem, param);
     if (auto *p_ll = byval_param_type(param);
         p_ll && val->getType()->isStructTy()) {
       auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);

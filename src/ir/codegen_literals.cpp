@@ -55,8 +55,7 @@ llvm::Value *CodeGen::collection_slot_address(llvm::Type *slot_ll,
   if (!val)
     return nullptr;
 
-  if (val_sem && val_sem->kind != TypeKind::Union)
-    val = coerce_to(val, val_sem, slot_sem);
+  val = coerce_to(val, val_sem, slot_sem);
 
   if (slot_ll && slot_ll->isStructTy())
     return spill_aggregate(val, "elem.tmp");
@@ -351,11 +350,7 @@ void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
     return;
   retain_if_borrowed(val, unwrap_alias(field_sem), value_node);
 
-  if (field_sem && field_sem->kind == TypeKind::Union) {
-    auto val_sem = operand_type(value_node);
-    if (val_sem && val_sem->kind != TypeKind::Union)
-      val = coerce_to(val, val_sem, field_sem);
-  }
+  val = coerce_to(val, operand_type(value_node), field_sem);
 
   // D1: aggregate fields are stored inline. If the rhs is a pointer to a
   // struct (e.g. from a nested struct literal), memcpy the bytes rather than

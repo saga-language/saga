@@ -432,6 +432,9 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return i64_type; // Enums are represented as i64 tags.
   case TypeKind::Struct: {
     auto &info = std::get<StructTypeInfo>(t->detail);
+    // A Task has no fields of its own; its value is the actor it names.
+    if (info.name == "Task")
+      return llvm::PointerType::getUnqual(context);
     // Errors are boxed: a value is a pointer to the heap box. The box layout
     // is still registered below so field access can GEP through the pointer.
     bool boxed = info.is_error;
