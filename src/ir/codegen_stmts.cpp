@@ -389,7 +389,7 @@ void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
                              ? nullptr
                              : semantic_type(*block.stmts.back());
       if (tail_sem && ret_sem && ret_sem->kind == TypeKind::Union)
-        if (auto *wrapped = emit_union_wrap(tail_val, tail_sem, ret_sem))
+        if (auto *wrapped = coerce_to(tail_val, tail_sem, ret_sem))
           union_val = builder.CreateLoad(ret_type, wrapped, "ret.union");
     }
     builder.CreateRet(union_val ? union_val
@@ -552,7 +552,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
             struct_ptr = local_it->second; // The alloca pointer.
         }
         if (struct_ptr) {
-          auto *boxed = emit_interface_box(struct_ptr, init_sem, sem_type_ptr);
+          auto *boxed = as_interface_ptr(struct_ptr, init_sem, sem_type_ptr);
           if (boxed) {
             if (auto *ba = llvm::dyn_cast<llvm::AllocaInst>(boxed)) {
               ba->setName(name);
@@ -568,7 +568,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
     if (val && sem_type_ptr && sem_type_ptr->kind == TypeKind::Union) {
       auto init_sem = root_expr_type(**node.init);
       if (init_sem && init_sem->kind != TypeKind::Union) {
-        auto *wrapped = emit_union_wrap(val, init_sem, sem_type_ptr);
+        auto *wrapped = coerce_to(val, init_sem, sem_type_ptr);
         if (wrapped && llvm::isa<llvm::AllocaInst>(wrapped)) {
           auto *alloca = llvm::cast<llvm::AllocaInst>(wrapped);
           alloca->setName(name);
@@ -902,7 +902,7 @@ void CodeGen::emit_assign(const AssignNode &node) {
       if (target_sem && target_sem->kind == TypeKind::Union) {
         auto val_sem = root_expr_type(*node.values[i]);
         if (val_sem && val_sem->kind != TypeKind::Union) {
-          if (auto *wrapped = emit_union_wrap(rhs, val_sem, target_sem);
+          if (auto *wrapped = coerce_to(rhs, val_sem, target_sem);
               wrapped && wrapped->getType()->isPointerTy()) {
             store_into_slot(alloca, alloca->getAllocatedType(), wrapped);
             continue;
@@ -1077,7 +1077,7 @@ void CodeGen::emit_return(const ReturnNode &node) {
           ret_sem = analyzer.current_scope->return_types[0];
         }
         if (val_sem && ret_sem && ret_sem->kind == TypeKind::Union) {
-          auto *wrapped = emit_union_wrap(val, val_sem, ret_sem);
+          auto *wrapped = coerce_to(val, val_sem, ret_sem);
           if (wrapped)
             val = builder.CreateLoad(ret_type, wrapped, "ret.union");
         }

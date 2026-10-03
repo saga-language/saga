@@ -55,10 +55,8 @@ llvm::Value *CodeGen::collection_slot_address(llvm::Type *slot_ll,
   if (!val)
     return nullptr;
 
-  if (slot_sem && slot_sem->kind == TypeKind::Union && val_sem &&
-      val_sem->kind != TypeKind::Union)
-    if (auto *wrapped = emit_union_wrap(val, val_sem, slot_sem))
-      val = wrapped;
+  if (val_sem && val_sem->kind != TypeKind::Union)
+    val = coerce_to(val, val_sem, slot_sem);
 
   if (slot_ll && slot_ll->isStructTy())
     return spill_aggregate(val, "elem.tmp");
@@ -353,16 +351,10 @@ void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
     return;
   retain_if_borrowed(val, unwrap_alias(field_sem), value_node);
 
-  // Field is a union; the supplied value is one alternative. Wrap before
-  // memcpy so the union's tag is set correctly. Without this an
-  // `optional String | Missing` field given `Missing{}` would memcpy zero
-  // bytes into a 9-byte slot, leaving the tag at 0 (an empty String).
   if (field_sem && field_sem->kind == TypeKind::Union) {
     auto val_sem = operand_type(value_node);
-    if (val_sem && val_sem->kind != TypeKind::Union) {
-      auto *wrapped = emit_union_wrap(val, val_sem, field_sem);
-      if (wrapped) val = wrapped;
-    }
+    if (val_sem && val_sem->kind != TypeKind::Union)
+      val = coerce_to(val, val_sem, field_sem);
   }
 
   // D1: aggregate fields are stored inline. If the rhs is a pointer to a

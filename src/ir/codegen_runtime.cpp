@@ -535,23 +535,6 @@ TypePtr CodeGen::union_sem_for_llvm(llvm::Type *st) const {
   return it == union_sem_by_llvm.end() ? nullptr : it->second;
 }
 
-llvm::Value *CodeGen::as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
-                                   const TypePtr &union_sem) {
-  auto *union_ll = get_union_llvm_type(union_sem);
-  if (!val || !union_ll)
-    return nullptr;
-  // Already union memory. If the layouts differ (e.g. an if's branch union
-  // `NetworkError | int` flowing into a declared `int | error`), remap tags.
-  if (val->getType()->isPointerTy() && val_sem &&
-      val_sem->kind == TypeKind::Union) {
-    if (types_equal(val_sem, union_sem))
-      return val;
-    return emit_union_convert(val, val_sem, union_sem);
-  }
-  // A concrete/error member value — wrap it at the correct tag.
-  return emit_union_wrap(val, materialize_untyped(val_sem), union_sem);
-}
-
 llvm::Value *CodeGen::emit_union_convert(llvm::Value *src_ptr,
                                          const TypePtr &src_sem,
                                          const TypePtr &dst_sem) {

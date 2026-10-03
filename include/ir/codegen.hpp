@@ -903,11 +903,22 @@ private:
   llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
                                 const TypePtr &union_type);
 
-  /// Produce a pointer to union memory holding `val`: an already-union pointer
-  /// passes through (converting if its layout differs); a concrete/error member
-  /// value is wrapped. Returns null if it can't place the value.
+  /// `val`, of type `from`, in the representation a slot of type `to` holds:
+  /// wrapped into or remapped between unions, or boxed into an interface.
+  /// Any other value comes back as it was.
+  llvm::Value *coerce_to(llvm::Value *val, const TypePtr &from,
+                         const TypePtr &to);
+
+  /// Produce a pointer to union memory holding `val`: a union passes through
+  /// (converting if its layout differs); a concrete/error member value is
+  /// wrapped. Returns null if it can't place the value.
   llvm::Value *as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
                             const TypePtr &union_sem);
+
+  /// Box a struct value into an interface fat pointer. Returns null for any
+  /// other kind of value.
+  llvm::Value *as_interface_ptr(llvm::Value *val, const TypePtr &val_sem,
+                                const TypePtr &iface_sem);
 
   /// Convert a union value to a different union type, remapping each
   /// alternative's tag and copying its payload. Returns a fresh dst union ptr.

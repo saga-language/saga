@@ -81,8 +81,8 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
                 frame.result_value_type && frame.result_union_type) {
               auto *val = emit_expr(*n.values[0]);
               if (val) {
-                auto *wrapped = emit_union_wrap(val, frame.result_value_type,
-                                                frame.result_union_type);
+                auto *wrapped = coerce_to(val, frame.result_value_type,
+                                          frame.result_union_type);
                 if (wrapped) {
                   auto *union_st =
                       get_union_llvm_type(frame.result_union_type);
