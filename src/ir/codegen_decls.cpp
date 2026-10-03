@@ -668,16 +668,10 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     locals.clear();
     managed_locals.clear();
     current_func_is_main = false;
+    return_sems_[func] = declared_return_sem(fn->signature.return_type);
 
-    size_t arg_idx = 0;
-    bool has_sret = false;
-    if (fn->signature.return_type) {
-      auto *r_ll = resolve_type_node(*fn->signature.return_type);
-      if (r_ll && r_ll->isStructTy()) {
-        has_sret = true;
-        ++arg_idx;
-      }
-    }
+    size_t arg_idx =
+        func->hasParamAttribute(0, llvm::Attribute::StructRet) ? 1 : 0;
 
     // A struct receiver holds the caller's address, not a copy of it: there is
     // no second spelling to choose between, so a method that writes a field has
@@ -701,15 +695,8 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     auto &block = std::get<BlockNode>(fn->body->data);
     auto *tail_val = emit_block(block);
 
-    if (!builder.GetInsertBlock()->getTerminator()) {
-      // The tail expression is the return value, so it has to survive the
-      // release of the locals it may well be one of.
-      if (!block.stmts.empty())
-        retain_if_borrowed(tail_val, block_result_type(block),
-                           *block.stmts.back());
-      emit_release_locals();
-      emit_tail_return(*fn, func, tail_val, block, has_sret);
-    }
+    if (!builder.GetInsertBlock()->getTerminator())
+      emit_fallthrough_return(block, tail_val);
 
     verify_function(*func);
   }
@@ -840,6 +827,7 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
     locals.clear();
     managed_locals.clear();
     current_func_is_main = false;
+    return_sems_[func] = declared_return_sem(fn->signature.return_type);
 
     // Collect generic param names for type resolution.
     auto gnames = collect_generic_names(*fn);
@@ -874,30 +862,8 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
     auto &block = std::get<BlockNode>(fn->body->data);
     auto *tail_val = emit_block(block);
 
-    if (!builder.GetInsertBlock()->getTerminator()) {
-      emit_release_locals();
-      auto *ret_type = func->getReturnType();
-      if (ret_type->isVoidTy()) {
-        builder.CreateRetVoid();
-      } else if (tail_val && tail_val->getType() == ret_type) {
-        builder.CreateRet(tail_val);
-      } else if (tail_val && ret_type->isStructTy() &&
-                 tail_val->getType()->isPointerTy()) {
-        auto *loaded = builder.CreateLoad(ret_type, tail_val, "ret.union");
-        builder.CreateRet(loaded);
-      } else if (tail_val && ret_type->isIntegerTy() &&
-                 tail_val->getType()->isIntegerTy() &&
-                 tail_val->getType() != ret_type) {
-        unsigned src = tail_val->getType()->getIntegerBitWidth();
-        unsigned dst = ret_type->getIntegerBitWidth();
-        auto *conv = (src > dst)
-            ? builder.CreateTrunc(tail_val, ret_type, "ret.trunc")
-            : builder.CreateZExt(tail_val, ret_type, "ret.zext");
-        builder.CreateRet(conv);
-      } else {
-        builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-      }
-    }
+    if (!builder.GetInsertBlock()->getTerminator())
+      emit_fallthrough_return(block, tail_val);
 
     verify_function(*func);
   }

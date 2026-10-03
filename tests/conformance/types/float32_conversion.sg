@@ -1,0 +1,14 @@
+// Spec: "Types can not be cast to a different size or type. They must be
+// converted" (docs/language.md:399), with `f32 := f.Float32()` at :409.
+// The conversion yields the float32 nearest the source: 2^24 + 1 has no float32
+// of its own and rounds to 2^24.
+import "std/io"
+
+pub fn Main() void {
+  f := 2.5
+  io.Println(f.Float32().String())
+  big := 16777217
+  rounded float32 = 16777216.0
+  io.Println("{big.Float32() == rounded}")
+  io.Println("{big.Float() == 16777217.0}")
+}

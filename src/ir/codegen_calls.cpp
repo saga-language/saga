@@ -69,18 +69,22 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return builder.CreateSIToFP(val, f64_type, "sitofp");
   }
 
+  // A float32 is stored as f64, like every float width: these round to f32
+  // and extend back, the float side of sext_zext_to_width below.
   if (name == "intrinsic_sitofp32") {
-    // intrinsic_sitofp32(value: Int) -> Float32 (f32)
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
-    return builder.CreateSIToFP(val, llvm::Type::getFloatTy(context), "sitofp32");
+    auto *narrow =
+        builder.CreateSIToFP(val, llvm::Type::getFloatTy(context), "sitofp32");
+    return builder.CreateFPExt(narrow, f64_type, "f32.wide");
   }
 
   if (name == "intrinsic_fptrunc") {
-    // intrinsic_fptrunc(value: Float) -> Float32 (f64 → f32)
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
-    return builder.CreateFPTrunc(val, llvm::Type::getFloatTy(context), "fptrunc");
+    auto *narrow =
+        builder.CreateFPTrunc(val, llvm::Type::getFloatTy(context), "fptrunc");
+    return builder.CreateFPExt(narrow, f64_type, "f32.wide");
   }
 
   if (name == "intrinsic_fpext") {

@@ -237,6 +237,8 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
     }
   }
 
+  return_sems_[func] =
+      is_main ? nullptr : declared_return_sem(fn.signature.return_type);
   emit_function_body_inner(fn, func, param_ll, is_main);
 }
 
@@ -258,13 +260,11 @@ void CodeGen::emit_function_body_inner(
   }
 
   // Skip the hidden sret arg if present. The function is the authority, not
-  // the annotation: a monomorphised specialisation returns a struct by
-  // pointer, and re-resolving `fn`'s declared return type cannot tell that
-  // apart from a declared function's sret lowering.
+  // the annotation: a specialisation's return type comes from its bindings,
+  // which re-resolving `fn`'s declared return type cannot see.
   size_t arg_idx = 0;
-  bool has_sret =
-      !is_main && func->hasParamAttribute(0, llvm::Attribute::StructRet);
-  if (has_sret)
+  if (!is_main && func->arg_size() > 0 &&
+      func->hasParamAttribute(0, llvm::Attribute::StructRet))
     ++arg_idx;
 
   // Create allocas for parameters and store the incoming argument values.
@@ -299,104 +299,19 @@ void CodeGen::emit_function_body_inner(
       ++ll_idx;
     }
   }
-  (void)has_sret;
 
   // Emit body.
   auto &block = std::get<BlockNode>(fn.body->data);
   auto *tail_val = emit_block(block);
 
-  // If the block didn't already terminate, release locals and return.
   if (!builder.GetInsertBlock()->getTerminator()) {
-    // The tail expression is the return value, so it has to survive the
-    // release of the locals it may well be one of.
-    if (!is_main && !block.stmts.empty())
-      retain_if_borrowed(tail_val, block_result_type(block),
-                         *block.stmts.back());
-    emit_release_locals();
-    if (is_main) {
-      if (has_spawn)
-        builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
-      builder.CreateRet(
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
-    } else {
-      emit_tail_return(fn, func, tail_val, block, has_sret);
-    }
+    if (is_main)
+      emit_main_exit(nullptr);
+    else
+      emit_fallthrough_return(block, tail_val);
   }
 
   verify_function(*func);
-}
-
-void CodeGen::emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
-                               llvm::Value *tail_val, const BlockNode &block,
-                               bool has_sret) {
-  auto *ret_type = func->getReturnType();
-  if (has_sret) {
-    // Struct return via sret.  tail_val is either a pointer to a struct
-    // alloca (struct literal, identifier, byval param, or an if/switch branch
-    // merge) or a struct SSA value.  Copy into the sret slot.  For a union
-    // return, a bare/error tail value is first wrapped into union memory.
-    auto *sret_arg = func->getArg(0);
-    llvm::Type *struct_ty = resolve_type_node(*fn.signature.return_type);
-    llvm::Value *src = tail_val;
-    if (auto union_sem = union_sem_for_llvm(struct_ty)) {
-      src = as_union_ptr(tail_val, block_result_type(block), union_sem);
-    }
-    if (src && struct_ty && struct_ty->isStructTy() &&
-        src->getType()->isPointerTy()) {
-      auto sz = size_of(struct_ty);
-      auto al = align_of(struct_ty);
-      builder.CreateMemCpy(sret_arg, al, src, al, sz);
-    } else if (tail_val && struct_ty && tail_val->getType() == struct_ty) {
-      builder.CreateStore(tail_val, sret_arg);
-    }
-    builder.CreateRetVoid();
-  } else if (ret_type->isVoidTy()) {
-    builder.CreateRetVoid();
-  } else if (tail_val && tail_val->getType() == ret_type) {
-    builder.CreateRet(tail_val);
-  } else if (tail_val && ret_type->isIntegerTy() &&
-             tail_val->getType()->isIntegerTy() &&
-             tail_val->getType() != ret_type) {
-    // Integer width mismatch (e.g. runtime returns i64, function returns i1).
-    unsigned src_bits = tail_val->getType()->getIntegerBitWidth();
-    unsigned dst_bits = ret_type->getIntegerBitWidth();
-    llvm::Value *conv;
-    if (src_bits > dst_bits)
-      conv = builder.CreateTrunc(tail_val, ret_type, "ret.trunc");
-    else
-      conv = builder.CreateZExt(tail_val, ret_type, "ret.zext");
-    builder.CreateRet(conv);
-  } else if (tail_val && ret_type->isStructTy() &&
-             llvm::cast<llvm::StructType>(ret_type)->getNumElements() == 2 &&
-             llvm::cast<llvm::StructType>(ret_type)
-                 ->getElementType(0)
-                 ->isIntegerTy(8) &&
-             llvm::cast<llvm::StructType>(ret_type)
-                 ->getElementType(1)
-                 ->isArrayTy()) {
-    // Union tail. Either tail_val already points at this union alloca, or
-    // it's a concrete/error value that must be wrapped into the union
-    // (e.g. `fn f() int | error { NetworkError{...} }`).
-    llvm::Value *union_val = nullptr;
-    if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(tail_val))
-      if (ai->getAllocatedType() == ret_type)
-        union_val = builder.CreateLoad(ret_type, tail_val, "ret.union");
-    if (!union_val) {
-      TypePtr ret_sem = fn.signature.return_type
-                            ? semantic_type(*fn.signature.return_type)
-                            : nullptr;
-      TypePtr tail_sem = block.stmts.empty()
-                             ? nullptr
-                             : semantic_type(*block.stmts.back());
-      if (tail_sem && ret_sem && ret_sem->kind == TypeKind::Union)
-        if (auto *wrapped = coerce_to(tail_val, tail_sem, ret_sem))
-          union_val = builder.CreateLoad(ret_type, wrapped, "ret.union");
-    }
-    builder.CreateRet(union_val ? union_val
-                                : llvm::Constant::getNullValue(ret_type));
-  } else {
-    builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-  }
 }
 
 // ===========================================================================
@@ -763,105 +678,23 @@ llvm::Value *CodeGen::emit_compound_op(Token::Kind op, llvm::Value *cur,
 }
 
 void CodeGen::emit_return(const ReturnNode &node) {
-  if (current_func_is_main) {
-    emit_release_locals();
-    if (has_spawn)
-      builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
-    if (!node.value) {
-      builder.CreateRet(
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0));
-    } else {
-      auto *val = emit_expr(*node.value);
-      auto *i32_val = builder.CreateTrunc(val, llvm::Type::getInt32Ty(context),
-                                          "main_ret");
-      builder.CreateRet(i32_val);
-    }
-    return;
-  }
+  if (current_func_is_main)
+    emit_main_exit(node.value ? emit_expr(*node.value) : nullptr);
+  else if (!node.value)
+    emit_return_value(nullptr, nullptr, nullptr);
+  else
+    emit_return_value(emit_root_expr(*node.value), root_expr_type(*node.value),
+                      node.value.get());
+}
 
-  if (!node.value) {
-    emit_release_locals();
-    builder.CreateRetVoid();
-  } else {
-    auto *val = emit_root_expr(*node.value);
-    // Handed to the caller, so it outlives the release of this frame's locals.
-    retain_if_borrowed(val, root_expr_type(*node.value), *node.value);
-    auto *func = builder.GetInsertBlock()->getParent();
-    auto *ret_type = func->getReturnType();
-
-    // Sret return: copy struct value/alloca into the hidden first arg.  For a
-    // union return, a bare/error value is first wrapped into union memory.
-    if (ret_type->isVoidTy() && func->arg_size() > 0 &&
-        func->getArg(0)->hasStructRetAttr()) {
-      auto *sret_arg = func->getArg(0);
-      auto *struct_ty = func->getParamStructRetType(0);
-      llvm::Value *src = val;
-      if (auto union_sem = union_sem_for_llvm(struct_ty))
-        src = as_union_ptr(val, root_expr_type(*node.value), union_sem);
-      if (src && struct_ty) {
-        if (src->getType()->isPointerTy()) {
-          auto sz = size_of(struct_ty);
-          auto al = align_of(struct_ty);
-          builder.CreateMemCpy(sret_arg, al, src, al, sz);
-        } else if (src->getType() == struct_ty) {
-          builder.CreateStore(src, sret_arg);
-        }
-      }
-      emit_release_locals();
-      builder.CreateRetVoid();
-      return;
-    }
-
-    // Handle union return types: wrap concrete values or load from alloca.
-    if (val && ret_type->isStructTy() && val->getType()->isPointerTy()) {
-      auto *st = llvm::cast<llvm::StructType>(ret_type);
-      // Check if return type is a union struct: { i8, [N x i8] }
-      if (st->getNumElements() == 2 &&
-          st->getElementType(0)->isIntegerTy(8) &&
-          st->getElementType(1)->isArrayTy()) {
-        // val is a pointer to the union alloca — load the struct value.
-        if (auto *ai = llvm::dyn_cast<llvm::AllocaInst>(val)) {
-          if (ai->getAllocatedType() == ret_type) {
-            val = builder.CreateLoad(ret_type, val, "ret.union");
-          }
-        }
-      }
-    }
-    // If val is a concrete value but ret_type is a union struct, wrap it.
-    if (val && ret_type->isStructTy() && !val->getType()->isStructTy()) {
-      auto *st = llvm::cast<llvm::StructType>(ret_type);
-      if (st->getNumElements() == 2 &&
-          st->getElementType(0)->isIntegerTy(8) &&
-          st->getElementType(1)->isArrayTy()) {
-        // Need to find the semantic return type and value type.
-        auto val_sem = root_expr_type(*node.value);
-        // Look up the function's semantic return type from the scope.
-        TypePtr ret_sem = nullptr;
-        for (auto &[key, union_st] : union_llvm_types) {
-          if (union_st == st) {
-            // Reconstruct semantic type is complex; use the analyzer's
-            // return types from the current scope instead.
-            break;
-          }
-        }
-        // Use the analyzer's scope to get return types.
-        if (!ret_sem && !analyzer.current_scope->return_types.empty()) {
-          ret_sem = analyzer.current_scope->return_types[0];
-        }
-        if (val_sem && ret_sem && ret_sem->kind == TypeKind::Union) {
-          auto *wrapped = coerce_to(val, val_sem, ret_sem);
-          if (wrapped)
-            val = builder.CreateLoad(ret_type, wrapped, "ret.union");
-        }
-      }
-    }
-
-    emit_release_locals();
-    if (val)
-      builder.CreateRet(val);
-    else
-      builder.CreateRetVoid();
-  }
+void CodeGen::emit_main_exit(llvm::Value *code) {
+  auto *i32_ll = llvm::Type::getInt32Ty(context);
+  auto *status = code ? builder.CreateTrunc(code, i32_ll, "main_ret")
+                      : llvm::ConstantInt::get(i32_ll, 0);
+  emit_release_locals();
+  if (has_spawn)
+    builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
+  builder.CreateRet(status);
 }
 
 void CodeGen::emit_step(const Node &target, bool increment) {

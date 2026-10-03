@@ -1,0 +1,18 @@
+// Spec: "no name ever observes another's edit" (docs/language.md:63), and a
+// second name holds its own reference. `String()` on a string hands back its
+// receiver, and the name bound to the result owns a reference of its own, so
+// both names can go out of scope without the string being freed twice.
+import "std/io"
+
+fn echo(s string) string {
+  t := s.String()
+  t
+}
+
+pub fn Main() void {
+  for i : 0..3 {
+    a := "x{i}"
+    b := a.String()
+    io.Println("{echo(b)} {a}")
+  }
+}

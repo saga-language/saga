@@ -526,13 +526,7 @@ llvm::StructType *CodeGen::get_union_llvm_type(const TypePtr &union_sem) {
       {llvm::Type::getInt8Ty(context), payload_ty},
       "saga.union." + key);
   union_llvm_types[key] = st;
-  union_sem_by_llvm[st] = union_sem;
   return st;
-}
-
-TypePtr CodeGen::union_sem_for_llvm(llvm::Type *st) const {
-  auto it = union_sem_by_llvm.find(st);
-  return it == union_sem_by_llvm.end() ? nullptr : it->second;
 }
 
 llvm::Value *CodeGen::emit_union_convert(llvm::Value *src_ptr,

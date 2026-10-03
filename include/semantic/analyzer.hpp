@@ -332,6 +332,9 @@ struct Analyzer {
     const FuncDeclNode *decl = nullptr;
     std::unordered_map<uint32_t, TypePtr> bindings;
     bool in_progress = false;
+    /// The body reported an error under these bindings, so there is nothing
+    /// to emit for it.
+    bool failed = false;
 
     std::unordered_map<const Node *, TypePtr> node_types;
     std::unordered_map<const Node *, Symbol> node_symbols;

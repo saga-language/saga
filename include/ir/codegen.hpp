@@ -104,10 +104,6 @@ struct CodeGen {
   /// Maps canonical union type string → LLVM struct type { i8 tag, [N x i8] }.
   std::unordered_map<std::string, llvm::StructType *> union_llvm_types;
 
-  /// Reverse of union_llvm_types: LLVM struct → semantic union type, so the
-  /// sret return paths can recover a union's alternatives from its layout.
-  std::unordered_map<llvm::Type *, TypePtr> union_sem_by_llvm;
-
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -457,13 +453,33 @@ private:
                                  const std::vector<llvm::Type *> &param_ll,
                                  bool is_main);
 
-  /// Emit the return for a fallen-through function tail (no explicit return).
-  /// Shared by free functions and receiver methods so struct/sret, union
-  /// wrapping, and scalar returns lower identically regardless of receiver.
-  /// `has_sret` means the return is lowered through the sret pointer (arg 0).
-  void emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
-                        llvm::Value *tail_val, const BlockNode &block,
-                        bool has_sret);
+  /// Return `val`, of type `val_sem` and emitted from `source`, from the
+  /// function being emitted: retained if borrowed, coerced to the semantic
+  /// return type, then handed back through sret or as the LLVM return value.
+  /// Releases the frame's locals. Every body emitter and `return` statement
+  /// ends here.
+  void emit_return_value(llvm::Value *val, const TypePtr &val_sem,
+                         const Node *source);
+
+  /// Return the value a body's last expression left, for a body that did not
+  /// end in a `return`.
+  void emit_fallthrough_return(const BlockNode &block, llvm::Value *tail_val);
+
+  /// Leave `Main` with exit status `code`, or 0 when it is null.
+  void emit_main_exit(llvm::Value *code);
+
+  /// `val` as an LLVM return value of type `ret_ll`.
+  llvm::Value *as_return_value(llvm::Value *val, llvm::Type *ret_ll);
+
+  /// The semantic type a return type node declares, or null for `void`.
+  TypePtr declared_return_sem(const NodePtr &return_type);
+
+  /// The semantic return type recorded for `func` when its body was emitted.
+  TypePtr return_sem_of(llvm::Function *func) const;
+
+  /// Keyed by function, not held as per-function state, so a body emitted in
+  /// the middle of another (a closure, a specialisation) cannot disturb it.
+  std::unordered_map<llvm::Function *, TypePtr> return_sems_;
 
   /// Check a finished function against the LLVM verifier. Malformed IR means
   /// the analyzer accepted a program this stage then mis-lowered, so it raises
@@ -935,10 +951,6 @@ private:
   /// alternative's tag and copying its payload. Returns a fresh dst union ptr.
   llvm::Value *emit_union_convert(llvm::Value *src_ptr, const TypePtr &src_sem,
                                   const TypePtr &dst_sem);
-
-  /// Recover the semantic union type from its cached LLVM struct (populated by
-  /// get_union_llvm_type), or null if unknown.
-  TypePtr union_sem_for_llvm(llvm::Type *st) const;
 
   /// Build a Missing error box carrying `message`. Returns the pointer from
   /// `saga_missing_new`, suitable for use as the err payload of a
