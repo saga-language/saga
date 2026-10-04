@@ -10,7 +10,6 @@ test fails, either the implementation has a bug or the spec is wrong.
 ```
 tests/conformance/
   README.md
-  BUGS.md             # spec-vs-impl drift, one entry per failing test
   run_test.sh         # shared runner
   CMakeLists.txt      # auto-discovers per-section subdirs
   <section_name>/
@@ -41,24 +40,15 @@ If a `.sg` file has neither sibling, the runner fails it as misconfigured.
 ## When a test fails
 
 Don't suppress it. The default disposition is **the implementation is
-wrong** — add an entry to `BUGS.md` pointing at the test path and quoting
-the spec line it derives from. The failing test stays red; that's the
-signal.
+wrong**: fix it in the same change. A conformance test lands green, so if
+the fix is out of scope, keep the test out and record the bug, with the
+spec line it derives from, wherever the work is tracked.
 
 If you're convinced the *spec* is the one that's wrong (the design moved
 and the doc didn't catch up), do **not** edit `docs/language.md` based on
-the failing test alone. Move the entry to `SPEC_FIXES.md` and leave it
-there for explicit human review. Spec changes are never automatic — the
-chicken-and-egg risk is that a buggy implementation silently rewrites
-the spec to match itself.
-
-So: three dispositions, in order of preference.
-
-1. **Fix now** — only if the change is obviously cheap (<30 min) and
-   stays in scope of the current section.
-2. **`BUGS.md`** — implementation is wrong, will be fixed later.
-3. **`SPEC_FIXES.md`** — spec is wrong, queued for human review. Never
-   touched without an explicit "yes, change the spec" decision.
+the failing test alone. Raise it for an explicit human decision. Spec
+changes are never automatic — the chicken-and-egg risk is that a buggy
+implementation silently rewrites the spec to match itself.
 
 ## Scope
 

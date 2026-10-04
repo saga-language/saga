@@ -36,12 +36,7 @@ void CodeGen::seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
     return;
   }
 
-  if (sem && sem->kind == TypeKind::Union) {
-    auto init_sem = root_expr_type(**acc.init);
-    if (init_sem && init_sem->kind != TypeKind::Union)
-      if (auto *wrapped = emit_union_wrap(val, init_sem, sem))
-        val = wrapped;
-  }
+  val = coerce_to(val, root_expr_type(**acc.init), sem);
 
   if (val->getType()->isPointerTy() && ll->isStructTy())
     val = builder.CreateLoad(ll, val, "acc.seed");

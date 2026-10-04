@@ -29,18 +29,7 @@ llvm::Value *CodeGen::fallback_as_union(llvm::Value *val,
   if (!sem || !target_st)
     return val;
 
-  llvm::Value *slot = nullptr;
-  if (sem->kind == TypeKind::Union) {
-    if (!val->getType()->isPointerTy()) {
-      auto *func = builder.GetInsertBlock()->getParent();
-      auto *spill = create_entry_alloca(func, "or.fb.spill", val->getType());
-      builder.CreateStore(val, spill);
-      val = spill;
-    }
-    slot = emit_union_convert(val, sem, target);
-  } else {
-    slot = emit_union_wrap(val, sem, target);
-  }
+  auto *slot = as_union_ptr(val, sem, target);
   return slot ? builder.CreateLoad(target_st, slot, "or.fb.union") : val;
 }
 

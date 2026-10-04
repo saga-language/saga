@@ -555,6 +555,8 @@ void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
 void Analyzer::error(Span span, const std::string &message) {
   if (silenced_)
     return;
+  if (current_instantiation_)
+    current_instantiation_->failed = true;
 
   Position pos = fileset.position_at(span.start);
 

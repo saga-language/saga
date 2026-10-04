@@ -69,18 +69,22 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return builder.CreateSIToFP(val, f64_type, "sitofp");
   }
 
+  // A float32 is stored as f64, like every float width: these round to f32
+  // and extend back, the float side of sext_zext_to_width below.
   if (name == "intrinsic_sitofp32") {
-    // intrinsic_sitofp32(value: Int) -> Float32 (f32)
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
-    return builder.CreateSIToFP(val, llvm::Type::getFloatTy(context), "sitofp32");
+    auto *narrow =
+        builder.CreateSIToFP(val, llvm::Type::getFloatTy(context), "sitofp32");
+    return builder.CreateFPExt(narrow, f64_type, "f32.wide");
   }
 
   if (name == "intrinsic_fptrunc") {
-    // intrinsic_fptrunc(value: Float) -> Float32 (f64 → f32)
     auto *val = emit_expr(*node.args[0]);
     if (!val) return nullptr;
-    return builder.CreateFPTrunc(val, llvm::Type::getFloatTy(context), "fptrunc");
+    auto *narrow =
+        builder.CreateFPTrunc(val, llvm::Type::getFloatTy(context), "fptrunc");
+    return builder.CreateFPExt(narrow, f64_type, "f32.wide");
   }
 
   if (name == "intrinsic_fpext") {
@@ -489,30 +493,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     // the shape.
     auto param =
         fi && i < fi->params.size() ? unwrap_alias(fi->params[i]) : nullptr;
-    // Interface boxing: param expects an interface, arg is a concrete
-    // struct.  Spill struct SSA values, then wrap the struct pointer
-    // in a fat pointer { data, vtable }.
-    if (param && param->kind == TypeKind::Interface && arg_sem &&
-        arg_sem->kind == TypeKind::Struct) {
-      llvm::Value *struct_ptr = val;
-      if (val->getType()->isStructTy()) {
-        auto *p_ll = llvm_type(arg_sem);
-        auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill", p_ll);
-        builder.CreateStore(val, tmp);
-        struct_ptr = tmp;
-      }
-      if (auto *boxed = emit_interface_box(struct_ptr, arg_sem, param))
-        val = boxed;
-    }
-    // Wrap a non-union arg into the union when the param expects one
-    // (`f Int|Float = 7`).  Without this, the byval attribute attaches
-    // to the raw scalar value and the callee's memcpy reads through
-    // address `7` → segfault.
-    if (param && param->kind == TypeKind::Union && arg_sem &&
-        arg_sem->kind != TypeKind::Union) {
-      if (auto *wrapped = emit_union_wrap(val, arg_sem, param))
-        val = wrapped;
-    }
+    val = coerce_to(val, arg_sem, param);
     if (auto *p_ll = byval_param_type(param);
         p_ll && val->getType()->isStructTy()) {
       auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);

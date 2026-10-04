@@ -84,6 +84,7 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   locals.clear();
   managed_locals.clear();
   current_func_is_main = false;
+  return_sems_[tramp_fn] = declared_return_sem(node.signature.return_type);
 
   // Unpack environment struct into local variables.
   if (env_type) {
@@ -117,17 +118,8 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   auto &block = std::get<BlockNode>(node.body->data);
   auto *tail_val = emit_block(block);
 
-  // Add terminator if needed.
-  if (!builder.GetInsertBlock()->getTerminator()) {
-    emit_release_locals();
-    if (ret_type->isVoidTy()) {
-      builder.CreateRetVoid();
-    } else if (tail_val && tail_val->getType() == ret_type) {
-      builder.CreateRet(tail_val);
-    } else {
-      builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-    }
-  }
+  if (!builder.GetInsertBlock()->getTerminator())
+    emit_fallthrough_return(block, tail_val);
 
   verify_function(*tramp_fn);
 

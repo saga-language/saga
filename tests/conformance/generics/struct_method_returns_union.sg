@@ -1,0 +1,25 @@
+// Spec: a method on a generic struct is declared "like any other method"
+// (docs/language.md:689), so a union it returns carries its tag whether the
+// value leaves through `return` or as the body's last expression.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Maybe(ok bool) T | string {
+  if ok { return b.value }
+  "none"
+}
+
+pub fn (b Box<T>) Plain() T | string { b.value }
+
+pub fn Main() void {
+  a := Box{value: 7}
+  m := a.Maybe(true)
+  if m is int { io.Println("returned {m}") }
+  n := a.Maybe(false)
+  if n is string { io.Println("fell through {n}") }
+  p := a.Plain()
+  if p is int { io.Println("tail {p}") }
+}

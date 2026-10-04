@@ -1,0 +1,25 @@
+// Spec: a function expression "has a signature and a body"
+// (docs/language.md:1682), so it returns whatever its signature names the way
+// a declared function does — a struct or a union as much as an int.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn Main() void {
+  mk := fn(n int) Point { Point{x: n, y: n + 1} }
+  p := mk(3)
+  q := mk(10)
+  io.Println("struct {p.x} {p.y} {q.x} {q.y}")
+
+  pick := fn(n int) int | string {
+    if n > 0 { return "pos" }
+    n
+  }
+  a := pick(1)
+  b := pick(-2)
+  if a is string { io.Println("returned {a}") }
+  if b is int { io.Println("fell through {b}") }
+}

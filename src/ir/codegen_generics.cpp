@@ -180,6 +180,8 @@ llvm::Function *CodeGen::emit_specialisation(
   std::string mangled = mangle_specialisation(fn, ordered_args);
   if (auto *existing = module->getFunction(mangled))
     return existing;
+  if (inst && inst->failed)
+    return nullptr;
 
   // Concrete signature from bindings.  Struct and interface params are
   // pointers in LLVM function signatures (matching resolve_type_node).
@@ -251,6 +253,8 @@ llvm::Function *CodeGen::emit_specialisation(
     }
   }
 
+  return_sems_[func] = fi.return_type;
+
   // Emit the body under a fresh per-function scope.
   {
     FuncEmissionScope guard(*this);
@@ -313,17 +317,8 @@ llvm::Function *CodeGen::emit_specialisation(
       auto &block = std::get<BlockNode>(fn.body->data);
       auto *tail_val = emit_block(block);
 
-      if (!builder.GetInsertBlock()->getTerminator()) {
-        emit_release_locals();
-        auto *ret_type = func->getReturnType();
-        if (ret_type->isVoidTy()) {
-          builder.CreateRetVoid();
-        } else if (tail_val && tail_val->getType() == ret_type) {
-          builder.CreateRet(tail_val);
-        } else {
-          builder.CreateRet(llvm::Constant::getNullValue(ret_type));
-        }
-      }
+      if (!builder.GetInsertBlock()->getTerminator())
+        emit_fallthrough_return(block, tail_val);
     } else {
       emit_function_body_inner(fn, func, param_ll, /*is_main=*/false);
     }

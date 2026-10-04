@@ -1,0 +1,24 @@
+// Spec: "no name ever observes another's edit" (docs/language.md:63). A union
+// is a value like any other, so a second name for one holds a copy: writing
+// either name leaves the other as it was, however the second name was bound.
+import "std/io"
+
+fn show(v int | string) string {
+  if v is string { return "string {v}" }
+  if v is int { return "int {v}" }
+  "none"
+}
+
+pub fn Main() void {
+  y int | string = 1
+  z int | string = y
+  z = "changed"
+  io.Println("declared: y={show(y)} z={show(z)}")
+
+  a := y
+  a = 5
+  io.Println("inferred: y={show(y)} a={show(a)}")
+
+  y = "late"
+  io.Println("original: y={show(y)} z={show(z)} a={show(a)}")
+}

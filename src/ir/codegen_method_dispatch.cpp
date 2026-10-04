@@ -973,25 +973,7 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
                        ? unwrap_alias(fn_info.params[i])
                        : nullptr;
       auto arg_sem = semantic_type(*node.args[i]);
-      // Union wrap: param is union, arg is concrete.
-      if (param && param->kind == TypeKind::Union && arg_sem &&
-          arg_sem->kind != TypeKind::Union) {
-        if (auto *wrapped = emit_union_wrap(val, arg_sem, param))
-          val = wrapped;
-      }
-      // Interface boxing: param expects interface, arg is concrete struct.
-      if (param && param->kind == TypeKind::Interface && arg_sem &&
-          arg_sem->kind == TypeKind::Struct) {
-        llvm::Value *struct_ptr = val;
-        if (val->getType()->isStructTy()) {
-          auto *p_ll = llvm_type(arg_sem);
-          auto *tmp = create_entry_alloca(parent_fn, "iface.arg.spill", p_ll);
-          builder.CreateStore(val, tmp);
-          struct_ptr = tmp;
-        }
-        if (auto *boxed = emit_interface_box(struct_ptr, arg_sem, param))
-          val = boxed;
-      }
+      val = coerce_to(val, arg_sem, param);
       // Byval struct/union param: pass pointer to alloca, spill SSA values.
       if (auto *p_ll = byval_param_type(param);
           p_ll && val->getType()->isStructTy()) {

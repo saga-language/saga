@@ -1,0 +1,3 @@
+declared: y=int 1 z=string changed
+inferred: y=int 1 a=int 5
+original: y=string late z=string changed a=int 5

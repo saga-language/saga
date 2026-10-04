@@ -104,10 +104,6 @@ struct CodeGen {
   /// Maps canonical union type string → LLVM struct type { i8 tag, [N x i8] }.
   std::unordered_map<std::string, llvm::StructType *> union_llvm_types;
 
-  /// Reverse of union_llvm_types: LLVM struct → semantic union type, so the
-  /// sret return paths can recover a union's alternatives from its layout.
-  std::unordered_map<llvm::Type *, TypePtr> union_sem_by_llvm;
-
   // ── String constant deduplication ────────────────────────────────────
 
   std::unordered_map<std::string, llvm::Value *> string_constants;
@@ -457,13 +453,33 @@ private:
                                  const std::vector<llvm::Type *> &param_ll,
                                  bool is_main);
 
-  /// Emit the return for a fallen-through function tail (no explicit return).
-  /// Shared by free functions and receiver methods so struct/sret, union
-  /// wrapping, and scalar returns lower identically regardless of receiver.
-  /// `has_sret` means the return is lowered through the sret pointer (arg 0).
-  void emit_tail_return(const FuncDeclNode &fn, llvm::Function *func,
-                        llvm::Value *tail_val, const BlockNode &block,
-                        bool has_sret);
+  /// Return `val`, of type `val_sem` and emitted from `source`, from the
+  /// function being emitted: retained if borrowed, coerced to the semantic
+  /// return type, then handed back through sret or as the LLVM return value.
+  /// Releases the frame's locals. Every body emitter and `return` statement
+  /// ends here.
+  void emit_return_value(llvm::Value *val, const TypePtr &val_sem,
+                         const Node *source);
+
+  /// Return the value a body's last expression left, for a body that did not
+  /// end in a `return`.
+  void emit_fallthrough_return(const BlockNode &block, llvm::Value *tail_val);
+
+  /// Leave `Main` with exit status `code`, or 0 when it is null.
+  void emit_main_exit(llvm::Value *code);
+
+  /// `val` as an LLVM return value of type `ret_ll`.
+  llvm::Value *as_return_value(llvm::Value *val, llvm::Type *ret_ll);
+
+  /// The semantic type a return type node declares, or null for `void`.
+  TypePtr declared_return_sem(const NodePtr &return_type);
+
+  /// The semantic return type recorded for `func` when its body was emitted.
+  TypePtr return_sem_of(llvm::Function *func) const;
+
+  /// Keyed by function, not held as per-function state, so a body emitted in
+  /// the middle of another (a closure, a specialisation) cannot disturb it.
+  std::unordered_map<llvm::Function *, TypePtr> return_sems_;
 
   /// Check a finished function against the LLVM verifier. Malformed IR means
   /// the analyzer accepted a program this stage then mis-lowered, so it raises
@@ -499,6 +515,7 @@ private:
   // ── Statement emitters ───────────────────────────────────────────────
 
   void emit_var_decl(const VarDeclNode &node);
+  void emit_zeroed_local(const std::string &name, const TypePtr &sem);
   llvm::Value *emit_empty_array(const TypePtr &array_sem);
   llvm::Value *emit_empty_map(const TypePtr &map_sem);
   void zero_fill(llvm::Value *slot, const TypePtr &sem, llvm::Type *ll);
@@ -514,8 +531,10 @@ private:
   std::pair<llvm::Value *, llvm::Type *>
   assign_target_address(const Node &target);
 
-  /// Store `rhs` into the field named by the selector `target`.
-  void emit_field_assign(const Node &target, Token::Kind op, llvm::Value *rhs);
+  /// Store `rhs` into the local or field an identifier or selector `target`
+  /// names, in the representation the slot's type takes.
+  void emit_slot_assign(const Node &target, Token::Kind op, llvm::Value *rhs,
+                        const TypePtr &rhs_sem);
 
   /// Store `rhs` into the element named by the index `target`.
   void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
@@ -903,20 +922,35 @@ private:
   llvm::Value *emit_union_wrap(llvm::Value *val, const TypePtr &val_type,
                                 const TypePtr &union_type);
 
-  /// Produce a pointer to union memory holding `val`: an already-union pointer
-  /// passes through (converting if its layout differs); a concrete/error member
-  /// value is wrapped. Returns null if it can't place the value.
+  /// `val`, of type `from`, in the representation a slot of type `to` holds:
+  /// wrapped into or remapped between unions, or boxed into an interface.
+  /// Any other value comes back as it was.
+  llvm::Value *coerce_to(llvm::Value *val, const TypePtr &from,
+                         const TypePtr &to);
+
+  /// Bind `name` to a fresh slot of type `sem` holding `val`, which must
+  /// already be in that type's representation (see coerce_to).
+  llvm::AllocaInst *bind_local(const std::string &name, llvm::Value *val,
+                               const TypePtr &sem);
+
+  /// The LLVM type of a local slot holding a value of type `sem`.
+  llvm::Type *local_slot_type(const TypePtr &sem, llvm::Value *val);
+
+  /// Produce a pointer to union memory holding `val`: a union passes through
+  /// (converting if its layout differs); a concrete/error member value is
+  /// wrapped. Returns null if it can't place the value.
   llvm::Value *as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
                             const TypePtr &union_sem);
+
+  /// Box a struct value into an interface fat pointer. Returns null for any
+  /// other kind of value.
+  llvm::Value *as_interface_ptr(llvm::Value *val, const TypePtr &val_sem,
+                                const TypePtr &iface_sem);
 
   /// Convert a union value to a different union type, remapping each
   /// alternative's tag and copying its payload. Returns a fresh dst union ptr.
   llvm::Value *emit_union_convert(llvm::Value *src_ptr, const TypePtr &src_sem,
                                   const TypePtr &dst_sem);
-
-  /// Recover the semantic union type from its cached LLVM struct (populated by
-  /// get_union_llvm_type), or null if unknown.
-  TypePtr union_sem_for_llvm(llvm::Type *st) const;
 
   /// Build a Missing error box carrying `message`. Returns the pointer from
   /// `saga_missing_new`, suitable for use as the err payload of a
