@@ -269,8 +269,9 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
   }
 
   auto *val = emit_root_expr(**node.init);
-  retain_if_borrowed(val, sem, **node.init);
-  bind_local(name, coerce_to(val, root_expr_type(**node.init), sem), sem);
+  auto val_sem = root_expr_type(**node.init);
+  retain_if_borrowed(val, unwrap_alias(val_sem), **node.init);
+  bind_local(name, coerce_to(val, val_sem, sem), sem);
 }
 
 void CodeGen::emit_zeroed_local(const std::string &name, const TypePtr &sem) {
@@ -363,17 +364,15 @@ void CodeGen::emit_map_index_assign(const IndexExprNode &target,
   if (!map || !key)
     return;
 
-  auto *key_slot = collection_slot_address(llvm_type(info.key), info.key, key,
-                                           semantic_type(*target.index));
-  auto *val_slot =
-      collection_slot_address(llvm_type(info.value), info.value, rhs, rhs_sem);
-  if (!key_slot || !val_slot)
+  auto key_v = stored_value(key, semantic_type(*target.index), info.key);
+  auto val_v = stored_value(rhs, rhs_sem, info.value);
+  if (!key_v.address || !val_v.address)
     return;
 
   builder.CreateCall(module->getFunction("saga_map_set"),
-                     {map, key_slot, val_slot});
-  settle_stored(key, semantic_type(*target.index), *target.index, info.key);
-  settle_stored(rhs, rhs_sem, rhs_node, info.value);
+                     {map, key_v.address, val_v.address});
+  settle_stored(key_v, *target.index, info.key);
+  settle_stored(val_v, rhs_node, info.value);
 }
 
 // A shared backing buffer is copied on write, so `saga_array_set` hands back
@@ -389,19 +388,18 @@ void CodeGen::emit_array_index_assign(const IndexExprNode &target,
 
   auto &info = std::get<ArrayTypeInfo>(obj_sem->detail);
   auto *idx = emit_expr(*target.index);
-  auto *elem = collection_slot_address(llvm_type(info.element), info.element,
-                                       rhs, rhs_sem);
-  if (!idx || !elem)
+  auto elem = stored_value(rhs, rhs_sem, info.element);
+  if (!idx || !elem.address)
     return;
 
   auto *arr = builder.CreateLoad(holder_ll, holder, "arr.cur");
   builder.CreateStore(builder.CreateCall(module->getFunction("saga_array_set"),
-                                         {arr, idx, elem}, "arr.set"),
+                                         {arr, idx, elem.address}, "arr.set"),
                       holder);
   // `saga_array_set` hands back its own +1, whether it cloned or wrote in
   // place, so the reference the slot held before this is one too many.
   emit_release(arr, obj_sem);
-  settle_stored(rhs, rhs_sem, rhs_node, info.element);
+  settle_stored(elem, rhs_node, info.element);
 }
 
 void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,

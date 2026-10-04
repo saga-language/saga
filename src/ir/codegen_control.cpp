@@ -103,7 +103,7 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
 void CodeGen::emit_if_branch(BranchJoin &join, const Node *body,
                              const std::optional<Narrowing> &narrowing) {
   if (!body) {
-    close_branch(join, nullptr, nullptr, zero_ownership(join.result));
+    close_branch(join, nullptr, nullptr, nullptr);
     return;
   }
   auto *displaced = narrowing ? narrow_local(narrowing->name, narrowing->from,
@@ -113,8 +113,7 @@ void CodeGen::emit_if_branch(BranchJoin &join, const Node *body,
   auto *val = emit_block(block);
   if (displaced)
     locals[narrowing->name] = displaced;
-  close_branch(join, val, block_result_type(block),
-               body_ownership(body, join.result));
+  close_branch(join, val, block_result_type(block), body);
 }
 
 } // namespace saga

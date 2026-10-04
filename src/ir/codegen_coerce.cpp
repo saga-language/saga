@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 namespace saga {
 
@@ -32,16 +33,13 @@ llvm::AllocaInst *CodeGen::bind_local(const std::string &name,
   return slot;
 }
 
-// A local holds a closure or an interface as the fat pair itself; llvm_type
-// answers with the pointer to one that a parameter receives.
+// A local holds a closure as the fat pair itself; llvm_type answers with the
+// pointer to one that a parameter receives.
 llvm::Type *CodeGen::local_slot_type(const TypePtr &sem, llvm::Value *val) {
   auto *held = llvm::dyn_cast_or_null<llvm::AllocaInst>(val);
   if (held && held->getAllocatedType() == closure_fat_ptr_type)
     return closure_fat_ptr_type;
-  auto s = unwrap_alias(sem);
-  if (s && s->kind == TypeKind::Interface)
-    return iface_fat_ptr_type;
-  return storage_type(s);
+  return storage_type(unwrap_alias(sem));
 }
 
 llvm::Value *CodeGen::as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
@@ -58,11 +56,15 @@ llvm::Value *CodeGen::as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
   return emit_union_wrap(val, materialize_untyped(val_sem), union_sem);
 }
 
+// An interface value already has its box. Only a struct is boxed yet.
 llvm::Value *CodeGen::as_interface_ptr(llvm::Value *val,
                                        const TypePtr &val_sem,
                                        const TypePtr &iface_sem) {
-  if (!val_sem || val_sem->kind != TypeKind::Struct)
+  if (!val_sem || val_sem->kind == TypeKind::Interface)
     return nullptr;
+  if (val_sem->kind != TypeKind::Struct)
+    internal_error("a '" + type_to_string(val_sem) + "' cannot be boxed as '" +
+                   type_to_string(iface_sem) + "' yet");
   return emit_interface_box(spill_aggregate(val, "iface.spill"), val_sem,
                             iface_sem);
 }

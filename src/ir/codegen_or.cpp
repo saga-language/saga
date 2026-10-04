@@ -111,7 +111,7 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   auto join = open_join("or.merge", result, or_ownership(node));
   builder.SetInsertPoint(ok_bb);
   close_branch(join, emit_union_purified(union_ptr, tag, expr_sem), result,
-               value_ownership(*node.expr));
+               node.expr.get());
   start_block(err_bb);
   emit_or_handler(node, union_ptr, expr_sem, join);
   return finish_join(join, "or.result");
@@ -163,8 +163,7 @@ void CodeGen::emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
 
   auto &fallback = std::get<BlockNode>(node.fallback->data);
   auto *val = emit_block(fallback);
-  close_branch(join, val, block_result_type(fallback),
-               body_ownership(node.fallback.get(), join.result));
+  close_branch(join, val, block_result_type(fallback), node.fallback.get());
 
   if (displaced)
     locals[pipe_name] = displaced;

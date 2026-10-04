@@ -2297,8 +2297,12 @@ TEST(CodeGen, InterfaceVtableTypeCreated) {
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga.vtable." + CG::mangled("Greeter"));
   ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 1u) << "Vtable should have 1 fn ptr";
-  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
+  ASSERT_EQ(st->getNumElements(), 4u)
+      << "size, slot ops and writes mask, then 1 fn ptr";
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+  EXPECT_TRUE(st->getElementType(2)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(3)->isPointerTy());
 }
 
 TEST(CodeGen, InterfaceVtableMultipleMethods) {
@@ -2311,17 +2315,27 @@ TEST(CodeGen, InterfaceVtableMultipleMethods) {
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga.vtable." + CG::mangled("ReadWriter"));
   ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_EQ(st->getNumElements(), 5u) << "the 3-field prefix, then 2 fn ptrs";
 }
 
-TEST(CodeGen, InterfaceFatPtrTypeExists) {
-  auto r = CG::from("pub fn Main() void {}");
-  auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "saga_runtime_iface");
-  ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u); // { ptr data, ptr vtable }
-  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
-  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+TEST(CodeGen, InterfaceValueIsABoxPointer) {
+  auto r = CG::from(
+      "interface Greeter { Greet() string }\n"
+      "fn hello(g Greeter) string { g.Greet() }\n"
+      "pub fn Main() void {}");
+  auto *fn = r.func("hello");
+  ASSERT_NE(fn, nullptr);
+  ASSERT_EQ(fn->arg_size(), 1u)
+      << "the box pointer, not a { data, vtable } pair";
+  EXPECT_TRUE(fn->getArg(0)->getType()->isPointerTy());
+  bool readies_box = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "saga_box_unique_for")
+          readies_box = true;
+  EXPECT_TRUE(readies_box) << "a call through an interface readies its box";
 }
 
 TEST(CodeGen, StructMethodDeclared) {

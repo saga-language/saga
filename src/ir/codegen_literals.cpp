@@ -312,8 +312,7 @@ void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,
   auto *val = emit_operand(value_node);
   if (!val)
     return;
-  retain_if_borrowed(val, unwrap_alias(field_sem), value_node);
-
+  retain_if_borrowed(val, unwrap_alias(operand_type(value_node)), value_node);
   val = coerce_to(val, operand_type(value_node), field_sem);
 
   // D1: aggregate fields are stored inline. If the rhs is a pointer to a

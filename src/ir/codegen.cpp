@@ -241,12 +241,8 @@ void CodeGen::init_types() {
        i64_type, llvm::PointerType::getUnqual(context)},
       "saga_runtime_array");
 
-  // Interface fat pointer: { ptr data, ptr vtable }
-  auto *ptr_ty = llvm::PointerType::getUnqual(context);
-  iface_fat_ptr_type = llvm::StructType::create(
-      context, {ptr_ty, ptr_ty}, "saga_runtime_iface");
-
   // Closure fat pointer: { ptr fn, ptr env }
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
   closure_fat_ptr_type = llvm::StructType::create(
       context, {ptr_ty, ptr_ty}, "saga_runtime_closure");
 
@@ -410,8 +406,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return boxed ? static_cast<llvm::Type *>(ptr_rep) : st;
   }
   case TypeKind::Interface:
-    // Interfaces are represented as a fat pointer struct.
-    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_iface
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_box
   case TypeKind::Union: {
     auto *st = get_union_llvm_type(t);
     if (!st)

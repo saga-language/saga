@@ -28,21 +28,26 @@ BranchJoin CodeGen::open_join(const std::string &name, const TypePtr &result,
 
 // A branch that already returned or broke never reaches the merge.
 void CodeGen::close_branch(BranchJoin &join, llvm::Value *val,
-                           const TypePtr &val_sem, Ownership own) {
+                           const TypePtr &val_sem, const Node *source) {
   if (builder.GetInsertBlock()->getTerminator())
     return;
   join.reached = true;
   if (join.result)
     join.incoming.push_back(
-        {join_value(join, val, val_sem, own), builder.GetInsertBlock()});
+        {join_value(join, val, val_sem, source), builder.GetInsertBlock()});
   builder.CreateBr(join.merge);
 }
 
+// A borrowed value takes a reference when the merge is owned, and when it is
+// boxed, since the box takes over what it is given.
 llvm::Value *CodeGen::join_value(const BranchJoin &join, llvm::Value *val,
-                                 const TypePtr &val_sem, Ownership own) {
+                                 const TypePtr &val_sem, const Node *source) {
   if (!val || val->getType()->isVoidTy())
     return emit_zero_value(join.result);
-  if (join.merged == Ownership::Owned && own == Ownership::Borrowed)
+  bool takes_reference =
+      join.merged == Ownership::Owned || boxes_into(val_sem, join.result);
+  if (takes_reference && branch_value_ownership(source, join.result) ==
+                             Ownership::Borrowed)
     emit_retain(val, unwrap_alias(val_sem));
   auto *placed = coerce_to(val, val_sem, join.result);
   if (llvm_type(join.result)->isStructTy())

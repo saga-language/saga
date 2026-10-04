@@ -38,6 +38,30 @@ typedef struct {
 extern const saga_runtime_elem_ops saga_string_elem_ops;
 extern const saga_runtime_elem_ops saga_array_elem_ops;
 extern const saga_runtime_elem_ops saga_map_elem_ops;
+extern const saga_runtime_elem_ops saga_box_elem_ops;
+
+/* ───────────────────────────────────────────────────────────────────────── */
+/* Interface box                                                            */
+/*                                                                          */
+/* An interface value is a pointer to a counted box holding its own copy of */
+/* the value, found by the vtable that box carries. Every vtable starts     */
+/* with this prefix, so a box is copied or freed without knowing its type;  */
+/* the methods follow it.                                                   */
+/* ───────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+  int64_t size;                     /* bytes of the boxed value           */
+  const saga_runtime_elem_ops *ops; /* null when the value holds no refs  */
+  int64_t writes;                   /* bit i: method i writes its receiver */
+} saga_runtime_vtable;
+
+typedef struct {
+  int64_t refcount;
+  const saga_runtime_vtable *vtable;
+} saga_runtime_box;
+
+/* The boxed value starts here, aligned for any value Saga lays out. */
+#define SAGA_RUNTIME_BOX_VALUE_OFFSET 16
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array                                                                    */
@@ -156,6 +180,8 @@ void saga_retain_array(saga_runtime_array *arr);
 void saga_release_array(saga_runtime_array *arr);
 void saga_retain_map(saga_runtime_map *m);
 void saga_release_map(saga_runtime_map *m);
+void saga_box_retain(saga_runtime_box *b);
+void saga_box_release(saga_runtime_box *b);
 saga_runtime_array *saga_array_new_internal(int64_t elem_size,
                                             int64_t initial_cap,
                                             const saga_runtime_elem_ops *ops);

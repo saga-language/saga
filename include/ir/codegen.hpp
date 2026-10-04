@@ -36,6 +36,10 @@ const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
 // is read out of storage that keeps its own.
 enum class Ownership { Owned, Borrowed };
 
+// Whether a value of `val_sem` landing in a slot of `slot_sem` is put in a new
+// interface box.
+bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem);
+
 // A conditional's merge point. Every branch that reaches it hands over a value
 // already in the conditional's type, and an owned one when `merged` is owned.
 struct BranchJoin {
@@ -87,9 +91,6 @@ struct CodeGen {
   std::unordered_map<std::string, bool> enum_types;
 
   // ── Interface registry ──────────────────────────────────────────────
-
-  /// The fat pointer type for interface values: { ptr data, ptr vtable }.
-  llvm::StructType *iface_fat_ptr_type = nullptr;
 
   /// Maps interface name → vtable struct type (struct of fn ptrs).
   std::unordered_map<std::string, llvm::StructType *> iface_vtable_types;
@@ -413,15 +414,26 @@ private:
   /// Emit bodies of receiver methods on intrinsic types.
   void emit_intrinsic_methods(const SourceNode &src);
 
-  /// Get or create a vtable for a concrete struct implementing an interface.
-  /// struct_type and iface_type must be TypeKind::Struct and ::Interface.
+  // ── Interface values (codegen_interfaces.cpp) ──────────────────────
+  void declare_vtable_type(const std::string &key,
+                           const std::vector<MethodInfo> &methods);
   llvm::GlobalVariable *get_or_create_vtable(const TypePtr &struct_type,
                                               const TypePtr &iface_type);
-
-  /// Box a concrete value into an interface fat pointer.
+  llvm::Constant *vtable_method(const StructTypeInfo &sinfo,
+                                const std::string &method,
+                                const FuncTypeInfo *iface_sig);
+  uint64_t writes_mask(const StructTypeInfo &sinfo,
+                       const std::vector<std::string> &methods);
+  std::optional<bool> method_writes(const StructTypeInfo &sinfo,
+                                    const std::string &method);
   llvm::Value *emit_interface_box(llvm::Value *concrete_val,
                                    const TypePtr &concrete_type,
                                    const TypePtr &iface_type);
+  llvm::Value *box_value(llvm::Value *box);
+  std::pair<llvm::Value *, bool> interface_receiver(const Node &object,
+                                                    llvm::Value *obj,
+                                                    const TypePtr &iface_sem,
+                                                    unsigned method);
 
   /// The one lowering for every function boundary, Saga or extern. `leading`
   /// is a receiver or closure environment, passed as it is.
@@ -780,12 +792,23 @@ private:
   llvm::Value *emit_new_array(const TypePtr &elem_sem, int64_t cap,
                               const std::string &name);
   llvm::Value *emit_new_map(const TypePtr &key_sem, const TypePtr &val_sem);
+  /// A value bound for a collection slot: as emitted, as the slot holds it,
+  /// and the address the runtime copies it from.
+  struct StoredValue {
+    llvm::Value *val = nullptr;
+    TypePtr val_sem;
+    llvm::Value *placed = nullptr;
+    llvm::Value *address = nullptr;
+  };
+  StoredValue emit_stored_value(const Node &node, const TypePtr &slot_sem);
+  StoredValue stored_value(llvm::Value *val, const TypePtr &val_sem,
+                           const TypePtr &slot_sem);
   void emit_push_element(llvm::Value *arr, const TypePtr &elem_sem,
                          const Node &node);
   void emit_set_entry(llvm::Value *map, const TypePtr &key_sem,
                       const TypePtr &val_sem, const KeyValueNode &entry);
-  void settle_stored(llvm::Value *val, const TypePtr &val_sem,
-                     const Node &source, const TypePtr &slot_sem);
+  void settle_stored(const StoredValue &v, const Node &source,
+                     const TypePtr &slot_sem);
   void release_handed_over(llvm::Value *val, const Node &source,
                            const TypePtr &slot_sem);
   void fill_range(llvm::Value *arr, llvm::Value *low, llvm::Value *high);
@@ -895,12 +918,12 @@ private:
                                      const std::string &method);
   std::vector<llvm::Value *>
   box_kind_method_args(const CallExprNode &node, const MethodInfo &m,
-                       std::vector<llvm::Value *> &values);
+                       const TypePtr &obj_sem,
+                       std::vector<StoredValue> &values);
   void release_kind_method_args(const CallExprNode &node, const MethodInfo &m,
                                 const TypePtr &obj_sem,
-                                const std::vector<llvm::Value *> &values);
+                                const std::vector<StoredValue> &values);
   TypePtr kind_slot_type(const TypePtr &obj_sem, const TypePtr &param);
-  llvm::Value *box_for_type_param(llvm::Value *val, const TypePtr &arg_sem);
   llvm::Value *unbox_kind_method_result(llvm::Value *result,
                                         const MethodInfo &m,
                                         const TypePtr &obj_sem);
@@ -1109,8 +1132,7 @@ private:
   llvm::Value *as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
                             const TypePtr &union_sem);
 
-  /// Box a struct value into an interface fat pointer. Returns null for any
-  /// other kind of value.
+  /// Box a value into a new interface box; null when it is already one.
   llvm::Value *as_interface_ptr(llvm::Value *val, const TypePtr &val_sem,
                                 const TypePtr &iface_sem);
 
@@ -1207,6 +1229,7 @@ private:
   bool reads_stored_element(const CallExprNode &call);
   bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
+  Ownership branch_value_ownership(const Node *body, const TypePtr &result);
   Ownership zero_ownership(const TypePtr &result);
   Ownership or_ownership(const OrExprNode &node);
   Ownership if_ownership(const IfExprNode &node, const Node &parent);
@@ -1221,9 +1244,9 @@ private:
   BranchJoin open_join(const std::string &name, const TypePtr &result,
                        Ownership merged);
   void close_branch(BranchJoin &join, llvm::Value *val, const TypePtr &val_sem,
-                    Ownership own);
+                    const Node *source);
   llvm::Value *join_value(const BranchJoin &join, llvm::Value *val,
-                          const TypePtr &val_sem, Ownership own);
+                          const TypePtr &val_sem, const Node *source);
   llvm::Value *finish_join(BranchJoin &join, const std::string &name);
   llvm::Value *emit_zero_value(const TypePtr &sem);
 

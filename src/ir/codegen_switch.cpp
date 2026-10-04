@@ -40,7 +40,7 @@ void CodeGen::emit_switch_arm(BranchJoin &join, const Node *body) {
     val = block ? emit_block(*block) : emit_expr(*body);
     sem = body_result_type(*body);
   }
-  close_branch(join, val, sem, body_ownership(body, join.result));
+  close_branch(join, val, sem, body);
 }
 
 // The analyzer holds a type switch with no else to covering every

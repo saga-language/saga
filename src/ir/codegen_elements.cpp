@@ -13,14 +13,15 @@
 
 namespace saga {
 
-// A counted kind's slot holds its pointer, and a struct's holds its fields.
-// A union or an interface element holds references nothing counts yet.
+// A counted kind's or an interface's slot holds its pointer, and a struct's
+// holds its fields. A union element holds references nothing counts yet.
 bool CodeGen::slot_holds_references(const TypePtr &sem) {
   auto s = unwrap_alias(sem);
   if (!s)
     return false;
   return s->kind == TypeKind::String || s->kind == TypeKind::Array ||
-         s->kind == TypeKind::Map || owns_managed_fields(s);
+         s->kind == TypeKind::Map || s->kind == TypeKind::Interface ||
+         owns_managed_fields(s);
 }
 
 llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
@@ -35,6 +36,8 @@ llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
     return runtime_elem_ops("saga_array_elem_ops");
   case TypeKind::Map:
     return runtime_elem_ops("saga_map_elem_ops");
+  case TypeKind::Interface:
+    return runtime_elem_ops("saga_box_elem_ops");
   default:
     return struct_elem_ops(s);
   }
@@ -95,46 +98,60 @@ llvm::Value *CodeGen::emit_new_map(const TypePtr &key_sem,
       "map");
 }
 
+CodeGen::StoredValue CodeGen::stored_value(llvm::Value *val,
+                                           const TypePtr &val_sem,
+                                           const TypePtr &slot_sem) {
+  auto *placed = coerce_to(val, val_sem, slot_sem);
+  return {val, val_sem, placed,
+          collection_slot_address(llvm_type(slot_sem), slot_sem, placed,
+                                  slot_sem)};
+}
+
+CodeGen::StoredValue CodeGen::emit_stored_value(const Node &node,
+                                                const TypePtr &slot_sem) {
+  return stored_value(emit_operand(node), operand_type(node), slot_sem);
+}
+
 void CodeGen::emit_push_element(llvm::Value *arr, const TypePtr &elem_sem,
                                 const Node &node) {
-  auto *val = emit_operand(node);
-  auto *src = collection_slot_address(llvm_type(elem_sem), elem_sem, val,
-                                      operand_type(node));
-  if (!src)
+  auto elem = emit_stored_value(node, elem_sem);
+  if (!elem.address)
     return;
   builder.CreateCall(module->getFunction("saga_array_builder_push"),
-                     {arr, src});
-  settle_stored(val, operand_type(node), node, elem_sem);
+                     {arr, elem.address});
+  settle_stored(elem, node, elem_sem);
 }
 
 void CodeGen::emit_set_entry(llvm::Value *map, const TypePtr &key_sem,
                              const TypePtr &val_sem,
                              const KeyValueNode &entry) {
-  auto *key = emit_operand(*entry.key);
-  auto *val = emit_operand(*entry.value);
-  auto *key_src = collection_slot_address(llvm_type(key_sem), key_sem, key,
-                                          operand_type(*entry.key));
-  auto *val_src = collection_slot_address(llvm_type(val_sem), val_sem, val,
-                                          operand_type(*entry.value));
-  if (!key_src || !val_src)
+  auto key = emit_stored_value(*entry.key, key_sem);
+  auto val = emit_stored_value(*entry.value, val_sem);
+  if (!key.address || !val.address)
     return;
   builder.CreateCall(module->getFunction("saga_map_set"),
-                     {map, key_src, val_src});
-  settle_stored(key, operand_type(*entry.key), *entry.key, key_sem);
-  settle_stored(val, operand_type(*entry.value), *entry.value, val_sem);
+                     {map, key.address, val.address});
+  settle_stored(key, *entry.key, key_sem);
+  settle_stored(val, *entry.value, val_sem);
 }
 
-// Called once the collection holds `val`. A slot whose type has no slot
+// Called once the collection holds the value. A slot whose type has no slot
 // operations holds what it is given without counting it, so a borrowed value
-// takes a reference for it instead, which leaks rather than dangles.
-void CodeGen::settle_stored(llvm::Value *val, const TypePtr &val_sem,
-                            const Node &source, const TypePtr &slot_sem) {
-  if (!val)
+// takes a reference for it instead, which leaks rather than dangles. A box
+// made for the slot took over the value, and the collection its own
+// reference to the box.
+void CodeGen::settle_stored(const StoredValue &v, const Node &source,
+                            const TypePtr &slot_sem) {
+  if (!v.val)
     return;
-  if (slot_holds_references(slot_sem))
-    release_handed_over(val, source, slot_sem);
-  else
-    retain_if_borrowed(val, unwrap_alias(val_sem), source);
+  if (boxes_into(v.val_sem, slot_sem)) {
+    retain_if_borrowed(v.val, unwrap_alias(v.val_sem), source);
+    emit_release(v.placed, unwrap_alias(slot_sem));
+  } else if (slot_holds_references(slot_sem)) {
+    release_handed_over(v.val, source, slot_sem);
+  } else {
+    retain_if_borrowed(v.val, unwrap_alias(v.val_sem), source);
+  }
 }
 
 // The collection took a reference of its own or did not keep the value, so

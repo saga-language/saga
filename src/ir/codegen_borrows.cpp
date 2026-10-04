@@ -106,7 +106,16 @@ Ownership CodeGen::zero_ownership(const TypePtr &result) {
              : Ownership::Borrowed;
 }
 
+// A concrete branch of an interface-typed conditional reaches the join in a
+// box made for it.
 Ownership CodeGen::body_ownership(const Node *body, const TypePtr &result) {
+  if (body && boxes_into(body_result_type(*body), result))
+    return Ownership::Owned;
+  return branch_value_ownership(body, result);
+}
+
+Ownership CodeGen::branch_value_ownership(const Node *body,
+                                          const TypePtr &result) {
   if (!body)
     return zero_ownership(result);
   auto *block = std::get_if<BlockNode>(&body->data);

@@ -137,17 +137,7 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
       if (iface_vtable_types.count(key))
         break;
 
-      auto *ptr_type = llvm::PointerType::getUnqual(context);
-      std::vector<llvm::Type *> vtable_fields;
-      std::vector<std::string> method_names;
-      for (auto &m : iinfo.methods) {
-        vtable_fields.push_back(ptr_type);
-        method_names.push_back(m.name);
-      }
-      auto *vtable_st = llvm::StructType::create(context, vtable_fields,
-                                                  "saga.vtable." + key);
-      iface_vtable_types[key] = vtable_st;
-      iface_method_names[key] = std::move(method_names);
+      declare_vtable_type(key, iinfo.methods);
       named_sem_types[key] = exp.type;
       break;
     }

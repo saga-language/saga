@@ -400,17 +400,8 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
     sem_type = make_interface_type(name, ast_interface_methods(node), {},
                                    package_name);
 
-  auto &info = std::get<InterfaceTypeInfo>(sem_type->detail);
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-  std::vector<llvm::Type *> vtable_fields(info.methods.size(), ptr_type);
-  std::vector<std::string> method_names;
-  for (auto &m : info.methods)
-    method_names.push_back(m.name);
-
-  auto *vtable_st =
-      llvm::StructType::create(context, vtable_fields, "saga.vtable." + key);
-  iface_vtable_types[key] = vtable_st;
-  iface_method_names[key] = std::move(method_names);
+  declare_vtable_type(key,
+                      std::get<InterfaceTypeInfo>(sem_type->detail).methods);
   named_sem_types[key] = sem_type;
 }
 

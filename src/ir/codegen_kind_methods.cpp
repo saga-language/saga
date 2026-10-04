@@ -67,9 +67,9 @@ llvm::Value *CodeGen::emit_opaque_kind_method_call(const CallExprNode &node,
     if (!callee)
       return nullptr;
 
-    std::vector<llvm::Value *> values;
-    auto *result =
-        emit_call(callee, obj, box_kind_method_args(node, m, values));
+    std::vector<StoredValue> values;
+    auto *result = emit_call(callee, obj,
+                             box_kind_method_args(node, m, obj_sem, values));
     auto *unboxed =
         result ? unbox_kind_method_result(result, m, obj_sem) : nullptr;
     release_kind_method_args(node, m, obj_sem, values);
@@ -112,38 +112,50 @@ llvm::Function *CodeGen::kind_method_callee(const MethodInfo &m,
                                   llvm_type(obj_sem)));
 }
 
-// A T parameter takes a pointer to the value, so every argument bound to one
-// is boxed, a pointer-shaped string or array included. A struct arrives as a
-// pointer to its slot, so it is the struct's bytes that are copied. `values`
-// keeps each T argument as it was before boxing, null for any other.
+// A T parameter takes a pointer to the value as the collection's slot would
+// hold it: a union wrapped, an interface boxed, a pointer-shaped string or
+// array behind an address of its own. `values` keeps each T argument for
+// settling once the call is done, with a null value for any other.
 std::vector<llvm::Value *>
 CodeGen::box_kind_method_args(const CallExprNode &node, const MethodInfo &m,
-                              std::vector<llvm::Value *> &values) {
+                              const TypePtr &obj_sem,
+                              std::vector<StoredValue> &values) {
   const FuncTypeInfo *fi = func_info(m);
   std::vector<llvm::Value *> args;
   for (size_t i = 0; i < node.args.size(); ++i) {
     auto param = fi && i < fi->params.size() ? fi->params[i] : nullptr;
     auto *val = emit_argument(*node.args[i], param, true);
     bool type_param = param && param->kind == TypeKind::TypeParam;
-    values.push_back(type_param ? val : nullptr);
-    if (!val) continue;
-    if (type_param)
-      val = box_for_type_param(val, operand_type(*node.args[i]));
-    args.push_back(val);
+    values.push_back(
+        type_param ? stored_value(val, operand_type(*node.args[i]),
+                                  kind_slot_type(obj_sem, param))
+                   : StoredValue{});
+    if (val)
+      args.push_back(type_param ? values.back().address : val);
   }
   return args;
 }
 
 // The runtime retains a T it keeps and leaves one it only reads, so an
-// argument made for the call is released afterwards either way.
-void CodeGen::release_kind_method_args(
-    const CallExprNode &node, const MethodInfo &m, const TypePtr &obj_sem,
-    const std::vector<llvm::Value *> &values) {
+// argument made for the call is released afterwards either way, and a box
+// made for it took over the argument.
+void CodeGen::release_kind_method_args(const CallExprNode &node,
+                                       const MethodInfo &m,
+                                       const TypePtr &obj_sem,
+                                       const std::vector<StoredValue> &values) {
   const FuncTypeInfo *fi = func_info(m);
-  for (size_t i = 0; fi && i < values.size() && i < fi->params.size(); ++i)
-    if (values[i])
-      release_handed_over(values[i], *node.args[i],
-                          kind_slot_type(obj_sem, fi->params[i]));
+  for (size_t i = 0; fi && i < values.size() && i < fi->params.size(); ++i) {
+    auto &v = values[i];
+    if (!v.val)
+      continue;
+    auto slot = kind_slot_type(obj_sem, fi->params[i]);
+    if (boxes_into(v.val_sem, slot)) {
+      retain_if_borrowed(v.val, unwrap_alias(v.val_sem), *node.args[i]);
+      emit_release(v.placed, unwrap_alias(slot));
+    } else {
+      release_handed_over(v.val, *node.args[i], slot);
+    }
+  }
 }
 
 // The element, key or value type a collection method's T, K or V stands for.
@@ -155,22 +167,6 @@ TypePtr CodeGen::kind_slot_type(const TypePtr &obj_sem, const TypePtr &param) {
   auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
   auto &tp = std::get<TypeParamInfo>(param->detail);
   return tp.param.id == 9991 ? map_info.key : map_info.value;
-}
-
-llvm::Value *CodeGen::box_for_type_param(llvm::Value *val,
-                                         const TypePtr &arg_sem) {
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
-  if (arg_sem && arg_sem->kind == TypeKind::Struct &&
-      val->getType()->isPointerTy()) {
-    auto *struct_ll = llvm_type(arg_sem);
-    auto *tmp = create_entry_alloca(parent_fn, "box.tmp", struct_ll);
-    builder.CreateMemCpy(tmp, align_of(struct_ll), val, align_of(struct_ll),
-                         size_of(struct_ll));
-    return tmp;
-  }
-  auto *tmp = create_entry_alloca(parent_fn, "box.tmp", val->getType());
-  builder.CreateStore(val, tmp);
-  return tmp;
 }
 
 // A T result comes back as the address of the runtime's slot for it; the

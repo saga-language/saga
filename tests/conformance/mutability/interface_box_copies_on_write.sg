@@ -1,0 +1,40 @@
+// Spec: "no name ever observes another's edit" (docs/language.md:63). Two
+// interface values may share one copy until a method that writes runs through
+// one of them; that one then gets a copy of its own. A method that only reads
+// shares the copy.
+import "std/io"
+
+interface Bumper {
+  Bump() void
+  Count() int
+}
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Bump() void { c.n = c.n + 1 }
+pub fn (c Counter) Count() int { c.n }
+
+struct Holder {
+  b Bumper
+}
+
+pub fn Main() void {
+  b Bumper = Counter{n: 10}
+  shared := b
+  shared.Bump()
+  io.Println("binding: {b.Count()} {shared.Count()}")
+
+  h := Holder{b: Counter{n: 20}}
+  copied := h
+  copied.b.Bump()
+  io.Println("field: {h.b.Count()} {copied.b.Count()}")
+
+  xs array{Bumper} = []
+  xs = xs.Append(Counter{n: 30})
+  ys := xs
+  ys[0] = Counter{n: 31}
+  first := xs[0] or { b }
+  io.Println("array: {first.Count()} {(ys[0] or { b }).Count()}")
+}

@@ -27,8 +27,9 @@ void CodeGen::seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
     return;
   }
 
-  retain_if_borrowed(val, sem, **acc.init);
-  val = coerce_to(val, root_expr_type(**acc.init), sem);
+  auto val_sem = root_expr_type(**acc.init);
+  retain_if_borrowed(val, unwrap_alias(val_sem), **acc.init);
+  val = coerce_to(val, val_sem, sem);
 
   if (val->getType()->isPointerTy() && ll->isStructTy())
     val = builder.CreateLoad(ll, val, "acc.seed");
