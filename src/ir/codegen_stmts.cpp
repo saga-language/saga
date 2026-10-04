@@ -344,6 +344,7 @@ void CodeGen::emit_destructure(const DestructureNode &node) {
 
   auto *base = spill_aggregate(value, "destructure.src");
   auto *func = builder.GetInsertBlock()->getParent();
+  bool borrowed = value_ownership(*node.value) == Ownership::Borrowed;
 
   for (auto &f : node.fields) {
     std::string name(std::get<IdentifierNode>(f.name->data).name);
@@ -360,6 +361,8 @@ void CodeGen::emit_destructure(const DestructureNode &node) {
       builder.CreateStore(builder.CreateLoad(field_ll, gep, name), slot);
     }
     locals[name] = slot;
+    if (borrowed)
+      retain_slot(slot, field_ll, semantic_type(*f.name));
     track_managed(slot, semantic_type(*f.name));
   }
 }

@@ -329,6 +329,8 @@ llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
   // Interpolated string — emit each part and concatenate.
   auto *concat_fn = module->getFunction("saga_string_concat");
   llvm::Value *result = nullptr;
+  const Node *sole_string = nullptr;
+  int parts = 0;
 
   for (auto &frag : node.fragments) {
     llvm::Value *part = nullptr;
@@ -343,10 +345,13 @@ llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
       auto *val = emit_expr(*frag);
       auto frag_sem = semantic_type(*frag);
       part = emit_to_string(val, frag_sem);
+      if (frag_sem && frag_sem->kind == TypeKind::String)
+        sole_string = frag.get();
     }
 
     if (!part)
       continue;
+    ++parts;
 
     if (!result) {
       result = part;
@@ -355,6 +360,9 @@ llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
     }
   }
 
+  // A lone string part is the result itself, not a copy of it.
+  if (parts == 1 && sole_string)
+    retain_if_borrowed(result, semantic_type(*sole_string), *sole_string);
   return result ? result : make_string_constant("");
 }
 

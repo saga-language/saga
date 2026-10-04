@@ -17,30 +17,33 @@ bool yields_value(const TypePtr &result) {
 }
 } // namespace
 
-BranchJoin CodeGen::open_join(const std::string &name,
-                              const TypePtr &result) {
+BranchJoin CodeGen::open_join(const std::string &name, const TypePtr &result,
+                              Ownership merged) {
   BranchJoin join;
   join.merge = llvm::BasicBlock::Create(context, name);
   join.result = yields_value(result) ? materialize_untyped(result) : nullptr;
+  join.merged = merged;
   return join;
 }
 
 // A branch that already returned or broke never reaches the merge.
 void CodeGen::close_branch(BranchJoin &join, llvm::Value *val,
-                           const TypePtr &val_sem) {
+                           const TypePtr &val_sem, Ownership own) {
   if (builder.GetInsertBlock()->getTerminator())
     return;
   join.reached = true;
   if (join.result)
     join.incoming.push_back(
-        {join_value(join, val, val_sem), builder.GetInsertBlock()});
+        {join_value(join, val, val_sem, own), builder.GetInsertBlock()});
   builder.CreateBr(join.merge);
 }
 
 llvm::Value *CodeGen::join_value(const BranchJoin &join, llvm::Value *val,
-                                 const TypePtr &val_sem) {
+                                 const TypePtr &val_sem, Ownership own) {
   if (!val || val->getType()->isVoidTy())
     return emit_zero_value(join.result);
+  if (join.merged == Ownership::Owned && own == Ownership::Borrowed)
+    emit_retain(val, unwrap_alias(val_sem));
   auto *placed = coerce_to(val, val_sem, join.result);
   if (llvm_type(join.result)->isStructTy())
     return spill_aggregate(placed, "join.spill");

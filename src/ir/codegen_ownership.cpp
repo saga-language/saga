@@ -124,6 +124,15 @@ void CodeGen::release_slot(llvm::Value *addr, llvm::Type *slot_ll,
     emit_release(builder.CreateLoad(slot_ll, addr), s);
 }
 
+void CodeGen::retain_slot(llvm::Value *addr, llvm::Type *slot_ll,
+                          const TypePtr &sem) {
+  auto s = unwrap_alias(sem);
+  if (owns_managed_fields(s))
+    emit_retain(addr, s);
+  else if (is_counted(s))
+    emit_retain(builder.CreateLoad(slot_ll, addr), s);
+}
+
 bool CodeGen::has_close_method(const StructTypeInfo &info) {
   for (auto &m : info.methods) {
     if (m.name != "Close" || !m.signature ||
@@ -145,23 +154,6 @@ void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_retain_map"), {val});
   else if (owns_managed_fields(sem))
     emit_ownership_walk(val, sem, true);
-}
-
-// A value read out of an existing binding is borrowed: the slot it came from
-// still owns it, so a second slot holding it needs a count of its own.
-// Everything else — a literal, a call, a copy-on-write method — hands back a
-// reference the runtime has already counted for this binding.
-bool CodeGen::is_borrowed_expr(const Node &node) {
-  if (auto *group = std::get_if<GroupExprNode>(&node.data))
-    return group->inner && is_borrowed_expr(*group->inner);
-  return std::holds_alternative<IdentifierNode>(node.data) ||
-         std::holds_alternative<SelectorNode>(node.data);
-}
-
-void CodeGen::retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
-                                 const Node &source) {
-  if (val && is_borrowed_expr(source))
-    emit_retain(val, sem);
 }
 
 // A write that lands through the binding, rather than through a value the

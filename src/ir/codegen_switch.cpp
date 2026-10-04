@@ -19,7 +19,8 @@ llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node,
   if (!subject)
     return nullptr;
 
-  auto join = open_join("sw.merge", semantic_type(parent));
+  auto join = open_join("sw.merge", semantic_type(parent),
+                        switch_ownership(node, parent));
   auto subject_sem = semantic_type(*node.subject);
   if (subject_sem && subject_sem->kind == TypeKind::Union)
     emit_type_switch(node, subject, subject_sem, join);
@@ -39,7 +40,7 @@ void CodeGen::emit_switch_arm(BranchJoin &join, const Node *body) {
     val = block ? emit_block(*block) : emit_expr(*body);
     sem = body_result_type(*body);
   }
-  close_branch(join, val, sem);
+  close_branch(join, val, sem, body_ownership(body, join.result));
 }
 
 // The analyzer holds a type switch with no else to covering every

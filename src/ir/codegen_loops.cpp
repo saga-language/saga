@@ -27,6 +27,7 @@ void CodeGen::seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
     return;
   }
 
+  retain_if_borrowed(val, sem, **acc.init);
   val = coerce_to(val, root_expr_type(**acc.init), sem);
 
   if (val->getType()->isPointerTy() && ll->isStructTy())

@@ -1,0 +1,21 @@
+// Destructuring a named struct binds copies of its fields, so the struct
+// keeps its own after every call that took it apart.
+import "std/io"
+
+struct User {
+  name string
+  age int
+}
+
+fn name_size(u User) int {
+  {name} := u
+  name.Size()
+}
+
+pub fn Main() void {
+  n := 7
+  u := User{name: "user{n}", age: 3}
+  total := 0
+  for _i : 0..3 { total += name_size(u) }
+  io.Println("{total} {u.name}")
+}

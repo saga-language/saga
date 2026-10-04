@@ -88,7 +88,8 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   auto *else_bb = llvm::BasicBlock::Create(context, "else");
   builder.CreateCondBr(cond, then_bb, else_bb);
 
-  auto join = open_join("merge", semantic_type(parent));
+  auto join = open_join("merge", semantic_type(parent),
+                        if_ownership(node, parent));
   auto narrowing = if_narrowing(node);
   builder.SetInsertPoint(then_bb);
   emit_if_branch(join, node.then_block.get(), narrowing);
@@ -102,7 +103,7 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
 void CodeGen::emit_if_branch(BranchJoin &join, const Node *body,
                              const std::optional<Narrowing> &narrowing) {
   if (!body) {
-    close_branch(join, nullptr, nullptr);
+    close_branch(join, nullptr, nullptr, zero_ownership(join.result));
     return;
   }
   auto *displaced = narrowing ? narrow_local(narrowing->name, narrowing->from,
@@ -112,7 +113,8 @@ void CodeGen::emit_if_branch(BranchJoin &join, const Node *body,
   auto *val = emit_block(block);
   if (displaced)
     locals[narrowing->name] = displaced;
-  close_branch(join, val, block_result_type(block));
+  close_branch(join, val, block_result_type(block),
+               body_ownership(body, join.result));
 }
 
 } // namespace saga

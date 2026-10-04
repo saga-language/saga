@@ -1,0 +1,17 @@
+// An accumulator seeded from a name holds a reference of its own, so the
+// name keeps its value however many loops start from it.
+import "std/io"
+
+fn joined(xs array{string}, start string) string {
+  for v : xs |acc string = start| { acc += v }
+}
+
+pub fn Main() void {
+  n := 7
+  start := "s{n}"
+  xs := ["a{n}", "b{n}"]
+  a := joined(xs, start)
+  b := joined(xs, start)
+  c := joined(xs, start)
+  io.Println("{a} {b} {c} {start}")
+}

@@ -1,0 +1,16 @@
+// A literal that interpolates one string and nothing else is a new string the
+// binding owns, not the one it names.
+import "std/io"
+
+fn echo_size(s string) int {
+  t := "{s}"
+  t.Size()
+}
+
+pub fn Main() void {
+  n := 7
+  s := "value{n}"
+  total := 0
+  for _i : 0..3 { total += echo_size(s) }
+  io.Println("{total} {s}")
+}

@@ -1,0 +1,43 @@
+// A conditional whose branches mix a name with a fresh value gives the named
+// branch a reference of its own, so the name keeps its value after every call.
+import "std/io"
+
+fn fail() string | error {
+  Missing{message: "no"}
+}
+
+fn through_or(name string) int {
+  s := fail() or { name }
+  s.Size()
+}
+
+fn through_if(c bool, name string) int {
+  s := if c { name } else { name.Upper() }
+  s.Size()
+}
+
+fn through_switch(k int, name string) int {
+  s := switch k {
+    case 1: name
+    else: name.Upper()
+  }
+  s.Size()
+}
+
+fn through_names(c bool, a string, b string) int {
+  s := if c { a } else { b }
+  s.Size()
+}
+
+pub fn Main() void {
+  n := 3
+  name := "name{n}"
+  other := "other{n}"
+  total := 0
+  for _i : 0..3 {
+    total += through_or(name) + through_if(true, name) + through_if(false, name)
+    total += through_switch(1, name) + through_switch(2, name)
+    total += through_names(true, name, other) + through_names(false, name, other)
+  }
+  io.Println("{total} {name} {other}")
+}

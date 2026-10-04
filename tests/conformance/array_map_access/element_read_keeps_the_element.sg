@@ -1,0 +1,56 @@
+// An element read out of an array or map is still the collection's: binding
+// it, returning it or storing it in a field takes a reference of its own, so
+// the collection's copy survives every call that read it.
+import "std/io"
+
+struct Label {
+  text string
+}
+
+fn indexed(xs array{string}) int {
+  s := xs[0] or { "" }
+  s.Size()
+}
+
+fn at(xs array{string}) int {
+  s := xs.At(1)
+  s.Size()
+}
+
+fn keyed(m map{string: string}) int {
+  v := m["a"] or { "" }
+  v.Size()
+}
+
+fn first(xs array{string}) string {
+  return xs[0] or { "" }
+}
+
+fn labelled(xs array{string}) Label {
+  Label{text: xs[1] or { "" }}
+}
+
+fn reassigned(xs array{string}) int {
+  s := "z"
+  s = xs[0] or { "" }
+  s.Size()
+}
+
+fn popped(xs array{string}) int {
+  v := xs.Pop()
+  v.Size()
+}
+
+pub fn Main() void {
+  n := 7
+  xs := ["a{n}", "bb{n}"]
+  m map{string: string} = {"a": "ccc{n}"}
+  total := 0
+  for _i : 0..3 {
+    total += indexed(xs) + at(xs) + keyed(m) + reassigned(xs) + popped(xs)
+    f := first(xs)
+    l := labelled(xs)
+    total += f.Size() + l.text.Size()
+  }
+  io.Println("{total} {xs[0] or { "" }} {xs.At(1)} {m["a"] or { "" }}")
+}

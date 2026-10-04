@@ -31,11 +31,16 @@ struct LoweredSig {
 const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
                                      const std::string &name);
 
+// An owned value carries a reference its consumer takes over; a borrowed one
+// is read out of storage that keeps its own.
+enum class Ownership { Owned, Borrowed };
+
 // A conditional's merge point. Every branch that reaches it hands over a value
-// already in the conditional's type.
+// already in the conditional's type, and an owned one when `merged` is owned.
 struct BranchJoin {
   llvm::BasicBlock *merge = nullptr;
   TypePtr result; // null when the conditional yields no value
+  Ownership merged = Ownership::Borrowed;
   bool reached = false;
   std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
 };
@@ -1177,9 +1182,14 @@ private:
   /// Emit retain call for a value based on its semantic type.
   void emit_retain(llvm::Value *val, const TypePtr &sem);
 
-  /// Whether the expression hands back a reference an existing slot still
-  /// owns, rather than one produced for this binding.
-  static bool is_borrowed_expr(const Node &node);
+  Ownership value_ownership(const Node &node);
+  Ownership call_ownership(const CallExprNode &call);
+  bool returns_stored_element(const CallExprNode &call);
+  Ownership body_ownership(const Node *body, const TypePtr &result);
+  Ownership zero_ownership(const TypePtr &result);
+  Ownership or_ownership(const OrExprNode &node);
+  Ownership if_ownership(const IfExprNode &node, const Node &parent);
+  Ownership switch_ownership(const SwitchExprNode &node, const Node &parent);
 
   /// Give `val` its own count when `source` only borrowed it, so the slot it
   /// is about to land in can release it like any other.
@@ -1187,10 +1197,12 @@ private:
                           const Node &source);
 
   // ── Conditional merges (codegen_join.cpp) ────────────────────────────
-  BranchJoin open_join(const std::string &name, const TypePtr &result);
-  void close_branch(BranchJoin &join, llvm::Value *val, const TypePtr &val_sem);
+  BranchJoin open_join(const std::string &name, const TypePtr &result,
+                       Ownership merged);
+  void close_branch(BranchJoin &join, llvm::Value *val, const TypePtr &val_sem,
+                    Ownership own);
   llvm::Value *join_value(const BranchJoin &join, llvm::Value *val,
-                          const TypePtr &val_sem);
+                          const TypePtr &val_sem, Ownership own);
   llvm::Value *finish_join(BranchJoin &join, const std::string &name);
   llvm::Value *emit_zero_value(const TypePtr &sem);
 
@@ -1224,6 +1236,7 @@ private:
                       llvm::Value *self, bool retain);
   void emit_slot_ownership(llvm::StructType *st, llvm::Value *self,
                            unsigned idx, const TypePtr &slot, bool retain);
+  void retain_slot(llvm::Value *addr, llvm::Type *slot_ll, const TypePtr &sem);
   void release_slot(llvm::Value *addr, llvm::Type *slot_ll,
                     const TypePtr &sem);
   std::string close_link_name(llvm::Type *struct_ll) const;
