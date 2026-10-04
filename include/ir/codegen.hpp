@@ -31,6 +31,15 @@ struct LoweredSig {
 const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
                                      const std::string &name);
 
+// A conditional's merge point. Every branch that reaches it hands over a value
+// already in the conditional's type.
+struct BranchJoin {
+  llvm::BasicBlock *merge = nullptr;
+  TypePtr result; // null when the conditional yields no value
+  bool reached = false;
+  std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
+};
+
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
 // ---------------------------------------------------------------------------
@@ -654,6 +663,22 @@ private:
   llvm::Function *get_or_declare_memcmp();
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
+  llvm::Value *as_condition(llvm::Value *val);
+  void start_block(llvm::BasicBlock *block);
+
+  /// A local an `is` test narrows for the length of one branch.
+  struct Narrowing {
+    std::string name;
+    TypePtr from;
+    TypePtr to;
+  };
+  std::optional<Narrowing> if_narrowing(const IfExprNode &node);
+  std::optional<Narrowing> else_narrowing(const std::optional<Narrowing> &then);
+  std::optional<Narrowing> arm_narrowing(const SwitchExprNode &node,
+                                         const CaseArmNode &arm,
+                                         const TypePtr &subject_sem);
+  void emit_if_branch(BranchJoin &join, const Node *body,
+                      const std::optional<Narrowing> &narrowing);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
   void seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
                         const TypePtr &sem, llvm::Type *ll);
@@ -719,6 +744,21 @@ private:
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node,
                                 const Node &parent);
+  void emit_switch_arm(BranchJoin &join, const Node *body);
+  void emit_type_switch(const SwitchExprNode &node, llvm::Value *subject,
+                        const TypePtr &subject_sem, BranchJoin &join);
+  void add_type_cases(llvm::SwitchInst *sw, const CaseArmNode &arm,
+                      const TypePtr &subject_sem, size_t arm_index,
+                      llvm::BasicBlock *case_bb);
+  void emit_string_switch(const SwitchExprNode &node, llvm::Value *subject,
+                          BranchJoin &join);
+  void branch_on_string_patterns(const CaseArmNode &arm, llvm::Value *subject,
+                                 size_t arm_index, llvm::BasicBlock *match,
+                                 llvm::BasicBlock *miss);
+  void emit_value_switch(const SwitchExprNode &node, llvm::Value *subject,
+                         BranchJoin &join);
+  llvm::ConstantInt *case_constant(llvm::Value *pattern, llvm::Type *subject_ll,
+                                   size_t arm_index);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node,
                                   const Node &parent);
   llvm::Value *emit_map_literal(const MapLiteralNode &node,
@@ -750,11 +790,12 @@ private:
                                                   const TypePtr &val_type,
                                                   const std::string &miss_msg);
   llvm::Value *emit_or_expr(const OrExprNode &node);
-
-  /// Bring an `or` handler's value to the union type the ok path produces,
-  /// wrapping a concrete value or remapping a narrower union.
-  llvm::Value *fallback_as_union(llvm::Value *val, const BlockNode &block,
-                                 const TypePtr &target);
+  bool or_has_handler(const OrExprNode &node) const;
+  TypePtr or_result_type(const OrExprNode &node) const;
+  llvm::Value *or_union_address(llvm::Value *val, const TypePtr &union_sem);
+  llvm::Value *is_error_tag(llvm::Value *tag, const TypePtr &union_sem);
+  void emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
+                       const TypePtr &union_sem, BranchJoin &join);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
 
@@ -1144,6 +1185,14 @@ private:
   /// is about to land in can release it like any other.
   void retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
                           const Node &source);
+
+  // ── Conditional merges (codegen_join.cpp) ────────────────────────────
+  BranchJoin open_join(const std::string &name, const TypePtr &result);
+  void close_branch(BranchJoin &join, llvm::Value *val, const TypePtr &val_sem);
+  llvm::Value *join_value(const BranchJoin &join, llvm::Value *val,
+                          const TypePtr &val_sem);
+  llvm::Value *finish_join(BranchJoin &join, const std::string &name);
+  llvm::Value *emit_zero_value(const TypePtr &sem);
 
   /// The receiver value for a method call, made unique first when the method
   /// writes through it.

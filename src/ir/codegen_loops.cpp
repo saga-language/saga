@@ -15,15 +15,6 @@ void tick_reduction(CodeGen &cg) {
                           {cg.current_actor});
 }
 
-llvm::Value *to_bool(llvm::IRBuilder<> &b, llvm::Value *v) {
-  if (!v)
-    return nullptr;
-  if (v->getType()->isIntegerTy(1))
-    return v;
-  return b.CreateICmpNE(v, llvm::Constant::getNullValue(v->getType()),
-                        "tobool");
-}
-
 } // namespace
 
 // An accumulator with no initializer starts at the zero value of its type,
@@ -161,7 +152,7 @@ void CodeGen::emit_for_c_style(const ForExprNode &node,
   builder.CreateBr(bbs.cond_bb);
 
   builder.SetInsertPoint(bbs.cond_bb);
-  auto *cond_val = to_bool(builder, emit_expr(*iter.condition));
+  auto *cond_val = as_condition(emit_expr(*iter.condition));
   if (cond_val)
     builder.CreateCondBr(cond_val, bbs.body_bb, bbs.exit_bb);
   else
@@ -187,7 +178,7 @@ void CodeGen::emit_for_condition(const ForExprNode &node, const Node &mode,
   builder.CreateBr(bbs.cond_bb);
 
   builder.SetInsertPoint(bbs.cond_bb);
-  auto *cond_val = to_bool(builder, emit_expr(mode));
+  auto *cond_val = as_condition(emit_expr(mode));
   if (cond_val)
     builder.CreateCondBr(cond_val, bbs.body_bb, bbs.exit_bb);
   else

@@ -1,0 +1,38 @@
+// Spec: the else clause is optional, and a case with no value yields the zero
+// value. A switch that leaves its else out yields the zero value when no case
+// matches, and the value of the case that does when one covers every member.
+import "std/io"
+
+enum Color {
+  Red
+  Green
+  Blue
+}
+
+fn name(c Color) string {
+  switch c {
+    case .Red: "red"
+    case .Green: "green"
+    case .Blue: "blue"
+  }
+}
+
+fn word(n int) string {
+  switch n {
+    case 1: "one"
+    case 2: "two"
+  }
+}
+
+fn rank(s string) int {
+  switch s {
+    case "a": 1
+    case "b": 2
+  }
+}
+
+pub fn Main() void {
+  io.Println(name(Color.Green))
+  io.Println("[{word(1)}] [{word(5)}]")
+  io.Println("{rank("b")} {rank("z")}")
+}

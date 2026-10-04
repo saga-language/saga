@@ -1,0 +1,26 @@
+// A branch can hand over a struct as a literal or by name; the if yields the
+// one that ran, whichever form each branch produced it in.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+fn literal_or_name(c bool, q Point) Point {
+  if c { Point{x: 1, y: 2} } else { q }
+}
+
+fn name_or_literal(c bool, q Point) Point {
+  p := if c { q } else { Point{x: 5, y: 6} }
+  p
+}
+
+pub fn Main() void {
+  q := Point{x: 3, y: 4}
+  a := literal_or_name(true, q)
+  b := literal_or_name(false, q)
+  c := name_or_literal(true, q)
+  d := name_or_literal(false, q)
+  io.Println("{a.x} {b.x} {c.x} {d.y}")
+}
