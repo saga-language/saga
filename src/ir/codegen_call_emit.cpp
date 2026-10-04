@@ -1,7 +1,8 @@
 // Copyright 2026 Rob Thornton
 // SPDX-License-Identifier: MIT
 
-// Emission of a call to a callee already resolved to an llvm::Function.
+// A call, once its arguments are lowered: the one place a call instruction to
+// a Saga function is built, so every call carries its callee's ABI.
 
 #include "ir/codegen.hpp"
 
@@ -9,22 +10,59 @@
 
 namespace saga {
 
+LoweredSig CodeGen::signature_of(llvm::Function *fn) {
+  LoweredSig sig;
+  sig.type = fn->getFunctionType();
+  if (fn->arg_size() > 0 &&
+      fn->hasParamAttribute(0, llvm::Attribute::StructRet))
+    sig.sret = fn->getParamStructRetType(0);
+  for (auto &arg : fn->args())
+    sig.byval.push_back(arg.getParamByValType());
+  return sig;
+}
+
+// `leading` is the receiver or closure environment, placed after any sret
+// slot. An aggregate result is handed back as the address of its slot.
+llvm::Value *CodeGen::emit_call(llvm::Value *callee, const LoweredSig &sig,
+                                llvm::Value *leading,
+                                const std::vector<llvm::Value *> &args) {
+  std::vector<llvm::Value *> ll_args;
+  llvm::Value *sret_slot = nullptr;
+  if (sig.sret) {
+    sret_slot = create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                    "sret.tmp", sig.sret);
+    ll_args.push_back(sret_slot);
+  }
+  if (leading)
+    ll_args.push_back(leading);
+  ll_args.insert(ll_args.end(), args.begin(), args.end());
+  for (unsigned i = sret_slot ? 1 : 0;
+       i < ll_args.size() && i < sig.type->getNumParams(); ++i)
+    ll_args[i] = as_param(ll_args[i], sig.type->getParamType(i));
+
+  auto *call = builder.CreateCall(sig.type, callee, ll_args);
+  stamp_abi(call, sig);
+  if (sret_slot)
+    return sret_slot;
+  if (sig.type->getReturnType()->isVoidTy())
+    return nullptr;
+  call->setName("call");
+  return call;
+}
+
+// A parameter that takes an aggregate by pointer needs an address, so a value
+// computed in registers is given a slot first.
+llvm::Value *CodeGen::as_param(llvm::Value *val, llvm::Type *param_ll) {
+  if (!param_ll->isPointerTy())
+    return val;
+  return spill_aggregate(val, "arg.spill");
+}
+
 llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
                                          const TypePtr &func_type,
                                          const CallExprNode &node) {
   auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
   std::vector<llvm::Value *> args;
-
-  // Sret lowering: if callee returns a struct via sret, alloca the
-  // result struct and pass as the hidden first argument.
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
-  llvm::Value *sret_slot = nullptr;
-  llvm::Type *sret_struct_ty = nullptr;
-  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
-    sret_struct_ty = callee->getParamStructRetType(0);
-    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
-    args.push_back(sret_slot);
-  }
 
   if (fn_info.is_variadic && !fn_info.params.empty()) {
     // Pack variadic arguments: non-variadic params are emitted normally,
@@ -58,120 +96,15 @@ llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
                        ? unwrap_alias(fn_info.params[i])
                        : nullptr;
       auto arg_sem = semantic_type(*node.args[i]);
-      val = coerce_to(val, arg_sem, param);
-      // Byval struct/union param: pass pointer to alloca, spill SSA values.
-      if (auto *p_ll = byval_param_type(param);
-          p_ll && val->getType()->isStructTy()) {
-        auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-        builder.CreateStore(val, tmp);
-        val = tmp;
-      }
-      args.push_back(val);
+      args.push_back(coerce_to(val, arg_sem, param));
     }
   }
-
-  auto *call = builder.CreateCall(callee, args,
-      callee->getReturnType()->isVoidTy() ? "" : "pkg.call");
-
-  // Mirror sret/byval attrs on the call site so LLVM lowers correctly.
-  unsigned idx = 0;
-  if (sret_slot) {
-    call->addParamAttr(idx,
-        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
-    call->addParamAttr(idx,
-        llvm::Attribute::getWithAlignment(context,
-            align_of(sret_struct_ty)));
-    ++idx;
-  }
-  for (size_t i = 0; i < fn_info.params.size(); ++i) {
-    if (auto *p_ll = byval_param_type(fn_info.params[i])) {
-      call->addParamAttr(idx,
-          llvm::Attribute::getWithByValType(context, p_ll));
-      call->addParamAttr(idx,
-          llvm::Attribute::getWithAlignment(context, align_of(p_ll)));
-    }
-    ++idx;
-  }
-
-  if (sret_slot)
-    return sret_slot;
-  if (callee->getReturnType()->isVoidTy())
-    return nullptr;
-  return call;
+  return emit_call(callee, nullptr, args);
 }
 
-llvm::Value *CodeGen::emit_receiver_call(
-    llvm::Function *callee, const TypePtr &recv_sem, llvm::Value *recv_value,
-    const std::vector<llvm::Value *> &arg_vals, const FuncTypeInfo *method_fi) {
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
-  std::vector<llvm::Value *> args;
-
-  llvm::Value *sret_slot = nullptr;
-  llvm::Type *sret_struct_ty = nullptr;
-  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
-    sret_struct_ty = callee->getParamStructRetType(0);
-    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
-    args.push_back(sret_slot);
-  }
-
-  llvm::Value *self = recv_value;
-  bool ptr_self = recv_sem && (recv_sem->kind == TypeKind::Struct ||
-                               recv_sem->kind == TypeKind::Alias);
-  if (ptr_self) {
-    auto *self_ll = llvm_type(recv_sem);
-    if (self_ll && self_ll->isStructTy() && self->getType() == self_ll) {
-      auto *tmp = create_entry_alloca(parent_fn, "self.tmp", self_ll);
-      builder.CreateStore(self, tmp);
-      self = tmp;
-    }
-  }
-  args.push_back(self);
-
-  auto is_byval_param = [&](size_t i) -> llvm::Type * {
-    if (!method_fi || i >= method_fi->params.size())
-      return nullptr;
-    return byval_param_type(method_fi->params[i]);
-  };
-
-  for (size_t i = 0; i < arg_vals.size(); ++i) {
-    auto *val = arg_vals[i];
-    if (!val)
-      continue;
-    if (auto *p_ll = is_byval_param(i);
-        p_ll && val->getType()->isStructTy()) {
-      auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-      builder.CreateStore(val, tmp);
-      val = tmp;
-    }
-    args.push_back(val);
-  }
-
-  std::string call_name = callee->getReturnType()->isVoidTy() ? "" : "mcall";
-  auto *call = builder.CreateCall(callee, args, call_name);
-
-  unsigned cidx = 0;
-  if (sret_slot) {
-    call->addParamAttr(cidx,
-        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
-    call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
-                                 context, align_of(sret_struct_ty)));
-    ++cidx;
-  }
-  ++cidx; // self
-  if (method_fi)
-    for (size_t i = 0; i < method_fi->params.size(); ++i, ++cidx)
-      if (auto *p_ll = is_byval_param(i)) {
-        call->addParamAttr(
-            cidx, llvm::Attribute::getWithByValType(context, p_ll));
-        call->addParamAttr(cidx, llvm::Attribute::getWithAlignment(
-                                     context, align_of(p_ll)));
-      }
-
-  if (sret_slot)
-    return sret_slot;
-  if (callee->getReturnType()->isVoidTy())
-    return nullptr;
-  return call;
+llvm::Value *CodeGen::emit_call(llvm::Function *callee, llvm::Value *leading,
+                                const std::vector<llvm::Value *> &args) {
+  return emit_call(callee, signature_of(callee), leading, args);
 }
 
 } // namespace saga

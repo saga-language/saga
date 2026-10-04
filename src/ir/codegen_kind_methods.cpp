@@ -51,16 +51,10 @@ llvm::Value *CodeGen::emit_kind_specialisation_call(llvm::Function *spec,
                                                     const CallExprNode &node,
                                                     llvm::Value *obj) {
   std::vector<llvm::Value *> args;
-  args.push_back(obj); // self
-  for (auto &arg_node : node.args) {
-    auto *val = emit_expr(*arg_node);
-    if (val) args.push_back(val);
-  }
-  if (spec->getReturnType()->isVoidTy()) {
-    builder.CreateCall(spec, args);
-    return nullptr;
-  }
-  return builder.CreateCall(spec, args, "kmcall.spec");
+  for (auto &arg_node : node.args)
+    if (auto *val = emit_expr(*arg_node))
+      args.push_back(val);
+  return emit_call(spec, obj, args);
 }
 
 llvm::Value *CodeGen::emit_opaque_kind_method_call(const CallExprNode &node,
@@ -77,14 +71,8 @@ llvm::Value *CodeGen::emit_opaque_kind_method_call(const CallExprNode &node,
     if (!callee)
       return nullptr;
 
-    std::vector<llvm::Value *> args = box_kind_method_args(node, m, callee);
-    args.insert(args.begin(), obj); // self
-    if (callee->getFunctionType()->getReturnType()->isVoidTy()) {
-      builder.CreateCall(callee, args);
-      return nullptr;
-    }
-    llvm::Value *result = builder.CreateCall(callee, args, "kmcall");
-    return unbox_kind_method_result(result, m, obj_sem);
+    auto *result = emit_call(callee, obj, box_kind_method_args(node, m, callee));
+    return result ? unbox_kind_method_result(result, m, obj_sem) : nullptr;
   }
   return nullptr;
 }

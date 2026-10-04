@@ -106,28 +106,10 @@ CodeGen::generic_function_specialisation(const CallExprNode &node,
 llvm::Value *CodeGen::emit_specialisation_call(llvm::Function *spec,
                                                const CallExprNode &node) {
   std::vector<llvm::Value *> args;
-  auto *ft = spec->getFunctionType();
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
-  for (auto &a : node.args) {
-    auto *v = emit_expr(*a);
-    if (!v) continue;
-    // A specialisation takes a struct by pointer. Ask its
-    // signature rather than re-deriving the rule here.
-    if (args.size() < ft->getNumParams() &&
-        ft->getParamType(args.size())->isPointerTy() &&
-        v->getType()->isStructTy()) {
-      auto *tmp = create_entry_alloca(parent_fn, "arg.spill",
-                                      v->getType());
-      builder.CreateStore(v, tmp);
-      v = tmp;
-    }
-    args.push_back(v);
-  }
-  if (spec->getReturnType()->isVoidTy()) {
-    builder.CreateCall(spec, args);
-    return nullptr;
-  }
-  return builder.CreateCall(spec, args, "gen.call");
+  for (auto &a : node.args)
+    if (auto *v = emit_expr(*a))
+      args.push_back(v);
+  return emit_call(spec, nullptr, args);
 }
 
 // A function-typed local or parameter: a closure value carries (fn, env) and
@@ -157,17 +139,13 @@ llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node,
     fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
   }
 
-  std::vector<llvm::Value *> args;
   std::vector<llvm::Type *> param_types;
-  if (is_closure) {
-    args.push_back(env_ptr);
+  if (is_closure)
     param_types.push_back(ptr_type);
-  }
-  for (auto &arg_node : node.args) {
-    auto *val = emit_expr(*arg_node);
-    if (val)
+  std::vector<llvm::Value *> args;
+  for (auto &arg_node : node.args)
+    if (auto *val = emit_expr(*arg_node))
       args.push_back(val);
-  }
 
   llvm::Type *ret_ll = void_ll_type;
   auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
@@ -176,12 +154,9 @@ llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node,
   if (fi.return_type)
     ret_ll = llvm_type(fi.return_type);
 
-  auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
-  if (ret_ll->isVoidTy()) {
-    builder.CreateCall(fn_type, fn_ptr, args);
-    return nullptr;
-  }
-  return builder.CreateCall(fn_type, fn_ptr, args, "fn.call");
+  LoweredSig sig;
+  sig.type = llvm::FunctionType::get(ret_ll, param_types, false);
+  return emit_call(fn_ptr, sig, env_ptr, args);
 }
 
 // Variadic arguments past the fixed ones are packed into a fresh array, unless
@@ -228,20 +203,7 @@ llvm::Value *CodeGen::pack_variadic_args(const CallExprNode &node,
 llvm::Value *CodeGen::emit_direct_call(llvm::Function *callee,
                                        const CallExprNode &node,
                                        bool callee_is_extern) {
-  std::vector<llvm::Value *> args;
-
-  // Sret lowering for direct dispatch.
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
-  llvm::Value *sret_slot = nullptr;
-  llvm::Type *sret_struct_ty = nullptr;
-  if (callee->arg_size() > 0 && callee->getArg(0)->hasStructRetAttr()) {
-    sret_struct_ty = callee->getParamStructRetType(0);
-    sret_slot = create_entry_alloca(parent_fn, "sret.tmp", sret_struct_ty);
-    args.push_back(sret_slot);
-  }
-
-  // Resolve the semantic param types so we can recognise struct args
-  // that need spilling for byval.
+  auto sig = signature_of(callee);
   auto callee_sem = unwrap_alias(semantic_type(*node.callee));
   const FuncTypeInfo *fi = nullptr;
   if (callee_sem && callee_sem->kind == TypeKind::Func)
@@ -250,6 +212,7 @@ llvm::Value *CodeGen::emit_direct_call(llvm::Function *callee,
   llvm::Value *variadic_packed = fi ? pack_variadic_args(node, *fi) : nullptr;
   size_t variadic_idx = fi && !fi->params.empty() ? fi->params.size() - 1 : 0;
 
+  std::vector<llvm::Value *> args;
   for (size_t i = 0; i < node.args.size(); ++i) {
     if (variadic_packed && i >= variadic_idx) {
       args.push_back(variadic_packed);
@@ -273,60 +236,24 @@ llvm::Value *CodeGen::emit_direct_call(llvm::Function *callee,
     auto param =
         fi && i < fi->params.size() ? unwrap_alias(fi->params[i]) : nullptr;
     val = coerce_to(val, arg_sem, param);
-    if (auto *p_ll = byval_param_type(param);
-        p_ll && val->getType()->isStructTy()) {
-      auto *tmp = create_entry_alloca(parent_fn, "arg.spill", p_ll);
-      builder.CreateStore(val, tmp);
-      val = tmp;
-    }
-    // Extern (C) callees: when the declared param is a pointer at the
-    // LLVM level (e.g. TypeParam → void*) and the Saga value is a scalar,
-    // spill it to a stack alloca and pass the pointer.  Polymorphic
-    // runtime functions like saga_array_builder_push take elements via void*.
-    if (callee_is_extern) {
-      size_t param_idx = sret_slot ? i + 1 : i;
-      if (param_idx < callee->getFunctionType()->getNumParams()) {
-        auto *expected = callee->getFunctionType()->getParamType(param_idx);
-        if (expected->isPointerTy() && !val->getType()->isPointerTy()) {
-          auto *tmp = create_entry_alloca(parent_fn, "extern.tmp",
-                                           val->getType());
-          builder.CreateStore(val, tmp);
-          val = tmp;
-        } else {
-          val = fit_extern_int(val, expected);
-        }
-      }
-    }
+    size_t param_idx = (sig.sret ? 1 : 0) + args.size();
+    if (callee_is_extern && param_idx < sig.type->getNumParams())
+      val = fit_extern_param(val, sig.type->getParamType(param_idx));
     args.push_back(val);
   }
+  return emit_call(callee, sig, nullptr, args);
+}
 
-  auto *call = builder.CreateCall(callee, args);
-
-  // Mirror sret/byval attrs on the call site.
-  unsigned cidx = 0;
-  if (sret_slot) {
-    call->addParamAttr(cidx,
-        llvm::Attribute::getWithStructRetType(context, sret_struct_ty));
-    call->addParamAttr(cidx,
-        llvm::Attribute::getWithAlignment(context,
-            align_of(sret_struct_ty)));
-    ++cidx;
-  }
-  if (fi) {
-    for (size_t i = 0; i < fi->params.size(); ++i) {
-      if (auto *p_ll = byval_param_type(fi->params[i])) {
-        call->addParamAttr(cidx,
-            llvm::Attribute::getWithByValType(context, p_ll));
-        call->addParamAttr(cidx,
-            llvm::Attribute::getWithAlignment(context, align_of(p_ll)));
-      }
-      ++cidx;
-    }
-  }
-
-  if (sret_slot)
-    return sret_slot;
-  return call;
+// A C callee whose parameter is a pointer where Saga has a scalar — a T the
+// runtime takes as void*, like saga_array_builder_push's element — is handed
+// the scalar's address.
+llvm::Value *CodeGen::fit_extern_param(llvm::Value *val, llvm::Type *expected) {
+  if (!expected->isPointerTy() || val->getType()->isPointerTy())
+    return fit_extern_int(val, expected);
+  auto *tmp = create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                  "extern.tmp", val->getType());
+  builder.CreateStore(val, tmp);
+  return tmp;
 }
 
 } // namespace saga

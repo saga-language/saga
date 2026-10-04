@@ -35,20 +35,11 @@ llvm::Value *CodeGen::emit_enum_user_method_call(const CallExprNode &node,
   auto *callee = module->getFunction(mangle(origin, info.name + "__" + method));
   if (!callee)
     return nullptr;
-  const FuncTypeInfo *m_fi = nullptr;
-  auto tm_it = analyzer.type_methods_.find(obj_sem.get());
-  if (tm_it != analyzer.type_methods_.end())
-    for (auto &m : tm_it->second)
-      if (m.name == method && m.signature &&
-          m.signature->kind == TypeKind::Func) {
-        m_fi = &std::get<FuncTypeInfo>(m.signature->detail);
-        break;
-      }
   std::vector<llvm::Value *> arg_vals;
   for (auto &arg_node : node.args)
     if (auto *val = emit_expr(*arg_node))
       arg_vals.push_back(val);
-  return emit_receiver_call(callee, obj_sem, obj, arg_vals, m_fi);
+  return emit_call(callee, obj, arg_vals);
 }
 
 llvm::Function *CodeGen::enum_string_fn(const TypePtr &enum_sem) {

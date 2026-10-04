@@ -46,7 +46,7 @@ llvm::Value *CodeGen::emit_scalar_method_call(const CallExprNode &node,
   for (auto &arg_node : node.args)
     if (auto *val = emit_expr(*arg_node))
       arg_vals.push_back(val);
-  return emit_receiver_call(callee, obj_sem, obj, arg_vals, m_fi);
+  return emit_call(callee, obj, arg_vals);
 }
 
 llvm::Function *CodeGen::resolve_member_method_callee(

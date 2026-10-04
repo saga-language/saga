@@ -90,16 +90,12 @@ CodeGen::emit_alias_method_call(const CallExprNode &node,
     auto *callee = module->getFunction(link_name);
     if (!callee)
       return std::nullopt;
-    const FuncTypeInfo *m_fi =
-        m.signature && m.signature->kind == TypeKind::Func
-            ? &std::get<FuncTypeInfo>(m.signature->detail)
-            : nullptr;
     auto *self = emit_expr(*sel.object);
     std::vector<llvm::Value *> arg_vals;
     for (auto &arg_node : node.args)
       if (auto *v = emit_expr(*arg_node))
         arg_vals.push_back(v);
-    return emit_receiver_call(callee, obj_sem, self, arg_vals, m_fi);
+    return emit_call(callee, self, arg_vals);
   }
   return std::nullopt;
 }

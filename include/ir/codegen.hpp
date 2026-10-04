@@ -596,6 +596,7 @@ private:
   /// Widen or narrow an integer argument to the width an extern callee was
   /// declared with. Saga's narrow integers are unsigned, so widening is zext.
   llvm::Value *fit_extern_int(llvm::Value *val, llvm::Type *expected);
+  llvm::Value *fit_extern_param(llvm::Value *val, llvm::Type *expected);
 
   llvm::Value *emit_identifier(const IdentifierNode &node,
                                const Node &parent);
@@ -838,22 +839,18 @@ private:
   llvm::Value *emit_type_method_call(const CallExprNode &node,
                                      const std::string &method,
                                      const TypePtr &obj_sem);
-  /// Lower args (sret, variadic, union-wrap, interface-box, byval) and emit
-  /// the call to an already-resolved free function. Shared by module and
+  /// A call to a module's or a type's function. Shared by module and
   /// type-method calls.
   llvm::Value *emit_resolved_call(llvm::Function *callee,
                                   const TypePtr &func_type,
                                   const CallExprNode &node);
-  /// Emit a receiver-method call `callee(self, args...)`. `recv_sem` selects
-  /// the self ABI — struct/alias receivers pass a pointer (an SSA struct
-  /// value is spilled to an alloca), scalar receivers pass the value. Handles
-  /// sret return slots and byval struct/union arg attrs (from `method_fi`).
-  /// Shared by the struct, intrinsic, and union-dispatch receiver paths.
-  llvm::Value *emit_receiver_call(llvm::Function *callee,
-                                  const TypePtr &recv_sem,
-                                  llvm::Value *recv_value,
-                                  const std::vector<llvm::Value *> &arg_vals,
-                                  const FuncTypeInfo *method_fi);
+  LoweredSig signature_of(llvm::Function *fn);
+  llvm::Value *emit_call(llvm::Value *callee, const LoweredSig &sig,
+                         llvm::Value *leading,
+                         const std::vector<llvm::Value *> &args);
+  llvm::Value *emit_call(llvm::Function *callee, llvm::Value *leading,
+                         const std::vector<llvm::Value *> &args);
+  llvm::Value *as_param(llvm::Value *val, llvm::Type *param_ll);
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,
@@ -861,7 +858,7 @@ private:
                                        llvm::Value *obj);
   /// Dispatch a method call on a union receiver without narrowing: switch on
   /// the union tag and, per member, extract the payload and call that
-  /// member's `method` (via emit_receiver_call), PHI-ing the common result.
+  /// member's `method` (via emit_call), PHI-ing the common result.
   /// The analyzer has already verified every member satisfies a shared
   /// interface declaring `method`.
   llvm::Value *emit_union_method_dispatch(const CallExprNode &node,

@@ -135,17 +135,7 @@ llvm::Constant *CodeGen::get_or_emit_key_ops(const TypePtr &key_type) {
     llvm::Value *a = equals_thunk->getArg(0);
     llvm::Value *b = equals_thunk->getArg(1);
     auto *raw = tb.CreateCall(user_equals, {a, b});
-    // Mirror byval on the call site — the user's `Equals` declares its
-    // `other` parameter as a byval struct, and direct calls in LLVM still
-    // require the attribute on the call as well as on the function decl.
-    llvm::Type *struct_ty = llvm_type(u);
-    if (struct_ty && struct_ty->isStructTy()) {
-      raw->addParamAttr(1,
-          llvm::Attribute::getWithByValType(context, struct_ty));
-      raw->addParamAttr(1,
-          llvm::Attribute::getWithAlignment(context,
-              align_of(struct_ty)));
-    }
+    stamp_abi(raw, signature_of(user_equals));
     llvm::Value *as_i32;
     if (raw->getType()->isIntegerTy(1))
       as_i32 = tb.CreateZExt(raw, i32_ty);

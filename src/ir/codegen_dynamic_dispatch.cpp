@@ -55,7 +55,7 @@ llvm::Value *CodeGen::emit_union_method_dispatch(const CallExprNode &node,
     const FuncTypeInfo *m_fi = nullptr;
     auto *callee = resolve_member_method_callee(alt, method, &m_fi);
     llvm::Value *result =
-        callee ? emit_receiver_call(callee, alt, recv, arg_vals, m_fi)
+        callee ? emit_call(callee, recv, arg_vals)
                : nullptr;
 
     bool terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
@@ -151,10 +151,7 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
 
   std::vector<llvm::Type *> param_ll_types;
   param_ll_types.push_back(ptr_type); // self
-
   std::vector<llvm::Value *> args;
-  args.push_back(data_ptr);
-
   for (auto &arg_node : node.args) {
     auto *val = emit_expr(*arg_node);
     if (val) {
@@ -173,13 +170,9 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
     }
   }
 
-  auto *fn_type = llvm::FunctionType::get(ret_ll, param_ll_types, false);
-
-  if (ret_ll->isVoidTy()) {
-    builder.CreateCall(fn_type, fn_ptr, args);
-    return nullptr;
-  }
-  return builder.CreateCall(fn_type, fn_ptr, args, "iface.call");
+  LoweredSig sig;
+  sig.type = llvm::FunctionType::get(ret_ll, param_ll_types, false);
+  return emit_call(fn_ptr, sig, data_ptr, args);
 }
 
 } // namespace saga

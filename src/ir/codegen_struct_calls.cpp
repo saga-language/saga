@@ -48,18 +48,14 @@ CodeGen::emit_field_function_call(const CallExprNode &node,
     auto &fi = std::get<FuncTypeInfo>(fld.type->detail);
     for (auto &pt : fi.params)
       param_types.push_back(llvm_type(pt));
-    for (auto &arg_node : node.args) {
-      auto *val = emit_expr(*arg_node);
-      if (val) args.push_back(val);
-    }
+    for (auto &arg_node : node.args)
+      if (auto *val = emit_expr(*arg_node))
+        args.push_back(val);
     llvm::Type *ret_ll =
         !fi.return_type ? void_ll_type : llvm_type(fi.return_type);
-    auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
-    if (ret_ll->isVoidTy()) {
-      builder.CreateCall(fn_type, fn_ptr, args);
-      return nullptr;
-    }
-    return builder.CreateCall(fn_type, fn_ptr, args, "field.call");
+    LoweredSig sig;
+    sig.type = llvm::FunctionType::get(ret_ll, param_types, false);
+    return emit_call(fn_ptr, sig, nullptr, args);
   }
   return std::nullopt;
 }
@@ -150,26 +146,16 @@ llvm::Value *CodeGen::emit_generic_method_call(llvm::Function *spec,
                                                const CallExprNode &node,
                                                const SelectorNode &sel,
                                                llvm::Value *obj) {
+  llvm::Value *self = obj;
+  if (auto *id = std::get_if<IdentifierNode>(&sel.object->data))
+    if (auto local_it = locals.find(std::string(id->name));
+        local_it != locals.end())
+      self = local_it->second;
   std::vector<llvm::Value *> args;
-  // self pointer
-  if (auto *id = std::get_if<IdentifierNode>(&sel.object->data)) {
-    auto local_it = locals.find(std::string(id->name));
-    if (local_it != locals.end())
-      args.push_back(local_it->second);
-    else
-      args.push_back(obj);
-  } else {
-    args.push_back(obj);
-  }
-  for (auto &a : node.args) {
-    auto *v = emit_expr(*a);
-    if (v) args.push_back(v);
-  }
-  if (spec->getReturnType()->isVoidTy()) {
-    builder.CreateCall(spec, args);
-    return nullptr;
-  }
-  return builder.CreateCall(spec, args, "gen.mcall");
+  for (auto &a : node.args)
+    if (auto *v = emit_expr(*a))
+      args.push_back(v);
+  return emit_call(spec, self, args);
 }
 
 llvm::Value *CodeGen::emit_declared_method_call(const CallExprNode &node,
@@ -201,21 +187,12 @@ llvm::Value *CodeGen::emit_declared_method_call(const CallExprNode &node,
     }
   }
 
-  const FuncTypeInfo *m_fi = nullptr;
-  for (auto &m : info.methods) {
-    if (m.name == method && m.signature &&
-        m.signature->kind == TypeKind::Func) {
-      m_fi = &std::get<FuncTypeInfo>(m.signature->detail);
-      break;
-    }
-  }
-
   std::vector<llvm::Value *> arg_vals;
   for (auto &arg_node : node.args) {
     if (auto *val = emit_expr(*arg_node))
       arg_vals.push_back(val);
   }
-  return emit_receiver_call(callee, obj_sem, self_ptr, arg_vals, m_fi);
+  return emit_call(callee, self_ptr, arg_vals);
 }
 
 llvm::Function *CodeGen::struct_method_callee(const StructTypeInfo &info,

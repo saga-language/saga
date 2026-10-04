@@ -617,7 +617,7 @@ llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
 
   return finish_operator_result(
       node, method,
-      emit_receiver_call(callee, lhs_sem, self, {rhs_val}, method_fi));
+      emit_call(callee, self, {rhs_val}));
 }
 
 llvm::Value *CodeGen::emit_float_pow(llvm::Value *base, llvm::Value *exp) {
