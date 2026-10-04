@@ -96,20 +96,13 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
   if (!func)
     return; // Should have been forward-declared.
 
-  std::vector<llvm::Type *> param_ll;
-  for (auto &arg : func->args())
-    if (!arg.hasStructRetAttr())
-      param_ll.push_back(arg.hasByValAttr() ? arg.getParamByValType()
-                                            : arg.getType());
-
   return_sems_[func] =
       is_main ? nullptr : declared_return_sem(fn.signature.return_type);
-  emit_function_body_inner(fn, func, param_ll, is_main);
+  emit_function_body_inner(fn, func, is_main);
 }
 
-void CodeGen::emit_function_body_inner(
-    const FuncDeclNode &fn, llvm::Function *func,
-    const std::vector<llvm::Type *> &param_ll, bool is_main) {
+void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
+                                       llvm::Function *func, bool is_main) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
 
@@ -124,45 +117,16 @@ void CodeGen::emit_function_body_inner(
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
-  // Skip the hidden sret arg if present. The function is the authority, not
-  // the annotation: a specialisation's return type comes from its bindings,
-  // which re-resolving `fn`'s declared return type cannot see.
-  size_t arg_idx = 0;
-  if (!is_main && func->arg_size() > 0 &&
-      func->hasParamAttribute(0, llvm::Attribute::StructRet))
-    ++arg_idx;
+  bind_params(func, first_param_index(func, false), fn.signature);
 
-  // Create allocas for parameters and store the incoming argument values.
-  // param_ll has one entry per flattened parameter name so variadic /
-  // multi-name params are already expanded.
-  //
   // An array parameter is a binding, so its slot owns a reference the caller
-  // took for it (emit_call_expr) and this frame gives back on the way out.
-  size_t ll_idx = 0;
+  // took for it (emit_direct_call) and this frame gives back on the way out.
   for (auto &param : fn.signature.params) {
     auto param_sem = lookup_sem_type(*param.type);
-    for (auto &ident : param.names.identifiers) {
-      auto *ll_type = ll_idx < param_ll.size()
-                          ? param_ll[ll_idx]
-                          : llvm::PointerType::getUnqual(context);
-      std::string pname(ident.name);
-      auto *arg = func->getArg(arg_idx++);
-      auto *alloca = create_entry_alloca(func, pname, ll_type);
-      if (ll_type && ll_type->isStructTy()) {
-        // Byval struct param: arg is a `ptr` to a stable caller-provided
-        // copy.  Memcpy its bytes into the local alloca so subsequent
-        // mutations stay local to this frame.
-        auto sz = size_of(ll_type);
-        auto al = align_of(ll_type);
-        builder.CreateMemCpy(alloca, al, arg, al, sz);
-      } else {
-        builder.CreateStore(arg, alloca);
-      }
-      locals[pname] = alloca;
-      if (param_sem && param_sem->kind == TypeKind::Array)
-        track_managed(alloca, param_sem);
-      ++ll_idx;
-    }
+    if (!param_sem || param_sem->kind != TypeKind::Array)
+      continue;
+    for (auto &ident : param.names.identifiers)
+      track_managed(locals[std::string(ident.name)], param_sem);
   }
 
   // Emit body.
@@ -176,6 +140,32 @@ void CodeGen::emit_function_body_inner(
       emit_fallthrough_return(block, tail_val);
   }
 
+  verify_function(*func);
+}
+
+// A struct receiver holds the caller's address, not a copy of it: there is no
+// second spelling to choose between, so a method that writes a field has to
+// reach the value the caller named. `struct_slot_address` loads a slot that
+// holds a pointer, which is what makes the reads work unchanged. Any other
+// receiver arrives as its value.
+void CodeGen::emit_receiver_method_body(const FuncDeclNode &fn,
+                                        llvm::Function *func) {
+  auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+  builder.SetInsertPoint(entry);
+  locals.clear();
+  managed_locals.clear();
+  current_func_is_main = false;
+
+  unsigned self_idx = first_param_index(func, false);
+  std::string recv_name(fn.receiver->name.name);
+  auto *self = func->getArg(self_idx);
+  locals[recv_name] = bind_value_slot(func, recv_name, self, self->getType());
+  bind_params(func, self_idx + 1, fn.signature);
+
+  auto &block = std::get<BlockNode>(fn.body->data);
+  auto *tail_val = emit_block(block);
+  if (!builder.GetInsertBlock()->getTerminator())
+    emit_fallthrough_return(block, tail_val);
   verify_function(*func);
 }
 

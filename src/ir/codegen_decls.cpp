@@ -528,43 +528,8 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
     if (!func || !func->empty())
       continue;
 
-    auto *entry = llvm::BasicBlock::Create(context, "entry", func);
-    builder.SetInsertPoint(entry);
-
-    locals.clear();
-    managed_locals.clear();
-    current_func_is_main = false;
     return_sems_[func] = declared_return_sem(fn->signature.return_type);
-
-    size_t arg_idx =
-        func->hasParamAttribute(0, llvm::Attribute::StructRet) ? 1 : 0;
-
-    // A struct receiver holds the caller's address, not a copy of it: there is
-    // no second spelling to choose between, so a method that writes a field has
-    // to reach the value the caller named. `struct_slot_address` loads a slot
-    // that holds a pointer, which is what makes the reads work unchanged.
-    std::string recv_name(fn->receiver->name.name);
-    auto *self_arg = func->getArg(arg_idx++);
-    locals[recv_name] =
-        bind_value_slot(func, recv_name, self_arg, self_arg->getType());
-
-    for (auto &param : fn->signature.params) {
-      auto *ll_type = resolve_type_node(*param.type);
-      for (auto &ident : param.names.identifiers) {
-        std::string pname(ident.name);
-        locals[pname] =
-            bind_value_slot(func, pname, func->getArg(arg_idx++), ll_type);
-      }
-    }
-
-    // Emit body.
-    auto &block = std::get<BlockNode>(fn->body->data);
-    auto *tail_val = emit_block(block);
-
-    if (!builder.GetInsertBlock()->getTerminator())
-      emit_fallthrough_return(block, tail_val);
-
-    verify_function(*func);
+    emit_receiver_method_body(*fn, func);
   }
 }
 
@@ -590,19 +555,6 @@ static std::string intrinsic_receiver_type_name(const Node &type_node) {
   return {};
 }
 
-/// Collect generic type parameter names from a FuncDeclNode.
-static std::unordered_set<std::string>
-collect_generic_names(const FuncDeclNode &fn) {
-  std::unordered_set<std::string> names;
-  if (fn.generic) {
-    for (auto &tp : fn.generic->type_params) {
-      if (auto opt_name = type_param_name(*tp))
-        names.insert(std::string(*opt_name));
-    }
-  }
-  return names;
-}
-
 void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
   for (auto &decl : src.declarations) {
     auto *fn = std::get_if<FuncDeclNode>(&decl->data);
@@ -625,42 +577,8 @@ void CodeGen::declare_intrinsic_methods(const SourceNode &src) {
     if (module->getFunction(link_name))
       continue;
 
-    // Collect generic type param names so we can map them to opaque ptr.
-    auto gnames = collect_generic_names(*fn);
-    auto resolve_or_ptr = [&](const Node &type_node) -> llvm::Type * {
-      if (auto *id = std::get_if<IdentifierNode>(&type_node.data)) {
-        if (gnames.count(std::string(id->name)))
-          return llvm::PointerType::getUnqual(context);
-      }
-      return resolve_type_node(type_node);
-    };
-
-    // Build function type: first param is the value type of self.
-    auto *self_type = resolve_or_ptr(*fn->receiver->type);
-    std::vector<llvm::Type *> param_types;
-    param_types.push_back(self_type);
-
-    for (auto &param : fn->signature.params) {
-      auto *ll = resolve_or_ptr(*param.type);
-      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-        param_types.push_back(ll);
-    }
-
-    llvm::Type *ret_type = void_ll_type;
-    if (fn->signature.return_type)
-      ret_type = resolve_or_ptr(*fn->signature.return_type);
-
-    auto *fn_type = llvm::FunctionType::get(ret_type, param_types, false);
-    auto *func = llvm::Function::Create(
-        fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
-
-    func->getArg(0)->setName(std::string(fn->receiver->name.name));
-    size_t arg_idx = 1;
-    for (auto &param : fn->signature.params)
-      for (auto &ident : param.names.identifiers)
-        if (arg_idx < func->arg_size())
-          func->getArg(arg_idx++)->setName(std::string(ident.name));
-
+    auto sig = lower_signature(decl_signature(*fn), receiver_param_type(*fn));
+    name_params(declare_function(link_name, sig), sig, *fn);
     intrinsic_method_links[type_name].push_back({link_name, method_name});
   }
 }
@@ -687,51 +605,8 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
     if (!func || !func->empty())
       continue;
 
-    auto *entry = llvm::BasicBlock::Create(context, "entry", func);
-    builder.SetInsertPoint(entry);
-
-    locals.clear();
-    managed_locals.clear();
-    current_func_is_main = false;
     return_sems_[func] = declared_return_sem(fn->signature.return_type);
-
-    // Collect generic param names for type resolution.
-    auto gnames = collect_generic_names(*fn);
-    auto resolve_or_ptr = [&](const Node &type_node) -> llvm::Type * {
-      if (auto *id = std::get_if<IdentifierNode>(&type_node.data)) {
-        if (gnames.count(std::string(id->name)))
-          return llvm::PointerType::getUnqual(context);
-      }
-      return resolve_type_node(type_node);
-    };
-
-    // Receiver parameter — self is a value, not a pointer to a struct.
-    std::string recv_name(fn->receiver->name.name);
-    auto *self_type = func->getArg(0)->getType();
-    auto *recv_alloca = create_entry_alloca(func, recv_name, self_type);
-    builder.CreateStore(func->getArg(0), recv_alloca);
-    locals[recv_name] = recv_alloca;
-
-    // Regular parameters.
-    size_t arg_idx = 1;
-    for (auto &param : fn->signature.params) {
-      auto *ll_type = resolve_or_ptr(*param.type);
-      for (auto &ident : param.names.identifiers) {
-        std::string pname(ident.name);
-        auto *alloca = create_entry_alloca(func, pname, ll_type);
-        builder.CreateStore(func->getArg(arg_idx++), alloca);
-        locals[pname] = alloca;
-      }
-    }
-
-    // Emit body.
-    auto &block = std::get<BlockNode>(fn->body->data);
-    auto *tail_val = emit_block(block);
-
-    if (!builder.GetInsertBlock()->getTerminator())
-      emit_fallthrough_return(block, tail_val);
-
-    verify_function(*func);
+    emit_receiver_method_body(*fn, func);
   }
 }
 

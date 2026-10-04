@@ -183,146 +183,24 @@ llvm::Function *CodeGen::emit_specialisation(
   if (inst && inst->failed)
     return nullptr;
 
-  // Concrete signature from bindings.  Struct and interface params are
-  // pointers in LLVM function signatures (matching resolve_type_node).
   auto concrete = substitute(generic_fn_type, bindings);
   auto &fi = std::get<FuncTypeInfo>(concrete->detail);
 
-  auto *ptr_ty = llvm::PointerType::getUnqual(context);
-
-  // Same parameter ABI as a declared function: whatever still lowers to an
-  // LLVM struct — a union — arrives by pointer with `byval`, and the body
-  // copies it into its own frame. `param_ll` is what the body binds, `sig_ll`
-  // what the signature declares; they differ exactly there.
-  std::vector<llvm::Type *> param_ll;
-  std::vector<llvm::Type *> sig_ll;
-  std::vector<llvm::Type *> byval_ll;
-  auto add_param = [&](const TypePtr &pt) {
-    auto *slot = pt && pt->kind == TypeKind::Struct ? ptr_ty : llvm_type(pt);
-    if (!slot)
-      return false;
-    bool indirect = slot->isStructTy();
-    param_ll.push_back(slot);
-    sig_ll.push_back(indirect ? ptr_ty : slot);
-    byval_ll.push_back(indirect ? slot : nullptr);
-    return true;
-  };
-
+  // Declared like any function; a receiver leads as the struct's address.
   bool has_receiver = fn.receiver.has_value();
-  std::string recv_struct_name;
-  if (has_receiver) {
-    param_ll.push_back(ptr_ty);
-    sig_ll.push_back(ptr_ty);
-    byval_ll.push_back(nullptr);
-    if (auto *ri = std::get_if<IdentifierNode>(&fn.receiver->type->data))
-      recv_struct_name = std::string(ri->name);
-  }
-  for (auto &pt : fi.params)
-    if (!add_param(pt))
-      return nullptr;
-
-  llvm::Type *ret_ll = void_ll_type;
-  if (fi.return_type) {
-    ret_ll = fi.return_type->kind == TypeKind::Struct ? ptr_ty
-                                                     : llvm_type(fi.return_type);
-    if (!ret_ll) return nullptr;
-  }
-
-  auto *ft = llvm::FunctionType::get(ret_ll, sig_ll, /*isVarArg=*/false);
-  auto *func = llvm::Function::Create(
-      ft, llvm::Function::LinkOnceODRLinkage, mangled, module.get());
-  for (size_t i = 0; i < byval_ll.size(); ++i) {
-    if (!byval_ll[i])
-      continue;
-    llvm::AttrBuilder ab(context);
-    ab.addByValAttr(byval_ll[i]);
-    ab.addAlignmentAttr(align_of(byval_ll[i]));
-    func->addParamAttrs(i, ab);
-  }
-
-  // Name the arguments for IR readability.
-  size_t arg_idx = 0;
-  if (has_receiver) {
-    func->getArg(arg_idx++)->setName(
-        std::string(fn.receiver->name.name));
-  }
-  for (auto &param : fn.signature.params) {
-    for (auto &ident : param.names.identifiers) {
-      if (arg_idx < func->arg_size())
-        func->getArg(arg_idx++)->setName(std::string(ident.name));
-    }
-  }
-
+  auto *ptr_ty = llvm::PointerType::getUnqual(context);
+  auto sig = lower_signature(fi, has_receiver ? ptr_ty : nullptr);
+  auto *func = declare_function(mangled, sig,
+                                llvm::Function::LinkOnceODRLinkage);
+  name_params(func, sig, fn);
   return_sems_[func] = fi.return_type;
 
-  // Emit the body under a fresh per-function scope.
-  {
-    FuncEmissionScope guard(*this);
-    current_instantiation_ = inst;
-
-    if (has_receiver) {
-      // Receiver method: set up self, struct fields, and params manually
-      // (emit_function_body_inner doesn't handle receivers).
-      auto *entry = llvm::BasicBlock::Create(context, "entry", func);
-      builder.SetInsertPoint(entry);
-      locals.clear();
-      managed_locals.clear();
-      current_func_is_main = false;
-
-      // Self parameter.
-      std::string recv_name(fn.receiver->name.name);
-      auto *self_alloca = create_entry_alloca(
-          func, recv_name, llvm::PointerType::getUnqual(context));
-      builder.CreateStore(func->getArg(0), self_alloca);
-      locals[recv_name] = self_alloca;
-
-      // Inject struct fields as locals.
-      if (!recv_struct_name.empty()) {
-        std::string recv_key = mangle(package_name, recv_struct_name);
-        auto st_it = struct_types.find(recv_key);
-        if (st_it != struct_types.end()) {
-          auto *st = st_it->second;
-          auto &fields = struct_fields[recv_key];
-          auto *self_ptr = builder.CreateLoad(
-              llvm::PointerType::getUnqual(context), self_alloca, "self.ptr");
-          for (size_t fi2 = 0; fi2 < fields.size(); ++fi2) {
-            auto *ftype = st->getElementType(fi2);
-            auto *gep = builder.CreateStructGEP(
-                st, self_ptr, fi2, fields[fi2]);
-            auto *val = builder.CreateLoad(
-                ftype, gep, fields[fi2] + ".val");
-            auto *field_alloca = create_entry_alloca(
-                func, fields[fi2], ftype);
-            builder.CreateStore(val, field_alloca);
-            locals[fields[fi2]] = field_alloca;
-          }
-        }
-      }
-
-      // Regular parameters (with concrete types from substitution).
-      size_t pidx = 1; // skip self
-      size_t ll_idx = 1;
-      for (auto &param : fn.signature.params) {
-        for (auto &ident : param.names.identifiers) {
-          auto *ll_type =
-              ll_idx < param_ll.size() ? param_ll[ll_idx] : ptr_ty;
-          std::string pname(ident.name);
-          locals[pname] = bind_value_slot(func, pname, func->getArg(pidx++),
-                                          ll_type);
-          ++ll_idx;
-        }
-      }
-
-      // Emit body.
-      auto &block = std::get<BlockNode>(fn.body->data);
-      auto *tail_val = emit_block(block);
-
-      if (!builder.GetInsertBlock()->getTerminator())
-        emit_fallthrough_return(block, tail_val);
-    } else {
-      emit_function_body_inner(fn, func, param_ll, /*is_main=*/false);
-    }
-  }
+  FuncEmissionScope guard(*this);
+  current_instantiation_ = inst;
+  if (has_receiver)
+    emit_receiver_method_body(fn, func);
+  else
+    emit_function_body_inner(fn, func, /*is_main=*/false);
   return func;
 }
 

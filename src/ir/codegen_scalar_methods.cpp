@@ -56,19 +56,6 @@ llvm::Function *CodeGen::resolve_member_method_callee(
   if (!member_sem)
     return nullptr;
 
-  auto declare = [&](const std::string &link, llvm::Type *self_ll,
-                     const FuncTypeInfo &fi) -> llvm::Function * {
-    std::vector<llvm::Type *> params;
-    params.push_back(self_ll);
-    for (auto &p : fi.params)
-      params.push_back(llvm_type(p));
-    llvm::Type *ret =
-        fi.return_type ? llvm_type(fi.return_type) : void_ll_type;
-    auto *ft = llvm::FunctionType::get(ret, params, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, link,
-                                  module.get());
-  };
-
   if (member_sem->kind == TypeKind::Struct) {
     auto &info = std::get<StructTypeInfo>(member_sem->detail);
     for (auto &m : info.methods) {
@@ -133,7 +120,7 @@ llvm::Function *CodeGen::resolve_member_method_callee(
     std::string cross = mangle(pkg, tn + "__" + method);
     if (auto *fn = module->getFunction(cross))
       return fn;
-    return declare(cross, llvm_type(member_sem), fi);
+    return declare_function(cross, lower_signature(fi, llvm_type(member_sem)));
   }
   return nullptr;
 }

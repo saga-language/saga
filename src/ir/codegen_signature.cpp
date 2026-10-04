@@ -88,15 +88,43 @@ llvm::Type *CodeGen::receiver_param_type(const FuncDeclNode &fn) {
 
 void CodeGen::name_params(llvm::Function *fn, const LoweredSig &sig,
                           const FuncDeclNode &decl) {
+  name_params(fn, sig, decl.signature,
+              decl.receiver ? decl.receiver->name.name : std::string_view{});
+}
+
+void CodeGen::name_params(llvm::Function *fn, const LoweredSig &sig,
+                          const SignatureNode &params,
+                          std::string_view leading) {
   unsigned idx = 0;
   if (sig.sret)
     fn->getArg(idx++)->setName("sret.out");
-  if (decl.receiver)
-    fn->getArg(idx++)->setName(std::string(decl.receiver->name.name));
-  for (auto &param : decl.signature.params)
+  if (!leading.empty())
+    fn->getArg(idx++)->setName(std::string(leading));
+  for (auto &param : params.params)
     for (auto &ident : param.names.identifiers)
       if (idx < fn->arg_size())
         fn->getArg(idx++)->setName(std::string(ident.name));
+}
+
+unsigned CodeGen::first_param_index(llvm::Function *fn, bool has_leading) {
+  bool sret = fn->arg_size() > 0 &&
+              fn->hasParamAttribute(0, llvm::Attribute::StructRet);
+  return (sret ? 1 : 0) + (has_leading ? 1 : 0);
+}
+
+// A byval aggregate arrives as a pointer to a copy made for the call and is
+// copied into this frame; anything else arrives as the value itself.
+void CodeGen::bind_params(llvm::Function *fn, unsigned first,
+                          const SignatureNode &sig) {
+  unsigned idx = first;
+  for (auto &param : sig.params)
+    for (auto &ident : param.names.identifiers) {
+      auto *arg = fn->getArg(idx++);
+      std::string name(ident.name);
+      auto *slot_ll =
+          arg->hasByValAttr() ? arg->getParamByValType() : arg->getType();
+      locals[name] = bind_value_slot(fn, name, arg, slot_ll);
+    }
 }
 
 } // namespace saga

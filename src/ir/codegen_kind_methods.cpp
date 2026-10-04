@@ -106,16 +106,9 @@ llvm::Function *CodeGen::kind_method_callee(const MethodInfo &m,
   if (auto *callee = module->getFunction(cross_link))
     return callee;
 
-  auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-  std::vector<llvm::Type *> param_ll;
-  param_ll.push_back(llvm_type(obj_sem)); // self
-  for (auto &p : fi.params)
-    param_ll.push_back(llvm_type(p));
-  llvm::Type *ret_ll =
-      !fi.return_type ? void_ll_type : llvm_type(fi.return_type);
-  auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
-  return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                cross_link, module.get());
+  return declare_function(
+      cross_link, lower_signature(std::get<FuncTypeInfo>(m.signature->detail),
+                                  llvm_type(obj_sem)));
 }
 
 // A T parameter takes a pointer to the value, so every argument bound to one

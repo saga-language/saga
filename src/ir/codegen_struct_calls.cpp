@@ -44,17 +44,10 @@ CodeGen::emit_field_function_call(const CallExprNode &node,
     auto *fn_ptr = builder.CreateLoad(ptr_type, gep, "field.fn");
 
     std::vector<llvm::Value *> args;
-    std::vector<llvm::Type *> param_types;
-    auto &fi = std::get<FuncTypeInfo>(fld.type->detail);
-    for (auto &pt : fi.params)
-      param_types.push_back(llvm_type(pt));
     for (auto &arg_node : node.args)
       if (auto *val = emit_expr(*arg_node))
         args.push_back(val);
-    llvm::Type *ret_ll =
-        !fi.return_type ? void_ll_type : llvm_type(fi.return_type);
-    LoweredSig sig;
-    sig.type = llvm::FunctionType::get(ret_ll, param_types, false);
+    auto sig = lower_signature(std::get<FuncTypeInfo>(fld.type->detail));
     return emit_call(fn_ptr, sig, nullptr, args);
   }
   return std::nullopt;

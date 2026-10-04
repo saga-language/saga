@@ -1,0 +1,29 @@
+// Spec: a type satisfies an interface by having every method
+// (docs/language.md:1487), so a call through the interface is a call to that
+// method, and a struct crosses it in both directions as it would in a direct
+// call.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+interface Mover {
+  Moved(by Point) Point
+}
+
+struct Walker {
+  at Point
+}
+
+fn (w Walker) Moved(by Point) Point {
+  Point{x: w.at.x + by.x, y: w.at.y + by.y}
+}
+
+pub fn Main() void {
+  w := Walker{at: Point{x: 1, y: 2}}
+  m Mover = w
+  p := m.Moved(Point{x: 10, y: 20})
+  io.Println("{p.x} {p.y}")
+}

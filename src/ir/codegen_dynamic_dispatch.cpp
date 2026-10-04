@@ -149,30 +149,23 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
       vtable_st, vtable_ptr, method_idx, "vfn.ptr");
   auto *fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "vfn");
 
-  std::vector<llvm::Type *> param_ll_types;
-  param_ll_types.push_back(ptr_type); // self
-  std::vector<llvm::Value *> args;
-  for (auto &arg_node : node.args) {
-    auto *val = emit_expr(*arg_node);
-    if (val) {
-      args.push_back(val);
-      param_ll_types.push_back(val->getType());
-    }
-  }
-
-  llvm::Type *ret_ll = void_ll_type;
-  for (auto &im : iface_info.methods) {
-    if (im.name == method && im.signature) {
-      auto &fi = std::get<FuncTypeInfo>(im.signature->detail);
-      if (fi.return_type)
-        ret_ll = llvm_type(fi.return_type);
+  const FuncTypeInfo *fi = nullptr;
+  for (auto &im : iface_info.methods)
+    if (im.name == method && im.signature &&
+        im.signature->kind == TypeKind::Func) {
+      fi = &std::get<FuncTypeInfo>(im.signature->detail);
       break;
     }
-  }
+  if (!fi)
+    return nullptr;
 
-  LoweredSig sig;
-  sig.type = llvm::FunctionType::get(ret_ll, param_ll_types, false);
-  return emit_call(fn_ptr, sig, data_ptr, args);
+  // The vtable holds the concrete type's method itself, so the call takes
+  // the ABI that method was declared with: the data pointer as its receiver.
+  std::vector<llvm::Value *> args;
+  for (auto &arg_node : node.args)
+    if (auto *val = emit_expr(*arg_node))
+      args.push_back(val);
+  return emit_call(fn_ptr, lower_signature(*fi, ptr_type), data_ptr, args);
 }
 
 } // namespace saga

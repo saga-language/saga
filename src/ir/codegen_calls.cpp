@@ -139,23 +139,12 @@ llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node,
     fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
   }
 
-  std::vector<llvm::Type *> param_types;
-  if (is_closure)
-    param_types.push_back(ptr_type);
   std::vector<llvm::Value *> args;
   for (auto &arg_node : node.args)
     if (auto *val = emit_expr(*arg_node))
       args.push_back(val);
-
-  llvm::Type *ret_ll = void_ll_type;
-  auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
-  for (auto &pt : fi.params)
-    param_types.push_back(llvm_type(pt));
-  if (fi.return_type)
-    ret_ll = llvm_type(fi.return_type);
-
-  LoweredSig sig;
-  sig.type = llvm::FunctionType::get(ret_ll, param_types, false);
+  auto sig = lower_signature(std::get<FuncTypeInfo>(callee_sem->detail),
+                             is_closure ? ptr_type : nullptr);
   return emit_call(fn_ptr, sig, env_ptr, args);
 }
 

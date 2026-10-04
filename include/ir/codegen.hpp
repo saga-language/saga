@@ -420,7 +420,12 @@ private:
   llvm::Type *receiver_param_type(const FuncDeclNode &fn);
   void name_params(llvm::Function *fn, const LoweredSig &sig,
                    const FuncDeclNode &decl);
+  void name_params(llvm::Function *fn, const LoweredSig &sig,
+                   const SignatureNode &params, std::string_view leading);
   void declare_free_function(const FuncDeclNode &fn);
+  unsigned first_param_index(llvm::Function *fn, bool has_leading);
+  void bind_params(llvm::Function *fn, unsigned first,
+                   const SignatureNode &sig);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
@@ -436,14 +441,10 @@ private:
   /// Emit a full function definition (entry block + body).
   void emit_func_decl(const FuncDeclNode &node);
 
-  /// Shared body-emission helper used by both emit_func_decl and
-  /// emit_specialisation.  Assumes `func` has been created and the caller
-  /// has set up per-function state (locals/loop/etc).  Writes the entry
-  /// block, param allocas (using `param_ll` LLVM types), the body, and
-  /// the return-handling tail.
+  /// The body of a function without a receiver, declared or specialised.
   void emit_function_body_inner(const FuncDeclNode &fn, llvm::Function *func,
-                                 const std::vector<llvm::Type *> &param_ll,
-                                 bool is_main);
+                                bool is_main);
+  void emit_receiver_method_body(const FuncDeclNode &fn, llvm::Function *func);
 
   /// Return `val`, of type `val_sem` and emitted from `source`, from the
   /// function being emitted: retained if borrowed, coerced to the semantic
