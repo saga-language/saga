@@ -80,7 +80,8 @@ bool CodeGen::param_owns_reference(const TypePtr &param) {
   if (!shape)
     return false;
   if (shape->kind == TypeKind::String || shape->kind == TypeKind::Array ||
-      shape->kind == TypeKind::Map || shape->kind == TypeKind::Interface)
+      shape->kind == TypeKind::Map || shape->kind == TypeKind::Interface ||
+      shape->kind == TypeKind::Func)
     return true;
   return shape->kind == TypeKind::Struct &&
          std::get<StructTypeInfo>(shape->detail).name != "Task" &&

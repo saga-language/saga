@@ -275,7 +275,7 @@ void CodeGen::emit_var_decl(const VarDeclNode &node) {
 }
 
 void CodeGen::emit_zeroed_local(const std::string &name, const TypePtr &sem) {
-  auto *slot_ll = local_slot_type(sem, nullptr);
+  auto *slot_ll = storage_type(unwrap_alias(sem));
   auto *slot =
       create_entry_alloca(builder.GetInsertBlock()->getParent(), name, slot_ll);
   locals[name] = slot;

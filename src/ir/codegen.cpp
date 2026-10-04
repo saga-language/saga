@@ -241,11 +241,6 @@ void CodeGen::init_types() {
        i64_type, llvm::PointerType::getUnqual(context)},
       "saga_runtime_array");
 
-  // Closure fat pointer: { ptr fn, ptr env }
-  auto *ptr_ty = llvm::PointerType::getUnqual(context);
-  closure_fat_ptr_type = llvm::StructType::create(
-      context, {ptr_ty, ptr_ty}, "saga_runtime_closure");
-
   // Register built-in enums with the current package as origin key.
   // key_for("", "Comparison") resolves to mangle(package_name, "Comparison").
   std::string cmp_key = mangle(package_name, "Comparison");
@@ -418,7 +413,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   case TypeKind::Map:
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_map
   case TypeKind::Func:
-    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_closure
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_box
   case TypeKind::TypeParam:
     // Unresolved generic type parameter (e.g. T in stdlib [T] methods).
     // At runtime, generic values are passed as opaque pointers.

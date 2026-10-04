@@ -26,10 +26,6 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node,
           st->getElementType(1)->isArrayTy()) {
         return alloca; // Return pointer to union struct.
       }
-      // Closure fat pointer — return the alloca pointer.
-      if (st == closure_fat_ptr_type) {
-        return alloca;
-      }
     }
     return builder.CreateLoad(alloc_ty, alloca, name);
   }
@@ -67,12 +63,10 @@ llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node,
                                  info.name + ".shape", it->second);
   }
 
-  // Top-level function referenced as a value (e.g. `call_it(greet, ...)` or
-  // a struct literal like `Reg{ handler: greet }`).  Return the raw LLVM
-  // Function* — it is pointer-typed, matching how function-typed locals
-  // and struct fields are lowered.
+  // A top-level function referenced as a value (`call_it(greet, ...)`,
+  // `Reg{ handler: greet }`) takes the box every function value is.
   if (auto *fn = module->getFunction(mangle(name)))
-    return fn;
+    return function_value(fn, semantic_type(parent));
 
   // Top-level constant declared in the current package.  emit_const_decl
   // creates a GlobalVariable named mangle(name); identifier reads from it.

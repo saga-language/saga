@@ -13,15 +13,15 @@
 
 namespace saga {
 
-// A counted kind's or an interface's slot holds its pointer, and a struct's
-// holds its fields. A union element holds references nothing counts yet.
+// A counted kind's or a box's slot holds its pointer, and a struct's holds
+// its fields. A union element holds references nothing counts yet.
 bool CodeGen::slot_holds_references(const TypePtr &sem) {
   auto s = unwrap_alias(sem);
   if (!s)
     return false;
   return s->kind == TypeKind::String || s->kind == TypeKind::Array ||
          s->kind == TypeKind::Map || s->kind == TypeKind::Interface ||
-         owns_managed_fields(s);
+         s->kind == TypeKind::Func || owns_managed_fields(s);
 }
 
 llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
@@ -37,6 +37,7 @@ llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
   case TypeKind::Map:
     return runtime_elem_ops("saga_map_elem_ops");
   case TypeKind::Interface:
+  case TypeKind::Func:
     return runtime_elem_ops("saga_box_elem_ops");
   default:
     return struct_elem_ops(s);

@@ -69,9 +69,9 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
     for (auto &exp : mod.exports) {
       if (exp.name == field_name) {
         if (exp.type && exp.type->kind == TypeKind::Func) {
-          // Function reference (not a call) — declare and return.
-          auto *fn = declare_import(mod.name, field_name, exp.type);
-          return fn;
+          // A function reference, not a call, is a function value.
+          return function_value(declare_import(mod.name, field_name, exp.type),
+                                exp.type);
         }
         // For enum variants from an imported module, look up the tag.
         // materialize_import() has already registered all enum keys.

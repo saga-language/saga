@@ -19,7 +19,7 @@ namespace {
 constexpr unsigned kVtablePrefix = 3;
 // Matches SAGA_RUNTIME_BOX_VALUE_OFFSET: { i64 refcount, ptr vtable }.
 constexpr uint64_t kBoxValueOffset = 16;
-constexpr unsigned kBoxVtableField = 1;
+constexpr uint64_t kBoxVtableOffset = 8;
 } // namespace
 
 bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem) {
@@ -174,6 +174,14 @@ llvm::Value *CodeGen::box_value(llvm::Value *box) {
                                             kBoxValueOffset, "box.value");
 }
 
+llvm::Value *CodeGen::box_vtable(llvm::Value *box) {
+  return builder.CreateLoad(
+      llvm::PointerType::getUnqual(context),
+      builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), box,
+                                         kBoxVtableOffset, "box.vtable.ptr"),
+      "vtable");
+}
+
 llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
                                               const SelectorNode &sel,
                                               const std::string &method,
@@ -197,14 +205,9 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
   auto [box, temporary] =
       interface_receiver(*sel.object, obj, obj_sem, method_idx);
   auto *ptr_type = llvm::PointerType::getUnqual(context);
-  auto *vtable = builder.CreateLoad(
-      ptr_type,
-      builder.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(context), box,
-                                         8 * kBoxVtableField, "box.vtable.ptr"),
-      "vtable");
   auto *fn_ptr = builder.CreateLoad(
       ptr_type,
-      builder.CreateStructGEP(vt_it->second, vtable,
+      builder.CreateStructGEP(vt_it->second, box_vtable(box),
                               kVtablePrefix + method_idx, "vfn.ptr"),
       "vfn");
 

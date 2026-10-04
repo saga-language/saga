@@ -146,9 +146,6 @@ struct CodeGen {
 
   // ── Closure support ──────────────────────────────────────────────────
 
-  /// The fat pointer type for closures: { ptr fn, ptr env }.
-  llvm::StructType *closure_fat_ptr_type = nullptr;
-
   /// Counter for generating unique closure names.
   int next_closure_id = 0;
 
@@ -445,6 +442,7 @@ private:
                                    const TypePtr &concrete_type,
                                    const TypePtr &iface_type);
   llvm::Value *box_value(llvm::Value *box);
+  llvm::Value *box_vtable(llvm::Value *box);
   std::pair<llvm::Value *, bool> interface_receiver(const Node &object,
                                                     llvm::Value *obj,
                                                     const TypePtr &iface_sem,
@@ -618,8 +616,30 @@ private:
   llvm::Value *emit_specialisation_call(llvm::Function *spec,
                                         const TypePtr &concrete,
                                         const CallExprNode &node);
-  llvm::Value *emit_function_value_call(const CallExprNode &node,
-                                        const std::string &name);
+  // ── Function values (codegen_function_values.cpp) ───────────────────
+  llvm::StructType *fn_vtable_type();
+  llvm::Constant *fn_vtable(const std::string &name, llvm::Function *code,
+                            const TypePtr &env_sem);
+  llvm::Value *
+  emit_closure_box(const std::string &name, llvm::Function *code,
+                   const TypePtr &env_sem,
+                   const std::vector<Analyzer::CaptureInfo> &captures);
+  llvm::Value *function_value(llvm::Function *fn, const TypePtr &fn_sem);
+  llvm::Function *function_value_thunk(llvm::Function *fn,
+                                       const FuncTypeInfo &fi);
+  llvm::Value *emit_function_value_call(const CallExprNode &node);
+  llvm::Value *emit_function_value_invoke(llvm::Value *box,
+                                          const FuncTypeInfo &fi,
+                                          const CallExprNode &node);
+  TypePtr closure_env_type(const std::string &closure_name,
+                           const std::vector<Analyzer::CaptureInfo> &captures);
+  llvm::Function *
+  emit_closure_trampoline(const std::string &closure_name,
+                          const FuncExprNode &node, const FuncTypeInfo &fi,
+                          const TypePtr &env_sem,
+                          const std::vector<Analyzer::CaptureInfo> &captures);
+  void bind_captures(llvm::Value *env, const TypePtr &env_sem,
+                     const std::vector<Analyzer::CaptureInfo> &captures);
   llvm::Value *pack_variadic_args(const CallExprNode &node,
                                   const FuncTypeInfo &fi);
   llvm::Value *emit_direct_call(llvm::Function *callee,
@@ -1137,9 +1157,6 @@ private:
   /// already be in that type's representation (see coerce_to).
   llvm::AllocaInst *bind_local(const std::string &name, llvm::Value *val,
                                const TypePtr &sem);
-
-  /// The LLVM type of a local slot holding a value of type `sem`.
-  llvm::Type *local_slot_type(const TypePtr &sem, llvm::Value *val);
 
   /// Produce a pointer to union memory holding `val`: a union passes through
   /// (converting if its layout differs); a concrete/error member value is

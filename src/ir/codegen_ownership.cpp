@@ -6,9 +6,13 @@
 namespace saga {
 
 namespace {
+bool is_boxed(const TypePtr &t) {
+  return t->kind == TypeKind::Interface || t->kind == TypeKind::Func;
+}
+
 bool is_counted(const TypePtr &t) {
   return t && (t->kind == TypeKind::String || t->kind == TypeKind::Array ||
-               t->kind == TypeKind::Map || t->kind == TypeKind::Interface);
+               t->kind == TypeKind::Map || is_boxed(t));
 }
 } // namespace
 
@@ -158,7 +162,7 @@ void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_retain_array"), {val});
   else if (sem->kind == TypeKind::Map)
     builder.CreateCall(module->getFunction("saga_retain_map"), {val});
-  else if (sem->kind == TypeKind::Interface)
+  else if (is_boxed(sem))
     builder.CreateCall(module->getFunction("saga_box_retain"), {val});
   else if (owns_managed_fields(sem))
     emit_ownership_walk(val, sem, true);
@@ -198,7 +202,7 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_release_array"), {val});
   else if (sem->kind == TypeKind::Map)
     builder.CreateCall(module->getFunction("saga_release_map"), {val});
-  else if (sem->kind == TypeKind::Interface)
+  else if (is_boxed(sem))
     builder.CreateCall(module->getFunction("saga_box_release"), {val});
   else if (owns_managed_fields(sem))
     emit_ownership_walk(val, sem, false);

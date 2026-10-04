@@ -56,6 +56,7 @@ Ownership CodeGen::value_ownership(const Node &node) {
           [&](const RangeNode &) { return Owned; },
           [&](const BinaryExprNode &) { return Owned; },
           [&](const SpawnExprNode &) { return Owned; },
+          [&](const FuncExprNode &) { return Owned; },
           [&](const ForExprNode &n) {
             return n.accumulator ? Owned : Borrowed;
           },

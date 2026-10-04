@@ -3294,7 +3294,7 @@ TEST(CodeGen, HashableInTypePositionTypeChecks) {
 // Closures / Function Expressions
 // ===========================================================================
 
-TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
+TEST(CodeGen, FuncExprBuildsABox) {
   auto r = CG::from(
       "pub fn Main() void {\n"
       "  f := fn () int { 42 }\n"
@@ -3302,15 +3302,14 @@ TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should have an alloca for the closure fat pointer.
-  bool found_closure_alloca = false;
+  bool boxed = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
-      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
-        if (a->getAllocatedType() == r.codegen->closure_fat_ptr_type)
-          found_closure_alloca = true;
-  EXPECT_TRUE(found_closure_alloca)
-      << "FuncExpr should create a closure fat pointer alloca";
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "saga_box_new")
+          boxed = true;
+  EXPECT_TRUE(boxed) << "a function expression's value is a box on the heap";
 }
 
 TEST(CodeGen, FuncExprGeneratesTrampolineFunction) {
@@ -3466,14 +3465,23 @@ TEST(CodeGen, ClosureReturnVoid) {
   EXPECT_TRUE(tramp->getReturnType()->isVoidTy());
 }
 
-TEST(CodeGen, ClosureFatPtrTypeExists) {
-  auto r = CG::from("pub fn Main() void {}");
-  auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "saga_runtime_closure");
-  ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u);
-  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
-  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+TEST(CodeGen, NamedFunctionValueIsAStaticBox) {
+  auto r = CG::from(
+      "fn double(n int) int { n * 2 }\n"
+      "pub fn Main() void {\n"
+      "  f := double\n"
+      "  _ := f\n"
+      "}");
+  llvm::GlobalVariable *box = nullptr;
+  for (auto &g : r.mod().globals())
+    if (g.getName().ends_with("double.fnval"))
+      box = &g;
+  ASSERT_NE(box, nullptr) << "a named function used as a value has a box";
+  auto *init = llvm::dyn_cast<llvm::ConstantStruct>(box->getInitializer());
+  ASSERT_NE(init, nullptr);
+  auto *refcount = llvm::dyn_cast<llvm::ConstantInt>(init->getOperand(0));
+  ASSERT_NE(refcount, nullptr);
+  EXPECT_EQ(refcount->getSExtValue(), -1) << "static, so never freed";
 }
 
 TEST(CodeGen, ClosureTrampolineHasInternalLinkage) {
@@ -4310,15 +4318,14 @@ TEST(CodeGen, FuncParamCalledIndirectly) {
   // the function identifier was silently dropped from the call arg list.
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  auto *greet = r.func("greet");
-  ASSERT_NE(greet, nullptr);
   bool greet_passed = false;
   for (auto &bb : *main) {
     for (auto &inst : bb) {
       auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
       if (!call) continue;
       for (unsigned i = 0; i < call->arg_size(); ++i) {
-        if (call->getArgOperand(i) == greet) {
+        auto *arg = call->getArgOperand(i);
+        if (arg->hasName() && arg->getName().ends_with("greet.fnval")) {
           greet_passed = true;
           break;
         }
@@ -4326,7 +4333,7 @@ TEST(CodeGen, FuncParamCalledIndirectly) {
     }
   }
   EXPECT_TRUE(greet_passed)
-      << "main must pass greet (the Function*) as an argument to call_it";
+      << "main must pass greet's function value as an argument to call_it";
 }
 
 TEST(CodeGen, StructFieldFuncCalledIndirectly) {
