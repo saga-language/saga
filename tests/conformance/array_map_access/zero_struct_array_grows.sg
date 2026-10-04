@@ -1,0 +1,17 @@
+// An array declared without a value starts empty, sized for its element type
+// like any other: appended structs read back whole.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+  z int
+}
+
+pub fn Main() void {
+  ps array{Point}
+  ps = ps.Append(Point{x: 1, y: 2, z: 3})
+  ps = ps.Append(Point{x: 4, y: 5, z: 6})
+  p := ps[1] or { Point{x: 0, y: 0, z: 0} }
+  io.Println("{ps.Size()} {p.x} {p.y} {p.z}")
+}

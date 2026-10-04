@@ -85,11 +85,17 @@ typedef struct {
 } saga_runtime_string;
 
 typedef struct {
+  void (*retain)(void *slot);
+  void (*release)(void *slot);
+} saga_runtime_elem_ops;
+
+typedef struct {
   void *data;
   int64_t len;
   int64_t cap;
   int64_t elem_size;
   int64_t refcount;
+  const saga_runtime_elem_ops *ops;
 } saga_runtime_array;
 
 typedef struct {
@@ -113,6 +119,8 @@ typedef struct {
   int64_t refcount;
   int64_t key_kind;
   const saga_runtime_key_ops *ops;
+  const saga_runtime_elem_ops *key_elem_ops;
+  const saga_runtime_elem_ops *val_elem_ops;
 } saga_runtime_map;
 
 saga_runtime_string  *saga_runtime_arena_alloc_string(saga_runtime_arena *a, const char *buf, int64_t len);
@@ -128,7 +136,9 @@ saga_runtime_array   *saga_runtime_cow_copy_array(saga_runtime_arena *a, saga_ru
 
 saga_runtime_map     *saga_map_new(int64_t key_size, int64_t val_size,
                                    int64_t key_kind,
-                                   const saga_runtime_key_ops *ops);
+                                   const saga_runtime_key_ops *ops,
+                                   const saga_runtime_elem_ops *key_elem_ops,
+                                   const saga_runtime_elem_ops *val_elem_ops);
 void        saga_map_set(saga_runtime_map *m, const void *key,
                          const void *value);
 void       *saga_map_get(saga_runtime_map *m, const void *key);

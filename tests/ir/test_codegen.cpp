@@ -3161,12 +3161,16 @@ TEST(CodeGen, MapStringKeyKind) {
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_map_new") {
           saw_call = true;
-          ASSERT_EQ(call->arg_size(), 4u);
+          ASSERT_EQ(call->arg_size(), 6u);
           auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
           ASSERT_NE(kind, nullptr);
           EXPECT_EQ(kind->getSExtValue(), 10) << "string key map should pass key_kind=STRING";
           EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)))
               << "Primitive-keyed maps should pass a null ops pointer";
+          EXPECT_EQ(call->getArgOperand(4)->getName(), "saga_string_elem_ops")
+              << "a string key is retained through the runtime's string ops";
+          EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(5)))
+              << "an int value holds no reference";
         }
   EXPECT_TRUE(saw_call);
 }
@@ -3187,7 +3191,7 @@ TEST(CodeGen, MapIntKeyKind) {
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_map_new") {
           saw_call = true;
-          ASSERT_EQ(call->arg_size(), 4u);
+          ASSERT_EQ(call->arg_size(), 6u);
           auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
           ASSERT_NE(kind, nullptr);
           EXPECT_EQ(kind->getSExtValue(), 1) << "int key map should pass key_kind=INT64";

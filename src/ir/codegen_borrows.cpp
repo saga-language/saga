@@ -60,7 +60,9 @@ Ownership CodeGen::value_ownership(const Node &node) {
             return n.accumulator ? Owned : Borrowed;
           },
           [&](const CallExprNode &n) { return call_ownership(n); },
-          [&](const IndexExprNode &n) { return is_slice(n) ? Owned : Borrowed; },
+          [&](const IndexExprNode &n) {
+            return is_slice(n) ? Owned : Borrowed;
+          },
           [&](const OrExprNode &n) { return or_ownership(n); },
           [&](const IfExprNode &n) { return if_ownership(n, node); },
           [&](const SwitchExprNode &n) { return switch_ownership(n, node); },
@@ -70,13 +72,14 @@ Ownership CodeGen::value_ownership(const Node &node) {
 }
 
 Ownership CodeGen::call_ownership(const CallExprNode &call) {
-  return returns_stored_element(call) ? Ownership::Borrowed
-                                      : Ownership::Owned;
+  return reads_stored_element(call) ? Ownership::Borrowed : Ownership::Owned;
 }
 
 // A collection method returning its T reads that T out of the collection, and
-// is written once over an opaque T, so it cannot take a reference for it.
-bool CodeGen::returns_stored_element(const CallExprNode &call) {
+// is written once over an opaque T, so it cannot take a reference for it. One
+// that writes through its receiver (`Pop`) takes the T out instead, and hands
+// over the collection's reference with it.
+bool CodeGen::reads_stored_element(const CallExprNode &call) {
   auto *sel = std::get_if<SelectorNode>(&call.callee->data);
   if (!sel)
     return false;
@@ -87,9 +90,11 @@ bool CodeGen::returns_stored_element(const CallExprNode &call) {
   auto km_it = analyzer.kind_methods_.find(obj_sem->kind);
   if (km_it == analyzer.kind_methods_.end())
     return false;
-  auto *fi = method_signature(km_it->second, std::string(sel->field.name));
+  std::string method(sel->field.name);
+  auto *fi = method_signature(km_it->second, method);
   return fi && fi->return_type &&
-         fi->return_type->kind == TypeKind::TypeParam;
+         fi->return_type->kind == TypeKind::TypeParam &&
+         !kind_method_mutates(obj_sem, method);
 }
 
 // A branch with no value of its own yields the result type's zero, and an

@@ -131,9 +131,10 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {f64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_float_format", module.get());
 
-  // saga_runtime_array* saga_array_new(i64 elem_size, i64 initial_cap)
+  // saga_runtime_array* saga_array_new(i64 elem_size, i64 initial_cap,
+  //                                    saga_runtime_elem_ops* ops)
   llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_new", module.get());
 
   // void saga_array_builder_push(saga_runtime_array* arr, void* elem)
@@ -233,10 +234,13 @@ void CodeGen::declare_runtime() {
       llvm::Function::ExternalLinkage, "saga_release_array", module.get());
 
   // saga_runtime_map* saga_map_new(i64 key_size, i64 val_size,
-  //                                i64 key_kind, saga_runtime_key_ops* ops)
+  //                                i64 key_kind, saga_runtime_key_ops* ops,
+  //                                saga_runtime_elem_ops* key_elem_ops,
+  //                                saga_runtime_elem_ops* val_elem_ops)
   llvm::Function::Create(
       llvm::FunctionType::get(
-          ptr_type, {i64_type, i64_type, i64_type, ptr_type}, false),
+          ptr_type,
+          {i64_type, i64_type, i64_type, ptr_type, ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_new", module.get());
 
   // void saga_map_set(saga_runtime_map* m, void* key, void* value)

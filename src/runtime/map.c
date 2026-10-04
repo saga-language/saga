@@ -139,6 +139,20 @@ static void saga_runtime_map_grow(saga_runtime_map *m) {
   saga_runtime_map_rebuild_index(m);
 }
 
+/* ── Entry ownership ───────────────────────────────────────────────────── */
+
+static void retain_entry(const saga_runtime_map *m,
+                         const saga_runtime_map_entry *e) {
+  if (m->key_elem_ops) m->key_elem_ops->retain(e->key);
+  if (m->val_elem_ops) m->val_elem_ops->retain(e->value);
+}
+
+static void release_entry(const saga_runtime_map *m,
+                          const saga_runtime_map_entry *e) {
+  if (m->key_elem_ops) m->key_elem_ops->release(e->key);
+  if (m->val_elem_ops) m->val_elem_ops->release(e->value);
+}
+
 /* ── Refcounting ───────────────────────────────────────────────────────── */
 
 void saga_retain_map(saga_runtime_map *m) {
@@ -151,6 +165,7 @@ void saga_release_map(saga_runtime_map *m) {
   m->refcount--;
   if (m->refcount <= 0) {
     for (int64_t i = 0; i < m->len; i++) {
+      release_entry(m, &m->entries[i]);
       free(m->entries[i].key);
       free(m->entries[i].value);
     }
@@ -162,7 +177,7 @@ void saga_release_map(saga_runtime_map *m) {
 
 /* Shallow clone: new map with its own entry blocks, key and value bytes    */
 /* copied.  Matches saga_map_equals: a pointer key or value is shared by     */
-/* byte-copy, not deeply duplicated.                                        */
+/* byte-copy, not deeply duplicated, so each gains a reference.             */
 saga_runtime_map *saga_map_clone(const saga_runtime_map *src) {
   if (!src) return NULL;
   saga_runtime_map *dst = (saga_runtime_map *)malloc(sizeof(*dst));
@@ -179,6 +194,7 @@ saga_runtime_map *saga_map_clone(const saga_runtime_map *src) {
     dst->entries[i].value = malloc((size_t)src->val_size);
     memcpy(dst->entries[i].value, src->entries[i].value,
            (size_t)src->val_size);
+    retain_entry(dst, &dst->entries[i]);
   }
   return dst;
 }
@@ -198,7 +214,9 @@ saga_runtime_map *saga_map_make_unique(saga_runtime_map *m) {
 /* ── Public API ────────────────────────────────────────────────────────── */
 
 saga_runtime_map *saga_map_new(int64_t key_size, int64_t val_size,
-                     int64_t key_kind, const saga_runtime_key_ops *ops) {
+                               int64_t key_kind, const saga_runtime_key_ops *ops,
+                               const saga_runtime_elem_ops *key_elem_ops,
+                               const saga_runtime_elem_ops *val_elem_ops) {
   int64_t initial_ecap = 8;
   int64_t initial_icap = 16; /* power of 2, ≥ 2 * initial_ecap */
 
@@ -216,6 +234,8 @@ saga_runtime_map *saga_map_new(int64_t key_size, int64_t val_size,
   m->refcount = 1;
   m->key_kind = key_kind;
   m->ops = ops;
+  m->key_elem_ops = key_elem_ops;
+  m->val_elem_ops = val_elem_ops;
   return m;
 }
 
@@ -226,8 +246,15 @@ void saga_map_set(saga_runtime_map *m, const void *key, const void *value) {
   int64_t slot = saga_runtime_map_probe(m, key, &entry_idx);
 
   if (entry_idx >= 0) {
-    /* Key exists — update value in place (preserves insertion order). */
-    memcpy(m->entries[entry_idx].value, value, (size_t)m->val_size);
+    /* Key exists — update value in place (preserves insertion order). The */
+    /* new value is retained before the old is released, in case they are  */
+    /* the same; the map keeps the key it already holds.                   */
+    void *slot = m->entries[entry_idx].value;
+    if (m->val_elem_ops) {
+      m->val_elem_ops->retain((void *)value);
+      m->val_elem_ops->release(slot);
+    }
+    memcpy(slot, value, (size_t)m->val_size);
     return;
   }
 
@@ -249,6 +276,7 @@ void saga_map_set(saga_runtime_map *m, const void *key, const void *value) {
   memcpy(m->entries[ei].key, key, (size_t)m->key_size);
   m->entries[ei].value = malloc((size_t)m->val_size);
   memcpy(m->entries[ei].value, value, (size_t)m->val_size);
+  retain_entry(m, &m->entries[ei]);
 
   m->indices[slot] = ei;
   m->len++;
@@ -275,6 +303,7 @@ void saga_map_remove(saga_runtime_map *m, const void *key) {
   if (entry_idx < 0) return;
 
   /* Free the key/value being removed. */
+  release_entry(m, &m->entries[entry_idx]);
   free(m->entries[entry_idx].key);
   free(m->entries[entry_idx].value);
 
@@ -323,9 +352,10 @@ void *saga_map_value_at(saga_runtime_map *m, int64_t index) {
 saga_runtime_array *saga_map_keys(saga_runtime_map *m) {
   int64_t key_size = m ? m->key_size : 8;
   int64_t len = m ? m->len : 0;
-  saga_runtime_array *arr = saga_array_new_internal(key_size, len > 4 ? len : 4);
+  saga_runtime_array *arr = saga_array_new_internal(
+      key_size, len > 4 ? len : 4, m ? m->key_elem_ops : NULL);
   for (int64_t i = 0; i < len; i++) {
-    saga_array_push_internal(arr, m->entries[i].key);
+    saga_array_builder_push(arr, m->entries[i].key);
   }
   return arr;
 }

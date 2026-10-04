@@ -162,28 +162,14 @@ llvm::Value *CodeGen::pack_variadic_args(const CallExprNode &node,
       return nullptr;
   }
 
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
   auto &arr = std::get<ArrayTypeInfo>(last->detail);
-  auto *elem_ll = llvm_type(arr.element);
-  uint64_t elem_size = elem_ll ? size_of(elem_ll) : 8;
   int64_t var_count =
       node.args.size() > variadic_idx
           ? static_cast<int64_t>(node.args.size() - variadic_idx)
           : 0;
-  std::vector<llvm::Value *> new_args = {
-      llvm::ConstantInt::get(i64_type, elem_size),
-      llvm::ConstantInt::get(i64_type, std::max<int64_t>(var_count, 4))};
-  auto *arr_val = builder.CreateCall(module->getFunction("saga_array_new"),
-                                     new_args, "var.arr");
-  auto *push_fn = module->getFunction("saga_array_builder_push");
-  for (size_t i = variadic_idx; i < node.args.size(); ++i) {
-    auto *val = emit_expr(*node.args[i]);
-    if (!val) continue;
-    auto *tmp = create_entry_alloca(parent_fn, "var.tmp", val->getType());
-    builder.CreateStore(val, tmp);
-    std::vector<llvm::Value *> push_args = {arr_val, tmp};
-    builder.CreateCall(push_fn, push_args);
-  }
+  auto *arr_val = emit_new_array(arr.element, var_count, "var.arr");
+  for (size_t i = variadic_idx; i < node.args.size(); ++i)
+    emit_push_element(arr_val, arr.element, *node.args[i]);
   return arr_val;
 }
 

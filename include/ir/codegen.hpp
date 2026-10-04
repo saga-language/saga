@@ -28,6 +28,7 @@ struct LoweredSig {
   std::vector<llvm::Type *> byval; // one per LLVM parameter; null if direct
 };
 
+const FuncTypeInfo *func_info(const MethodInfo &m);
 const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
                                      const std::string &name);
 
@@ -384,7 +385,7 @@ private:
   /// Lower a const array literal to a static `saga_runtime_array` header plus
   /// element buffer in rodata (refcount -1).  Returns the header's address.
   llvm::Constant *build_const_array_global(
-      llvm::Type *elem_ll, const std::vector<llvm::Constant *> &elems);
+      const TypePtr &elem_sem, const std::vector<llvm::Constant *> &elems);
 
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
@@ -549,13 +550,13 @@ private:
 
   /// Store `rhs` into the element named by the index `target`.
   void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
-                         const TypePtr &rhs_sem);
+                         const TypePtr &rhs_sem, const Node &rhs_node);
   void emit_map_index_assign(const IndexExprNode &target,
                              const TypePtr &obj_sem, llvm::Value *rhs,
-                             const TypePtr &rhs_sem);
+                             const TypePtr &rhs_sem, const Node &rhs_node);
   void emit_array_index_assign(const IndexExprNode &target,
                                const TypePtr &obj_sem, llvm::Value *rhs,
-                               const TypePtr &rhs_sem);
+                               const TypePtr &rhs_sem, const Node &rhs_node);
 
   /// Step the integer target by one in place, shared by `++` and `--`.
   void emit_step(const Node &target, bool increment);
@@ -769,6 +770,24 @@ private:
   llvm::Value *emit_map_literal(const MapLiteralNode &node,
                                 const Node &parent);
   llvm::Value *emit_range_literal(const RangeNode &node);
+
+  // ── Collections owning their elements (codegen_elements.cpp) ─────────
+  bool slot_holds_references(const TypePtr &sem);
+  llvm::Constant *elem_ops_for(const TypePtr &sem);
+  llvm::StructType *elem_ops_type();
+  llvm::Constant *runtime_elem_ops(const std::string &name);
+  llvm::Constant *struct_elem_ops(const TypePtr &sem);
+  llvm::Value *emit_new_array(const TypePtr &elem_sem, int64_t cap,
+                              const std::string &name);
+  llvm::Value *emit_new_map(const TypePtr &key_sem, const TypePtr &val_sem);
+  void emit_push_element(llvm::Value *arr, const TypePtr &elem_sem,
+                         const Node &node);
+  void emit_set_entry(llvm::Value *map, const TypePtr &key_sem,
+                      const TypePtr &val_sem, const KeyValueNode &entry);
+  void settle_stored(llvm::Value *val, const TypePtr &val_sem,
+                     const Node &source, const TypePtr &slot_sem);
+  void release_handed_over(llvm::Value *val, const Node &source,
+                           const TypePtr &slot_sem);
   void fill_range(llvm::Value *arr, llvm::Value *low, llvm::Value *high);
   /// Bytes the runtime copies for one element/key/value of `ll`.
   int64_t element_size_of(llvm::Type *ll);
@@ -778,11 +797,6 @@ private:
   /// never recorded.
   TypePtr collection_slot_type(const Node &parent, Slot slot,
                                const Node *fallback);
-  /// Emit one element/key/value and hand back its address, wrapping into the
-  /// slot's union first when the slot is one.
-  llvm::Value *collection_slot_value(llvm::Type *slot_ll,
-                                     const TypePtr &slot_sem,
-                                     const Node &value_node);
   /// The address an already-emitted value is written to a collection slot
   /// from. A null `val_sem` means the value cannot need a union wrap.
   llvm::Value *collection_slot_address(llvm::Type *slot_ll,
@@ -879,8 +893,13 @@ private:
   llvm::Function *kind_method_callee(const MethodInfo &m,
                                      const TypePtr &obj_sem,
                                      const std::string &method);
-  std::vector<llvm::Value *> box_kind_method_args(const CallExprNode &node,
-                                                  const MethodInfo &m);
+  std::vector<llvm::Value *>
+  box_kind_method_args(const CallExprNode &node, const MethodInfo &m,
+                       std::vector<llvm::Value *> &values);
+  void release_kind_method_args(const CallExprNode &node, const MethodInfo &m,
+                                const TypePtr &obj_sem,
+                                const std::vector<llvm::Value *> &values);
+  TypePtr kind_slot_type(const TypePtr &obj_sem, const TypePtr &param);
   llvm::Value *box_for_type_param(llvm::Value *val, const TypePtr &arg_sem);
   llvm::Value *unbox_kind_method_result(llvm::Value *result,
                                         const MethodInfo &m,
@@ -1185,7 +1204,8 @@ private:
 
   Ownership value_ownership(const Node &node);
   Ownership call_ownership(const CallExprNode &call);
-  bool returns_stored_element(const CallExprNode &call);
+  bool reads_stored_element(const CallExprNode &call);
+  bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
   Ownership zero_ownership(const TypePtr &result);
   Ownership or_ownership(const OrExprNode &node);

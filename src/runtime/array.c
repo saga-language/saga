@@ -11,8 +11,26 @@
 /* Array                                                                    */
 /*                                                                          */
 /* A counted, copy-on-write buffer of fixed-size elements. The layout is in */
-/* runtime_internal.h.                                                      */
+/* runtime_internal.h; `ops` is how it holds what its elements point at.    */
 /* ───────────────────────────────────────────────────────────────────────── */
+
+static void *slot_at(const saga_runtime_array *arr, int64_t index) {
+  return (char *)arr->data + arr->elem_size * index;
+}
+
+static void retain_slot(const saga_runtime_array *arr, void *slot) {
+  if (arr->ops) arr->ops->retain(slot);
+}
+
+static void release_slot(const saga_runtime_array *arr, void *slot) {
+  if (arr->ops) arr->ops->release(slot);
+}
+
+static void ensure_room(saga_runtime_array *arr) {
+  if (arr->len < arr->cap) return;
+  arr->cap = arr->cap > 0 ? arr->cap * 2 : 4;
+  arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
+}
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array refcounting                                                        */
@@ -26,18 +44,20 @@ void saga_retain_array(saga_runtime_array *arr) {
 void saga_release_array(saga_runtime_array *arr) {
   if (!arr || arr->refcount < 0) return;
   arr->refcount--;
-  if (arr->refcount <= 0) {
-    free(arr->data);
-    free(arr);
-  }
+  if (arr->refcount > 0) return;
+  for (int64_t i = 0; i < arr->len; i++)
+    release_slot(arr, slot_at(arr, i));
+  free(arr->data);
+  free(arr);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array operations                                                         */
 /* ───────────────────────────────────────────────────────────────────────── */
 
-/* Internal versions used by string helpers (defined above via forward decl). */
-saga_runtime_array *saga_array_new_internal(int64_t elem_size, int64_t initial_cap) {
+saga_runtime_array *saga_array_new_internal(int64_t elem_size,
+                                            int64_t initial_cap,
+                                            const saga_runtime_elem_ops *ops) {
   if (initial_cap < 4) initial_cap = 4;
   saga_runtime_array *arr = (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
   arr->data = malloc((size_t)(elem_size * initial_cap));
@@ -45,40 +65,34 @@ saga_runtime_array *saga_array_new_internal(int64_t elem_size, int64_t initial_c
   arr->cap = initial_cap;
   arr->elem_size = elem_size;
   arr->refcount = 1;
+  arr->ops = ops;
   return arr;
 }
 
+/* The runtime's own push: the element is one it just made, so the array */
+/* takes over that reference rather than adding one.                     */
 void saga_array_push_internal(saga_runtime_array *arr, const void *elem) {
   if (!arr) return;
-  if (arr->len >= arr->cap) {
-    arr->cap = arr->cap * 2;
-    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
-  }
-  memcpy((char *)arr->data + arr->elem_size * arr->len, elem,
-         (size_t)arr->elem_size);
+  ensure_room(arr);
+  memcpy(slot_at(arr, arr->len), elem, (size_t)arr->elem_size);
   arr->len++;
 }
 
-saga_runtime_array *saga_array_new(int64_t elem_size, int64_t initial_cap) {
-  if (initial_cap < 4) initial_cap = 4;
-  saga_runtime_array *arr = (saga_runtime_array *)malloc(sizeof(saga_runtime_array));
-  arr->data = malloc((size_t)(elem_size * initial_cap));
-  arr->len = 0;
-  arr->cap = initial_cap;
-  arr->elem_size = elem_size;
-  arr->refcount = 1;
-  return arr;
+saga_runtime_array *saga_array_new(int64_t elem_size, int64_t initial_cap,
+                                   const saga_runtime_elem_ops *ops) {
+  return saga_array_new_internal(elem_size, initial_cap, ops);
 }
 
 // Construction-only append: the caller has just allocated `arr` and holds the
 // sole reference, so it is safe to grow in place with no copy-on-write.
 void saga_array_builder_push(saga_runtime_array *arr, const void *elem) {
   saga_array_push_internal(arr, elem);
+  retain_slot(arr, slot_at(arr, arr->len - 1));
 }
 
 void *saga_array_at(saga_runtime_array *arr, int64_t index) {
   if (!arr || index < 0 || index >= arr->len) return NULL;
-  return (char *)arr->data + arr->elem_size * index;
+  return slot_at(arr, index);
 }
 
 int64_t saga_array_size(saga_runtime_array *arr) {
@@ -89,8 +103,7 @@ void saga_array_find(saga_union_8 *out, saga_runtime_array *arr,
                      const void *elem) {
   if (arr && elem) {
     for (int64_t i = 0; i < arr->len; i++) {
-      void *cur = (char *)arr->data + arr->elem_size * i;
-      if (memcmp(cur, elem, (size_t)arr->elem_size) == 0) {
+      if (memcmp(slot_at(arr, i), elem, (size_t)arr->elem_size) == 0) {
         saga_union_8_set_i64(out, 0, i);
         return;
       }
@@ -107,39 +120,38 @@ saga_runtime_array *saga_array_insert(saga_runtime_array *arr,
   if (!arr || !elem) return arr;
   if (index < 0) index = 0;
   if (index > arr->len) index = arr->len;
-  if (arr->len >= arr->cap) {
-    arr->cap = arr->cap > 0 ? arr->cap * 2 : 4;
-    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
-  }
-  char *base = (char *)arr->data;
-  int64_t es = arr->elem_size;
-  if (index < arr->len) {
-    memmove(base + es * (index + 1), base + es * index,
-            (size_t)(es * (arr->len - index)));
-  }
-  memcpy(base + es * index, elem, (size_t)es);
+  ensure_room(arr);
+  if (index < arr->len)
+    memmove(slot_at(arr, index + 1), slot_at(arr, index),
+            (size_t)(arr->elem_size * (arr->len - index)));
+  memcpy(slot_at(arr, index), elem, (size_t)arr->elem_size);
+  retain_slot(arr, slot_at(arr, index));
   arr->len++;
   return arr;
 }
 
+/* The popped element's reference goes to the caller with it. */
 void *saga_array_pop(saga_runtime_array *arr) {
   if (!arr || arr->len == 0) return NULL;
   arr->len--;
-  return (char *)arr->data + arr->elem_size * arr->len;
+  return slot_at(arr, arr->len);
 }
 
+/* The new element is retained before the old is released, in case they are */
+/* the same value.                                                           */
 saga_runtime_array *saga_array_set(saga_runtime_array *arr, int64_t index,
                                    const void *elem) {
   arr = saga_array_make_unique(arr);
   if (!arr || !elem || index < 0 || index >= arr->len) return arr;
-  memcpy((char *)arr->data + arr->elem_size * index, elem,
-         (size_t)arr->elem_size);
+  retain_slot(arr, (void *)elem);
+  release_slot(arr, slot_at(arr, index));
+  memcpy(slot_at(arr, index), elem, (size_t)arr->elem_size);
   return arr;
 }
 
 /* Shallow clone: new struct + new data buffer, contents memcpy'd.            */
 /* Matches saga_array_equals: elements (pointer or aggregate value) are       */
-/* shared by byte-copy, not deeply duplicated.                                */
+/* shared by byte-copy, not deeply duplicated, so each gains a reference.     */
 saga_runtime_array *saga_array_clone(const saga_runtime_array *src) {
   if (!src) return NULL;
   saga_runtime_array *dst = (saga_runtime_array *)malloc(sizeof(*dst));
@@ -147,9 +159,12 @@ saga_runtime_array *saga_array_clone(const saga_runtime_array *src) {
   dst->len = src->len;
   dst->cap = src->cap > 0 ? src->cap : (src->len > 0 ? src->len : 4);
   dst->refcount = 1;
+  dst->ops = src->ops;
   dst->data = malloc((size_t)(dst->elem_size * dst->cap));
   if (src->len > 0)
     memcpy(dst->data, src->data, (size_t)(src->elem_size * src->len));
+  for (int64_t i = 0; i < dst->len; i++)
+    retain_slot(dst, slot_at(dst, i));
   return dst;
 }
 
@@ -169,12 +184,9 @@ saga_runtime_array *saga_array_append(saga_runtime_array *arr,
                                       const void *elem) {
   arr = saga_array_make_unique(arr);
   if (!arr || !elem) return arr;
-  if (arr->len >= arr->cap) {
-    arr->cap = arr->cap > 0 ? arr->cap * 2 : 4;
-    arr->data = realloc(arr->data, (size_t)(arr->elem_size * arr->cap));
-  }
-  memcpy((char *)arr->data + arr->elem_size * arr->len, elem,
-         (size_t)arr->elem_size);
+  ensure_room(arr);
+  memcpy(slot_at(arr, arr->len), elem, (size_t)arr->elem_size);
+  retain_slot(arr, slot_at(arr, arr->len));
   arr->len++;
   return arr;
 }

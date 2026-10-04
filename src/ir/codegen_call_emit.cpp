@@ -58,13 +58,17 @@ llvm::Value *CodeGen::as_param(llvm::Value *val, llvm::Type *param_ll) {
   return spill_aggregate(val, "arg.spill");
 }
 
+const FuncTypeInfo *func_info(const MethodInfo &m) {
+  return m.signature && m.signature->kind == TypeKind::Func
+             ? &std::get<FuncTypeInfo>(m.signature->detail)
+             : nullptr;
+}
+
 const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
                                      const std::string &name) {
   for (auto &m : methods)
     if (m.name == name)
-      return m.signature && m.signature->kind == TypeKind::Func
-                 ? &std::get<FuncTypeInfo>(m.signature->detail)
-                 : nullptr;
+      return func_info(m);
   return nullptr;
 }
 

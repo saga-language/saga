@@ -135,8 +135,8 @@ llvm::Value *CodeGen::is_error_tag(llvm::Value *tag,
   for (size_t i = 0; i < info.alternatives.size(); ++i) {
     if (!is_error_valued(info.alternatives[i]))
       continue;
-    auto *cmp =
-        builder.CreateICmpEQ(tag, llvm::ConstantInt::get(i8_ty, i), "or.is_err");
+    auto *cmp = builder.CreateICmpEQ(tag, llvm::ConstantInt::get(i8_ty, i),
+                                     "or.is_err");
     is_err = is_err ? builder.CreateOr(is_err, cmp, "or.any_err") : cmp;
   }
   return is_err;

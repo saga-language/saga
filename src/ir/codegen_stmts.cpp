@@ -199,43 +199,13 @@ void CodeGen::emit_stmt(const Node &node) {
 // ===========================================================================
 
 llvm::Value *CodeGen::emit_empty_array(const TypePtr &array_sem) {
-  auto &arr_info = std::get<ArrayTypeInfo>(array_sem->detail);
-  int64_t elem_size = 8;
-  if (arr_info.element) {
-    auto *elem_ll = llvm_type(arr_info.element);
-    if (elem_ll->isIntegerTy(1))
-      elem_size = 1;
-  }
-  return builder.CreateCall(
-      module->getFunction("saga_array_new"),
-      {llvm::ConstantInt::get(i64_type, elem_size),
-       llvm::ConstantInt::get(i64_type, 4)}, "arr");
+  return emit_new_array(std::get<ArrayTypeInfo>(array_sem->detail).element, 4,
+                        "arr");
 }
 
 llvm::Value *CodeGen::emit_empty_map(const TypePtr &map_sem) {
   auto &map_info = std::get<MapTypeInfo>(map_sem->detail);
-  int64_t key_size = 8, val_size = 8;
-  if (map_info.key) {
-    auto *key_ll = llvm_type(map_info.key);
-    if (key_ll->isStructTy())
-      key_size = size_of(key_ll);
-    else if (key_ll->isIntegerTy(1))
-      key_size = 1;
-  }
-  if (map_info.value) {
-    auto *val_ll = llvm_type(map_info.value);
-    if (val_ll->isStructTy())
-      val_size = size_of(val_ll);
-    else if (val_ll->isIntegerTy(1))
-      val_size = 1;
-  }
-  int64_t key_kind_tag = static_cast<int64_t>(CodeGen::key_kind_for(map_info.key));
-  return builder.CreateCall(
-      module->getFunction("saga_map_new"),
-      {llvm::ConstantInt::get(i64_type, key_size),
-       llvm::ConstantInt::get(i64_type, val_size),
-       llvm::ConstantInt::get(i64_type, key_kind_tag),
-       get_or_emit_key_ops(map_info.key)}, "map");
+  return emit_new_map(map_info.key, map_info.value);
 }
 
 // A union with no initializer zeroes to tag 0 (the leftmost alternative). For a
@@ -385,7 +355,8 @@ void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
 // the write lands in is made unique first.
 void CodeGen::emit_map_index_assign(const IndexExprNode &target,
                                     const TypePtr &obj_sem, llvm::Value *rhs,
-                                    const TypePtr &rhs_sem) {
+                                    const TypePtr &rhs_sem,
+                                    const Node &rhs_node) {
   auto &info = std::get<MapTypeInfo>(obj_sem->detail);
   auto *map = make_binding_unique(*target.object, obj_sem);
   auto *key = emit_expr(*target.index);
@@ -401,6 +372,8 @@ void CodeGen::emit_map_index_assign(const IndexExprNode &target,
 
   builder.CreateCall(module->getFunction("saga_map_set"),
                      {map, key_slot, val_slot});
+  settle_stored(key, semantic_type(*target.index), *target.index, info.key);
+  settle_stored(rhs, rhs_sem, rhs_node, info.value);
 }
 
 // A shared backing buffer is copied on write, so `saga_array_set` hands back
@@ -408,7 +381,8 @@ void CodeGen::emit_map_index_assign(const IndexExprNode &target,
 // that result is what made the write vanish.
 void CodeGen::emit_array_index_assign(const IndexExprNode &target,
                                       const TypePtr &obj_sem, llvm::Value *rhs,
-                                      const TypePtr &rhs_sem) {
+                                      const TypePtr &rhs_sem,
+                                      const Node &rhs_node) {
   auto [holder, holder_ll] = assign_target_address(*target.object);
   if (!holder)
     return;
@@ -427,17 +401,18 @@ void CodeGen::emit_array_index_assign(const IndexExprNode &target,
   // `saga_array_set` hands back its own +1, whether it cloned or wrote in
   // place, so the reference the slot held before this is one too many.
   emit_release(arr, obj_sem);
+  settle_stored(rhs, rhs_sem, rhs_node, info.element);
 }
 
 void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
-                                const TypePtr &rhs_sem) {
+                                const TypePtr &rhs_sem, const Node &rhs_node) {
   auto obj_sem = unwrap_alias(semantic_type(*target.object));
   if (!obj_sem)
     return;
   if (obj_sem->kind == TypeKind::Map)
-    emit_map_index_assign(target, obj_sem, rhs, rhs_sem);
+    emit_map_index_assign(target, obj_sem, rhs, rhs_sem, rhs_node);
   else if (obj_sem->kind == TypeKind::Array)
-    emit_array_index_assign(target, obj_sem, rhs, rhs_sem);
+    emit_array_index_assign(target, obj_sem, rhs, rhs_sem, rhs_node);
 }
 
 void CodeGen::emit_assign(const AssignNode &node) {
@@ -446,12 +421,12 @@ void CodeGen::emit_assign(const AssignNode &node) {
     if (!rhs)
       continue;
     auto rhs_sem = root_expr_type(*node.values[i]);
+    if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data)) {
+      emit_index_assign(*idx_expr, rhs, rhs_sem, *node.values[i]);
+      continue;
+    }
     retain_if_borrowed(rhs, rhs_sem, *node.values[i]);
-
-    if (auto *idx_expr = std::get_if<IndexExprNode>(&node.targets[i]->data))
-      emit_index_assign(*idx_expr, rhs, rhs_sem);
-    else
-      emit_slot_assign(*node.targets[i], node.op, rhs, rhs_sem);
+    emit_slot_assign(*node.targets[i], node.op, rhs, rhs_sem);
   }
 }
 

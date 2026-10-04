@@ -1440,7 +1440,7 @@ int64_t saga_string_size(const saga_runtime_string *s) {
 
 saga_runtime_array *saga_string_bytes(const saga_runtime_string *s) {
   int64_t len = (s && s->data) ? s->len : 0;
-  saga_runtime_array *arr = saga_array_new_internal(1, len > 4 ? len : 4);
+  saga_runtime_array *arr = saga_array_new_internal(1, len > 4 ? len : 4, NULL);
   for (int64_t i = 0; i < len; i++) {
     uint8_t b = (uint8_t)s->data[i];
     saga_array_push_internal(arr, &b);
@@ -1464,7 +1464,7 @@ int64_t saga_string_count(const saga_runtime_string *s) {
 
 saga_runtime_array *saga_string_runes(const saga_runtime_string *s) {
   int64_t len = (s && s->data) ? s->len : 0;
-  saga_runtime_array *arr = saga_array_new_internal(4, len > 4 ? len : 4);
+  saga_runtime_array *arr = saga_array_new_internal(4, len > 4 ? len : 4, NULL);
   for (int64_t i = 0; i < len; ) {
     unsigned char c = (unsigned char)s->data[i];
     int32_t cp = 0;
@@ -1592,7 +1592,7 @@ saga_runtime_string *saga_string_title(const saga_runtime_string *s) {
 saga_runtime_array *saga_string_split(const saga_runtime_string *s,
                                       const saga_runtime_string *sep) {
   saga_runtime_array *arr = saga_array_new_internal(
-      (int64_t)sizeof(saga_runtime_string *), 4);
+      (int64_t)sizeof(saga_runtime_string *), 4, &saga_string_elem_ops);
   if (!s || s->len == 0) {
     saga_runtime_string *empty = saga_runtime_alloc_string("", 0);
     saga_array_push_internal(arr, &empty);
@@ -1845,6 +1845,7 @@ saga_runtime_array *saga_runtime_arena_alloc_array(saga_runtime_arena *a, int64_
   arr->cap       = initial_cap;
   arr->elem_size = elem_size;
   arr->refcount  = -1; /* arena-owned */
+  arr->ops       = NULL;
   return arr;
 }
 
@@ -1879,6 +1880,8 @@ saga_runtime_map *saga_runtime_arena_alloc_map(saga_runtime_arena *a, int64_t ke
   m->refcount    = -1; /* arena-owned */
   m->key_kind    = key_kind;
   m->ops         = ops;
+  m->key_elem_ops = NULL;
+  m->val_elem_ops = NULL;
   return m;
 }
 

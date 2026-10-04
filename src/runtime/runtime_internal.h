@@ -26,10 +26,24 @@ typedef struct {
   int64_t refcount;
 } saga_runtime_string;
 
+/* How a collection takes and drops the references one of its slots holds.  */
+/* Codegen hands one in per element type, and a type that holds none gets   */
+/* null. A collection retains what it stores, releases what it overwrites,  */
+/* removes or frees, and retains every element of a copy.                   */
+typedef struct {
+  void (*retain)(void *slot);
+  void (*release)(void *slot);
+} saga_runtime_elem_ops;
+
+extern const saga_runtime_elem_ops saga_string_elem_ops;
+extern const saga_runtime_elem_ops saga_array_elem_ops;
+extern const saga_runtime_elem_ops saga_map_elem_ops;
+
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Array                                                                    */
 /*                                                                          */
-/* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount }   */
+/* Layout: { void *data, i64 len, i64 cap, i64 elem_size, i64 refcount,    */
+/*           ptr ops }                                                      */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -38,6 +52,7 @@ typedef struct {
   int64_t cap;
   int64_t elem_size;
   int64_t refcount;
+  const saga_runtime_elem_ops *ops;
 } saga_runtime_array;
 
 /* ───────────────────────────────────────────────────────────────────────── */
@@ -84,6 +99,8 @@ typedef struct {
   int64_t refcount;
   int64_t key_kind;                       /* saga_runtime_key_kind                  */
   const saga_runtime_key_ops *ops;        /* non-NULL iff key_kind == USER          */
+  const saga_runtime_elem_ops *key_elem_ops;
+  const saga_runtime_elem_ops *val_elem_ops;
 } saga_runtime_map;
 
 #define SAGA_RUNTIME_MAP_EMPTY    (-1)
@@ -137,9 +154,13 @@ uint64_t saga_runtime_siphash(const uint8_t *data, int64_t len);
 
 void saga_retain_array(saga_runtime_array *arr);
 void saga_release_array(saga_runtime_array *arr);
+void saga_retain_map(saga_runtime_map *m);
+void saga_release_map(saga_runtime_map *m);
 saga_runtime_array *saga_array_new_internal(int64_t elem_size,
-                                            int64_t initial_cap);
+                                            int64_t initial_cap,
+                                            const saga_runtime_elem_ops *ops);
 void saga_array_push_internal(saga_runtime_array *arr, const void *elem);
+void saga_array_builder_push(saga_runtime_array *arr, const void *elem);
 saga_runtime_array *saga_array_clone(const saga_runtime_array *src);
 saga_runtime_array *saga_array_make_unique(saga_runtime_array *arr);
 

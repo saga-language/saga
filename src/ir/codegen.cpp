@@ -233,12 +233,12 @@ void CodeGen::init_types() {
       {llvm::PointerType::getUnqual(context), i64_type, i64_type},
       "saga_runtime_string");
 
-  // saga_runtime_array = { ptr, i64, i64, i64, i64 } — data, len, cap,
-  // elem_size, refcount
+  // saga_runtime_array = { ptr, i64, i64, i64, i64, ptr } — data, len, cap,
+  // elem_size, refcount, elem ops
   array_type = llvm::StructType::create(
       context,
       {llvm::PointerType::getUnqual(context), i64_type, i64_type, i64_type,
-       i64_type},
+       i64_type, llvm::PointerType::getUnqual(context)},
       "saga_runtime_array");
 
   // Interface fat pointer: { ptr data, ptr vtable }

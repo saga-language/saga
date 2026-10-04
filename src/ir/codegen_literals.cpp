@@ -66,33 +66,14 @@ llvm::Value *CodeGen::collection_slot_address(llvm::Type *slot_ll,
   return tmp;
 }
 
-llvm::Value *CodeGen::collection_slot_value(llvm::Type *slot_ll,
-                                            const TypePtr &slot_sem,
-                                            const Node &value_node) {
-  return collection_slot_address(slot_ll, slot_sem, emit_operand(value_node),
-                                 operand_type(value_node));
-}
-
 llvm::Value *CodeGen::emit_array_literal(const ArrayLiteralNode &node,
                                          const Node &parent) {
   auto elem_sem = collection_slot_type(
       parent, Slot::Element,
       node.elements.empty() ? nullptr : node.elements[0].get());
-  auto *elem_ll = elem_sem ? llvm_type(elem_sem) : i64_type;
-
-  auto *new_fn = module->getFunction("saga_array_new");
-  auto *arr = builder.CreateCall(
-      new_fn,
-      {llvm::ConstantInt::get(i64_type, element_size_of(elem_ll)),
-       llvm::ConstantInt::get(i64_type,
-                              std::max((int64_t)node.elements.size(), (int64_t)4))},
-      "arr");
-
-  auto *push_fn = module->getFunction("saga_array_builder_push");
+  auto *arr = emit_new_array(elem_sem, node.elements.size(), "arr");
   for (auto &elem_node : node.elements)
-    if (auto *src = collection_slot_value(elem_ll, elem_sem, *elem_node))
-      builder.CreateCall(push_fn, {arr, src});
-
+    emit_push_element(arr, elem_sem, *elem_node);
   return arr;
 }
 
@@ -136,7 +117,8 @@ llvm::Value *CodeGen::emit_range_literal(const RangeNode &node) {
   auto *arr = builder.CreateCall(
       module->getFunction("saga_array_new"),
       {llvm::ConstantInt::get(i64_type, element_size_of(low->getType())),
-       llvm::ConstantInt::get(i64_type, 4)},
+       llvm::ConstantInt::get(i64_type, 4),
+       llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(context))},
       "range.arr");
   fill_range(arr, low, high);
   return arr;
@@ -154,27 +136,9 @@ llvm::Value *CodeGen::emit_map_literal(const MapLiteralNode &node,
       node.entries.empty() ? nullptr : node.entries[0].value.get();
   auto key_sem = collection_slot_type(parent, Slot::Key, first_key);
   auto val_sem = collection_slot_type(parent, Slot::Value, first_val);
-  auto *key_ll = key_sem ? llvm_type(key_sem) : i64_type;
-  auto *val_ll = val_sem ? llvm_type(val_sem) : i64_type;
-
-  auto *new_fn = module->getFunction("saga_map_new");
-  auto *map = builder.CreateCall(
-      new_fn,
-      {llvm::ConstantInt::get(i64_type, element_size_of(key_ll)),
-       llvm::ConstantInt::get(i64_type, element_size_of(val_ll)),
-       llvm::ConstantInt::get(
-           i64_type, static_cast<int64_t>(CodeGen::key_kind_for(key_sem))),
-       get_or_emit_key_ops(key_sem)},
-      "map");
-
-  auto *set_fn = module->getFunction("saga_map_set");
-  for (auto &entry : node.entries) {
-    auto *key_ptr = collection_slot_value(key_ll, key_sem, *entry.key);
-    auto *val_ptr = collection_slot_value(val_ll, val_sem, *entry.value);
-    if (key_ptr && val_ptr)
-      builder.CreateCall(set_fn, {map, key_ptr, val_ptr});
-  }
-
+  auto *map = emit_new_map(key_sem, val_sem);
+  for (auto &entry : node.entries)
+    emit_set_entry(map, key_sem, val_sem, entry);
   return map;
 }
 

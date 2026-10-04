@@ -23,6 +23,7 @@ static saga_runtime_array *heap_array(int64_t elem_size, int64_t cap) {
   arr->cap = cap;
   arr->elem_size = elem_size;
   arr->refcount = 1;
+  arr->ops = nullptr;
   return arr;
 }
 
@@ -184,7 +185,7 @@ TEST(CowTest, BarrierCopiesWhenShared) {
 
 static saga_runtime_map *int_map() {
   return saga_map_new(sizeof(int64_t), sizeof(int64_t), 1 /* INT64 */,
-                      nullptr);
+                      nullptr, nullptr, nullptr);
 }
 
 static void map_put(saga_runtime_map *m, int64_t k, int64_t v) {
