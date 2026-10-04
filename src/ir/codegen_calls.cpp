@@ -5,20 +5,8 @@
 
 #include <algorithm>
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/GlobalVariable.h>
-#include <llvm/IR/InlineAsm.h>
-#include <llvm/IR/Verifier.h>
 
 namespace saga {
-
-// Parse an integer literal (decimal only; for intrinsic argument indices).
-static int64_t parse_int_literal(std::string_view lit) {
-  int64_t val = 0;
-  for (char c : lit)
-    if (c != '_')
-      val = val * 10 + (c - '0');
-  return val;
-}
 
 // A C prototype takes what C declared, and the runtime spells its `bool` and
 // `byte` parameters `int64_t`. The Saga-side `extern fn` names the Saga type,
@@ -37,371 +25,209 @@ llvm::Value *CodeGen::fit_extern_int(llvm::Value *val, llvm::Type *expected) {
                      : builder.CreateTrunc(val, expected, "extern.trunc");
 }
 
-
 // ===========================================================================
 // Call expressions
 // ===========================================================================
 
 llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
                                      const Node &parent) {
-  // Check for method calls on objects (selector calls like arr.Size()).
   if (std::holds_alternative<SelectorNode>(node.callee->data))
     return emit_method_or_module_call(node, parent);
 
-
-  // Direct function call.
   auto *ident = std::get_if<IdentifierNode>(&node.callee->data);
   if (!ident)
     return nullptr;
-
   std::string name(ident->name);
 
-  // ── Concurrency intrinsics ──────────────────────────────────────────
-  // These need special handling because they inject the current_actor
-  // pointer or emit inline LLVM instructions.
+  if (auto result = emit_intrinsic_call(name, node))
+    return *result;
+  if (auto *spec = generic_function_specialisation(node, parent))
+    return emit_specialisation_call(spec, node);
+  if (auto *callee = module->getFunction(direct_link_name(name)))
+    return emit_direct_call(callee, node, is_extern_function(name));
+  return emit_function_value_call(node, name);
+}
 
-  // ── New stdlib intrinsics ────────────────────────────────────────────
+bool CodeGen::is_extern_function(const std::string &name) {
+  if (!analyzer.package_scope_)
+    return false;
+  auto sym = analyzer.package_scope_->lookup(name);
+  return sym && sym->is_extern;
+}
 
-  if (name == "intrinsic_sitofp") {
-    // intrinsic_sitofp(value: Int) -> Float (f64)
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    return builder.CreateSIToFP(val, f64_type, "sitofp");
-  }
+std::string CodeGen::direct_link_name(const std::string &name) {
+  if (name == "intrinsic_print")
+    return "saga_intrinsic_print";
+  return is_extern_function(name) ? name : mangle(name);
+}
 
-  // A float32 is stored as f64, like every float width: these round to f32
-  // and extend back, the float side of sext_zext_to_width below.
-  if (name == "intrinsic_sitofp32") {
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    auto *narrow =
-        builder.CreateSIToFP(val, llvm::Type::getFloatTy(context), "sitofp32");
-    return builder.CreateFPExt(narrow, f64_type, "f32.wide");
-  }
-
-  if (name == "intrinsic_fptrunc") {
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    auto *narrow =
-        builder.CreateFPTrunc(val, llvm::Type::getFloatTy(context), "fptrunc");
-    return builder.CreateFPExt(narrow, f64_type, "f32.wide");
-  }
-
-  if (name == "intrinsic_fpext") {
-    // intrinsic_fpext(value: Float) -> Float64 (f32 → f64)
-    // On 64-bit targets this is a no-op since Float is already f64.
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    auto *dst = llvm::Type::getDoubleTy(context);
-    if (val->getType() == dst) return val; // already f64 — identity
-    return builder.CreateFPExt(val, dst, "fpext");
-  }
-
-  if (name == "intrinsic_fptosi") {
-    // intrinsic_fptosi(value: Float) -> Int
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    return builder.CreateFPToSI(val, i64_type, "fptosi");
-  }
-
-  // Trunc-then-extend back to i64 keeps the runtime's uniform i64
-  // storage convention for narrow ints.
-  auto sext_zext_to_width = [&](int width, bool is_signed)
-      -> llvm::Value * {
-    auto *val = emit_expr(*node.args[0]);
-    if (!val) return nullptr;
-    if (width >= 64) return val;
-    auto *narrow_ty =
-        llvm::IntegerType::get(context, static_cast<unsigned>(width));
-    auto *narrow = builder.CreateTrunc(
-        val, narrow_ty, is_signed ? "strunc" : "ztrunc");
-    return is_signed ? builder.CreateSExt(narrow, i64_type, "sext")
-                     : builder.CreateZExt(narrow, i64_type, "zext");
-  };
-
-  if (name == "intrinsic_sext_i8")  return sext_zext_to_width(8,  true);
-  if (name == "intrinsic_sext_i16") return sext_zext_to_width(16, true);
-  if (name == "intrinsic_sext_i32") return sext_zext_to_width(32, true);
-  if (name == "intrinsic_sext_i64") return sext_zext_to_width(64, true);
-  if (name == "intrinsic_zext_u8")  return sext_zext_to_width(8,  false);
-  if (name == "intrinsic_zext_u16") return sext_zext_to_width(16, false);
-  if (name == "intrinsic_zext_u32") return sext_zext_to_width(32, false);
-  if (name == "intrinsic_zext_u64") return sext_zext_to_width(64, false);
-
-  if (name == "intrinsic_is_string") {
-    // Compile-time predicate: the argument's static type (after
-    // monomorphisation, via semantic_type) folds to a constant i1.
-    // LLVM constant-folds the surrounding branch, so the dead arm is
-    // dropped during -O1.
-    if (node.args.empty()) return nullptr;
-    // Emit the argument so any side-effects in the expression still run
-    // (none expected, but we don't speculate).
-    (void)emit_expr(*node.args[0]);
-    auto arg_sem = semantic_type(*node.args[0]);
-    bool is_string = arg_sem && arg_sem->kind == TypeKind::String;
-    return llvm::ConstantInt::get(i1_type, is_string ? 1 : 0);
-  }
-
-
-  if (name == "intrinsic_yield") {
-    // intrinsic_yield() → saga_actor_yield()
-    // The runtime reads the current actor from a thread-local so this
-    // call is safe from any depth inside a spawned execution context.
-    // Outside an actor context the runtime itself no-ops on NULL.
-    builder.CreateCall(module->getFunction("saga_actor_yield"), {});
-    return llvm::Constant::getNullValue(
-        llvm::PointerType::getUnqual(context));
-  }
-
-  if (name == "intrinsic_atomic_add") {
-    // intrinsic_atomic_add(ptr, val) → atomicrmw add i64* %ptr, i64 %val
-    // The first argument is treated as a pointer to an i64.
-    // We need to get the *address* of the first argument, not its value.
-    auto *val = emit_expr(*node.args[1]);
-    // Get the address of the first argument (must be a variable).
-    auto *ptr_ident = std::get_if<IdentifierNode>(&node.args[0]->data);
-    llvm::Value *ptr = nullptr;
-    if (ptr_ident) {
-      auto it = locals.find(std::string(ptr_ident->name));
-      if (it != locals.end())
-        ptr = it->second; // alloca — this IS the pointer
-    }
-    if (!ptr) {
-      // Fallback: emit the expression as a value (won't be atomic, but
-      // won't crash).  Semantic analysis should catch misuse.
-      return llvm::Constant::getNullValue(i64_type);
-    }
-    return builder.CreateAtomicRMW(llvm::AtomicRMWInst::Add, ptr, val,
-                                   llvm::MaybeAlign(),
-                                   llvm::AtomicOrdering::SequentiallyConsistent);
-  }
-
-  if (name == "intrinsic_trap") {
-    // intrinsic_trap(reason) → saga_actor_trap(reason)
-    // The runtime pulls the current actor from a thread-local so the
-    // intrinsic works from any call depth.  If there is no current
-    // actor (illegal use outside a spawn body), the runtime no-ops.
-    auto *reason = emit_expr(*node.args[0]);
-    builder.CreateCall(module->getFunction("saga_actor_trap"), {reason});
-    return llvm::Constant::getNullValue(
-        llvm::PointerType::getUnqual(context));
-  }
-
-  if (name == "intrinsic_syscall") {
-    // intrinsic_syscall(num, args_array) → inline syscall instruction.
-    // num is the syscall number (i64), args_array is an [Int] with up to
-    // 6 elements.
-    // On Linux x86_64 the syscall convention is:
-    //   rax = syscall number
-    //   rdi, rsi, rdx, r10, r8, r9 = arguments
-    //   rax = return value (negative = -errno)
-    auto *num = emit_expr(*node.args[0]);
-    auto *arr = emit_expr(*node.args[1]);
-
-    // Load up to 6 elements from the array. saga_runtime_array is { i64*, i64, i64 }
-    // where field 0 = data ptr, field 1 = length.
-    auto *arr_struct = llvm::StructType::getTypeByName(context, "saga_runtime_array");
-    if (!arr_struct)
-      arr_struct = llvm::StructType::create(
-          context,
-          {llvm::PointerType::getUnqual(context), i64_type, i64_type},
-          "saga_runtime_array");
-    auto *data_gep = builder.CreateStructGEP(arr_struct, arr, 0, "arr.data.ptr");
-    auto *data_ptr = builder.CreateLoad(
-        llvm::PointerType::getUnqual(context), data_gep, "arr.data");
-    auto *len_gep = builder.CreateStructGEP(arr_struct, arr, 1, "arr.len.ptr");
-    auto *len = builder.CreateLoad(i64_type, len_gep, "arr.len");
-
-    // Load each argument with a bounds check, defaulting to 0.
-    auto *zero = llvm::ConstantInt::get(i64_type, 0);
-    llvm::Value *syscall_args[6];
-    for (int i = 0; i < 6; ++i) {
-      auto *idx = llvm::ConstantInt::get(i64_type, i);
-      auto *in_bounds = builder.CreateICmpSGT(len, idx, "inb");
-      auto *elem_ptr = builder.CreateGEP(i64_type, data_ptr, {idx}, "elem.ptr");
-      auto *elem = builder.CreateLoad(i64_type, elem_ptr, "elem");
-      syscall_args[i] = builder.CreateSelect(in_bounds, elem, zero, "arg");
-    }
-
-    // Build the inline asm for syscall.
-    auto *fn_type = llvm::FunctionType::get(
-        i64_type,
-        {i64_type, i64_type, i64_type, i64_type, i64_type, i64_type, i64_type},
-        false);
-    auto *ia = llvm::InlineAsm::get(
-        fn_type, "syscall",
-        "={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}",
-        /*hasSideEffects=*/true);
-    return builder.CreateCall(
-        ia, {num, syscall_args[0], syscall_args[1], syscall_args[2],
-             syscall_args[3], syscall_args[4], syscall_args[5]});
-  }
-
-  if (name == "intrinsic_ptr") {
-    // intrinsic_ptr(value) → load the data pointer from the backing
-    // buffer.  The argument is String | [Byte] (a union). We need
-    // to extract the payload pointer and then load field 0 of
-    // saga_runtime_string (the data pointer).
-    auto *val = emit_expr(*node.args[0]);
-    auto arg_sem = semantic_type(*node.args[0]);
-    llvm::Value *str_ptr = val;
-    // If the arg is a union, val is a ptr to the union struct alloca.
-    // Extract the payload (which is the string/array pointer).
-    if (arg_sem && arg_sem->kind == TypeKind::Union) {
-      auto *union_st = get_union_llvm_type(arg_sem);
-      auto *payload = builder.CreateStructGEP(union_st, val, 1, "ptr.payload");
-      str_ptr = builder.CreateLoad(
-          llvm::PointerType::getUnqual(context), payload, "ptr.str");
-    }
-    auto *data_ptr = builder.CreateStructGEP(string_type, str_ptr, 0, "str.data.ptr");
-    auto *ptr = builder.CreateLoad(
-        llvm::PointerType::getUnqual(context), data_ptr, "str.data");
-    return builder.CreatePtrToInt(ptr, i64_type, "ptr.int");
-  }
-
-  // ── Generic free-function dispatch ──────────────────────────────────
-  // If the callee is a generic free function, emit (or reuse) a
-  // monomorphised specialisation and call it directly.
-  {
-    auto callee_sem = unwrap_alias(semantic_type(*node.callee));
-    if (callee_sem && callee_sem->kind == TypeKind::Func) {
-      auto fd_it = analyzer.func_decl_by_type_.find(callee_sem.get());
-      if (fd_it != analyzer.func_decl_by_type_.end()) {
-        const FuncDeclNode *fn_decl = fd_it->second;
-        if (fn_decl->generic && !fn_decl->receiver && !fn_decl->is_extern) {
-          auto *ta_ptr = node_type_args_of(parent);
-          if (ta_ptr) {
-            auto &bindings = *ta_ptr;
-
-            // Find the matching BodyInstantiation.
-            const Analyzer::BodyInstantiation *inst = nullptr;
-            auto inst_it = analyzer.instantiations_.find(fn_decl);
-            if (inst_it != analyzer.instantiations_.end()) {
-              for (auto &i : inst_it->second) {
-                if (i.bindings.size() == bindings.size()) {
-                  bool match = true;
-                  for (auto &[id, t] : bindings) {
-                    auto j = i.bindings.find(id);
-                    if (j == i.bindings.end() ||
-                        !types_equal(t, j->second)) {
-                      match = false;
-                      break;
-                    }
-                  }
-                  if (match) { inst = &i; break; }
-                }
-              }
-            }
-
-            auto *spec = emit_specialisation(*fn_decl, callee_sem,
-                                             bindings, inst);
-            if (spec) {
-              std::vector<llvm::Value *> args;
-              auto *ft = spec->getFunctionType();
-              auto *parent_fn = builder.GetInsertBlock()->getParent();
-              for (auto &a : node.args) {
-                auto *v = emit_expr(*a);
-                if (!v) continue;
-                // A specialisation takes a struct by pointer. Ask its
-                // signature rather than re-deriving the rule here.
-                if (args.size() < ft->getNumParams() &&
-                    ft->getParamType(args.size())->isPointerTy() &&
-                    v->getType()->isStructTy()) {
-                  auto *tmp = create_entry_alloca(parent_fn, "arg.spill",
-                                                  v->getType());
-                  builder.CreateStore(v, tmp);
-                  v = tmp;
-                }
-                args.push_back(v);
-              }
-              if (spec->getReturnType()->isVoidTy()) {
-                builder.CreateCall(spec, args);
-                return nullptr;
-              }
-              return builder.CreateCall(spec, args, "gen.call");
-            }
-          }
-        }
+const Analyzer::BodyInstantiation *CodeGen::find_instantiation(
+    const FuncDeclNode *decl,
+    const std::unordered_map<uint32_t, TypePtr> &bindings) {
+  auto inst_it = analyzer.instantiations_.find(decl);
+  if (inst_it == analyzer.instantiations_.end())
+    return nullptr;
+  for (auto &inst : inst_it->second) {
+    if (inst.bindings.size() != bindings.size())
+      continue;
+    bool match = true;
+    for (auto &[id, t] : bindings) {
+      auto j = inst.bindings.find(id);
+      if (j == inst.bindings.end() || !types_equal(t, j->second)) {
+        match = false;
+        break;
       }
     }
+    if (match)
+      return &inst;
   }
+  return nullptr;
+}
 
-  // ── Regular function dispatch ───────────────────────────────────────
-  auto pkg_lookup = [&]() -> std::optional<Symbol> {
-    if (analyzer.package_scope_)
-      return analyzer.package_scope_->lookup(name);
-    return std::nullopt;
-  };
-  std::string link_name;
-  if (name == "intrinsic_print") {
-    link_name = "saga_intrinsic_print";
-  } else if (auto sym = pkg_lookup(); sym && sym->is_extern) {
-    link_name = name;
-  } else {
-    link_name = mangle(name);
-  }
+llvm::Function *
+CodeGen::generic_function_specialisation(const CallExprNode &node,
+                                         const Node &parent) {
+  auto callee_sem = unwrap_alias(semantic_type(*node.callee));
+  if (!callee_sem || callee_sem->kind != TypeKind::Func)
+    return nullptr;
+  auto fd_it = analyzer.func_decl_by_type_.find(callee_sem.get());
+  if (fd_it == analyzer.func_decl_by_type_.end())
+    return nullptr;
+  const FuncDeclNode *fn_decl = fd_it->second;
+  if (!fn_decl->generic || fn_decl->receiver || fn_decl->is_extern)
+    return nullptr;
+  auto *bindings = node_type_args_of(parent);
+  if (!bindings)
+    return nullptr;
+  return emit_specialisation(*fn_decl, callee_sem, *bindings,
+                             find_instantiation(fn_decl, *bindings));
+}
 
-  auto *callee = module->getFunction(link_name);
-
-  // If not a known module function, check if it's a function-typed local
-  // or parameter (first-class function value).  v1: free functions only —
-  // the value is a raw LLVM function pointer; no env, no closure struct.
-  if (!callee) {
-    auto local_it = locals.find(name);
-    if (local_it != locals.end()) {
-      auto *alloca = local_it->second;
-      auto callee_sem = unwrap_alias(semantic_type(*node.callee));
-      bool is_func_typed = callee_sem && callee_sem->kind == TypeKind::Func;
-      if (is_func_typed) {
-        auto *ptr_type = llvm::PointerType::getUnqual(context);
-        bool is_closure =
-            alloca->getAllocatedType() == closure_fat_ptr_type;
-
-        // Closure value carries (fn, env); plain function value is just fn.
-        // The trampoline expects env as its first arg.
-        llvm::Value *fn_ptr = nullptr;
-        llvm::Value *env_ptr = nullptr;
-        if (is_closure) {
-          auto *fn_gep = builder.CreateStructGEP(
-              closure_fat_ptr_type, alloca, 0, "closure.fn.gep");
-          fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "closure.fn");
-          auto *env_gep = builder.CreateStructGEP(
-              closure_fat_ptr_type, alloca, 1, "closure.env.gep");
-          env_ptr = builder.CreateLoad(ptr_type, env_gep, "closure.env");
-        } else {
-          fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
-        }
-
-        std::vector<llvm::Value *> args;
-        std::vector<llvm::Type *> param_types;
-        if (is_closure) {
-          args.push_back(env_ptr);
-          param_types.push_back(ptr_type);
-        }
-        for (auto &arg_node : node.args) {
-          auto *val = emit_expr(*arg_node);
-          if (val)
-            args.push_back(val);
-        }
-
-        llvm::Type *ret_ll = void_ll_type;
-        auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
-        for (auto &pt : fi.params)
-          param_types.push_back(llvm_type(pt));
-        if (fi.return_type)
-          ret_ll = llvm_type(fi.return_type);
-
-        auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
-        if (ret_ll->isVoidTy()) {
-          builder.CreateCall(fn_type, fn_ptr, args);
-          return nullptr;
-        }
-        return builder.CreateCall(fn_type, fn_ptr, args, "fn.call");
-      }
+llvm::Value *CodeGen::emit_specialisation_call(llvm::Function *spec,
+                                               const CallExprNode &node) {
+  std::vector<llvm::Value *> args;
+  auto *ft = spec->getFunctionType();
+  auto *parent_fn = builder.GetInsertBlock()->getParent();
+  for (auto &a : node.args) {
+    auto *v = emit_expr(*a);
+    if (!v) continue;
+    // A specialisation takes a struct by pointer. Ask its
+    // signature rather than re-deriving the rule here.
+    if (args.size() < ft->getNumParams() &&
+        ft->getParamType(args.size())->isPointerTy() &&
+        v->getType()->isStructTy()) {
+      auto *tmp = create_entry_alloca(parent_fn, "arg.spill",
+                                      v->getType());
+      builder.CreateStore(v, tmp);
+      v = tmp;
     }
+    args.push_back(v);
+  }
+  if (spec->getReturnType()->isVoidTy()) {
+    builder.CreateCall(spec, args);
     return nullptr;
   }
+  return builder.CreateCall(spec, args, "gen.call");
+}
 
+// A function-typed local or parameter: a closure value carries (fn, env) and
+// the trampoline takes env first; a plain function value is just fn.
+llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node,
+                                               const std::string &name) {
+  auto local_it = locals.find(name);
+  if (local_it == locals.end())
+    return nullptr;
+  auto *alloca = local_it->second;
+  auto callee_sem = unwrap_alias(semantic_type(*node.callee));
+  if (!callee_sem || callee_sem->kind != TypeKind::Func)
+    return nullptr;
+
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  bool is_closure = alloca->getAllocatedType() == closure_fat_ptr_type;
+  llvm::Value *fn_ptr = nullptr;
+  llvm::Value *env_ptr = nullptr;
+  if (is_closure) {
+    auto *fn_gep = builder.CreateStructGEP(
+        closure_fat_ptr_type, alloca, 0, "closure.fn.gep");
+    fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "closure.fn");
+    auto *env_gep = builder.CreateStructGEP(
+        closure_fat_ptr_type, alloca, 1, "closure.env.gep");
+    env_ptr = builder.CreateLoad(ptr_type, env_gep, "closure.env");
+  } else {
+    fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
+  }
+
+  std::vector<llvm::Value *> args;
+  std::vector<llvm::Type *> param_types;
+  if (is_closure) {
+    args.push_back(env_ptr);
+    param_types.push_back(ptr_type);
+  }
+  for (auto &arg_node : node.args) {
+    auto *val = emit_expr(*arg_node);
+    if (val)
+      args.push_back(val);
+  }
+
+  llvm::Type *ret_ll = void_ll_type;
+  auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
+  for (auto &pt : fi.params)
+    param_types.push_back(llvm_type(pt));
+  if (fi.return_type)
+    ret_ll = llvm_type(fi.return_type);
+
+  auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, false);
+  if (ret_ll->isVoidTy()) {
+    builder.CreateCall(fn_type, fn_ptr, args);
+    return nullptr;
+  }
+  return builder.CreateCall(fn_type, fn_ptr, args, "fn.call");
+}
+
+// Variadic arguments past the fixed ones are packed into a fresh array, unless
+// the call passes a single array of the variadic type through as it is.
+llvm::Value *CodeGen::pack_variadic_args(const CallExprNode &node,
+                                         const FuncTypeInfo &fi) {
+  if (!fi.is_variadic || fi.params.empty())
+    return nullptr;
+  size_t variadic_idx = fi.params.size() - 1;
+  auto &last = fi.params.back();
+  if (!last || last->kind != TypeKind::Array)
+    return nullptr;
+  if (node.args.size() == fi.params.size()) {
+    auto last_arg_sem = semantic_type(*node.args.back());
+    if (last_arg_sem && types_equal(last_arg_sem, last))
+      return nullptr;
+  }
+
+  auto *parent_fn = builder.GetInsertBlock()->getParent();
+  auto &arr = std::get<ArrayTypeInfo>(last->detail);
+  auto *elem_ll = llvm_type(arr.element);
+  uint64_t elem_size = elem_ll ? size_of(elem_ll) : 8;
+  int64_t var_count =
+      node.args.size() > variadic_idx
+          ? static_cast<int64_t>(node.args.size() - variadic_idx)
+          : 0;
+  std::vector<llvm::Value *> new_args = {
+      llvm::ConstantInt::get(i64_type, elem_size),
+      llvm::ConstantInt::get(i64_type, std::max<int64_t>(var_count, 4))};
+  auto *arr_val = builder.CreateCall(module->getFunction("saga_array_new"),
+                                     new_args, "var.arr");
+  auto *push_fn = module->getFunction("saga_array_builder_push");
+  for (size_t i = variadic_idx; i < node.args.size(); ++i) {
+    auto *val = emit_expr(*node.args[i]);
+    if (!val) continue;
+    auto *tmp = create_entry_alloca(parent_fn, "var.tmp", val->getType());
+    builder.CreateStore(val, tmp);
+    std::vector<llvm::Value *> push_args = {arr_val, tmp};
+    builder.CreateCall(push_fn, push_args);
+  }
+  return arr_val;
+}
+
+llvm::Value *CodeGen::emit_direct_call(llvm::Function *callee,
+                                       const CallExprNode &node,
+                                       bool callee_is_extern) {
   std::vector<llvm::Value *> args;
 
   // Sret lowering for direct dispatch.
@@ -421,56 +247,9 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   if (callee_sem && callee_sem->kind == TypeKind::Func)
     fi = &std::get<FuncTypeInfo>(callee_sem->detail);
 
-  // Variadic call with multiple scalar args: pack them into a fresh
-  // saga_runtime_array and pass the pointer as the variadic arg.
-  // The array-passthrough case (single array arg matching the variadic
-  // array type) is handled by the per-arg loop below.
-  llvm::Value *variadic_packed = nullptr;
-  size_t variadic_idx = 0;
-  bool variadic_is_passthrough = false;
-  if (fi && fi->is_variadic && !fi->params.empty()) {
-    variadic_idx = fi->params.size() - 1;
-    auto &last = fi->params.back();
-    if (node.args.size() == fi->params.size() &&
-        last && last->kind == TypeKind::Array) {
-      auto last_arg_sem = semantic_type(*node.args.back());
-      if (last_arg_sem && types_equal(last_arg_sem, last))
-        variadic_is_passthrough = true;
-    }
-    if (!variadic_is_passthrough &&
-        last && last->kind == TypeKind::Array) {
-      auto &arr = std::get<ArrayTypeInfo>(last->detail);
-      auto *elem_ll = llvm_type(arr.element);
-      uint64_t elem_size =
-          elem_ll ? size_of(elem_ll)
-                  : 8;
-      auto *new_fn = module->getFunction("saga_array_new");
-      auto *push_fn = module->getFunction("saga_array_builder_push");
-      int64_t var_count = node.args.size() > variadic_idx
-                              ? static_cast<int64_t>(node.args.size() -
-                                                     variadic_idx)
-                              : 0;
-      std::vector<llvm::Value *> new_args = {
-          llvm::ConstantInt::get(i64_type, elem_size),
-          llvm::ConstantInt::get(i64_type,
-                                 std::max<int64_t>(var_count, 4))};
-      auto *arr_val = builder.CreateCall(new_fn, new_args, "var.arr");
-      for (size_t i = variadic_idx; i < node.args.size(); ++i) {
-        auto *val = emit_expr(*node.args[i]);
-        if (!val) continue;
-        auto *tmp =
-            create_entry_alloca(parent_fn, "var.tmp", val->getType());
-        builder.CreateStore(val, tmp);
-        std::vector<llvm::Value *> push_args = {arr_val, tmp};
-        builder.CreateCall(push_fn, push_args);
-      }
-      variadic_packed = arr_val;
-    }
-  }
+  llvm::Value *variadic_packed = fi ? pack_variadic_args(node, *fi) : nullptr;
+  size_t variadic_idx = fi && !fi->params.empty() ? fi->params.size() - 1 : 0;
 
-  bool callee_is_extern = false;
-  if (auto sym = pkg_lookup(); sym && sym->is_extern)
-    callee_is_extern = true;
   for (size_t i = 0; i < node.args.size(); ++i) {
     if (variadic_packed && i >= variadic_idx) {
       args.push_back(variadic_packed);
@@ -548,91 +327,6 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
   if (sret_slot)
     return sret_slot;
   return call;
-}
-
-// ===========================================================================
-// Identifier expressions
-// ===========================================================================
-
-llvm::Value *CodeGen::emit_identifier(const IdentifierNode &node,
-                                      const Node &parent) {
-  std::string name(node.name);
-
-  // Check local variables.
-  auto it = locals.find(name);
-  if (it != locals.end()) {
-    // Union types are passed as pointers to their tagged struct.
-    // Return the alloca directly rather than loading.
-    auto *alloca = it->second;
-    auto *alloc_ty = alloca->getAllocatedType();
-    if (alloc_ty->isStructTy()) {
-      auto *st = llvm::cast<llvm::StructType>(alloc_ty);
-      // Check if this is a union struct: { i8, [N x i8] }
-      if (st->getNumElements() == 2 &&
-          st->getElementType(0)->isIntegerTy(8) &&
-          st->getElementType(1)->isArrayTy()) {
-        return alloca; // Return pointer to union struct.
-      }
-      // Closure fat pointer — return the alloca pointer.
-      if (st == closure_fat_ptr_type) {
-        return alloca;
-      }
-    }
-    return builder.CreateLoad(alloc_ty, alloca, name);
-  }
-
-  // Builtin constants.
-  if (name == "true")
-    return llvm::ConstantInt::get(i1_type, 1);
-  if (name == "false")
-    return llvm::ConstantInt::get(i1_type, 0);
-
-  // Enum type names — return a sentinel so selectors can access variants.
-  // Use the analyzer's symbol table to get the origin package so cross-
-  // package enum references resolve without falling back through the local
-  // package.
-  if (auto sym = analyzer.lookup(name);
-      sym && sym->type && sym->type->kind == TypeKind::Enum) {
-    auto &info = std::get<EnumTypeInfo>(sym->type->detail);
-    if (enum_types.count(key_for(info.origin_package, info.name)))
-      return llvm::ConstantInt::get(i64_type, 0);
-  }
-  if (enum_types.count(key_for("", name)))
-    return llvm::ConstantInt::get(i64_type, 0);
-
-  // A shape with no fields may be written without `{}`, so a bare type name
-  // here is a construction, not a type escaping into value position. Locals
-  // were resolved above, and the analyzer's recorded type is what admitted the
-  // braceless form, so it is what decides. There is nothing to store: the slot
-  // exists so the value has an address to be passed and received by.
-  if (auto sem = semantic_type(parent); is_empty_shape(sem)) {
-    llvm_type(sem);
-    auto &info = std::get<StructTypeInfo>(sem->detail);
-    if (auto it = struct_types.find(struct_cache_key(info));
-        it != struct_types.end())
-      return create_entry_alloca(builder.GetInsertBlock()->getParent(),
-                                 info.name + ".shape", it->second);
-  }
-
-  // Top-level function referenced as a value (e.g. `call_it(greet, ...)` or
-  // a struct literal like `Reg{ handler: greet }`).  Return the raw LLVM
-  // Function* — it is pointer-typed, matching how function-typed locals
-  // and struct fields are lowered.
-  if (auto *fn = module->getFunction(mangle(name)))
-    return fn;
-
-  // Top-level constant declared in the current package.  emit_const_decl
-  // creates a GlobalVariable named mangle(name); identifier reads from it.
-  // Struct-typed constants return the pointer (caller GEPs through it);
-  // scalar/string/array/map constants load the stored value.
-  if (auto *gv = module->getGlobalVariable(mangle(name))) {
-    auto sym = analyzer.lookup(name);
-    if (sym && sym->type && sym->type->kind == TypeKind::Struct)
-      return gv;
-    return builder.CreateLoad(gv->getValueType(), gv, name);
-  }
-
-  return nullptr;
 }
 
 } // namespace saga

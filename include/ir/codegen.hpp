@@ -560,6 +560,38 @@ private:
                                    const Node &outer);
   llvm::Value *emit_string_literal(const StringLiteralNode &node);
   llvm::Value *emit_call_expr(const CallExprNode &node, const Node &parent);
+  bool is_extern_function(const std::string &name);
+  std::string direct_link_name(const std::string &name);
+  const Analyzer::BodyInstantiation *
+  find_instantiation(const FuncDeclNode *decl,
+                     const std::unordered_map<uint32_t, TypePtr> &bindings);
+  llvm::Function *generic_function_specialisation(const CallExprNode &node,
+                                                  const Node &parent);
+  llvm::Value *emit_specialisation_call(llvm::Function *spec,
+                                        const CallExprNode &node);
+  llvm::Value *emit_function_value_call(const CallExprNode &node,
+                                        const std::string &name);
+  llvm::Value *pack_variadic_args(const CallExprNode &node,
+                                  const FuncTypeInfo &fi);
+  llvm::Value *emit_direct_call(llvm::Function *callee,
+                                const CallExprNode &node,
+                                bool callee_is_extern);
+
+  std::optional<llvm::Value *> emit_intrinsic_call(const std::string &name,
+                                                   const CallExprNode &node);
+  llvm::Value *emit_intrinsic_sitofp(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_sitofp32(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_fptrunc(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_fpext(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_fptosi(const CallExprNode &node);
+  llvm::Value *emit_int_width(const CallExprNode &node, unsigned bits,
+                              bool is_signed);
+  llvm::Value *emit_intrinsic_is_string(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_yield(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_atomic_add(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_trap(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_syscall(const CallExprNode &node);
+  llvm::Value *emit_intrinsic_ptr(const CallExprNode &node);
 
   /// Widen or narrow an integer argument to the width an extern callee was
   /// declared with. Saga's narrow integers are unsigned, so widening is zext.
@@ -731,6 +763,75 @@ private:
   llvm::Value *emit_module_function_call(const CallExprNode &node,
                                          const std::string &method,
                                          const TypePtr &obj_sem);
+  std::optional<llvm::Value *>
+  emit_alias_method_call(const CallExprNode &node, const SelectorNode &sel,
+                         const std::string &method, const TypePtr &obj_sem);
+  std::optional<llvm::Value *>
+  emit_field_function_call(const CallExprNode &node, const SelectorNode &sel,
+                           const std::string &method, const TypePtr &obj_sem);
+  llvm::Value *emit_struct_method_call(const CallExprNode &node,
+                                       const SelectorNode &sel,
+                                       const std::string &method,
+                                       const TypePtr &obj_sem,
+                                       llvm::Value *obj, const Node &parent);
+  std::pair<llvm::Value *, TypePtr>
+  embedded_method_target(const SelectorNode &sel, const std::string &method,
+                         const TypePtr &obj_sem, llvm::Value *obj);
+  llvm::Function *generic_method_specialisation(const std::string &method,
+                                                const TypePtr &obj_sem,
+                                                const Node &parent);
+  llvm::Value *emit_generic_method_call(llvm::Function *spec,
+                                        const CallExprNode &node,
+                                        const SelectorNode &sel,
+                                        llvm::Value *obj);
+  llvm::Value *emit_declared_method_call(const CallExprNode &node,
+                                         const SelectorNode &sel,
+                                         const std::string &method,
+                                         const TypePtr &obj_sem,
+                                         llvm::Value *obj);
+  llvm::Function *struct_method_callee(const StructTypeInfo &info,
+                                       const std::string &method);
+  std::optional<llvm::Value *> emit_task_method_call(const std::string &method,
+                                                     const StructTypeInfo &sinfo,
+                                                     llvm::Value *obj);
+  llvm::Value *emit_task_wait(const StructTypeInfo &sinfo, llvm::Value *obj);
+  std::optional<llvm::Value *>
+  emit_context_method_call(const CallExprNode &node, const std::string &method,
+                           llvm::Value *obj);
+  llvm::Value *emit_context_send(const CallExprNode &node, llvm::Value *obj);
+  llvm::Value *emit_context_exit(const CallExprNode &node, llvm::Value *obj);
+  llvm::Value *emit_enum_method_call(const CallExprNode &node,
+                                     const std::string &method,
+                                     const TypePtr &enum_sem, llvm::Value *obj);
+  llvm::Value *emit_enum_user_method_call(const CallExprNode &node,
+                                          const std::string &method,
+                                          const TypePtr &obj_sem,
+                                          llvm::Value *obj);
+  llvm::Value *emit_scalar_method_call(const CallExprNode &node,
+                                       const std::string &method,
+                                       const TypePtr &obj_sem,
+                                       llvm::Value *obj);
+  llvm::Value *emit_kind_method_call(const CallExprNode &node,
+                                     const std::string &method,
+                                     const TypePtr &obj_sem, llvm::Value *obj);
+  llvm::Function *kind_method_specialisation(const std::string &method,
+                                             const TypePtr &obj_sem);
+  llvm::Value *emit_kind_specialisation_call(llvm::Function *spec,
+                                             const CallExprNode &node,
+                                             llvm::Value *obj);
+  llvm::Value *emit_opaque_kind_method_call(const CallExprNode &node,
+                                            const std::string &method,
+                                            const TypePtr &obj_sem,
+                                            llvm::Value *obj);
+  llvm::Function *kind_method_callee(const MethodInfo &m,
+                                     const TypePtr &obj_sem,
+                                     const std::string &method);
+  std::vector<llvm::Value *> box_kind_method_args(const CallExprNode &node,
+                                                  const MethodInfo &m,
+                                                  llvm::Function *callee);
+  llvm::Value *unbox_kind_method_result(llvm::Value *result,
+                                        const MethodInfo &m,
+                                        const TypePtr &obj_sem);
   /// Type method call: `Type.Fn(args)` — a receiver-less free function
   /// namespaced to a struct type. The caller has already confirmed the
   /// selector object is a type reference.
