@@ -1178,6 +1178,7 @@ private:
 
   /// Register a local variable as managed (needs release at scope exit).
   void track_managed(llvm::AllocaInst *slot, const TypePtr &sem);
+  void track_reference(llvm::AllocaInst *slot, const TypePtr &sem);
 
   /// Emit retain call for a value based on its semantic type.
   void emit_retain(llvm::Value *val, const TypePtr &sem);

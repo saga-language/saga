@@ -1,0 +1,21 @@
+// A struct key is looked up by its value, whether the index names a key or
+// builds one in place.
+import "std/io"
+
+struct Key {
+  name string
+}
+
+pub fn (k Key) Hash() int64 { k.name.Size() }
+
+pub fn (k Key) Equals(other Key) bool { k.name == other.name }
+
+pub fn Main() void {
+  n := 7
+  keys map{Key: int} = {}
+  keys[Key{name: "k{n}"}] = 2
+  k := Key{name: "k{n}"}
+  named := keys[k] or { 0 }
+  built := keys[Key{name: "k{n}"}] or { 0 }
+  io.Println("{named} {built} {keys.Has(Key{name: "k{n}"})} {keys.Size()}")
+}

@@ -12,20 +12,26 @@ bool is_counted(const TypePtr &t) {
 }
 } // namespace
 
+// A local owns its value outright: a Task is dropped and a struct with a
+// `Close` is closed when its scope ends.
 void CodeGen::track_managed(llvm::AllocaInst *slot, const TypePtr &sem) {
   if (!slot || !sem) return;
-  if (sem->kind == TypeKind::String || sem->kind == TypeKind::Array ||
-      sem->kind == TypeKind::Map) {
-    managed_locals.push_back({slot, ManagedKind::Counted, sem});
-    return;
-  }
-  if (sem->kind != TypeKind::Struct) return;
-
-  auto &info = std::get<StructTypeInfo>(sem->detail);
-  if (info.name == "Task")
+  auto *info = sem->kind == TypeKind::Struct
+                   ? &std::get<StructTypeInfo>(sem->detail)
+                   : nullptr;
+  if (info && info->name == "Task")
     managed_locals.push_back({slot, ManagedKind::Task, sem});
-  else if (has_close_method(info))
+  else if (info && has_close_method(*info))
     managed_locals.push_back({slot, ManagedKind::Closeable, sem});
+  else
+    track_reference(slot, sem);
+}
+
+// A parameter owns only the reference its caller handed over; the value
+// itself, and closing it, stay with the caller.
+void CodeGen::track_reference(llvm::AllocaInst *slot, const TypePtr &sem) {
+  if (is_counted(sem))
+    managed_locals.push_back({slot, ManagedKind::Counted, sem});
   else if (owns_managed_fields(sem))
     managed_locals.push_back({slot, ManagedKind::Struct, sem});
 }

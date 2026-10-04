@@ -134,6 +134,11 @@ llvm::Constant *CodeGen::get_or_emit_key_ops(const TypePtr &key_type) {
     llvm::IRBuilder<> tb(bb);
     llvm::Value *a = equals_thunk->getArg(0);
     llvm::Value *b = equals_thunk->getArg(1);
+    // `other` takes a reference the callee gives back; the key stays in the
+    // map.
+    if (param_owns_reference(u))
+      if (auto *retain = struct_ownership_fn(u, true))
+        tb.CreateCall(retain, {b});
     auto *raw = tb.CreateCall(user_equals, {a, b});
     stamp_abi(raw, signature_of(user_equals));
     llvm::Value *as_i32;

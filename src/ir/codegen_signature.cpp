@@ -130,7 +130,7 @@ void CodeGen::bind_params(llvm::Function *fn, unsigned first,
       auto sem = pi < fi.params.size() ? fi.params[pi] : nullptr;
       ++pi;
       if (param_owns_reference(sem))
-        track_managed(slot, unwrap_alias(sem));
+        track_reference(slot, unwrap_alias(sem));
     }
 }
 

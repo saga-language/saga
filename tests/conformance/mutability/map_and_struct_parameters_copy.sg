@@ -1,0 +1,26 @@
+// Spec: "Values that escape their scope are copied." (docs/language.md:51)
+// A map parameter, and an array inside a struct parameter, hold a reference
+// of their own, so a write in the callee copies and the caller's value is
+// untouched.
+import "std/io"
+
+struct Bag {
+  xs array{int}
+}
+
+fn put(m map{string: int}) int {
+  m["a"] = 9
+  m["a"] or { 0 }
+}
+
+fn poke(b Bag) int {
+  b.xs[0] = 9
+  b.xs[0] or { 0 }
+}
+
+pub fn Main() void {
+  m map{string: int} = {"a": 1}
+  b := Bag{xs: [1, 2]}
+  io.Println("{put(m)} {m["a"] or { 0 }}")
+  io.Println("{poke(b)} {b.xs[0] or { 0 }}")
+}
