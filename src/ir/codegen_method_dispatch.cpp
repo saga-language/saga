@@ -91,11 +91,9 @@ CodeGen::emit_alias_method_call(const CallExprNode &node,
     if (!callee)
       return std::nullopt;
     auto *self = emit_expr(*sel.object);
-    std::vector<llvm::Value *> arg_vals;
-    for (auto &arg_node : node.args)
-      if (auto *v = emit_expr(*arg_node))
-        arg_vals.push_back(v);
-    return emit_call(callee, self, arg_vals);
+    return emit_call(callee, self,
+                     emit_arguments(node, method_signature(ai.methods, method),
+                                    true));
   }
   return std::nullopt;
 }

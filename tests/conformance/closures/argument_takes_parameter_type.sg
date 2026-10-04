@@ -1,0 +1,24 @@
+// Spec: a function expression "has a signature" (docs/language.md:1682), so
+// an argument takes its parameter's type as it would for a declared
+// function: a member of a union becomes the union.
+import "std/io"
+
+struct Shower {
+  tag string
+}
+
+fn (s Shower) Show(v int | string) string {
+  if v is int { return "{s.tag} int {v}" }
+  "{s.tag} other"
+}
+
+pub fn Main() void {
+  show := fn(v int | string) string {
+    if v is int { return "int {v}" }
+    "other"
+  }
+  io.Println(show(9))
+  io.Println(show("nine"))
+  s := Shower{tag: "method"}
+  io.Println(s.Show(9))
+}

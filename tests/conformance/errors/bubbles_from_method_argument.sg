@@ -1,0 +1,17 @@
+// Spec: "an argument travels the same way" (docs/language.md:618): an error
+// in an argument ends the expression at its `or`, whether the call is to a
+// function or to a method.
+import "std/io"
+
+struct Acc {
+  n int
+}
+
+fn (a Acc) Add(k int) int { a.n + k }
+
+pub fn Main() void {
+  a := Acc{n: 1}
+  xs := [1, 2]
+  io.Println((a.Add(xs[1]) or { -1 }).String())
+  io.Println((a.Add(xs[5]) or { -1 }).String())
+}

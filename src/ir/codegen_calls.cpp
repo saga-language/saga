@@ -41,8 +41,9 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
 
   if (auto result = emit_intrinsic_call(name, node))
     return *result;
-  if (auto *spec = generic_function_specialisation(node, parent))
-    return emit_specialisation_call(spec, node);
+  if (auto [spec, concrete] = generic_function_specialisation(node, parent);
+      spec)
+    return emit_specialisation_call(spec, concrete, node);
   if (auto *callee = module->getFunction(direct_link_name(name)))
     return emit_direct_call(callee, node, is_extern_function(name));
   return emit_function_value_call(node, name);
@@ -84,32 +85,33 @@ const Analyzer::BodyInstantiation *CodeGen::find_instantiation(
   return nullptr;
 }
 
-llvm::Function *
+// The specialisation a generic call names, with the signature its bindings
+// give it: the call lowers its arguments against that, as the body binds them.
+std::pair<llvm::Function *, TypePtr>
 CodeGen::generic_function_specialisation(const CallExprNode &node,
                                          const Node &parent) {
   auto callee_sem = unwrap_alias(semantic_type(*node.callee));
   if (!callee_sem || callee_sem->kind != TypeKind::Func)
-    return nullptr;
+    return {};
   auto fd_it = analyzer.func_decl_by_type_.find(callee_sem.get());
   if (fd_it == analyzer.func_decl_by_type_.end())
-    return nullptr;
+    return {};
   const FuncDeclNode *fn_decl = fd_it->second;
   if (!fn_decl->generic || fn_decl->receiver || fn_decl->is_extern)
-    return nullptr;
+    return {};
   auto *bindings = node_type_args_of(parent);
   if (!bindings)
-    return nullptr;
-  return emit_specialisation(*fn_decl, callee_sem, *bindings,
-                             find_instantiation(fn_decl, *bindings));
+    return {};
+  auto *spec = emit_specialisation(*fn_decl, callee_sem, *bindings,
+                                   find_instantiation(fn_decl, *bindings));
+  return {spec, spec ? substitute(callee_sem, *bindings) : nullptr};
 }
 
 llvm::Value *CodeGen::emit_specialisation_call(llvm::Function *spec,
+                                               const TypePtr &concrete,
                                                const CallExprNode &node) {
-  std::vector<llvm::Value *> args;
-  for (auto &a : node.args)
-    if (auto *v = emit_expr(*a))
-      args.push_back(v);
-  return emit_call(spec, nullptr, args);
+  auto &fi = std::get<FuncTypeInfo>(concrete->detail);
+  return emit_call(spec, nullptr, emit_arguments(node, &fi, true));
 }
 
 // A function-typed local or parameter: a closure value carries (fn, env) and
@@ -139,13 +141,9 @@ llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node,
     fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
   }
 
-  std::vector<llvm::Value *> args;
-  for (auto &arg_node : node.args)
-    if (auto *val = emit_expr(*arg_node))
-      args.push_back(val);
-  auto sig = lower_signature(std::get<FuncTypeInfo>(callee_sem->detail),
-                             is_closure ? ptr_type : nullptr);
-  return emit_call(fn_ptr, sig, env_ptr, args);
+  auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
+  auto sig = lower_signature(fi, is_closure ? ptr_type : nullptr);
+  return emit_call(fn_ptr, sig, env_ptr, emit_arguments(node, &fi, true));
 }
 
 // Variadic arguments past the fixed ones are packed into a fresh array, unless
@@ -192,43 +190,18 @@ llvm::Value *CodeGen::pack_variadic_args(const CallExprNode &node,
 llvm::Value *CodeGen::emit_direct_call(llvm::Function *callee,
                                        const CallExprNode &node,
                                        bool callee_is_extern) {
-  auto sig = signature_of(callee);
   auto callee_sem = unwrap_alias(semantic_type(*node.callee));
   const FuncTypeInfo *fi = nullptr;
   if (callee_sem && callee_sem->kind == TypeKind::Func)
     fi = &std::get<FuncTypeInfo>(callee_sem->detail);
 
-  llvm::Value *variadic_packed = fi ? pack_variadic_args(node, *fi) : nullptr;
-  size_t variadic_idx = fi && !fi->params.empty() ? fi->params.size() - 1 : 0;
-
-  std::vector<llvm::Value *> args;
-  for (size_t i = 0; i < node.args.size(); ++i) {
-    if (variadic_packed && i >= variadic_idx) {
-      args.push_back(variadic_packed);
-      break;
-    }
-    auto *val = emit_operand(*node.args[i]);
-    if (!val)
-      continue;
-    // Spec docs/language.md:51 — a value that escapes its scope is copied,
-    // and the call boundary is an escape. The parameter slot is a binding like
-    // any other, so a borrowed argument takes a reference for it: a callee that
-    // only reads pays an increment, and one that writes finds the buffer shared
-    // and gets the copy. Extern (C) callees are the runtime's own in-place path
-    // for Push/Pop/Set, which needs the actual array.
-    auto arg_sem = operand_type(*node.args[i]);
-    if (arg_sem && arg_sem->kind == TypeKind::Array && !callee_is_extern)
-      retain_if_borrowed(val, arg_sem, *node.args[i]);
-    // The parameter's shape, not the name it was declared under: an alias is a
-    // second name for a union or a struct, and every question below is about
-    // the shape.
-    auto param =
-        fi && i < fi->params.size() ? unwrap_alias(fi->params[i]) : nullptr;
-    val = coerce_to(val, arg_sem, param);
-    size_t param_idx = (sig.sret ? 1 : 0) + args.size();
-    if (callee_is_extern && param_idx < sig.type->getNumParams())
-      val = fit_extern_param(val, sig.type->getParamType(param_idx));
-    args.push_back(val);
+  auto sig = signature_of(callee);
+  auto args = emit_arguments(node, fi, !callee_is_extern);
+  if (callee_is_extern) {
+    unsigned first = sig.sret ? 1 : 0;
+    for (unsigned i = 0; i < args.size() && first + i < sig.type->getNumParams();
+         ++i)
+      args[i] = fit_extern_param(args[i], sig.type->getParamType(first + i));
   }
   return emit_call(callee, sig, nullptr, args);
 }

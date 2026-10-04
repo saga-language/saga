@@ -113,17 +113,24 @@ unsigned CodeGen::first_param_index(llvm::Function *fn, bool has_leading) {
 }
 
 // A byval aggregate arrives as a pointer to a copy made for the call and is
-// copied into this frame; anything else arrives as the value itself.
+// copied into this frame; anything else arrives as the value itself. A
+// parameter that owns a reference gives it back when the frame ends.
 void CodeGen::bind_params(llvm::Function *fn, unsigned first,
-                          const SignatureNode &sig) {
+                          const SignatureNode &sig, const FuncTypeInfo &fi) {
   unsigned idx = first;
+  size_t pi = 0;
   for (auto &param : sig.params)
     for (auto &ident : param.names.identifiers) {
       auto *arg = fn->getArg(idx++);
       std::string name(ident.name);
       auto *slot_ll =
           arg->hasByValAttr() ? arg->getParamByValType() : arg->getType();
-      locals[name] = bind_value_slot(fn, name, arg, slot_ll);
+      auto *slot = bind_value_slot(fn, name, arg, slot_ll);
+      locals[name] = slot;
+      auto sem = pi < fi.params.size() ? fi.params[pi] : nullptr;
+      ++pi;
+      if (param_owns_reference(sem))
+        track_managed(slot, unwrap_alias(sem));
     }
 }
 

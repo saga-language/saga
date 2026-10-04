@@ -16,12 +16,13 @@ llvm::Value *CodeGen::emit_union_method_dispatch(const CallExprNode &node,
                                                  llvm::Value *union_ptr) {
   auto &alts = std::get<UnionTypeInfo>(union_sem->detail).alternatives;
 
-  // Emit call arguments once — they are identical for every arm and must not
-  // re-run their side effects per member.
-  std::vector<llvm::Value *> arg_vals;
-  for (auto &arg_node : node.args)
-    if (auto *v = emit_expr(*arg_node))
-      arg_vals.push_back(v);
+  // Every member satisfies one interface declaring `method`, so the arguments
+  // are lowered once, against any member's signature, and must not re-run
+  // their side effects per arm.
+  const FuncTypeInfo *shared_sig = nullptr;
+  if (!alts.empty())
+    resolve_member_method_callee(alts.front(), method, &shared_sig);
+  auto arg_vals = emit_arguments(node, shared_sig, true);
 
   auto *func = builder.GetInsertBlock()->getParent();
   auto *union_st = get_union_llvm_type(union_sem);
@@ -161,11 +162,8 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
 
   // The vtable holds the concrete type's method itself, so the call takes
   // the ABI that method was declared with: the data pointer as its receiver.
-  std::vector<llvm::Value *> args;
-  for (auto &arg_node : node.args)
-    if (auto *val = emit_expr(*arg_node))
-      args.push_back(val);
-  return emit_call(fn_ptr, lower_signature(*fi, ptr_type), data_ptr, args);
+  return emit_call(fn_ptr, lower_signature(*fi, ptr_type), data_ptr,
+                   emit_arguments(node, fi, true));
 }
 
 } // namespace saga

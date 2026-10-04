@@ -98,11 +98,12 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
 
   return_sems_[func] =
       is_main ? nullptr : declared_return_sem(fn.signature.return_type);
-  emit_function_body_inner(fn, func, is_main);
+  emit_function_body_inner(fn, func, decl_signature(fn), is_main);
 }
 
 void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
-                                       llvm::Function *func, bool is_main) {
+                                       llvm::Function *func,
+                                       const FuncTypeInfo &fi, bool is_main) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
 
@@ -117,17 +118,7 @@ void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
-  bind_params(func, first_param_index(func, false), fn.signature);
-
-  // An array parameter is a binding, so its slot owns a reference the caller
-  // took for it (emit_direct_call) and this frame gives back on the way out.
-  for (auto &param : fn.signature.params) {
-    auto param_sem = lookup_sem_type(*param.type);
-    if (!param_sem || param_sem->kind != TypeKind::Array)
-      continue;
-    for (auto &ident : param.names.identifiers)
-      track_managed(locals[std::string(ident.name)], param_sem);
-  }
+  bind_params(func, first_param_index(func, false), fn.signature, fi);
 
   // Emit body.
   auto &block = std::get<BlockNode>(fn.body->data);
@@ -149,7 +140,8 @@ void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
 // holds a pointer, which is what makes the reads work unchanged. Any other
 // receiver arrives as its value.
 void CodeGen::emit_receiver_method_body(const FuncDeclNode &fn,
-                                        llvm::Function *func) {
+                                        llvm::Function *func,
+                                        const FuncTypeInfo &fi) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
   locals.clear();
@@ -160,7 +152,7 @@ void CodeGen::emit_receiver_method_body(const FuncDeclNode &fn,
   std::string recv_name(fn.receiver->name.name);
   auto *self = func->getArg(self_idx);
   locals[recv_name] = bind_value_slot(func, recv_name, self, self->getType());
-  bind_params(func, self_idx + 1, fn.signature);
+  bind_params(func, self_idx + 1, fn.signature, fi);
 
   auto &block = std::get<BlockNode>(fn.body->data);
   auto *tail_val = emit_block(block);

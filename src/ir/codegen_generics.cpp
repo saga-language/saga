@@ -198,9 +198,9 @@ llvm::Function *CodeGen::emit_specialisation(
   FuncEmissionScope guard(*this);
   current_instantiation_ = inst;
   if (has_receiver)
-    emit_receiver_method_body(fn, func);
+    emit_receiver_method_body(fn, func, fi);
   else
-    emit_function_body_inner(fn, func, /*is_main=*/false);
+    emit_function_body_inner(fn, func, fi, /*is_main=*/false);
   return func;
 }
 

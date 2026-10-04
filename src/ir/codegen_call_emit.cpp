@@ -58,48 +58,69 @@ llvm::Value *CodeGen::as_param(llvm::Value *val, llvm::Type *param_ll) {
   return spill_aggregate(val, "arg.spill");
 }
 
+const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
+                                     const std::string &name) {
+  for (auto &m : methods)
+    if (m.name == name)
+      return m.signature && m.signature->kind == TypeKind::Func
+                 ? &std::get<FuncTypeInfo>(m.signature->detail)
+                 : nullptr;
+  return nullptr;
+}
+
+// The one answer to which parameters own a reference: the caller retains a
+// borrowed argument for exactly these, and the callee gives it back.
+bool CodeGen::param_owns_reference(const TypePtr &param) {
+  auto shape = unwrap_alias(param);
+  return shape && shape->kind == TypeKind::Array;
+}
+
+// An argument binds the callee's parameter: an error bubbles out of it as out
+// of any operand, it takes the parameter's type, and a borrowed value takes
+// the reference the parameter's slot will own. A C callee owns nothing.
+llvm::Value *CodeGen::emit_argument(const Node &arg, const TypePtr &param,
+                                    bool callee_owns) {
+  auto *val = emit_operand(arg);
+  if (!val)
+    return nullptr;
+  auto arg_sem = operand_type(arg);
+  if (callee_owns && param_owns_reference(param))
+    retain_if_borrowed(val, arg_sem, arg);
+  return coerce_to(val, arg_sem, unwrap_alias(param));
+}
+
+// Arguments past a variadic signature's fixed ones are packed into an array,
+// unless a single array of the variadic type is passed through as it is.
+std::vector<llvm::Value *>
+CodeGen::emit_arguments(const CallExprNode &node, const FuncTypeInfo *fi,
+                        bool callee_owns) {
+  bool variadic = fi && fi->is_variadic && !fi->params.empty();
+  size_t fixed = variadic ? fi->params.size() - 1 : node.args.size();
+  std::vector<llvm::Value *> args;
+  for (size_t i = 0; i < node.args.size() && i < fixed; ++i) {
+    auto param = fi && i < fi->params.size() ? fi->params[i] : nullptr;
+    if (auto *val = emit_argument(*node.args[i], param, callee_owns))
+      args.push_back(val);
+  }
+  if (!variadic)
+    return args;
+  if (auto *packed = pack_variadic_args(node, *fi)) {
+    args.push_back(packed);
+    return args;
+  }
+  for (size_t i = fixed; i < node.args.size(); ++i)
+    if (auto *val =
+            emit_argument(*node.args[i], fi->params.back(), callee_owns))
+      args.push_back(val);
+  return args;
+}
+
 llvm::Value *CodeGen::emit_resolved_call(llvm::Function *callee,
                                          const TypePtr &func_type,
                                          const CallExprNode &node) {
-  auto &fn_info = std::get<FuncTypeInfo>(func_type->detail);
-  std::vector<llvm::Value *> args;
-
-  if (fn_info.is_variadic && !fn_info.params.empty()) {
-    // Pack variadic arguments: non-variadic params are emitted normally,
-    // then the remaining args are packed into a saga_runtime array.
-    size_t fixed_count = fn_info.params.size() - 1;
-    for (size_t i = 0; i < fixed_count && i < node.args.size(); ++i) {
-      auto *val = emit_expr(*node.args[i]);
-      if (val) args.push_back(val);
-    }
-    size_t var_count = node.args.size() > fixed_count
-                           ? node.args.size() - fixed_count : 0;
-    auto *arr = builder.CreateCall(
-        module->getFunction("saga_array_new"),
-        {llvm::ConstantInt::get(i64_type, 8),
-         llvm::ConstantInt::get(i64_type, var_count)}, "varargs");
-    auto *func = builder.GetInsertBlock()->getParent();
-    for (size_t i = 0; i < var_count; ++i) {
-      auto *val = emit_expr(*node.args[fixed_count + i]);
-      if (!val) continue;
-      auto *tmp = create_entry_alloca(func, "va.tmp", val->getType());
-      builder.CreateStore(val, tmp);
-      builder.CreateCall(module->getFunction("saga_array_builder_push"),
-                         {arr, tmp});
-    }
-    args.push_back(arr);
-  } else {
-    for (size_t i = 0; i < node.args.size(); ++i) {
-      auto *val = emit_expr(*node.args[i]);
-      if (!val) continue;
-      auto param = i < fn_info.params.size()
-                       ? unwrap_alias(fn_info.params[i])
-                       : nullptr;
-      auto arg_sem = semantic_type(*node.args[i]);
-      args.push_back(coerce_to(val, arg_sem, param));
-    }
-  }
-  return emit_call(callee, nullptr, args);
+  return emit_call(callee, nullptr,
+                   emit_arguments(node, &std::get<FuncTypeInfo>(func_type->detail),
+                                  /*callee_owns=*/true));
 }
 
 llvm::Value *CodeGen::emit_call(llvm::Function *callee, llvm::Value *leading,

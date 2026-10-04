@@ -529,7 +529,7 @@ void CodeGen::emit_struct_methods(const SourceNode &src) {
       continue;
 
     return_sems_[func] = declared_return_sem(fn->signature.return_type);
-    emit_receiver_method_body(*fn, func);
+    emit_receiver_method_body(*fn, func, decl_signature(*fn));
   }
 }
 
@@ -606,7 +606,7 @@ void CodeGen::emit_intrinsic_methods(const SourceNode &src) {
       continue;
 
     return_sems_[func] = declared_return_sem(fn->signature.return_type);
-    emit_receiver_method_body(*fn, func);
+    emit_receiver_method_body(*fn, func, decl_signature(*fn));
   }
 }
 

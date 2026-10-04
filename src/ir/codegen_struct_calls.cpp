@@ -43,12 +43,9 @@ CodeGen::emit_field_function_call(const CallExprNode &node,
     if (!gep) break;
     auto *fn_ptr = builder.CreateLoad(ptr_type, gep, "field.fn");
 
-    std::vector<llvm::Value *> args;
-    for (auto &arg_node : node.args)
-      if (auto *val = emit_expr(*arg_node))
-        args.push_back(val);
-    auto sig = lower_signature(std::get<FuncTypeInfo>(fld.type->detail));
-    return emit_call(fn_ptr, sig, nullptr, args);
+    auto &fi = std::get<FuncTypeInfo>(fld.type->detail);
+    return emit_call(fn_ptr, lower_signature(fi), nullptr,
+                     emit_arguments(node, &fi, true));
   }
   return std::nullopt;
 }
@@ -70,8 +67,10 @@ llvm::Value *CodeGen::emit_struct_method_call(const CallExprNode &node,
       return *result;
 
   auto [recv, recv_sem] = embedded_method_target(sel, method, obj_sem, obj);
-  if (auto *spec = generic_method_specialisation(method, recv_sem, parent))
-    return emit_generic_method_call(spec, node, sel, recv);
+  if (auto [spec, concrete] =
+          generic_method_specialisation(method, recv_sem, parent);
+      spec)
+    return emit_generic_method_call(spec, concrete, node, sel, recv);
   return emit_declared_method_call(node, sel, method, recv_sem, recv);
 }
 
@@ -117,7 +116,7 @@ CodeGen::embedded_method_target(const SelectorNode &sel,
   return {recv, recv_sem};
 }
 
-llvm::Function *
+std::pair<llvm::Function *, TypePtr>
 CodeGen::generic_method_specialisation(const std::string &method,
                                        const TypePtr &obj_sem,
                                        const Node &parent) {
@@ -128,14 +127,17 @@ CodeGen::generic_method_specialisation(const std::string &method,
     auto fd_it = analyzer.func_decl_by_type_.find(m.signature.get());
     auto *bindings = node_type_args_of(parent);
     if (fd_it == analyzer.func_decl_by_type_.end() || !bindings)
-      return nullptr;
-    return emit_specialisation(*fd_it->second, m.signature, *bindings,
-                               find_instantiation(fd_it->second, *bindings));
+      return {};
+    auto *spec =
+        emit_specialisation(*fd_it->second, m.signature, *bindings,
+                            find_instantiation(fd_it->second, *bindings));
+    return {spec, spec ? substitute(m.signature, *bindings) : nullptr};
   }
-  return nullptr;
+  return {};
 }
 
 llvm::Value *CodeGen::emit_generic_method_call(llvm::Function *spec,
+                                               const TypePtr &concrete,
                                                const CallExprNode &node,
                                                const SelectorNode &sel,
                                                llvm::Value *obj) {
@@ -144,11 +146,8 @@ llvm::Value *CodeGen::emit_generic_method_call(llvm::Function *spec,
     if (auto local_it = locals.find(std::string(id->name));
         local_it != locals.end())
       self = local_it->second;
-  std::vector<llvm::Value *> args;
-  for (auto &a : node.args)
-    if (auto *v = emit_expr(*a))
-      args.push_back(v);
-  return emit_call(spec, self, args);
+  auto &fi = std::get<FuncTypeInfo>(concrete->detail);
+  return emit_call(spec, self, emit_arguments(node, &fi, true));
 }
 
 llvm::Value *CodeGen::emit_declared_method_call(const CallExprNode &node,
@@ -180,12 +179,9 @@ llvm::Value *CodeGen::emit_declared_method_call(const CallExprNode &node,
     }
   }
 
-  std::vector<llvm::Value *> arg_vals;
-  for (auto &arg_node : node.args) {
-    if (auto *val = emit_expr(*arg_node))
-      arg_vals.push_back(val);
-  }
-  return emit_call(callee, self_ptr, arg_vals);
+  return emit_call(callee, self_ptr,
+                   emit_arguments(node, method_signature(info.methods, method),
+                                  true));
 }
 
 llvm::Function *CodeGen::struct_method_callee(const StructTypeInfo &info,

@@ -28,6 +28,9 @@ struct LoweredSig {
   std::vector<llvm::Type *> byval; // one per LLVM parameter; null if direct
 };
 
+const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
+                                     const std::string &name);
+
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
 // ---------------------------------------------------------------------------
@@ -425,7 +428,7 @@ private:
   void declare_free_function(const FuncDeclNode &fn);
   unsigned first_param_index(llvm::Function *fn, bool has_leading);
   void bind_params(llvm::Function *fn, unsigned first,
-                   const SignatureNode &sig);
+                   const SignatureNode &sig, const FuncTypeInfo &fi);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);
@@ -443,8 +446,9 @@ private:
 
   /// The body of a function without a receiver, declared or specialised.
   void emit_function_body_inner(const FuncDeclNode &fn, llvm::Function *func,
-                                bool is_main);
-  void emit_receiver_method_body(const FuncDeclNode &fn, llvm::Function *func);
+                                const FuncTypeInfo &fi, bool is_main);
+  void emit_receiver_method_body(const FuncDeclNode &fn, llvm::Function *func,
+                                 const FuncTypeInfo &fi);
 
   /// Return `val`, of type `val_sem` and emitted from `source`, from the
   /// function being emitted: retained if borrowed, coerced to the semantic
@@ -566,9 +570,11 @@ private:
   const Analyzer::BodyInstantiation *
   find_instantiation(const FuncDeclNode *decl,
                      const std::unordered_map<uint32_t, TypePtr> &bindings);
-  llvm::Function *generic_function_specialisation(const CallExprNode &node,
-                                                  const Node &parent);
+  std::pair<llvm::Function *, TypePtr>
+  generic_function_specialisation(const CallExprNode &node,
+                                  const Node &parent);
   llvm::Value *emit_specialisation_call(llvm::Function *spec,
+                                        const TypePtr &concrete,
                                         const CallExprNode &node);
   llvm::Value *emit_function_value_call(const CallExprNode &node,
                                         const std::string &name);
@@ -779,10 +785,11 @@ private:
   std::pair<llvm::Value *, TypePtr>
   embedded_method_target(const SelectorNode &sel, const std::string &method,
                          const TypePtr &obj_sem, llvm::Value *obj);
-  llvm::Function *generic_method_specialisation(const std::string &method,
-                                                const TypePtr &obj_sem,
-                                                const Node &parent);
+  std::pair<llvm::Function *, TypePtr>
+  generic_method_specialisation(const std::string &method,
+                                const TypePtr &obj_sem, const Node &parent);
   llvm::Value *emit_generic_method_call(llvm::Function *spec,
+                                        const TypePtr &concrete,
                                         const CallExprNode &node,
                                         const SelectorNode &sel,
                                         llvm::Value *obj);
@@ -816,11 +823,9 @@ private:
   llvm::Value *emit_kind_method_call(const CallExprNode &node,
                                      const std::string &method,
                                      const TypePtr &obj_sem, llvm::Value *obj);
-  llvm::Function *kind_method_specialisation(const std::string &method,
-                                             const TypePtr &obj_sem);
-  llvm::Value *emit_kind_specialisation_call(llvm::Function *spec,
-                                             const CallExprNode &node,
-                                             llvm::Value *obj);
+  std::pair<llvm::Function *, TypePtr>
+  kind_method_specialisation(const std::string &method,
+                             const TypePtr &obj_sem);
   llvm::Value *emit_opaque_kind_method_call(const CallExprNode &node,
                                             const std::string &method,
                                             const TypePtr &obj_sem,
@@ -829,8 +834,8 @@ private:
                                      const TypePtr &obj_sem,
                                      const std::string &method);
   std::vector<llvm::Value *> box_kind_method_args(const CallExprNode &node,
-                                                  const MethodInfo &m,
-                                                  llvm::Function *callee);
+                                                  const MethodInfo &m);
+  llvm::Value *box_for_type_param(llvm::Value *val, const TypePtr &arg_sem);
   llvm::Value *unbox_kind_method_result(llvm::Value *result,
                                         const MethodInfo &m,
                                         const TypePtr &obj_sem);
@@ -846,6 +851,12 @@ private:
                                   const TypePtr &func_type,
                                   const CallExprNode &node);
   LoweredSig signature_of(llvm::Function *fn);
+  bool param_owns_reference(const TypePtr &param);
+  llvm::Value *emit_argument(const Node &arg, const TypePtr &param,
+                             bool callee_owns);
+  std::vector<llvm::Value *> emit_arguments(const CallExprNode &node,
+                                            const FuncTypeInfo *fi,
+                                            bool callee_owns);
   llvm::Value *emit_call(llvm::Value *callee, const LoweredSig &sig,
                          llvm::Value *leading,
                          const std::vector<llvm::Value *> &args);

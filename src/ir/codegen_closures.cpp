@@ -47,8 +47,8 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   auto fn_sem = unwrap_alias(semantic_type(parent));
   if (!fn_sem || fn_sem->kind != TypeKind::Func)
     internal_error("a function expression has no function type");
-  auto tramp_sig =
-      lower_signature(std::get<FuncTypeInfo>(fn_sem->detail), ptr_type);
+  auto &fi = std::get<FuncTypeInfo>(fn_sem->detail);
+  auto tramp_sig = lower_signature(fi, ptr_type);
   auto *tramp_fn = declare_function(closure_name, tramp_sig,
                                     llvm::Function::InternalLinkage);
   name_params(tramp_fn, tramp_sig, node.signature, "env");
@@ -86,7 +86,7 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
     }
   }
 
-  bind_params(tramp_fn, env_idx + 1, node.signature);
+  bind_params(tramp_fn, env_idx + 1, node.signature, fi);
 
   // Emit the closure body.
   auto &block = std::get<BlockNode>(node.body->data);
