@@ -1,0 +1,18 @@
+// Spec: a generic function is emitted once per concrete type argument
+// (docs/language.md:673) and returns what its signature names, like any
+// function. Two results of the same instantiation are two values: the second
+// call must not overwrite the first while both are arguments of one call.
+import "std/io"
+
+struct Pair<T> {
+  a T
+  b T
+}
+
+fn twice<T>(v T) Pair<T> { Pair{a: v, b: v} }
+
+fn combine(p Pair<int>, q Pair<int>) int { p.a * 100 + q.b }
+
+pub fn Main() void {
+  io.Println("{combine(twice(7), twice(8))}")
+}

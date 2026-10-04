@@ -1,0 +1,12 @@
+import "io"
+import "lib"
+
+// A parameter is a second name for its argument (docs/language.md:65), so a
+// function in another package gives back only the reference its parameter
+// took, and the caller's array is still whole for the second call.
+pub fn Main() void {
+  xs := [1, 2, 3]
+  a := lib.Count(xs)
+  b := lib.Count(xs)
+  io.Println("{a} {b} {xs.Size()}")
+}

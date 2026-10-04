@@ -7,8 +7,6 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
 
-#include <unordered_set>
-
 namespace saga {
 
 
@@ -84,167 +82,28 @@ llvm::Type *CodeGen::qualified_type_llvm(const SelectorNode &sel) {
   return nullptr;
 }
 
-llvm::FunctionType *CodeGen::build_func_type(const FuncDeclNode &fn) {
-  bool is_main = (fn.name.name == "Main");
-  std::string link_name = is_main ? "main" : mangle(std::string(fn.name.name));
-
-  // Determine semantic-level return.  Struct returns are lowered to sret:
-  // a hidden first parameter `ptr sret(%T)`, the LLVM return type is void.
-  llvm::Type *ret_type = void_ll_type;
-  llvm::Type *sret_struct_ty = nullptr;
-  if (is_main) {
-    ret_type = llvm::Type::getInt32Ty(context);
-  } else if (fn.signature.return_type) {
-    auto *r_ll = resolve_type_node(*fn.signature.return_type);
-    if (r_ll && r_ll->isStructTy()) {
-      sret_struct_ty = r_ll;
-      ret_type = void_ll_type;
-    } else {
-      ret_type = r_ll;
-    }
-  }
-
-  // Parameter types.  Structs are lowered to `ptr` for byval.
-  std::vector<llvm::Type *> param_types;
-  if (sret_struct_ty)
-    param_types.push_back(llvm::PointerType::getUnqual(context));
-  if (!is_main) {
-    for (auto &param : fn.signature.params) {
-      auto *ll_type = resolve_type_node(*param.type);
-      // Variadic params are arrays at the LLVM level (ptr to saga_runtime_array).
-      if (param.is_variadic)
-        ll_type = llvm::PointerType::getUnqual(context);
-      // Struct params: byval lowering.  At the LLVM level the param slot
-      // is `ptr`; the byval(%T) attribute is attached separately.
-      else if (ll_type && ll_type->isStructTy())
-        ll_type = llvm::PointerType::getUnqual(context);
-      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-        param_types.push_back(ll_type);
-    }
-  }
-
-  return llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
-}
-
-llvm::FunctionType *
-CodeGen::build_extern_generic_func_type(const FuncDeclNode &fn) {
-  std::unordered_set<std::string> generic_names;
-  if (fn.generic) {
-    for (auto &tp : fn.generic->type_params) {
-      if (auto opt_name = type_param_name(*tp))
-        generic_names.insert(std::string(*opt_name));
-    }
-  }
-
-  auto *ptr_ty = llvm::PointerType::getUnqual(context);
-  auto lower = [&](const Node &type_node) -> llvm::Type * {
-    if (auto *id = std::get_if<IdentifierNode>(&type_node.data))
-      if (generic_names.count(std::string(id->name)))
-        return ptr_ty;
-    return resolve_type_node(type_node);
-  };
-
-  llvm::Type *ret_type = void_ll_type;
-  if (fn.signature.return_type)
-    ret_type = lower(*fn.signature.return_type);
-
-  std::vector<llvm::Type *> param_types;
-  for (auto &param : fn.signature.params) {
-    auto *ll_type = lower(*param.type);
-    if (ll_type && ll_type->isStructTy())
-      ll_type = ptr_ty;
-    for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-      param_types.push_back(ll_type);
-  }
-  return llvm::FunctionType::get(ret_type, param_types, /*isVarArg=*/false);
-}
-
-void CodeGen::apply_func_abi_attrs(llvm::Function *func,
-                                    const FuncDeclNode &fn) {
-  if (fn.name.name == "Main")
-    return;
-  unsigned idx = 0;
-  // Sret return
-  if (fn.signature.return_type) {
-    auto *r_ll = resolve_type_node(*fn.signature.return_type);
-    if (r_ll && r_ll->isStructTy()) {
-      llvm::AttrBuilder ab(context);
-      ab.addStructRetAttr(r_ll);
-      ab.addAlignmentAttr(
-          align_of(r_ll));
-      func->addParamAttrs(idx, ab);
-      ++idx;
-    }
-  }
-  // Byval struct params
-  for (auto &param : fn.signature.params) {
-    auto *p_ll = resolve_type_node(*param.type);
-    bool byval = p_ll && p_ll->isStructTy() && !param.is_variadic;
-    for (size_t i = 0; i < param.names.identifiers.size(); ++i) {
-      if (byval) {
-        llvm::AttrBuilder ab(context);
-        ab.addByValAttr(p_ll);
-        ab.addAlignmentAttr(
-            align_of(p_ll));
-        func->addParamAttrs(idx, ab);
-      }
-      ++idx;
-    }
-  }
-}
-
 // ===========================================================================
 // Function body emission
 // ===========================================================================
 
 void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
-  if (fn.is_extern) {
-    // Bodiless declaration — the link-time symbol is resolved externally.
+  // Receiver methods and generic functions have bodies emitted elsewhere.
+  if (fn.is_extern || fn.generic || fn.receiver)
     return;
-  }
-  if (fn.generic) {
-    if (!fn.receiver)
-      return;
-    auto &rt = fn.receiver->type->data;
-    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
-                           std::get_if<MapTypeNode>(&rt);
-    if (!is_generic_recv)
-      return;
-  } else if (fn.receiver) {
-    // Receiver method bodies are emitted by their own paths.
-    return;
-  }
 
-  std::string name(fn.name.name);
-  bool is_main = (name == "Main");
-  std::string link_name = free_func_link_name(fn);
-
-  auto *func = module->getFunction(link_name);
+  bool is_main = fn.name.name == "Main";
+  auto *func = module->getFunction(free_func_link_name(fn));
   if (!func)
     return; // Should have been forward-declared.
 
-  // Build the LLVM parameter types from the AST annotations (same logic
-  // as build_func_type uses).  Specialised emission computes them from
-  // bindings instead.
-  std::vector<llvm::Type *> param_ll;
-  if (!is_main) {
-    for (auto &param : fn.signature.params) {
-      auto *ll_type = resolve_type_node(*param.type);
-      if (param.is_variadic)
-        ll_type = llvm::PointerType::getUnqual(context);
-      for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-        param_ll.push_back(ll_type);
-    }
-  }
-
   return_sems_[func] =
       is_main ? nullptr : declared_return_sem(fn.signature.return_type);
-  emit_function_body_inner(fn, func, param_ll, is_main);
+  emit_function_body_inner(fn, func, decl_signature(fn), is_main);
 }
 
-void CodeGen::emit_function_body_inner(
-    const FuncDeclNode &fn, llvm::Function *func,
-    const std::vector<llvm::Type *> &param_ll, bool is_main) {
+void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
+                                       llvm::Function *func,
+                                       const FuncTypeInfo &fi, bool is_main) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
 
@@ -259,46 +118,7 @@ void CodeGen::emit_function_body_inner(
                        {llvm::ConstantInt::get(i64_type, 0)});
   }
 
-  // Skip the hidden sret arg if present. The function is the authority, not
-  // the annotation: a specialisation's return type comes from its bindings,
-  // which re-resolving `fn`'s declared return type cannot see.
-  size_t arg_idx = 0;
-  if (!is_main && func->arg_size() > 0 &&
-      func->hasParamAttribute(0, llvm::Attribute::StructRet))
-    ++arg_idx;
-
-  // Create allocas for parameters and store the incoming argument values.
-  // param_ll has one entry per flattened parameter name so variadic /
-  // multi-name params are already expanded.
-  //
-  // An array parameter is a binding, so its slot owns a reference the caller
-  // took for it (emit_call_expr) and this frame gives back on the way out.
-  size_t ll_idx = 0;
-  for (auto &param : fn.signature.params) {
-    auto param_sem = lookup_sem_type(*param.type);
-    for (auto &ident : param.names.identifiers) {
-      auto *ll_type = ll_idx < param_ll.size()
-                          ? param_ll[ll_idx]
-                          : llvm::PointerType::getUnqual(context);
-      std::string pname(ident.name);
-      auto *arg = func->getArg(arg_idx++);
-      auto *alloca = create_entry_alloca(func, pname, ll_type);
-      if (ll_type && ll_type->isStructTy()) {
-        // Byval struct param: arg is a `ptr` to a stable caller-provided
-        // copy.  Memcpy its bytes into the local alloca so subsequent
-        // mutations stay local to this frame.
-        auto sz = size_of(ll_type);
-        auto al = align_of(ll_type);
-        builder.CreateMemCpy(alloca, al, arg, al, sz);
-      } else {
-        builder.CreateStore(arg, alloca);
-      }
-      locals[pname] = alloca;
-      if (param_sem && param_sem->kind == TypeKind::Array)
-        track_managed(alloca, param_sem);
-      ++ll_idx;
-    }
-  }
+  bind_params(func, first_param_index(func, false), fn.signature, fi);
 
   // Emit body.
   auto &block = std::get<BlockNode>(fn.body->data);
@@ -311,6 +131,33 @@ void CodeGen::emit_function_body_inner(
       emit_fallthrough_return(block, tail_val);
   }
 
+  verify_function(*func);
+}
+
+// A struct receiver holds the caller's address, not a copy of it: there is no
+// second spelling to choose between, so a method that writes a field has to
+// reach the value the caller named. `struct_slot_address` loads a slot that
+// holds a pointer, which is what makes the reads work unchanged. Any other
+// receiver arrives as its value.
+void CodeGen::emit_receiver_method_body(const FuncDeclNode &fn,
+                                        llvm::Function *func,
+                                        const FuncTypeInfo &fi) {
+  auto *entry = llvm::BasicBlock::Create(context, "entry", func);
+  builder.SetInsertPoint(entry);
+  locals.clear();
+  managed_locals.clear();
+  current_func_is_main = false;
+
+  unsigned self_idx = first_param_index(func, false);
+  std::string recv_name(fn.receiver->name.name);
+  auto *self = func->getArg(self_idx);
+  locals[recv_name] = bind_value_slot(func, recv_name, self, self->getType());
+  bind_params(func, self_idx + 1, fn.signature, fi);
+
+  auto &block = std::get<BlockNode>(fn.body->data);
+  auto *tail_val = emit_block(block);
+  if (!builder.GetInsertBlock()->getTerminator())
+    emit_fallthrough_return(block, tail_val);
   verify_function(*func);
 }
 

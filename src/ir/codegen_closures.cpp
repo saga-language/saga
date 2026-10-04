@@ -7,6 +7,7 @@
 // value is expected.
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Verifier.h>
 
@@ -42,33 +43,15 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   }
 
   // ── Build the trampoline function ──────────────────────────────────
-  // Signature: ret_type trampoline(ptr env, param1, param2, ...)
-  std::vector<llvm::Type *> tramp_param_types;
-  tramp_param_types.push_back(ptr_type); // env pointer (always first)
-
-  for (auto &param : node.signature.params) {
-    auto *ll = resolve_type_node(*param.type);
-    for (size_t i = 0; i < param.names.identifiers.size(); ++i)
-      tramp_param_types.push_back(ll);
-  }
-
-  llvm::Type *ret_type = void_ll_type;
-  if (node.signature.return_type)
-    ret_type = resolve_type_node(*node.signature.return_type);
-
-  auto *tramp_fn_type = llvm::FunctionType::get(ret_type, tramp_param_types,
-                                                  false);
-  auto *tramp_fn = llvm::Function::Create(
-      tramp_fn_type, llvm::Function::InternalLinkage, closure_name,
-      module.get());
-
-  // Name the arguments.
-  tramp_fn->getArg(0)->setName("env");
-  size_t arg_idx = 1;
-  for (auto &param : node.signature.params)
-    for (auto &ident : param.names.identifiers)
-      if (arg_idx < tramp_fn->arg_size())
-        tramp_fn->getArg(arg_idx++)->setName(std::string(ident.name));
+  // Declared like any function, with the environment leading its params.
+  auto fn_sem = unwrap_alias(semantic_type(parent));
+  if (!fn_sem || fn_sem->kind != TypeKind::Func)
+    internal_error("a function expression has no function type");
+  auto &fi = std::get<FuncTypeInfo>(fn_sem->detail);
+  auto tramp_sig = lower_signature(fi, ptr_type);
+  auto *tramp_fn = declare_function(closure_name, tramp_sig,
+                                    llvm::Function::InternalLinkage);
+  name_params(tramp_fn, tramp_sig, node.signature, "env");
 
   // ── Emit the trampoline body ───────────────────────────────────────
   // Save current insertion state.
@@ -86,9 +69,10 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   current_func_is_main = false;
   return_sems_[tramp_fn] = declared_return_sem(node.signature.return_type);
 
+  unsigned env_idx = first_param_index(tramp_fn, false);
   // Unpack environment struct into local variables.
   if (env_type) {
-    auto *env_ptr = tramp_fn->getArg(0);
+    auto *env_ptr = tramp_fn->getArg(env_idx);
     for (size_t i = 0; i < captures.size(); ++i) {
       auto *field_gep = builder.CreateStructGEP(env_type, env_ptr, i,
                                                   captures[i].name + ".cap");
@@ -102,17 +86,7 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
     }
   }
 
-  // Create allocas for parameters.
-  arg_idx = 1;
-  for (auto &param : node.signature.params) {
-    auto *ll = resolve_type_node(*param.type);
-    for (auto &ident : param.names.identifiers) {
-      std::string pname(ident.name);
-      auto *alloca = create_entry_alloca(tramp_fn, pname, ll);
-      builder.CreateStore(tramp_fn->getArg(arg_idx++), alloca);
-      locals[pname] = alloca;
-    }
-  }
+  bind_params(tramp_fn, env_idx + 1, node.signature, fi);
 
   // Emit the closure body.
   auto &block = std::get<BlockNode>(node.body->data);

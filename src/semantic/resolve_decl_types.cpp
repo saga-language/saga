@@ -168,6 +168,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
     auto &fi = std::get<FuncTypeInfo>(fn_type->detail);
     fi.is_variadic = true;
   }
+  decl_signatures_[&fn] = fn_type;
 
   // If this is a receiver method, attach it to the receiver type.
   // NOTE: generics scope (if any) is still active here so that non-identifier

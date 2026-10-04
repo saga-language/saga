@@ -1,0 +1,19 @@
+// Spec: "A parameter is a second name like any other, so a callee that writes
+// leaves the caller's value alone" (docs/language.md:65), for a method's
+// parameter as much as a function's.
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+fn (c Counter) Fill(xs array{int}) int {
+  xs[0] = 7
+  xs[0] or { 0 }
+}
+
+pub fn Main() void {
+  c := Counter{n: 0}
+  ys := [5]
+  io.Println("{c.Fill(ys)} {ys[0] or { 0 }}")
+}

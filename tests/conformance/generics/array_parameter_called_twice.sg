@@ -1,0 +1,13 @@
+// Spec: a parameter is a second name for its argument (docs/language.md:65),
+// so a generic function's body gives back only the reference its parameter
+// took: the caller's array is still whole for the second call.
+import "std/io"
+
+fn count<T>(xs array{T}) int { xs.Size() }
+
+pub fn Main() void {
+  xs := [1, 2, 3]
+  a := count(xs)
+  b := count(xs)
+  io.Println("{a} {b} {xs.Size()}")
+}

@@ -1,0 +1,19 @@
+// Spec: a struct field may hold a function (docs/language.md:446), and a call
+// through the field passes its arguments as a call to that function would.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+struct Reg {
+  handler fn(Point) int
+}
+
+fn sum(p Point) int { p.x + p.y }
+
+pub fn Main() void {
+  r := Reg{handler: sum}
+  io.Println("{r.handler(Point{x: 3, y: 4})}")
+}

@@ -611,13 +611,15 @@ llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
   auto *callee =
       forward_declare_method(struct_method_link_name(info, method), *method_fi);
   auto *self = emit_expr(*node.lhs);
-  auto *rhs_val = emit_expr(*node.rhs);
+  auto *rhs_val = emit_argument(
+      *node.rhs, method_fi->params.empty() ? nullptr : method_fi->params[0],
+      true);
   if (!callee || !self || !rhs_val)
     return nullptr;
 
   return finish_operator_result(
       node, method,
-      emit_receiver_call(callee, lhs_sem, self, {rhs_val}, method_fi));
+      emit_call(callee, self, {rhs_val}));
 }
 
 llvm::Value *CodeGen::emit_float_pow(llvm::Value *base, llvm::Value *exp) {

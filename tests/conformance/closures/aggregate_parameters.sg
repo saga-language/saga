@@ -1,0 +1,25 @@
+// Spec: a function expression "has a signature and a body"
+// (docs/language.md:1682), so it takes a struct or a union the way a declared
+// function does: as a value of its own.
+import "std/io"
+
+struct Point {
+  x int
+  y int
+}
+
+pub fn Main() void {
+  bump := fn(p Point) int {
+    p.x = p.x + 1
+    p.x
+  }
+  q := Point{x: 1, y: 2}
+  io.Println("{bump(q)} {q.x}")
+
+  show := fn(v int | string) string {
+    if v is int { return "int {v}" }
+    "other"
+  }
+  u int | string = 5
+  io.Println(show(u))
+}
