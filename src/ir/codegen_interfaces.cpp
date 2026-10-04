@@ -46,18 +46,37 @@ void CodeGen::declare_vtable_type(const std::string &key,
   iface_method_names[key] = std::move(names);
 }
 
+std::string CodeGen::vtable_type_key(const TypePtr &concrete) {
+  switch (concrete->kind) {
+  case TypeKind::Struct: {
+    auto &info = std::get<StructTypeInfo>(concrete->detail);
+    return key_for(info.origin_package, info.name);
+  }
+  case TypeKind::Enum: {
+    auto &info = std::get<EnumTypeInfo>(concrete->detail);
+    return key_for(info.origin_package, info.name);
+  }
+  case TypeKind::Alias: {
+    auto &info = std::get<AliasTypeInfo>(concrete->detail);
+    return key_for(info.origin_package, info.name);
+  }
+  default:
+    return type_to_string(concrete);
+  }
+}
+
+// A value receiver cannot be written through, so only a struct's methods set
+// bits in the writes mask.
 llvm::GlobalVariable *
-CodeGen::get_or_create_vtable(const TypePtr &struct_type,
+CodeGen::get_or_create_vtable(const TypePtr &concrete,
                               const TypePtr &iface_type) {
-  if (!struct_type || struct_type->kind != TypeKind::Struct) return nullptr;
-  if (!iface_type || iface_type->kind != TypeKind::Interface) return nullptr;
+  if (!concrete || !iface_type || iface_type->kind != TypeKind::Interface)
+    return nullptr;
 
-  auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
   auto &iinfo = std::get<InterfaceTypeInfo>(iface_type->detail);
-  std::string struct_key = key_for(sinfo.origin_package, sinfo.name);
+  std::string type_key = vtable_type_key(concrete);
   std::string iface_key = key_for(iinfo.origin_package, iinfo.name);
-
-  std::string vtable_cache_key = struct_key + "::" + iface_key;
+  std::string vtable_cache_key = type_key + "::" + iface_key;
   if (auto it = vtable_globals.find(vtable_cache_key);
       it != vtable_globals.end())
     return it->second;
@@ -66,18 +85,27 @@ CodeGen::get_or_create_vtable(const TypePtr &struct_type,
     return nullptr;
 
   auto &method_names = iface_method_names[iface_key];
+  auto shape = unwrap_alias(concrete);
+  auto *sinfo = shape->kind == TypeKind::Struct
+                    ? &std::get<StructTypeInfo>(shape->detail)
+                    : nullptr;
   std::vector<llvm::Constant *> entries{
-      llvm::ConstantInt::get(i64_type, size_of(llvm_type(struct_type))),
-      elem_ops_for(struct_type),
-      llvm::ConstantInt::get(i64_type, writes_mask(sinfo, method_names))};
-  for (size_t mi = 0; mi < method_names.size(); ++mi)
-    entries.push_back(vtable_method(sinfo, method_names[mi],
-                                    func_info(iinfo.methods[mi])));
+      llvm::ConstantInt::get(i64_type, size_of(llvm_type(concrete))),
+      elem_ops_for(concrete),
+      llvm::ConstantInt::get(i64_type,
+                             sinfo ? writes_mask(*sinfo, method_names) : 0)};
+  for (size_t mi = 0; mi < method_names.size(); ++mi) {
+    auto *sig = func_info(iinfo.methods[mi]);
+    entries.push_back(
+        sinfo ? vtable_method(*sinfo, method_names[mi], sig)
+              : value_receiver_thunk(concrete, type_key + "." + iface_key,
+                                     method_names[mi], sig));
+  }
 
   auto *vtable_global = new llvm::GlobalVariable(
       *module, vt_it->second, true, llvm::GlobalValue::PrivateLinkage,
       llvm::ConstantStruct::get(vt_it->second, entries),
-      "saga.vtable." + struct_key + "." + iface_key);
+      "saga.vtable." + type_key + "." + iface_key);
   vtable_globals[vtable_cache_key] = vtable_global;
   return vtable_global;
 }

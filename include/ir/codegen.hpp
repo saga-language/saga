@@ -417,8 +417,23 @@ private:
   // ── Interface values (codegen_interfaces.cpp) ──────────────────────
   void declare_vtable_type(const std::string &key,
                            const std::vector<MethodInfo> &methods);
-  llvm::GlobalVariable *get_or_create_vtable(const TypePtr &struct_type,
+  std::string vtable_type_key(const TypePtr &concrete);
+  llvm::GlobalVariable *get_or_create_vtable(const TypePtr &concrete,
                                               const TypePtr &iface_type);
+  llvm::Function *value_receiver_thunk(const TypePtr &concrete,
+                                       const std::string &key,
+                                       const std::string &method,
+                                       const FuncTypeInfo *sig);
+  llvm::Value *call_value_method(const TypePtr &concrete,
+                                 const std::string &method,
+                                 llvm::Function *thunk, unsigned recv,
+                                 llvm::Value *value);
+  llvm::Function *value_method_callee(const TypePtr &concrete,
+                                      const std::string &method);
+  llvm::Function *enum_method_callee(const TypePtr &enum_sem,
+                                     const std::string &method);
+  const FuncTypeInfo *enum_method_signature(const TypePtr &enum_sem,
+                                            const std::string &method);
   llvm::Constant *vtable_method(const StructTypeInfo &sinfo,
                                 const std::string &method,
                                 const FuncTypeInfo *iface_sig);

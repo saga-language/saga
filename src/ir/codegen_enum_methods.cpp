@@ -29,17 +29,37 @@ llvm::Value *CodeGen::emit_enum_user_method_call(const CallExprNode &node,
                                                  const std::string &method,
                                                  const TypePtr &obj_sem,
                                                  llvm::Value *obj) {
-  auto &info = std::get<EnumTypeInfo>(obj_sem->detail);
-  std::string origin =
-      info.origin_package.empty() ? package_name : info.origin_package;
-  auto *callee = module->getFunction(mangle(origin, info.name + "__" + method));
+  auto *callee = enum_method_callee(obj_sem, method);
   if (!callee)
     return nullptr;
-  const FuncTypeInfo *m_fi = nullptr;
-  if (auto tm_it = analyzer.type_methods_.find(obj_sem.get());
-      tm_it != analyzer.type_methods_.end())
-    m_fi = method_signature(tm_it->second, method);
-  return emit_call(callee, obj, emit_arguments(node, m_fi, true));
+  return emit_call(callee, obj,
+                   emit_arguments(node, enum_method_signature(obj_sem, method),
+                                  true));
+}
+
+// Int has no function: an enum's ordinal is the value itself.
+llvm::Function *CodeGen::enum_method_callee(const TypePtr &enum_sem,
+                                            const std::string &method) {
+  if (method == "String")
+    return enum_string_fn(enum_sem);
+  if (method == "Int")
+    return nullptr;
+  auto &info = std::get<EnumTypeInfo>(enum_sem->detail);
+  std::string origin =
+      info.origin_package.empty() ? package_name : info.origin_package;
+  std::string link = mangle(origin, info.name + "__" + method);
+  if (auto *callee = module->getFunction(link))
+    return callee;
+  auto *fi = enum_method_signature(enum_sem, method);
+  return fi ? declare_function(link, lower_signature(*fi, i64_type)) : nullptr;
+}
+
+const FuncTypeInfo *CodeGen::enum_method_signature(const TypePtr &enum_sem,
+                                                   const std::string &method) {
+  auto tm_it = analyzer.type_methods_.find(enum_sem.get());
+  return tm_it == analyzer.type_methods_.end()
+             ? nullptr
+             : method_signature(tm_it->second, method);
 }
 
 llvm::Function *CodeGen::enum_string_fn(const TypePtr &enum_sem) {

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
-#include "util/internal_error.hpp"
 
 namespace saga {
 
@@ -16,7 +15,7 @@ llvm::Value *CodeGen::coerce_to(llvm::Value *val, const TypePtr &from,
   if (target->kind == TypeKind::Union)
     placed = as_union_ptr(val, unwrap_alias(from), target);
   else if (target->kind == TypeKind::Interface)
-    placed = as_interface_ptr(val, unwrap_alias(from), target);
+    placed = as_interface_ptr(val, from, target);
   return placed ? placed : val;
 }
 
@@ -56,15 +55,14 @@ llvm::Value *CodeGen::as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
   return emit_union_wrap(val, materialize_untyped(val_sem), union_sem);
 }
 
-// An interface value already has its box. Only a struct is boxed yet.
+// An interface value already has its box. `val_sem` keeps any alias, whose
+// own methods are the ones the box's vtable finds.
 llvm::Value *CodeGen::as_interface_ptr(llvm::Value *val,
                                        const TypePtr &val_sem,
                                        const TypePtr &iface_sem) {
-  if (!val_sem || val_sem->kind == TypeKind::Interface)
+  auto shape = unwrap_alias(val_sem);
+  if (!shape || shape->kind == TypeKind::Interface)
     return nullptr;
-  if (val_sem->kind != TypeKind::Struct)
-    internal_error("a '" + type_to_string(val_sem) + "' cannot be boxed as '" +
-                   type_to_string(iface_sem) + "' yet");
   return emit_interface_box(spill_aggregate(val, "iface.spill"), val_sem,
                             iface_sem);
 }
