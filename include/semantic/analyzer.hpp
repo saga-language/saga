@@ -325,6 +325,10 @@ struct Analyzer {
   /// simple for future use).
   std::unordered_map<const Type *, const FuncDeclNode *> func_decl_by_type_;
 
+  /// Every declaration's resolved signature, receiver excluded, so codegen
+  /// lowers the types the checker used rather than re-resolving the AST.
+  std::unordered_map<const FuncDeclNode *, TypePtr> decl_signatures_;
+
   /// One per-instantiation side-table view.  Lives inside instantiations_.
   /// Codegen will read these in Step 4 through accessors that fall through
   /// to the global tables for nodes that aren't in the generic body.

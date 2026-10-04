@@ -19,20 +19,14 @@
 
 namespace saga {
 
-// Lowered LLVM signature for a Saga method (receiver + params), including
-// any byval/sret aggregate types attached at call boundaries.
-struct MethodSig {
-  llvm::FunctionType *fn_type = nullptr;
-  llvm::Type *sret_struct_ty = nullptr;
-  std::vector<llvm::Type *> byval_struct_tys; // one per regular param
-  llvm::Type *self_ll = nullptr;              // receiver LLVM type
+// A signature as LLVM sees it: [sret] [leading] params. An aggregate result
+// comes back through the hidden sret pointer, and an aggregate parameter
+// arrives as a pointer to a copy made for the call (`byval`).
+struct LoweredSig {
+  llvm::FunctionType *type = nullptr;
+  llvm::Type *sret = nullptr;
+  std::vector<llvm::Type *> byval; // one per LLVM parameter; null if direct
 };
-
-// Stamp argument names onto an already-created LLVM function based on its
-// Saga signature. Pure mechanical helper — does not need CodeGen state.
-void name_method_args(llvm::Function *func, const MethodSig &sig,
-                      const FuncDeclNode &fn,
-                      std::string_view receiver_name);
 
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
@@ -411,24 +405,22 @@ private:
                                    const TypePtr &concrete_type,
                                    const TypePtr &iface_type);
 
-  /// Build the LLVM FunctionType for a Saga function declaration.
-  llvm::FunctionType *build_func_type(const FuncDeclNode &fn);
-
-  /// Build the LLVM FunctionType for a generic `extern fn` — generic
-  /// parameter identifiers in the signature lower to opaque pointers
-  /// without consulting the analyzer's scope (the generic params are
-  /// not in any live scope at codegen time).
-  llvm::FunctionType *build_extern_generic_func_type(const FuncDeclNode &fn);
-
-  /// Apply byval/sret/align param attributes to a freshly-created Function
-  /// based on its AST signature.  Must be called once after Function::Create.
-  void apply_func_abi_attrs(llvm::Function *func, const FuncDeclNode &fn);
-
-  /// Build the LLVM FunctionType for a struct method (in-bound or out-bound).
-  /// Also applies byval/sret attrs to the supplied function (after Create).
-  /// Returns the lowered signature and stamps attributes into `out_attrs`.
-  MethodSig build_method_signature(const FuncDeclNode &fn);
-  void apply_method_abi_attrs(llvm::Function *func, const MethodSig &sig);
+  /// The one lowering for every function boundary, Saga or extern. `leading`
+  /// is a receiver or closure environment, passed as it is.
+  LoweredSig lower_signature(const FuncTypeInfo &fi,
+                             llvm::Type *leading = nullptr);
+  llvm::Function *declare_function(
+      const std::string &link, const LoweredSig &sig,
+      llvm::GlobalValue::LinkageTypes linkage = llvm::Function::ExternalLinkage);
+  void stamp_abi(llvm::Function *fn, const LoweredSig &sig);
+  void stamp_abi(llvm::CallBase *call, const LoweredSig &sig);
+  std::vector<std::pair<unsigned, llvm::Attribute>>
+  abi_attrs(const LoweredSig &sig);
+  const FuncTypeInfo &decl_signature(const FuncDeclNode &fn);
+  llvm::Type *receiver_param_type(const FuncDeclNode &fn);
+  void name_params(llvm::Function *fn, const LoweredSig &sig,
+                   const FuncDeclNode &decl);
+  void declare_free_function(const FuncDeclNode &fn);
 
   /// Resolve a type annotation node to an LLVM type.
   llvm::Type *resolve_type_node(const Node &type_node);

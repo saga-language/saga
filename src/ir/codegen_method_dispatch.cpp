@@ -818,28 +818,16 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
     if (!callee && !info.type_args.empty() && !info.type_params.empty())
       callee = emit_generic_method(info, struct_origin, method);
 
-    // If the method isn't forward-declared yet (shouldn't happen after
-    // materialize_import, but guard for non-imported local types), declare it.
-    if (!callee) {
-      for (auto &m : info.methods) {
+    // A local type's methods are declared up front and an imported one's when
+    // its package is materialized; this covers a type reached neither way.
+    if (!callee)
+      for (auto &m : info.methods)
         if (m.name == method && m.signature &&
             m.signature->kind == TypeKind::Func) {
-          auto &finfo = std::get<FuncTypeInfo>(m.signature->detail);
-          auto *ptr_type = llvm::PointerType::getUnqual(context);
-          std::vector<llvm::Type *> param_ll;
-          param_ll.push_back(ptr_type); // self
-          for (auto &p : finfo.params)
-            param_ll.push_back(llvm_type(p));
-          llvm::Type *ret_ll = !finfo.return_type
-                                   ? void_ll_type
-                                   : llvm_type(finfo.return_type);
-          auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
-          callee = llvm::Function::Create(
-              ft, llvm::Function::ExternalLinkage, link_name, module.get());
+          callee = forward_declare_method(
+              link_name, std::get<FuncTypeInfo>(m.signature->detail));
           break;
         }
-      }
-    }
 
     if (callee) {
       // Self is a pointer to the struct.  Resolve through the parameterized
@@ -1228,9 +1216,7 @@ llvm::Function *CodeGen::resolve_member_method_callee(
       std::string origin =
           info.origin_package.empty() ? package_name : info.origin_package;
       std::string link = mangle(origin, info.name + "__" + method);
-      if (auto *fn = module->getFunction(link))
-        return fn;
-      return declare(link, llvm::PointerType::getUnqual(context), fi);
+      return forward_declare_method(link, fi);
     }
     return nullptr;
   }

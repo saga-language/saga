@@ -218,61 +218,8 @@ llvm::Function *CodeGen::declare_import(const std::string &pkg_name,
   if (auto *existing = module->getFunction(link_name))
     return existing;
 
-  // Build the LLVM function type from the semantic type.
-  auto &fi = std::get<FuncTypeInfo>(func_type->detail);
-
-  // Determine sret lowering for struct returns.
-  llvm::Type *sret_struct_ty = nullptr;
-  llvm::Type *ret_ll = void_ll_type;
-  if (fi.return_type && fi.return_type->kind != TypeKind::Void) {
-    auto *r = llvm_type(fi.return_type);
-    if (r && r->isStructTy()) {
-      sret_struct_ty = r;
-      ret_ll = void_ll_type;
-    } else {
-      ret_ll = r;
-    }
-  }
-
-  // Param types: structs lowered to ptr (byval applied below).
-  auto *ptr_ty = llvm::PointerType::getUnqual(context);
-  std::vector<llvm::Type *> param_types;
-  std::vector<llvm::Type *> byval_attached(fi.params.size(), nullptr);
-  if (sret_struct_ty)
-    param_types.push_back(ptr_ty);
-  for (size_t i = 0; i < fi.params.size(); ++i) {
-    auto *p = llvm_type(fi.params[i]);
-    if (p && p->isStructTy()) {
-      byval_attached[i] = p;
-      param_types.push_back(ptr_ty);
-    } else {
-      param_types.push_back(p);
-    }
-  }
-
-  auto *fn_type = llvm::FunctionType::get(ret_ll, param_types, /*isVarArg=*/false);
-  auto *func = llvm::Function::Create(
-      fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
-
-  unsigned idx = 0;
-  if (sret_struct_ty) {
-    llvm::AttrBuilder ab(context);
-    ab.addStructRetAttr(sret_struct_ty);
-    ab.addAlignmentAttr(
-        align_of(sret_struct_ty));
-    func->addParamAttrs(idx++, ab);
-  }
-  for (size_t i = 0; i < fi.params.size(); ++i) {
-    if (byval_attached[i]) {
-      llvm::AttrBuilder ab(context);
-      ab.addByValAttr(byval_attached[i]);
-      ab.addAlignmentAttr(
-          align_of(byval_attached[i]));
-      func->addParamAttrs(idx, ab);
-    }
-    ++idx;
-  }
-  return func;
+  return declare_function(link_name,
+                          lower_signature(std::get<FuncTypeInfo>(func_type->detail)));
 }
 
 // ===========================================================================
@@ -492,7 +439,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
 }
 
 // The LLVM type is the whole rule, and it is the one the declaration side
-// applies (`apply_func_abi_attrs`). A caller that asks the semantic kind
+// applies (`lower_signature`). A caller that asks the semantic kind
 // instead disagrees with the callee about an alias, which lowers to a struct
 // without being one.
 llvm::Type *CodeGen::byval_param_type(const TypePtr &param) {

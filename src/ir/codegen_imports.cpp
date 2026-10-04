@@ -179,58 +179,8 @@ CodeGen::forward_declare_method(const std::string &link_name,
                                  const FuncTypeInfo &fi) {
   if (auto *existing = module->getFunction(link_name))
     return existing;
-
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-  llvm::Type *sret_ty = nullptr;
-  llvm::Type *ret_ll = void_ll_type;
-  if (fi.return_type) {
-    auto *r = llvm_type(fi.return_type);
-    if (r && r->isStructTy()) {
-      sret_ty = r;
-    } else {
-      ret_ll = r;
-    }
-  }
-
-  std::vector<llvm::Type *> param_ll;
-  std::vector<llvm::Type *> byval_attached(fi.params.size(), nullptr);
-  if (sret_ty)
-    param_ll.push_back(ptr_type);
-  param_ll.push_back(ptr_type); // self pointer
-  for (size_t pi = 0; pi < fi.params.size(); ++pi) {
-    auto *p = llvm_type(fi.params[pi]);
-    if (p && p->isStructTy()) {
-      byval_attached[pi] = p;
-      param_ll.push_back(ptr_type);
-    } else {
-      param_ll.push_back(p);
-    }
-  }
-
-  auto *ft = llvm::FunctionType::get(ret_ll, param_ll, false);
-  auto *func = llvm::Function::Create(
-      ft, llvm::Function::ExternalLinkage, link_name, module.get());
-
-  unsigned aidx = 0;
-  if (sret_ty) {
-    llvm::AttrBuilder ab(context);
-    ab.addStructRetAttr(sret_ty);
-    ab.addAlignmentAttr(align_of(sret_ty));
-    func->addParamAttrs(aidx++, ab);
-  }
-  ++aidx; // self
-  for (size_t pi = 0; pi < fi.params.size(); ++pi) {
-    if (byval_attached[pi]) {
-      llvm::AttrBuilder ab(context);
-      ab.addByValAttr(byval_attached[pi]);
-      ab.addAlignmentAttr(
-          align_of(byval_attached[pi]));
-      func->addParamAttrs(aidx, ab);
-    }
-    ++aidx;
-  }
-  return func;
+  return declare_function(
+      link_name, lower_signature(fi, llvm::PointerType::getUnqual(context)));
 }
 
 } // namespace saga

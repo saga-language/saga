@@ -36,72 +36,29 @@ static bool is_intrinsic_type_name(std::string_view name) {
 }
 
 void CodeGen::declare_functions(const SourceNode &src) {
-  for (auto &decl : src.declarations) {
-    if (auto *fn = std::get_if<FuncDeclNode>(&decl->data)) {
-      // Generic functions are emitted lazily as monomorphised
-      // specialisations at each call site (see monomorphism_plan.md,
-      // Step 5).  The template itself has no concrete LLVM signature.
-      // Receiver methods on generic receiver types (Array/Map) are
-      // handled through their own codegen path.  Extern declarations
-      // are always emitted directly — there is a single C symbol
-      // regardless of T; TypeParam params lower to opaque pointers,
-      // matching how polymorphic runtime functions take elements via
-      // void*.
-      if (fn->generic && !fn->is_extern) {
-        if (!fn->receiver)
-          continue;
-        auto &rt = fn->receiver->type->data;
-        bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
-                               std::get_if<MapTypeNode>(&rt);
-        if (!is_generic_recv)
-          continue;
-      }
+  for (auto &decl : src.declarations)
+    if (auto *fn = std::get_if<FuncDeclNode>(&decl->data))
+      declare_free_function(*fn);
+}
 
-      // Receiver methods are declared elsewhere with the receiver in
-      // the signature; this path would build a clashing one without it.
-      if (fn->receiver)
-        continue;
-      std::string name(fn->name.name);
-      bool is_main = (name == "Main");
-      std::string link_name = free_func_link_name(*fn);
+// A generic function has no signature until a call fixes its type arguments,
+// and a receiver method is declared with its receiver. An extern has one C
+// symbol whatever its type arguments, so it is declared here either way.
+void CodeGen::declare_free_function(const FuncDeclNode &fn) {
+  if ((fn.generic && !fn.is_extern) || fn.receiver)
+    return;
+  std::string link_name = free_func_link_name(fn);
+  if (module->getFunction(link_name))
+    return;
 
-      // Skip if already declared (e.g. by a previous source file).
-      if (module->getFunction(link_name))
-        continue;
-
-      llvm::FunctionType *fn_type = nullptr;
-      if (fn->is_extern && fn->generic) {
-        // Generic extern: resolve generic-param identifiers to opaque
-        // pointers without consulting the analyzer's scope (T may not
-        // be in any live scope at codegen time).
-        fn_type = build_extern_generic_func_type(*fn);
-      } else {
-        fn_type = build_func_type(*fn);
-      }
-      auto *func = llvm::Function::Create(
-          fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
-
-      if (!(fn->is_extern && fn->generic))
-        apply_func_abi_attrs(func, *fn);
-
-      // Name the arguments for readability.
-      size_t arg_idx = 0;
-      // Skip the hidden sret arg if present.
-      if (fn->signature.return_type && !(fn->is_extern && fn->generic)) {
-        auto *r_ll = resolve_type_node(*fn->signature.return_type);
-        if (r_ll && r_ll->isStructTy()) {
-          if (arg_idx < func->arg_size())
-            func->getArg(arg_idx++)->setName("sret.out");
-        }
-      }
-      for (auto &param : fn->signature.params) {
-        for (auto &ident : param.names.identifiers) {
-          if (arg_idx < func->arg_size())
-            func->getArg(arg_idx++)->setName(std::string(ident.name));
-        }
-      }
-    }
+  if (fn.name.name == "Main") {
+    llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getInt32Ty(context), false),
+        llvm::Function::ExternalLinkage, link_name, module.get());
+    return;
   }
+  auto sig = lower_signature(decl_signature(fn));
+  name_params(declare_function(link_name, sig), sig, fn);
 }
 
 // ===========================================================================
@@ -477,94 +434,6 @@ CodeGen::ast_interface_methods(const InterfaceDeclNode &node) {
 // Struct method declarations
 // ===========================================================================
 
-MethodSig CodeGen::build_method_signature(const FuncDeclNode &fn) {
-  MethodSig sig;
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-  // Sret lowering for struct returns.
-  llvm::Type *ret_type = void_ll_type;
-  if (fn.signature.return_type) {
-    auto *r = resolve_type_node(*fn.signature.return_type);
-    if (r && r->isStructTy()) {
-      sig.sret_struct_ty = r;
-      ret_type = void_ll_type;
-    } else {
-      ret_type = r;
-    }
-  }
-
-  // Receiver ABI: structs and interfaces pass by pointer; alias-of-
-  // primitive (e.g. `UserID = Int`) passes by value so the LLVM
-  // signature matches dispatch sites that emit a scalar receiver.
-  // Resolve the receiver via the analyzer's package_scope_ rather
-  // than resolve_type_node — at codegen time current_scope may not
-  // hold the receiver's name, which would silently degrade to void.
-  llvm::Type *self_ll = ptr_type;
-  if (fn.receiver) {
-    if (auto *id = std::get_if<IdentifierNode>(&fn.receiver->type->data)) {
-      auto sym = analyzer.package_scope_
-                     ? analyzer.package_scope_->lookup(std::string(id->name))
-                     : std::optional<Symbol>{};
-      if (sym && sym->type) {
-        auto unwrapped = unwrap_alias(sym->type);
-        if (unwrapped && unwrapped->kind != TypeKind::Struct)
-          self_ll = llvm_type(unwrapped);
-      }
-    }
-  }
-
-  std::vector<llvm::Type *> param_types;
-  if (sig.sret_struct_ty)
-    param_types.push_back(ptr_type);
-  param_types.push_back(self_ll);
-  sig.self_ll = self_ll;
-  for (auto &param : fn.signature.params) {
-    auto *ll = resolve_type_node(*param.type);
-    bool byval = ll && ll->isStructTy() && !param.is_variadic;
-    for (size_t i = 0; i < param.names.identifiers.size(); ++i) {
-      sig.byval_struct_tys.push_back(byval ? ll : nullptr);
-      param_types.push_back(byval ? ptr_type : ll);
-    }
-  }
-  sig.fn_type = llvm::FunctionType::get(ret_type, param_types, false);
-  return sig;
-}
-
-void CodeGen::apply_method_abi_attrs(llvm::Function *func,
-                                       const MethodSig &sig) {
-  unsigned idx = 0;
-  if (sig.sret_struct_ty) {
-    llvm::AttrBuilder ab(context);
-    ab.addStructRetAttr(sig.sret_struct_ty);
-    ab.addAlignmentAttr(
-        align_of(sig.sret_struct_ty));
-    func->addParamAttrs(idx++, ab);
-  }
-  ++idx; // self
-  for (auto *bv : sig.byval_struct_tys) {
-    if (bv) {
-      llvm::AttrBuilder ab(context);
-      ab.addByValAttr(bv);
-      ab.addAlignmentAttr(align_of(bv));
-      func->addParamAttrs(idx, ab);
-    }
-    ++idx;
-  }
-}
-
-void name_method_args(llvm::Function *func, const MethodSig &sig,
-                      const FuncDeclNode &fn,
-                      std::string_view receiver_name) {
-  unsigned aidx = 0;
-  if (sig.sret_struct_ty)
-    func->getArg(aidx++)->setName("sret.out");
-  func->getArg(aidx++)->setName(std::string(receiver_name));
-  for (auto &param : fn.signature.params)
-    for (auto &ident : param.names.identifiers)
-      if (aidx < func->arg_size())
-        func->getArg(aidx++)->setName(std::string(ident.name));
-}
-
 void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
   // Methods are top-level functions with a receiver.
   for (auto &decl : src.declarations) {
@@ -593,11 +462,8 @@ void CodeGen::declare_struct_method_symbols(const SourceNode &src) {
     if (module->getFunction(link_name))
       continue;
 
-    auto sig = build_method_signature(*fn);
-    auto *func = llvm::Function::Create(
-        sig.fn_type, llvm::Function::ExternalLinkage, link_name, module.get());
-    apply_method_abi_attrs(func, sig);
-    name_method_args(func, sig, *fn, fn->receiver->name.name);
+    auto sig = lower_signature(decl_signature(*fn), receiver_param_type(*fn));
+    name_params(declare_function(link_name, sig), sig, *fn);
   }
 }
 
