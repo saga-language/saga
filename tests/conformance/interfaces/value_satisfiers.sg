@@ -1,0 +1,40 @@
+// Any type whose methods match satisfies an interface, not only a struct: an
+// enum with methods of its own, and the scalars through the stdlib's methods
+// on them. Each is boxed and called through the vtable like a struct.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+interface Shown {
+  String() string
+}
+
+enum Color {
+  Red
+  Green
+}
+
+pub fn (c Color) Name() string { "color {c.String()}" }
+
+fn describe(n Named) string { n.Name() }
+
+pub fn Main() void {
+  k := 3
+  a Named = Color.Green
+  io.Println("{a.Name()} | {describe(Color.Red)}")
+
+  i Shown = 42
+  s Shown = "text{k}"
+  b Shown = true
+  e Shown = Color.Red
+  io.Println("{i.String()} {s.String()} {b.String()} {e.String()}")
+
+  all array{Shown} = []
+  all = all.Append(7)
+  all = all.Append("s{k}")
+  first := all[0] or { i }
+  second := all[1] or { i }
+  io.Println("{first.String()} {second.String()}")
+}

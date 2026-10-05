@@ -297,6 +297,13 @@ static void write_struct_export(std::ostringstream &os,
     }
   }
 
+  // An importer needs to know which methods write through their receiver:
+  // they cannot be called on a constant, and a box holding the struct is
+  // copied before one runs.
+  for (auto &method : info.methods)
+    if (method.is_public && method.mutates_receiver)
+      os << "  writes " << method.name << "\n";
+
   os << "}\n";
 }
 
@@ -1043,6 +1050,13 @@ struct SgiParser {
         skip_line();
         if (etype)
           embeds.push_back(etype);
+      } else if (kw == "writes") {
+        skip_whitespace();
+        std::string mname = read_word();
+        skip_line();
+        for (auto &m : methods)
+          if (m.name == mname)
+            m.mutates_receiver = true;
       } else if (kw == "fn") {
         // Private method — skip
         push_type_param_scope();

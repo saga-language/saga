@@ -134,6 +134,11 @@ llvm::Constant *CodeGen::get_or_emit_key_ops(const TypePtr &key_type) {
     llvm::IRBuilder<> tb(bb);
     llvm::Value *a = equals_thunk->getArg(0);
     llvm::Value *b = equals_thunk->getArg(1);
+    // `other` takes a reference the callee gives back; the key stays in the
+    // map.
+    if (param_owns_reference(u))
+      if (auto *retain = ownership_fn(u, true))
+        tb.CreateCall(retain, {b});
     auto *raw = tb.CreateCall(user_equals, {a, b});
     stamp_abi(raw, signature_of(user_equals));
     llvm::Value *as_i32;
@@ -228,22 +233,13 @@ void CodeGen::init_types() {
       {llvm::PointerType::getUnqual(context), i64_type, i64_type},
       "saga_runtime_string");
 
-  // saga_runtime_array = { ptr, i64, i64, i64, i64 } — data, len, cap,
-  // elem_size, refcount
+  // saga_runtime_array = { ptr, i64, i64, i64, i64, ptr } — data, len, cap,
+  // elem_size, refcount, elem ops
   array_type = llvm::StructType::create(
       context,
       {llvm::PointerType::getUnqual(context), i64_type, i64_type, i64_type,
-       i64_type},
+       i64_type, llvm::PointerType::getUnqual(context)},
       "saga_runtime_array");
-
-  // Interface fat pointer: { ptr data, ptr vtable }
-  auto *ptr_ty = llvm::PointerType::getUnqual(context);
-  iface_fat_ptr_type = llvm::StructType::create(
-      context, {ptr_ty, ptr_ty}, "saga_runtime_iface");
-
-  // Closure fat pointer: { ptr fn, ptr env }
-  closure_fat_ptr_type = llvm::StructType::create(
-      context, {ptr_ty, ptr_ty}, "saga_runtime_closure");
 
   // Register built-in enums with the current package as origin key.
   // key_for("", "Comparison") resolves to mangle(package_name, "Comparison").
@@ -405,8 +401,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
     return boxed ? static_cast<llvm::Type *>(ptr_rep) : st;
   }
   case TypeKind::Interface:
-    // Interfaces are represented as a fat pointer struct.
-    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_iface
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_box
   case TypeKind::Union: {
     auto *st = get_union_llvm_type(t);
     if (!st)
@@ -418,7 +413,7 @@ llvm::Type *CodeGen::llvm_type(const TypePtr &t) {
   case TypeKind::Map:
     return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_map
   case TypeKind::Func:
-    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_closure
+    return llvm::PointerType::getUnqual(context); // ptr to saga_runtime_box
   case TypeKind::TypeParam:
     // Unresolved generic type parameter (e.g. T in stdlib [T] methods).
     // At runtime, generic values are passed as opaque pointers.

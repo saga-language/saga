@@ -1,0 +1,7 @@
+pub struct Counter {
+  pub n int
+}
+
+pub fn (c Counter) Bump() void { c.n = c.n + 1 }
+
+pub fn (c Counter) Count() int { c.n }

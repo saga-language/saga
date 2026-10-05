@@ -1,0 +1,38 @@
+// An interface value holds its own copy of what it was given, so it outlives
+// the function that made it: one returned, and one stored in a field, are
+// read after their maker's frame is gone and another call has reused it.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+struct Cat {
+  name string
+  age int
+}
+
+pub fn (c Cat) Name() string { "{c.name}/{c.age}" }
+
+struct Holder {
+  n Named
+}
+
+fn make(n string) Named {
+  c := Cat{name: n, age: 3}
+  c
+}
+
+fn hold(n string) Holder {
+  Holder{n: Cat{name: n, age: 4}}
+}
+
+fn clobber(a int, b int, c int, d int) int { a + b + c + d }
+
+pub fn Main() void {
+  x := make("tom")
+  y := make("jerry")
+  h := hold("held")
+  z := clobber(1, 2, 3, 4)
+  io.Println("{x.Name()} {y.Name()} {h.n.Name()} {z}")
+}

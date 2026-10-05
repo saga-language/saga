@@ -1,0 +1,18 @@
+// A method that writes its receiver through a chain of calls cannot run on
+// a constant, whichever order the methods are declared in.
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Clear() void { c.Reset() }
+pub fn (c Counter) Reset() void { c.Bump() }
+pub fn (c Counter) Bump() void { c.n = c.n + 1 }
+
+const start = Counter{n: 1}
+
+pub fn Main() void {
+  start.Clear()
+  io.Println("{start.n}")
+}

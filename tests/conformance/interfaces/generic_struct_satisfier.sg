@@ -1,0 +1,25 @@
+// An instance of a generic struct satisfies an interface like any struct;
+// its methods are generated for that instance when it is boxed, even with
+// no direct call to them anywhere.
+import "std/io"
+
+interface Counted {
+  Bump() void
+  Count() int
+}
+
+struct Box<T> {
+  v T
+  n int
+}
+
+pub fn (b Box<T>) Bump() void { b.n = b.n + 1 }
+pub fn (b Box<T>) Count() int { b.n }
+
+pub fn Main() void {
+  bx := Box{v: "label", n: 1}
+  c Counted = bx
+  shared := c
+  shared.Bump()
+  io.Println("{c.Count()} {shared.Count()} {bx.n}")
+}

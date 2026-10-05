@@ -299,7 +299,7 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
       if (!c) return nullptr;
       elems.push_back(c);
     }
-    return build_const_array_global(elem_ll, elems);
+    return build_const_array_global(ainfo.element, elems);
   }
   // Backward reference to a sibling const, already lowered to a global.
   if (auto *id = std::get_if<IdentifierNode>(&val_node.data)) {
@@ -311,8 +311,11 @@ llvm::Constant *CodeGen::build_const_value(const Node &val_node,
   return nullptr;
 }
 
+// A constant's elements are static and its copies are not, so it carries the
+// element type's slot operations like any other array.
 llvm::Constant *CodeGen::build_const_array_global(
-    llvm::Type *elem_ll, const std::vector<llvm::Constant *> &elems) {
+    const TypePtr &elem_sem, const std::vector<llvm::Constant *> &elems) {
+  auto *elem_ll = llvm_type(elem_sem);
   auto *buf_ty = llvm::ArrayType::get(elem_ll, elems.size());
   auto *buf_global = new llvm::GlobalVariable(
       *module, buf_ty, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
@@ -326,7 +329,8 @@ llvm::Constant *CodeGen::build_const_array_global(
       array_type, {buf_global, llvm::ConstantInt::get(i64_type, n),
                    llvm::ConstantInt::get(i64_type, n),
                    llvm::ConstantInt::get(i64_type, elem_size),
-                   llvm::ConstantInt::getSigned(i64_type, -1)});
+                   llvm::ConstantInt::getSigned(i64_type, -1),
+                   elem_ops_for(elem_sem)});
   auto *hdr_global = new llvm::GlobalVariable(
       *module, array_type, /*isConstant=*/true,
       llvm::GlobalValue::PrivateLinkage, hdr, ".saga_arr_hdr");
@@ -396,17 +400,8 @@ void CodeGen::emit_interface_decl(const InterfaceDeclNode &node) {
     sem_type = make_interface_type(name, ast_interface_methods(node), {},
                                    package_name);
 
-  auto &info = std::get<InterfaceTypeInfo>(sem_type->detail);
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-  std::vector<llvm::Type *> vtable_fields(info.methods.size(), ptr_type);
-  std::vector<std::string> method_names;
-  for (auto &m : info.methods)
-    method_names.push_back(m.name);
-
-  auto *vtable_st =
-      llvm::StructType::create(context, vtable_fields, "saga.vtable." + key);
-  iface_vtable_types[key] = vtable_st;
-  iface_method_names[key] = std::move(method_names);
+  declare_vtable_type(key,
+                      std::get<InterfaceTypeInfo>(sem_type->detail).methods);
   named_sem_types[key] = sem_type;
 }
 

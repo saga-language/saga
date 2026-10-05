@@ -1,0 +1,29 @@
+// Spec: "no name ever observes another's edit" (docs/language.md:63). Two
+// names for one closure share its state until a call through one of them
+// writes it; that one then gets a copy of its own. A parameter is a second
+// name like any other.
+import "std/io"
+
+fn counter() fn() int {
+  n := 0
+  fn() int {
+    n += 1
+    n
+  }
+}
+
+fn twice(f fn() int) int {
+  f()
+  f()
+}
+
+pub fn Main() void {
+  c := counter()
+  c()
+  shared := c
+  io.Println("{shared()} {shared()} {c()}")
+
+  d := counter()
+  d()
+  io.Println("{twice(d)} {d()}")
+}

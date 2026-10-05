@@ -28,8 +28,32 @@ struct LoweredSig {
   std::vector<llvm::Type *> byval; // one per LLVM parameter; null if direct
 };
 
+const FuncTypeInfo *func_info(const MethodInfo &m);
 const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
                                      const std::string &name);
+
+// An owned value carries a reference its consumer takes over; a borrowed one
+// is read out of storage that keeps its own.
+enum class Ownership { Owned, Borrowed };
+
+// Whether a value of `val_sem` landing in a slot of `slot_sem` is put in a new
+// interface box.
+bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem);
+
+// A counted kind is held through one pointer to a refcounted object; a boxed
+// one (an interface or function value) is the counted box the runtime shares.
+bool is_counted(const TypePtr &t);
+bool is_boxed(const TypePtr &t);
+
+// A conditional's merge point. Every branch that reaches it hands over a value
+// already in the conditional's type, and an owned one when `merged` is owned.
+struct BranchJoin {
+  llvm::BasicBlock *merge = nullptr;
+  TypePtr result; // null when the conditional yields no value
+  Ownership merged = Ownership::Borrowed;
+  bool reached = false;
+  std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
+};
 
 // ---------------------------------------------------------------------------
 // CodeGen — lowers a type-checked AST to LLVM IR.
@@ -72,9 +96,6 @@ struct CodeGen {
   std::unordered_map<std::string, bool> enum_types;
 
   // ── Interface registry ──────────────────────────────────────────────
-
-  /// The fat pointer type for interface values: { ptr data, ptr vtable }.
-  llvm::StructType *iface_fat_ptr_type = nullptr;
 
   /// Maps interface name → vtable struct type (struct of fn ptrs).
   std::unordered_map<std::string, llvm::StructType *> iface_vtable_types;
@@ -129,9 +150,6 @@ struct CodeGen {
   bool current_func_is_main = false;
 
   // ── Closure support ──────────────────────────────────────────────────
-
-  /// The fat pointer type for closures: { ptr fn, ptr env }.
-  llvm::StructType *closure_fat_ptr_type = nullptr;
 
   /// Counter for generating unique closure names.
   int next_closure_id = 0;
@@ -370,7 +388,7 @@ private:
   /// Lower a const array literal to a static `saga_runtime_array` header plus
   /// element buffer in rodata (refcount -1).  Returns the header's address.
   llvm::Constant *build_const_array_global(
-      llvm::Type *elem_ll, const std::vector<llvm::Constant *> &elems);
+      const TypePtr &elem_sem, const std::vector<llvm::Constant *> &elems);
 
   /// Register enum variant tags.
   void declare_enums(const SourceNode &src);
@@ -398,15 +416,42 @@ private:
   /// Emit bodies of receiver methods on intrinsic types.
   void emit_intrinsic_methods(const SourceNode &src);
 
-  /// Get or create a vtable for a concrete struct implementing an interface.
-  /// struct_type and iface_type must be TypeKind::Struct and ::Interface.
-  llvm::GlobalVariable *get_or_create_vtable(const TypePtr &struct_type,
+  // ── Interface values (codegen_interfaces.cpp) ──────────────────────
+  void declare_vtable_type(const std::string &key,
+                           const std::vector<MethodInfo> &methods);
+  std::string vtable_type_key(const TypePtr &concrete);
+  llvm::GlobalVariable *get_or_create_vtable(const TypePtr &concrete,
                                               const TypePtr &iface_type);
-
-  /// Box a concrete value into an interface fat pointer.
+  llvm::Function *value_receiver_thunk(const TypePtr &concrete,
+                                       const std::string &key,
+                                       const std::string &method,
+                                       const FuncTypeInfo *sig);
+  llvm::Value *call_value_method(const TypePtr &concrete,
+                                 const std::string &method,
+                                 llvm::Function *thunk, unsigned recv,
+                                 llvm::Value *value);
+  llvm::Function *value_method_callee(const TypePtr &concrete,
+                                      const std::string &method);
+  llvm::Function *enum_method_callee(const TypePtr &enum_sem,
+                                     const std::string &method);
+  const FuncTypeInfo *enum_method_signature(const TypePtr &enum_sem,
+                                            const std::string &method);
+  llvm::Constant *vtable_method(const StructTypeInfo &sinfo,
+                                const std::string &method,
+                                const FuncTypeInfo *iface_sig);
+  uint64_t writes_mask(const StructTypeInfo &sinfo,
+                       const std::vector<std::string> &methods);
+  std::optional<bool> method_writes(const StructTypeInfo &sinfo,
+                                    const std::string &method);
   llvm::Value *emit_interface_box(llvm::Value *concrete_val,
                                    const TypePtr &concrete_type,
                                    const TypePtr &iface_type);
+  llvm::Value *box_value(llvm::Value *box);
+  llvm::Value *box_vtable(llvm::Value *box);
+  std::pair<llvm::Value *, bool> interface_receiver(const Node &object,
+                                                    llvm::Value *obj,
+                                                    const TypePtr &iface_sem,
+                                                    unsigned method);
 
   /// The one lowering for every function boundary, Saga or extern. `leading`
   /// is a receiver or closure environment, passed as it is.
@@ -535,13 +580,13 @@ private:
 
   /// Store `rhs` into the element named by the index `target`.
   void emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
-                         const TypePtr &rhs_sem);
+                         const TypePtr &rhs_sem, const Node &rhs_node);
   void emit_map_index_assign(const IndexExprNode &target,
                              const TypePtr &obj_sem, llvm::Value *rhs,
-                             const TypePtr &rhs_sem);
+                             const TypePtr &rhs_sem, const Node &rhs_node);
   void emit_array_index_assign(const IndexExprNode &target,
                                const TypePtr &obj_sem, llvm::Value *rhs,
-                               const TypePtr &rhs_sem);
+                               const TypePtr &rhs_sem, const Node &rhs_node);
 
   /// Step the integer target by one in place, shared by `++` and `--`.
   void emit_step(const Node &target, bool increment);
@@ -576,8 +621,36 @@ private:
   llvm::Value *emit_specialisation_call(llvm::Function *spec,
                                         const TypePtr &concrete,
                                         const CallExprNode &node);
-  llvm::Value *emit_function_value_call(const CallExprNode &node,
-                                        const std::string &name);
+  // ── Function values (codegen_function_values.cpp) ───────────────────
+  llvm::StructType *fn_vtable_type();
+  llvm::Constant *fn_vtable(const std::string &name, llvm::Function *code,
+                            const TypePtr &env_sem, bool writes);
+  llvm::Value *
+  emit_closure_box(const std::string &name, llvm::Function *code,
+                   const TypePtr &env_sem,
+                   const std::vector<Analyzer::CaptureInfo> &captures,
+                   bool writes);
+  llvm::Value *function_value(llvm::Function *fn, const TypePtr &fn_sem);
+  llvm::Function *function_value_thunk(llvm::Function *fn,
+                                       const FuncTypeInfo &fi);
+  llvm::Value *emit_function_value_call(const CallExprNode &node);
+  llvm::Value *emit_function_value_invoke(const Node &callee, llvm::Value *box,
+                                          const CallExprNode &node);
+  TypePtr closure_env_type(const std::string &closure_name,
+                           const std::vector<Analyzer::CaptureInfo> &captures);
+  llvm::Function *
+  emit_closure_trampoline(const std::string &closure_name,
+                          const FuncExprNode &node, const FuncTypeInfo &fi,
+                          const TypePtr &env_sem,
+                          const std::vector<Analyzer::CaptureInfo> &captures);
+  void bind_captures(llvm::Value *env, const TypePtr &env_sem,
+                     const std::vector<Analyzer::CaptureInfo> &captures);
+  void write_back_captures(llvm::Function *fn);
+  /// A closure body's views of its environment, by trampoline, so each
+  /// return writes back its own.
+  std::unordered_map<const llvm::Function *,
+                     std::vector<std::pair<llvm::AllocaInst *, llvm::Value *>>>
+      capture_views_;
   llvm::Value *pack_variadic_args(const CallExprNode &node,
                                   const FuncTypeInfo &fi);
   llvm::Value *emit_direct_call(llvm::Function *callee,
@@ -654,6 +727,22 @@ private:
   llvm::Function *get_or_declare_memcmp();
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
+  llvm::Value *as_condition(llvm::Value *val);
+  void start_block(llvm::BasicBlock *block);
+
+  /// A local an `is` test narrows for the length of one branch.
+  struct Narrowing {
+    std::string name;
+    TypePtr from;
+    TypePtr to;
+  };
+  std::optional<Narrowing> if_narrowing(const IfExprNode &node);
+  std::optional<Narrowing> else_narrowing(const std::optional<Narrowing> &then);
+  std::optional<Narrowing> arm_narrowing(const SwitchExprNode &node,
+                                         const CaseArmNode &arm,
+                                         const TypePtr &subject_sem);
+  void emit_if_branch(BranchJoin &join, const Node *body,
+                      const std::optional<Narrowing> &narrowing);
   llvm::Value *emit_for_expr(const ForExprNode &node, const Node &parent);
   void seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
                         const TypePtr &sem, llvm::Type *ll);
@@ -719,11 +808,55 @@ private:
   llvm::Value *emit_selector(const SelectorNode &node, const Node &parent);
   llvm::Value *emit_switch_expr(const SwitchExprNode &node,
                                 const Node &parent);
+  void emit_switch_arm(BranchJoin &join, const Node *body);
+  void emit_type_switch(const SwitchExprNode &node, llvm::Value *subject,
+                        const TypePtr &subject_sem, BranchJoin &join);
+  void add_type_cases(llvm::SwitchInst *sw, const CaseArmNode &arm,
+                      const TypePtr &subject_sem, size_t arm_index,
+                      llvm::BasicBlock *case_bb);
+  void emit_string_switch(const SwitchExprNode &node, llvm::Value *subject,
+                          BranchJoin &join);
+  void branch_on_string_patterns(const CaseArmNode &arm, llvm::Value *subject,
+                                 size_t arm_index, llvm::BasicBlock *match,
+                                 llvm::BasicBlock *miss);
+  void emit_value_switch(const SwitchExprNode &node, llvm::Value *subject,
+                         BranchJoin &join);
+  llvm::ConstantInt *case_constant(llvm::Value *pattern, llvm::Type *subject_ll,
+                                   size_t arm_index);
   llvm::Value *emit_array_literal(const ArrayLiteralNode &node,
                                   const Node &parent);
   llvm::Value *emit_map_literal(const MapLiteralNode &node,
                                 const Node &parent);
   llvm::Value *emit_range_literal(const RangeNode &node);
+
+  // ── Collections owning their elements (codegen_elements.cpp) ─────────
+  bool slot_holds_references(const TypePtr &sem);
+  llvm::Constant *elem_ops_for(const TypePtr &sem);
+  llvm::StructType *elem_ops_type();
+  llvm::Constant *runtime_elem_ops(const std::string &name);
+  llvm::Constant *walk_elem_ops(const TypePtr &sem);
+  llvm::Value *emit_new_array(const TypePtr &elem_sem, int64_t cap,
+                              const std::string &name);
+  llvm::Value *emit_new_map(const TypePtr &key_sem, const TypePtr &val_sem);
+  /// A value bound for a collection slot: as emitted, as the slot holds it,
+  /// and the address the runtime copies it from.
+  struct StoredValue {
+    llvm::Value *val = nullptr;
+    TypePtr val_sem;
+    llvm::Value *placed = nullptr;
+    llvm::Value *address = nullptr;
+  };
+  StoredValue emit_stored_value(const Node &node, const TypePtr &slot_sem);
+  StoredValue stored_value(llvm::Value *val, const TypePtr &val_sem,
+                           const TypePtr &slot_sem);
+  void emit_push_element(llvm::Value *arr, const TypePtr &elem_sem,
+                         const Node &node);
+  void emit_set_entry(llvm::Value *map, const TypePtr &key_sem,
+                      const TypePtr &val_sem, const KeyValueNode &entry);
+  void settle_stored(const StoredValue &v, const Node &source,
+                     const TypePtr &slot_sem);
+  void release_handed_over(llvm::Value *val, const TypePtr &val_sem,
+                           const Node &source, const TypePtr &slot_sem);
   void fill_range(llvm::Value *arr, llvm::Value *low, llvm::Value *high);
   /// Bytes the runtime copies for one element/key/value of `ll`.
   int64_t element_size_of(llvm::Type *ll);
@@ -733,11 +866,6 @@ private:
   /// never recorded.
   TypePtr collection_slot_type(const Node &parent, Slot slot,
                                const Node *fallback);
-  /// Emit one element/key/value and hand back its address, wrapping into the
-  /// slot's union first when the slot is one.
-  llvm::Value *collection_slot_value(llvm::Type *slot_ll,
-                                     const TypePtr &slot_sem,
-                                     const Node &value_node);
   /// The address an already-emitted value is written to a collection slot
   /// from. A null `val_sem` means the value cannot need a union wrap.
   llvm::Value *collection_slot_address(llvm::Type *slot_ll,
@@ -750,11 +878,12 @@ private:
                                                   const TypePtr &val_type,
                                                   const std::string &miss_msg);
   llvm::Value *emit_or_expr(const OrExprNode &node);
-
-  /// Bring an `or` handler's value to the union type the ok path produces,
-  /// wrapping a concrete value or remapping a narrower union.
-  llvm::Value *fallback_as_union(llvm::Value *val, const BlockNode &block,
-                                 const TypePtr &target);
+  bool or_has_handler(const OrExprNode &node) const;
+  TypePtr or_result_type(const OrExprNode &node) const;
+  llvm::Value *or_union_address(llvm::Value *val, const TypePtr &union_sem);
+  llvm::Value *is_error_tag(llvm::Value *tag, const TypePtr &union_sem);
+  void emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
+                       const TypePtr &union_sem, BranchJoin &join);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
 
@@ -833,9 +962,14 @@ private:
   llvm::Function *kind_method_callee(const MethodInfo &m,
                                      const TypePtr &obj_sem,
                                      const std::string &method);
-  std::vector<llvm::Value *> box_kind_method_args(const CallExprNode &node,
-                                                  const MethodInfo &m);
-  llvm::Value *box_for_type_param(llvm::Value *val, const TypePtr &arg_sem);
+  std::vector<llvm::Value *>
+  box_kind_method_args(const CallExprNode &node, const MethodInfo &m,
+                       const TypePtr &obj_sem,
+                       std::vector<StoredValue> &values);
+  void release_kind_method_args(const CallExprNode &node, const MethodInfo &m,
+                                const TypePtr &obj_sem,
+                                const std::vector<StoredValue> &values);
+  TypePtr kind_slot_type(const TypePtr &obj_sem, const TypePtr &param);
   llvm::Value *unbox_kind_method_result(llvm::Value *result,
                                         const MethodInfo &m,
                                         const TypePtr &obj_sem);
@@ -1035,17 +1169,13 @@ private:
   llvm::AllocaInst *bind_local(const std::string &name, llvm::Value *val,
                                const TypePtr &sem);
 
-  /// The LLVM type of a local slot holding a value of type `sem`.
-  llvm::Type *local_slot_type(const TypePtr &sem, llvm::Value *val);
-
   /// Produce a pointer to union memory holding `val`: a union passes through
   /// (converting if its layout differs); a concrete/error member value is
   /// wrapped. Returns null if it can't place the value.
   llvm::Value *as_union_ptr(llvm::Value *val, const TypePtr &val_sem,
                             const TypePtr &union_sem);
 
-  /// Box a struct value into an interface fat pointer. Returns null for any
-  /// other kind of value.
+  /// Box a value into a new interface box; null when it is already one.
   llvm::Value *as_interface_ptr(llvm::Value *val, const TypePtr &val_sem,
                                 const TypePtr &iface_sem);
 
@@ -1068,6 +1198,22 @@ private:
   /// back when the branch ends, or null if nothing was rebound.
   llvm::AllocaInst *narrow_local(const std::string &name, const TypePtr &from,
                                  const TypePtr &to);
+  void end_narrowing(const std::string &name, llvm::AllocaInst *displaced);
+
+  /// The union variable a narrowed slot views, and every view of it in force.
+  /// Keyed by slot, which belongs to one function, so a nested function body
+  /// never sees its parent's.
+  struct NarrowOrigin {
+    llvm::AllocaInst *slot = nullptr;
+    TypePtr sem;
+  };
+  std::unordered_map<const llvm::AllocaInst *, NarrowOrigin> narrow_origins_;
+  std::unordered_map<const llvm::AllocaInst *,
+                     std::vector<std::pair<llvm::AllocaInst *, TypePtr>>>
+      narrow_views_;
+  void emit_narrowed_assign(const NarrowOrigin &origin, llvm::AllocaInst *view,
+                            const Node &target, Token::Kind op,
+                            llvm::Value *rhs, const TypePtr &rhs_sem);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
   llvm::Value *emit_box_copy(llvm::Value *val, llvm::Type *ll_alt);
@@ -1132,18 +1278,36 @@ private:
 
   /// Register a local variable as managed (needs release at scope exit).
   void track_managed(llvm::AllocaInst *slot, const TypePtr &sem);
+  void track_reference(llvm::AllocaInst *slot, const TypePtr &sem);
 
   /// Emit retain call for a value based on its semantic type.
   void emit_retain(llvm::Value *val, const TypePtr &sem);
 
-  /// Whether the expression hands back a reference an existing slot still
-  /// owns, rather than one produced for this binding.
-  static bool is_borrowed_expr(const Node &node);
+  Ownership value_ownership(const Node &node);
+  Ownership call_ownership(const CallExprNode &call);
+  bool reads_stored_element(const CallExprNode &call);
+  bool kind_method_mutates(const TypePtr &shape, const std::string &method);
+  Ownership body_ownership(const Node *body, const TypePtr &result);
+  Ownership branch_value_ownership(const Node *body, const TypePtr &result);
+  Ownership zero_ownership(const TypePtr &result);
+  Ownership or_ownership(const OrExprNode &node);
+  Ownership if_ownership(const IfExprNode &node, const Node &parent);
+  Ownership switch_ownership(const SwitchExprNode &node, const Node &parent);
 
   /// Give `val` its own count when `source` only borrowed it, so the slot it
   /// is about to land in can release it like any other.
   void retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
                           const Node &source);
+
+  // ── Conditional merges (codegen_join.cpp) ────────────────────────────
+  BranchJoin open_join(const std::string &name, const TypePtr &result,
+                       Ownership merged);
+  void close_branch(BranchJoin &join, llvm::Value *val, const TypePtr &val_sem,
+                    const Node *source);
+  llvm::Value *join_value(const BranchJoin &join, llvm::Value *val,
+                          const TypePtr &val_sem, const Node *source);
+  llvm::Value *finish_join(BranchJoin &join, const std::string &name);
+  llvm::Value *emit_zero_value(const TypePtr &sem);
 
   /// The receiver value for a method call, made unique first when the method
   /// writes through it.
@@ -1165,18 +1329,22 @@ private:
   /// method table records rather than one derived from the LLVM type.
   static bool has_close_method(const StructTypeInfo &info);
 
-  /// A struct owns one reference to each managed value it holds, so a copy of
-  /// one retains them and its death releases them. The walk is generated per
-  /// struct type rather than inline, so a nested struct is one call.
-  bool owns_managed_fields(const TypePtr &sem);
+  /// A struct or union owns one reference to each managed value it holds,
+  /// so a copy of one retains them and its death releases them. The walk is
+  /// generated per type rather than inline, so a nested one is one call
+  /// (codegen_walks.cpp).
+  bool walks_references(const TypePtr &sem);
+  bool holds_references(const TypePtr &sem);
   void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
-  llvm::Function *struct_ownership_fn(const TypePtr &sem, bool retain);
+  llvm::Function *ownership_fn(const TypePtr &sem, bool retain);
+  llvm::Function *declare_walk_fn(const std::string &name);
+  llvm::Function *struct_walk_fn(const TypePtr &sem, bool retain);
+  llvm::Function *union_walk_fn(const TypePtr &sem, bool retain);
   void emit_slot_walk(llvm::StructType *st, const TypePtr &sem,
                       llvm::Value *self, bool retain);
-  void emit_slot_ownership(llvm::StructType *st, llvm::Value *self,
-                           unsigned idx, const TypePtr &slot, bool retain);
-  void release_slot(llvm::Value *addr, llvm::Type *slot_ll,
-                    const TypePtr &sem);
+  void walk_field(llvm::StructType *st, llvm::Value *self, unsigned idx,
+                  const TypePtr &slot, bool retain);
+  void walk_slot(llvm::Value *addr, const TypePtr &slot, bool retain);
   std::string close_link_name(llvm::Type *struct_ll) const;
   void emit_close_call(llvm::AllocaInst *slot);
 };

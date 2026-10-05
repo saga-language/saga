@@ -1,0 +1,46 @@
+// A union owns the value it holds: it outlives the local it was made from,
+// whether returned, copied through a parameter, held in a struct field, or
+// stored in an array.
+import "std/io"
+
+struct Wrap {
+  v string | int
+}
+
+fn make() string | int {
+  n := 3
+  s := "made{n}"
+  u string | int = s
+  u
+}
+
+fn copied(u string | int) string | int {
+  v := u
+  v
+}
+
+fn wrapped(n int) Wrap {
+  s := "field{n}"
+  Wrap{v: s}
+}
+
+fn stored() array{string | int} {
+  n := 5
+  s := "stored{n}"
+  xs array{string | int} = []
+  xs = xs.Append(s)
+  xs
+}
+
+pub fn Main() void {
+  a := make()
+  b := copied(a)
+  w := wrapped(4)
+  xs := stored()
+  wv := w.v
+  x := xs[0] or { 0 }
+  if a is string { io.Println(a) }
+  if b is string { io.Println(b) }
+  if wv is string { io.Println(wv) }
+  if x is string { io.Println(x) }
+}

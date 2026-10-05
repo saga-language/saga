@@ -696,12 +696,7 @@ void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
 }
 
-namespace {
-
-// The binding an assignment target ultimately names: `c`, `c.at.n` and
-// `c.xs[0]` all root at `c`. Anything else (a call result, a literal) has no
-// root and cannot be written through.
-std::string_view assignment_root(const Node &target) {
+std::string_view binding_root(const Node &target) {
   for (const Node *cur = &target; cur;) {
     if (auto *id = std::get_if<IdentifierNode>(&cur->data))
       return id->name;
@@ -718,6 +713,8 @@ std::string_view assignment_root(const Node &target) {
   return {};
 }
 
+namespace {
+
 bool any_writes(const std::vector<NodePtr> &nodes, std::string_view name) {
   for (auto &n : nodes)
     if (n && writes_through_binding(*n, name))
@@ -727,7 +724,7 @@ bool any_writes(const std::vector<NodePtr> &nodes, std::string_view name) {
 
 bool assign_writes(const AssignNode &node, std::string_view name) {
   for (auto &t : node.targets)
-    if (t && assignment_root(*t) == name)
+    if (t && binding_root(*t) == name)
       return true;
   return any_writes(node.values, name);
 }
@@ -757,9 +754,9 @@ bool writes_through_binding(const Node &node, std::string_view name) {
   if (auto *n = std::get_if<AssignNode>(&node.data))
     return assign_writes(*n, name);
   if (auto *n = std::get_if<IncrementNode>(&node.data))
-    return assignment_root(*n->operand) == name;
+    return binding_root(*n->operand) == name;
   if (auto *n = std::get_if<DecrementNode>(&node.data))
-    return assignment_root(*n->operand) == name;
+    return binding_root(*n->operand) == name;
   if (auto *n = std::get_if<BlockNode>(&node.data))
     return any_writes(n->stmts, name);
   if (auto *n = std::get_if<IfExprNode>(&node.data))

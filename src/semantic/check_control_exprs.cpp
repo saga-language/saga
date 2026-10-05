@@ -658,6 +658,7 @@ TypePtr Analyzer::check_or_expr(const OrExprNode &node) {
 TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
                                   const Node &parent) {
   push_scope(ScopeKind::Function);
+  push_closure_frame(node, parent);
 
   if (node.generic)
     enter_generics(*node.generic);
@@ -693,6 +694,7 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
     }
   }
 
+  pop_writer_frame();
   pop_scope();
 
   // Update capture types now that type checking is complete.

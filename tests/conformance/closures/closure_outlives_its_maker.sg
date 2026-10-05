@@ -1,0 +1,20 @@
+// Spec: "If the closure itself escapes its current scope, the closure
+// itself, and its captured state, are moved onto the heap." A closure
+// returned from the function that made it keeps what it captured.
+import "std/io"
+
+fn adder(k int) fn(int) int {
+  fn(n int) int { n + k }
+}
+
+fn greeter(name string) fn(string) string {
+  fn(greeting string) string { "{greeting}, {name}" }
+}
+
+pub fn Main() void {
+  n := 7
+  add10 := adder(10)
+  hi := greeter("ann{n}")
+  io.Println("{add10(5)} {adder(1)(2)}")
+  io.Println(hi("hello"))
+}

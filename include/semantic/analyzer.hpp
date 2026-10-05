@@ -805,6 +805,51 @@ private:
   bool method_mutates_receiver(const TypePtr &type,
                                std::string_view name) const;
 
+  // ── What a body writes through its receiver or captures ──────────────
+  // (receiver_writes.cpp). A method also writes its receiver by calling one
+  // that does on it, and a closure its captures, which the declaration's
+  // structural answer cannot see; the calls are noted while bodies are
+  // checked and settled once they all are.
+  struct WriterFrame {
+    TypePtr recv_type;            // a method's receiver type, else null
+    std::string method;           // that method's name
+    const Node *closure = nullptr;
+    std::vector<std::string> bindings;
+  };
+  struct WriterCall {
+    TypePtr caller_recv;
+    std::string caller;
+    const Node *closure;
+    TypePtr recv;
+    std::string method;
+  };
+  struct DeferredConstCall {
+    Span span;
+    TypePtr recv;
+    std::string method;
+    std::string constant;
+  };
+  std::vector<WriterFrame> writer_frames_;
+  std::vector<WriterCall> writer_calls_;
+  std::vector<DeferredConstCall> deferred_const_calls_;
+  std::unordered_set<const Node *> closures_writing_captures_;
+
+  void push_method_frame(const FuncDeclNode &fn, const TypePtr &recv_type);
+  void push_closure_frame(const FuncExprNode &node, const Node &parent);
+  void pop_writer_frame();
+  void note_receiver_call(const SelectorNode &sel, const TypePtr &recv);
+  void settle_receiver_writes();
+  bool mark_method_writes(const TypePtr &recv_type, const std::string &name);
+
+public:
+  /// Whether a closure writes a captured binding, directly or through a
+  /// method that writes its receiver.
+  bool closure_writes_captures(const Node &closure) const {
+    return closures_writing_captures_.count(&closure) > 0;
+  }
+
+private:
+
   TypePtr check_call_expr(const CallExprNode &node, const Node &parent);
   TypePtr check_index_expr(const IndexExprNode &node);
   TypePtr check_selector(const SelectorNode &node, const Node &parent);

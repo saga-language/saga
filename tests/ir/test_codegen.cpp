@@ -2297,8 +2297,12 @@ TEST(CodeGen, InterfaceVtableTypeCreated) {
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga.vtable." + CG::mangled("Greeter"));
   ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 1u) << "Vtable should have 1 fn ptr";
-  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
+  ASSERT_EQ(st->getNumElements(), 4u)
+      << "size, slot ops and writes mask, then 1 fn ptr";
+  EXPECT_TRUE(st->getElementType(0)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+  EXPECT_TRUE(st->getElementType(2)->isIntegerTy(64));
+  EXPECT_TRUE(st->getElementType(3)->isPointerTy());
 }
 
 TEST(CodeGen, InterfaceVtableMultipleMethods) {
@@ -2311,17 +2315,27 @@ TEST(CodeGen, InterfaceVtableMultipleMethods) {
   auto *st = llvm::StructType::getTypeByName(
       r.mod().getContext(), "saga.vtable." + CG::mangled("ReadWriter"));
   ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u);
+  EXPECT_EQ(st->getNumElements(), 5u) << "the 3-field prefix, then 2 fn ptrs";
 }
 
-TEST(CodeGen, InterfaceFatPtrTypeExists) {
-  auto r = CG::from("pub fn Main() void {}");
-  auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "saga_runtime_iface");
-  ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u); // { ptr data, ptr vtable }
-  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
-  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+TEST(CodeGen, InterfaceValueIsABoxPointer) {
+  auto r = CG::from(
+      "interface Greeter { Greet() string }\n"
+      "fn hello(g Greeter) string { g.Greet() }\n"
+      "pub fn Main() void {}");
+  auto *fn = r.func("hello");
+  ASSERT_NE(fn, nullptr);
+  ASSERT_EQ(fn->arg_size(), 1u)
+      << "the box pointer, not a { data, vtable } pair";
+  EXPECT_TRUE(fn->getArg(0)->getType()->isPointerTy());
+  bool readies_box = false;
+  for (auto &bb : *fn)
+    for (auto &inst : bb)
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "saga_box_unique_for")
+          readies_box = true;
+  EXPECT_TRUE(readies_box) << "a call through an interface readies its box";
 }
 
 TEST(CodeGen, StructMethodDeclared) {
@@ -3161,12 +3175,16 @@ TEST(CodeGen, MapStringKeyKind) {
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_map_new") {
           saw_call = true;
-          ASSERT_EQ(call->arg_size(), 4u);
+          ASSERT_EQ(call->arg_size(), 6u);
           auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
           ASSERT_NE(kind, nullptr);
           EXPECT_EQ(kind->getSExtValue(), 10) << "string key map should pass key_kind=STRING";
           EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(3)))
               << "Primitive-keyed maps should pass a null ops pointer";
+          EXPECT_EQ(call->getArgOperand(4)->getName(), "saga_string_elem_ops")
+              << "a string key is retained through the runtime's string ops";
+          EXPECT_TRUE(llvm::isa<llvm::ConstantPointerNull>(call->getArgOperand(5)))
+              << "an int value holds no reference";
         }
   EXPECT_TRUE(saw_call);
 }
@@ -3187,7 +3205,7 @@ TEST(CodeGen, MapIntKeyKind) {
         if (call->getCalledFunction() &&
             call->getCalledFunction()->getName() == "saga_map_new") {
           saw_call = true;
-          ASSERT_EQ(call->arg_size(), 4u);
+          ASSERT_EQ(call->arg_size(), 6u);
           auto *kind = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2));
           ASSERT_NE(kind, nullptr);
           EXPECT_EQ(kind->getSExtValue(), 1) << "int key map should pass key_kind=INT64";
@@ -3276,7 +3294,7 @@ TEST(CodeGen, HashableInTypePositionTypeChecks) {
 // Closures / Function Expressions
 // ===========================================================================
 
-TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
+TEST(CodeGen, FuncExprBuildsABox) {
   auto r = CG::from(
       "pub fn Main() void {\n"
       "  f := fn () int { 42 }\n"
@@ -3284,15 +3302,14 @@ TEST(CodeGen, SimpleFuncExprCreatesClosureStruct) {
       "}");
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  // Should have an alloca for the closure fat pointer.
-  bool found_closure_alloca = false;
+  bool boxed = false;
   for (auto &bb : *main)
     for (auto &inst : bb)
-      if (auto *a = llvm::dyn_cast<llvm::AllocaInst>(&inst))
-        if (a->getAllocatedType() == r.codegen->closure_fat_ptr_type)
-          found_closure_alloca = true;
-  EXPECT_TRUE(found_closure_alloca)
-      << "FuncExpr should create a closure fat pointer alloca";
+      if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+        if (call->getCalledFunction() &&
+            call->getCalledFunction()->getName() == "saga_box_new")
+          boxed = true;
+  EXPECT_TRUE(boxed) << "a function expression's value is a box on the heap";
 }
 
 TEST(CodeGen, FuncExprGeneratesTrampolineFunction) {
@@ -3448,14 +3465,23 @@ TEST(CodeGen, ClosureReturnVoid) {
   EXPECT_TRUE(tramp->getReturnType()->isVoidTy());
 }
 
-TEST(CodeGen, ClosureFatPtrTypeExists) {
-  auto r = CG::from("pub fn Main() void {}");
-  auto *st = llvm::StructType::getTypeByName(
-      r.mod().getContext(), "saga_runtime_closure");
-  ASSERT_NE(st, nullptr);
-  EXPECT_EQ(st->getNumElements(), 2u);
-  EXPECT_TRUE(st->getElementType(0)->isPointerTy());
-  EXPECT_TRUE(st->getElementType(1)->isPointerTy());
+TEST(CodeGen, NamedFunctionValueIsAStaticBox) {
+  auto r = CG::from(
+      "fn double(n int) int { n * 2 }\n"
+      "pub fn Main() void {\n"
+      "  f := double\n"
+      "  _ := f\n"
+      "}");
+  llvm::GlobalVariable *box = nullptr;
+  for (auto &g : r.mod().globals())
+    if (g.getName().ends_with("double.fnval"))
+      box = &g;
+  ASSERT_NE(box, nullptr) << "a named function used as a value has a box";
+  auto *init = llvm::dyn_cast<llvm::ConstantStruct>(box->getInitializer());
+  ASSERT_NE(init, nullptr);
+  auto *refcount = llvm::dyn_cast<llvm::ConstantInt>(init->getOperand(0));
+  ASSERT_NE(refcount, nullptr);
+  EXPECT_EQ(refcount->getSExtValue(), -1) << "static, so never freed";
 }
 
 TEST(CodeGen, ClosureTrampolineHasInternalLinkage) {
@@ -4292,15 +4318,14 @@ TEST(CodeGen, FuncParamCalledIndirectly) {
   // the function identifier was silently dropped from the call arg list.
   auto *main = r.func("main");
   ASSERT_NE(main, nullptr);
-  auto *greet = r.func("greet");
-  ASSERT_NE(greet, nullptr);
   bool greet_passed = false;
   for (auto &bb : *main) {
     for (auto &inst : bb) {
       auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
       if (!call) continue;
       for (unsigned i = 0; i < call->arg_size(); ++i) {
-        if (call->getArgOperand(i) == greet) {
+        auto *arg = call->getArgOperand(i);
+        if (arg->hasName() && arg->getName().ends_with("greet.fnval")) {
           greet_passed = true;
           break;
         }
@@ -4308,7 +4333,7 @@ TEST(CodeGen, FuncParamCalledIndirectly) {
     }
   }
   EXPECT_TRUE(greet_passed)
-      << "main must pass greet (the Function*) as an argument to call_it";
+      << "main must pass greet's function value as an argument to call_it";
 }
 
 TEST(CodeGen, StructFieldFuncCalledIndirectly) {

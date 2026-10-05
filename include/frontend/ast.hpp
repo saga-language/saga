@@ -763,4 +763,9 @@ std::optional<std::string_view> type_param_name(const Node &node);
 // ---------------------------------------------------------------------------
 bool writes_through_binding(const Node &node, std::string_view name);
 
+// The binding an assignment target or a call's receiver ultimately names:
+// `c`, `c.at.n` and `c.xs[0]` all root at `c`. Anything else (a call result,
+// a literal) has no root and cannot be written through.
+std::string_view binding_root(const Node &target);
+
 } // namespace saga

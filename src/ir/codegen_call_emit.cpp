@@ -58,21 +58,31 @@ llvm::Value *CodeGen::as_param(llvm::Value *val, llvm::Type *param_ll) {
   return spill_aggregate(val, "arg.spill");
 }
 
+const FuncTypeInfo *func_info(const MethodInfo &m) {
+  return m.signature && m.signature->kind == TypeKind::Func
+             ? &std::get<FuncTypeInfo>(m.signature->detail)
+             : nullptr;
+}
+
 const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
                                      const std::string &name) {
   for (auto &m : methods)
     if (m.name == name)
-      return m.signature && m.signature->kind == TypeKind::Func
-                 ? &std::get<FuncTypeInfo>(m.signature->detail)
-                 : nullptr;
+      return func_info(m);
   return nullptr;
 }
 
 // The one answer to which parameters own a reference: the caller retains a
-// borrowed argument for exactly these, and the callee gives it back.
+// borrowed argument for exactly these, and the callee gives it back. A Task
+// is a handle the runtime counts on its own.
 bool CodeGen::param_owns_reference(const TypePtr &param) {
   auto shape = unwrap_alias(param);
-  return shape && shape->kind == TypeKind::Array;
+  if (!shape)
+    return false;
+  if (shape->kind == TypeKind::Struct &&
+      std::get<StructTypeInfo>(shape->detail).name == "Task")
+    return false;
+  return holds_references(shape);
 }
 
 // An argument binds the callee's parameter: an error bubbles out of it as out

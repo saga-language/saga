@@ -36,7 +36,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
 
   auto *ident = std::get_if<IdentifierNode>(&node.callee->data);
   if (!ident)
-    return nullptr;
+    return emit_function_value_call(node);
   std::string name(ident->name);
 
   if (auto result = emit_intrinsic_call(name, node))
@@ -46,7 +46,7 @@ llvm::Value *CodeGen::emit_call_expr(const CallExprNode &node,
     return emit_specialisation_call(spec, concrete, node);
   if (auto *callee = module->getFunction(direct_link_name(name)))
     return emit_direct_call(callee, node, is_extern_function(name));
-  return emit_function_value_call(node, name);
+  return emit_function_value_call(node);
 }
 
 bool CodeGen::is_extern_function(const std::string &name) {
@@ -116,36 +116,6 @@ llvm::Value *CodeGen::emit_specialisation_call(llvm::Function *spec,
 
 // A function-typed local or parameter: a closure value carries (fn, env) and
 // the trampoline takes env first; a plain function value is just fn.
-llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node,
-                                               const std::string &name) {
-  auto local_it = locals.find(name);
-  if (local_it == locals.end())
-    return nullptr;
-  auto *alloca = local_it->second;
-  auto callee_sem = unwrap_alias(semantic_type(*node.callee));
-  if (!callee_sem || callee_sem->kind != TypeKind::Func)
-    return nullptr;
-
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-  bool is_closure = alloca->getAllocatedType() == closure_fat_ptr_type;
-  llvm::Value *fn_ptr = nullptr;
-  llvm::Value *env_ptr = nullptr;
-  if (is_closure) {
-    auto *fn_gep = builder.CreateStructGEP(
-        closure_fat_ptr_type, alloca, 0, "closure.fn.gep");
-    fn_ptr = builder.CreateLoad(ptr_type, fn_gep, "closure.fn");
-    auto *env_gep = builder.CreateStructGEP(
-        closure_fat_ptr_type, alloca, 1, "closure.env.gep");
-    env_ptr = builder.CreateLoad(ptr_type, env_gep, "closure.env");
-  } else {
-    fn_ptr = builder.CreateLoad(ptr_type, alloca, "fn.load");
-  }
-
-  auto &fi = std::get<FuncTypeInfo>(callee_sem->detail);
-  auto sig = lower_signature(fi, is_closure ? ptr_type : nullptr);
-  return emit_call(fn_ptr, sig, env_ptr, emit_arguments(node, &fi, true));
-}
-
 // Variadic arguments past the fixed ones are packed into a fresh array, unless
 // the call passes a single array of the variadic type through as it is.
 llvm::Value *CodeGen::pack_variadic_args(const CallExprNode &node,
@@ -162,28 +132,14 @@ llvm::Value *CodeGen::pack_variadic_args(const CallExprNode &node,
       return nullptr;
   }
 
-  auto *parent_fn = builder.GetInsertBlock()->getParent();
   auto &arr = std::get<ArrayTypeInfo>(last->detail);
-  auto *elem_ll = llvm_type(arr.element);
-  uint64_t elem_size = elem_ll ? size_of(elem_ll) : 8;
   int64_t var_count =
       node.args.size() > variadic_idx
           ? static_cast<int64_t>(node.args.size() - variadic_idx)
           : 0;
-  std::vector<llvm::Value *> new_args = {
-      llvm::ConstantInt::get(i64_type, elem_size),
-      llvm::ConstantInt::get(i64_type, std::max<int64_t>(var_count, 4))};
-  auto *arr_val = builder.CreateCall(module->getFunction("saga_array_new"),
-                                     new_args, "var.arr");
-  auto *push_fn = module->getFunction("saga_array_builder_push");
-  for (size_t i = variadic_idx; i < node.args.size(); ++i) {
-    auto *val = emit_expr(*node.args[i]);
-    if (!val) continue;
-    auto *tmp = create_entry_alloca(parent_fn, "var.tmp", val->getType());
-    builder.CreateStore(val, tmp);
-    std::vector<llvm::Value *> push_args = {arr_val, tmp};
-    builder.CreateCall(push_fn, push_args);
-  }
+  auto *arr_val = emit_new_array(arr.element, var_count, "var.arr");
+  for (size_t i = variadic_idx; i < node.args.size(); ++i)
+    emit_push_element(arr_val, arr.element, *node.args[i]);
   return arr_val;
 }
 

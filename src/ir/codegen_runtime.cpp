@@ -131,9 +131,10 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {f64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_float_format", module.get());
 
-  // saga_runtime_array* saga_array_new(i64 elem_size, i64 initial_cap)
+  // saga_runtime_array* saga_array_new(i64 elem_size, i64 initial_cap,
+  //                                    saga_runtime_elem_ops* ops)
   llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {i64_type, i64_type}, false),
+      llvm::FunctionType::get(ptr_type, {i64_type, i64_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_array_new", module.get());
 
   // void saga_array_builder_push(saga_runtime_array* arr, void* elem)
@@ -233,10 +234,13 @@ void CodeGen::declare_runtime() {
       llvm::Function::ExternalLinkage, "saga_release_array", module.get());
 
   // saga_runtime_map* saga_map_new(i64 key_size, i64 val_size,
-  //                                i64 key_kind, saga_runtime_key_ops* ops)
+  //                                i64 key_kind, saga_runtime_key_ops* ops,
+  //                                saga_runtime_elem_ops* key_elem_ops,
+  //                                saga_runtime_elem_ops* val_elem_ops)
   llvm::Function::Create(
       llvm::FunctionType::get(
-          ptr_type, {i64_type, i64_type, i64_type, ptr_type}, false),
+          ptr_type,
+          {i64_type, i64_type, i64_type, ptr_type, ptr_type, ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_map_new", module.get());
 
   // void saga_map_set(saga_runtime_map* m, void* key, void* value)
@@ -396,6 +400,24 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {}, false),
       llvm::Function::ExternalLinkage, "saga_actor_yield", module.get());
 
+  // saga_runtime_box* saga_box_new(saga_runtime_vtable* vt)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_box_new", module.get());
+
+  // void saga_box_retain(saga_runtime_box* b) / saga_box_release(...)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_box_retain", module.get());
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_box_release", module.get());
+
+  // saga_runtime_box* saga_box_unique_for(saga_runtime_box* b, i64 method)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_box_unique_for", module.get());
+
   // void saga_actor_trap(saga_runtime_string* reason)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -405,104 +427,6 @@ void CodeGen::declare_runtime() {
   llvm::Function::Create(
       llvm::FunctionType::get(ptr_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_error_from_trap", module.get());
-}
-// ===========================================================================
-// Vtable generation
-// ===========================================================================
-
-llvm::GlobalVariable *CodeGen::get_or_create_vtable(const TypePtr &struct_type,
-                                                     const TypePtr &iface_type) {
-  if (!struct_type || struct_type->kind != TypeKind::Struct) return nullptr;
-  if (!iface_type || iface_type->kind != TypeKind::Interface) return nullptr;
-
-  auto &sinfo = std::get<StructTypeInfo>(struct_type->detail);
-  auto &iinfo = std::get<InterfaceTypeInfo>(iface_type->detail);
-
-  std::string struct_key = key_for(sinfo.origin_package, sinfo.name);
-  std::string iface_key = key_for(iinfo.origin_package, iinfo.name);
-
-  std::string vtable_cache_key = struct_key + "::" + iface_key;
-  auto it = vtable_globals.find(vtable_cache_key);
-  if (it != vtable_globals.end())
-    return it->second;
-
-  auto vt_it = iface_vtable_types.find(iface_key);
-  if (vt_it == iface_vtable_types.end())
-    return nullptr;
-  auto *vtable_st = vt_it->second;
-
-  auto &method_names = iface_method_names[iface_key];
-  auto &iinfo_methods = std::get<InterfaceTypeInfo>(iface_type->detail).methods;
-
-  // Build the vtable constant.
-  std::string struct_origin =
-      sinfo.origin_package.empty() ? package_name : sinfo.origin_package;
-  std::vector<llvm::Constant *> entries;
-  for (size_t mi = 0; mi < method_names.size(); ++mi) {
-    auto &iface_method = method_names[mi];
-    std::string link_name =
-        mangle(struct_origin, sinfo.name + "__" + iface_method);
-    auto *fn = module->getFunction(link_name);
-    if (!fn && mi < iinfo_methods.size() && iinfo_methods[mi].signature &&
-        iinfo_methods[mi].signature->kind == TypeKind::Func) {
-      // Symbol not visible in this importer (e.g. struct from pkg A satisfying
-      // iface from pkg B used from pkg C).  Forward-declare against the iface
-      // method signature so the linker resolves it.
-      auto &fi = std::get<FuncTypeInfo>(iinfo_methods[mi].signature->detail);
-      fn = forward_declare_method(link_name, fi);
-    }
-    if (fn) {
-      entries.push_back(fn);
-    } else {
-      entries.push_back(
-          llvm::ConstantPointerNull::get(
-              llvm::PointerType::getUnqual(context)));
-    }
-  }
-
-  auto *vtable_const = llvm::ConstantStruct::get(vtable_st, entries);
-  auto *vtable_global = new llvm::GlobalVariable(
-      *module, vtable_st, true, llvm::GlobalValue::PrivateLinkage,
-      vtable_const, "saga.vtable." + struct_key + "." + iface_key);
-
-  vtable_globals[vtable_cache_key] = vtable_global;
-  return vtable_global;
-}
-
-// ===========================================================================
-// Interface boxing
-// ===========================================================================
-
-llvm::Value *CodeGen::emit_interface_box(llvm::Value *concrete_val,
-                                          const TypePtr &concrete_type,
-                                          const TypePtr &iface_type) {
-  if (!concrete_val || !concrete_type || !iface_type)
-    return nullptr;
-  if (iface_type->kind != TypeKind::Interface)
-    return nullptr;
-
-
-  if (concrete_type->kind != TypeKind::Struct)
-    return nullptr; // Only struct boxing supported for now.
-
-  // Get or create the vtable using origin-qualified type pointers.
-  auto *vtable = get_or_create_vtable(concrete_type, iface_type);
-  if (!vtable)
-    return nullptr;
-
-  // Allocate a fat pointer on the stack.
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto *fat_alloca = create_entry_alloca(func, "iface.box", iface_fat_ptr_type);
-
-  // Store the data pointer (the concrete struct pointer).
-  auto *data_gep = builder.CreateStructGEP(iface_fat_ptr_type, fat_alloca, 0, "iface.data");
-  builder.CreateStore(concrete_val, data_gep);
-
-  // Store the vtable pointer.
-  auto *vtable_gep = builder.CreateStructGEP(iface_fat_ptr_type, fat_alloca, 1, "iface.vtable");
-  builder.CreateStore(vtable, vtable_gep);
-
-  return fat_alloca;
 }
 // ===========================================================================
 // Union helpers

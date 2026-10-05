@@ -1,0 +1,11 @@
+import "io"
+import "lib"
+
+// A method that writes through its receiver cannot run on a constant, and
+// the importing package knows which methods those are from the export file.
+const start = lib.Counter{n: 1}
+
+pub fn Main() void {
+  start.Bump()
+  io.Println("{start.Count()}")
+}

@@ -1,0 +1,55 @@
+// A collection holds a reference to each value stored in it, so it outlives
+// the names it was built from: each of these is read after the function that
+// built it, and every local it stored, has gone.
+import "std/io"
+
+struct Label {
+  text string
+}
+
+fn literal() array{string} {
+  n := 1
+  s := "lit{n}"
+  [s]
+}
+
+fn appended() array{string} {
+  n := 2
+  s := "app{n}"
+  xs array{string} = []
+  xs = xs.Append(s)
+  xs.Insert(s, 0)
+}
+
+fn assigned() array{string} {
+  n := 3
+  s := "idx{n}"
+  xs := ["old"]
+  xs[0] = s
+  xs
+}
+
+fn labels() array{Label} {
+  n := 4
+  t := "label{n}"
+  [Label{text: t}]
+}
+
+fn keyed() map{string: string} {
+  n := 5
+  k := "key{n}"
+  v := "value{n}"
+  m map{string: string} = {}
+  m[k] = v
+  m
+}
+
+pub fn Main() void {
+  a := literal()
+  b := appended()
+  c := assigned()
+  d := labels()
+  e := keyed()
+  io.Println("{a.At(0)} {b.At(0)} {b.At(1)} {c.At(0)} {d.At(0).text}")
+  io.Println("{e["key5"] or { "" }} {e.Keys().At(0)}")
+}

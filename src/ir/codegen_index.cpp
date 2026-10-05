@@ -135,14 +135,10 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
       return nullptr;
 
     auto &map_info = std::get<MapTypeInfo>(obj_sem->detail);
-
-    auto *func = builder.GetInsertBlock()->getParent();
-
-    auto *key_tmp = create_entry_alloca(func, "map.idx.key", idx->getType());
-    builder.CreateStore(idx, key_tmp);
-
+    auto *key = collection_slot_address(llvm_type(map_info.key), map_info.key,
+                                        idx, semantic_type(*node.index));
     auto *get_fn = module->getFunction("saga_map_get");
-    auto *val_ptr = builder.CreateCall(get_fn, {obj, key_tmp}, "map.get");
+    auto *val_ptr = builder.CreateCall(get_fn, {obj, key}, "map.get");
 
     auto *val_ll = llvm_type(map_info.value);
     return wrap_indexed_lookup_in_error_union(

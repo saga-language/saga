@@ -1,0 +1,31 @@
+// A named function and a closure are the same kind of value: either can be
+// bound, rebound, passed, stored in a field or an array, and called through
+// any of them.
+import "std/io"
+
+struct Reg {
+  handler fn(int) int
+}
+
+fn two(n int) int { 2 }
+
+fn apply(f fn(int) int, v int) int { f(v) }
+
+pub fn Main() void {
+  k := 7
+  g := fn(n int) int { n + 100 }
+  first := g(1)
+  g = two
+  add := fn(n int) int { n + k }
+  r := Reg{handler: fn(n int) int { n * k }}
+  named := Reg{handler: two}
+  io.Println("{first} {g(1)} {apply(add, 4)} {apply(two, 4)}")
+  io.Println("{r.handler(5)} {named.handler(5)}")
+
+  fs array{fn(int) int} = []
+  fs = fs.Append(add)
+  fs = fs.Append(two)
+  total := 0
+  for f : fs { total += f(1) }
+  io.Println("{total}")
+}

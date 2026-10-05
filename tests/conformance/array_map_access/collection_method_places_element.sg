@@ -1,0 +1,32 @@
+// A value handed to a collection method lands as the element type holds it: a
+// struct boxed for an interface element, an int wrapped for a union one.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+struct Cat {
+  name string
+}
+
+pub fn (c Cat) Name() string { c.name }
+
+pub fn Main() void {
+  n := 2
+  cats array{Named} = []
+  cats = cats.Append(Cat{name: "tom{n}"})
+  owners map{string: Named} = {}
+  owners.Set("ann", Cat{name: "jerry{n}"})
+  first := cats[0] or { Cat{name: ""} }
+  owned := owners["ann"] or { Cat{name: ""} }
+  io.Println("{first.Name()} {owned.Name()}")
+
+  mixed array{int | string} = []
+  mixed = mixed.Append(5)
+  mixed = mixed.Append("five")
+  a := mixed[0] or { 0 }
+  b := mixed[1] or { 0 }
+  if a is int { io.Println("int {a}") }
+  if b is string { io.Println("string {b}") }
+}

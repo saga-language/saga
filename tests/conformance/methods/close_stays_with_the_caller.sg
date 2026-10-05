@@ -1,0 +1,24 @@
+// A struct with a `Close` is closed when the scope that owns it ends. A
+// function it is passed to holds a reference to its fields, not the value,
+// so the callee does not close it.
+import "std/io"
+
+struct File {
+  name string
+}
+
+fn (f File) Close() void {
+  io.Println("closed {f.name}")
+}
+
+fn name_size(f File) int { f.name.Size() }
+
+fn open_and_read(n int) void {
+  f := File{name: "file{n}"}
+  io.Println("read {name_size(f)} {name_size(f)}")
+}
+
+pub fn Main() void {
+  open_and_read(7)
+  io.Println("done")
+}

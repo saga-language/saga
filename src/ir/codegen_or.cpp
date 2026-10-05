@@ -6,32 +6,10 @@
 // what survives stripping decides whether the result is still a union.
 
 #include "ir/codegen.hpp"
-#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 
-#include <cstdint>
-
 namespace saga {
-
-// ===========================================================================
-// Or expression (error stripping)
-// ===========================================================================
-
-// Stripping the error alternatives can leave more than one behind, and then the
-// result is still a union. The handler's value has to reach the merge as that
-// same union, so it is wrapped (or remapped, if it is a union already) here.
-llvm::Value *CodeGen::fallback_as_union(llvm::Value *val,
-                                        const BlockNode &block,
-                                        const TypePtr &target) {
-  auto sem = block_result_type(block);
-  auto *target_st = get_union_llvm_type(target);
-  if (!sem || !target_st)
-    return val;
-
-  auto *slot = as_union_ptr(val, sem, target);
-  return slot ? builder.CreateLoad(target_st, slot, "or.fb.union") : val;
-}
 
 // Extracting the non-error value is not a load when more than one value
 // alternative survives: the tag indexes the *original* union, so each surviving
@@ -103,166 +81,94 @@ llvm::Value *CodeGen::emit_union_purified(llvm::Value *union_ptr,
   return builder.CreateLoad(purified_st, purified_alloca, "pur.val");
 }
 
+// An `or` on a value that cannot hold an error has no handler to run.
+bool CodeGen::or_has_handler(const OrExprNode &node) const {
+  auto sem = root_expr_type(*node.expr);
+  return sem && sem->kind == TypeKind::Union && is_impure_union(sem);
+}
+
+TypePtr CodeGen::or_result_type(const OrExprNode &node) const {
+  return strip_error_from_union(root_expr_type(*node.expr));
+}
+
 llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
-  // Emit the expression that may produce a union with Error.
   auto *expr_val = emit_root_expr(*node.expr);
-  if (!expr_val)
-    return nullptr;
+  if (!expr_val || !or_has_handler(node))
+    return expr_val;
 
   auto expr_sem = root_expr_type(*node.expr);
-  if (!expr_sem)
-    return expr_val;
-
-  // If the expression is not a union, just return the value.
-  if (expr_sem->kind != TypeKind::Union)
-    return expr_val;
-
-  // Check if this is an impure union (contains Error).
-  if (!is_impure_union(expr_sem))
-    return expr_val;
-
-  auto *union_st = get_union_llvm_type(expr_sem);
-  if (!union_st)
-    return expr_val;
-
-  auto *func = builder.GetInsertBlock()->getParent();
-
-  // The expr_val should be an alloca (pointer to the union struct).
-  // If it's not already a pointer to the union, we need to handle that.
-  llvm::Value *union_ptr = expr_val;
-
-  // If union_ptr is a loaded value (struct type, not pointer), store it.
-  if (!union_ptr->getType()->isPointerTy() ||
-      (llvm::isa<llvm::LoadInst>(union_ptr))) {
-    auto *tmp = create_entry_alloca(func, "or.union", union_st);
-    builder.CreateStore(expr_val, tmp);
-    union_ptr = tmp;
-  }
-
-  // Load the tag.
-  auto *tag_gep = builder.CreateStructGEP(union_st, union_ptr, 0, "or.tag");
+  auto *union_ptr = or_union_address(expr_val, expr_sem);
+  auto *tag_gep = builder.CreateStructGEP(get_union_llvm_type(expr_sem),
+                                          union_ptr, 0, "or.tag");
   auto *tag = builder.CreateLoad(llvm::Type::getInt8Ty(context), tag_gep,
-                                  "or.tag.val");
-
-  // Find which tag values correspond to Error types.
-  auto &info = std::get<UnionTypeInfo>(expr_sem->detail);
-  std::vector<int> error_tags;
-  for (size_t i = 0; i < info.alternatives.size(); ++i) {
-    if (is_error_valued(info.alternatives[i]))
-      error_tags.push_back(static_cast<int>(i));
-  }
-
-  // Create basic blocks.
+                                 "or.tag.val");
+  auto *func = builder.GetInsertBlock()->getParent();
   auto *ok_bb = llvm::BasicBlock::Create(context, "or.ok", func);
   auto *err_bb = llvm::BasicBlock::Create(context, "or.err");
-  auto *merge_bb = llvm::BasicBlock::Create(context, "or.merge");
+  builder.CreateCondBr(is_error_tag(tag, expr_sem), err_bb, ok_bb);
 
-  // Branch based on whether the tag is an error tag.
-  // If there's only one error tag, simple comparison.
-  // For multiple error tags, we'd need an or-chain, but typically there's
-  // just one Error interface in the union.
-  if (error_tags.size() == 1) {
-    auto *is_err = builder.CreateICmpEQ(
-        tag,
-        llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), error_tags[0]),
-        "or.is_err");
-    builder.CreateCondBr(is_err, err_bb, ok_bb);
-  } else {
-    // Multiple error tags — build an OR chain.
-    llvm::Value *is_err = llvm::ConstantInt::get(
-        llvm::Type::getInt1Ty(context), 0);
-    for (int et : error_tags) {
-      auto *cmp = builder.CreateICmpEQ(
-          tag,
-          llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), et),
-          "or.cmp");
-      is_err = builder.CreateOr(is_err, cmp, "or.any_err");
-    }
-    builder.CreateCondBr(is_err, err_bb, ok_bb);
-  }
-
-  // ── OK block: extract the non-error value ──────────────────────────
+  auto result = or_result_type(node);
+  auto join = open_join("or.merge", result, or_ownership(node));
   builder.SetInsertPoint(ok_bb);
+  close_branch(join, emit_union_purified(union_ptr, tag, expr_sem), result,
+               node.expr.get());
+  start_block(err_bb);
+  emit_or_handler(node, union_ptr, expr_sem, join);
+  return finish_join(join, "or.result");
+}
 
-  TypePtr purified = strip_error_from_union(expr_sem);
-  llvm::Value *ok_val = emit_union_purified(union_ptr, tag, expr_sem);
+llvm::Value *CodeGen::or_union_address(llvm::Value *val,
+                                       const TypePtr &union_sem) {
+  if (val->getType()->isPointerTy() && !llvm::isa<llvm::LoadInst>(val))
+    return val;
+  auto *tmp = create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                  "or.union", get_union_llvm_type(union_sem));
+  builder.CreateStore(val, tmp);
+  return tmp;
+}
 
-  if (!ok_val)
-    ok_val = llvm::Constant::getNullValue(
-        purified ? llvm_type(purified) : i64_type);
+llvm::Value *CodeGen::is_error_tag(llvm::Value *tag,
+                                   const TypePtr &union_sem) {
+  auto *i8_ty = llvm::Type::getInt8Ty(context);
+  auto &info = std::get<UnionTypeInfo>(union_sem->detail);
+  llvm::Value *is_err = nullptr;
+  for (size_t i = 0; i < info.alternatives.size(); ++i) {
+    if (!is_error_valued(info.alternatives[i]))
+      continue;
+    auto *cmp = builder.CreateICmpEQ(tag, llvm::ConstantInt::get(i8_ty, i),
+                                     "or.is_err");
+    is_err = is_err ? builder.CreateOr(is_err, cmp, "or.any_err") : cmp;
+  }
+  return is_err;
+}
 
-  builder.CreateBr(merge_bb);
-  auto *ok_end_bb = builder.GetInsertBlock();
-
-  // ── Error block: emit fallback ─────────────────────────────────────
-  func->insert(func->end(), err_bb);
-  builder.SetInsertPoint(err_bb);
-
-  // Bind the pipe variable to the Error payload extracted from the
-  // union.  The payload first 8 bytes hold the interface fat pointer
-  // produced by whichever path produced the Error (e.g. Task.Wait's
-  // saga_error_from_trap).
+// The pipe names the error for the handler's duration; the payload's first
+// word is the error's interface pointer, whichever path produced it.
+void CodeGen::emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
+                              const TypePtr &union_sem, BranchJoin &join) {
+  llvm::AllocaInst *displaced = nullptr;
+  std::string pipe_name = node.pipe ? std::string(node.pipe->name) : "";
   if (node.pipe) {
-    std::string pipe_name(node.pipe->name);
     auto *ptr_type = llvm::PointerType::getUnqual(context);
-    auto *err_alloca = create_entry_alloca(func, pipe_name, ptr_type);
-    auto *payload_gep = builder.CreateStructGEP(union_st, union_ptr, 1,
-                                                 "err.payload.gep");
-    auto *err_val = builder.CreateLoad(ptr_type, payload_gep,
-                                        "err.payload.val");
-    builder.CreateStore(err_val, err_alloca);
-    locals[pipe_name] = err_alloca;
+    auto *slot = create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                     pipe_name, ptr_type);
+    auto *payload = builder.CreateStructGEP(get_union_llvm_type(union_sem),
+                                            union_ptr, 1, "err.payload.gep");
+    builder.CreateStore(
+        builder.CreateLoad(ptr_type, payload, "err.payload.val"), slot);
+    auto it = locals.find(pipe_name);
+    displaced = it == locals.end() ? nullptr : it->second;
+    locals[pipe_name] = slot;
   }
 
-  auto &fallback_block = std::get<BlockNode>(node.fallback->data);
-  auto *fallback_val = emit_block(fallback_block);
+  auto &fallback = std::get<BlockNode>(node.fallback->data);
+  auto *val = emit_block(fallback);
+  close_branch(join, val, block_result_type(fallback), node.fallback.get());
 
-  // The fallback value must match the purified type.
-  if (!fallback_val && ok_val)
-    fallback_val = llvm::Constant::getNullValue(ok_val->getType());
-
-  if (fallback_val && ok_val && fallback_val->getType() != ok_val->getType()) {
-    if (purified && purified->kind == TypeKind::Union)
-      fallback_val = fallback_as_union(fallback_val, fallback_block, purified);
-    // A struct payload leaves the union as a value and leaves the handler as
-    // an address, so the two branches settle on the address. This runs after
-    // the union conversion above, never before: once both sides are pointers
-    // their LLVM types are equal and a missing conversion looks like a match.
-    if (fallback_val->getType() != ok_val->getType()) {
-      auto saved = builder.saveIP();
-      builder.SetInsertPoint(ok_end_bb->getTerminator());
-      ok_val = spill_aggregate(ok_val, "or.ok.spill");
-      builder.restoreIP(saved);
-      fallback_val = spill_aggregate(fallback_val, "or.fallback.spill");
-    }
-    if (fallback_val->getType() != ok_val->getType())
-      internal_error("`or` handler produced a value the result type cannot "
-                     "hold, which the analyzer should have rejected");
-  }
-
-  bool err_terminated = builder.GetInsertBlock()->getTerminator() != nullptr;
-  if (!err_terminated)
-    builder.CreateBr(merge_bb);
-  auto *err_end_bb = builder.GetInsertBlock();
-
-  // Clean up pipe variable.
-  if (node.pipe) {
-    locals.erase(std::string(node.pipe->name));
-  }
-
-  // ── Merge block ────────────────────────────────────────────────────
-  func->insert(func->end(), merge_bb);
-  builder.SetInsertPoint(merge_bb);
-
-  if (ok_val && fallback_val &&
-      ok_val->getType() == fallback_val->getType() && !err_terminated) {
-    auto *phi = builder.CreatePHI(ok_val->getType(), 2, "or.result");
-    phi->addIncoming(ok_val, ok_end_bb);
-    phi->addIncoming(fallback_val, err_end_bb);
-    return phi;
-  }
-
-  return ok_val;
+  if (displaced)
+    locals[pipe_name] = displaced;
+  else if (node.pipe)
+    locals.erase(pipe_name);
 }
 
 } // namespace saga
