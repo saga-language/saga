@@ -1,0 +1,17 @@
+// An instance of a generic struct keeps which of its methods write the
+// receiver, so a writing one cannot be called on a constant of it.
+import "std/io"
+
+struct Box<T> {
+  v T
+  n int
+}
+
+pub fn (b Box<T>) Bump() void { b.n = b.n + 1 }
+
+const start = Box{v: 1, n: 0}
+
+pub fn Main() void {
+  start.Bump()
+  io.Println("{start.n}")
+}

@@ -839,7 +839,7 @@ static TypePtr substitute_struct(const TypePtr &t, const Bindings &bindings,
                          f.is_public, f.default_value});
   for (auto &m : info.methods)
     ri.methods.push_back({m.name, substitute_impl(m.signature, bindings, memo),
-                          m.is_public, m.origin_package});
+                          m.is_public, m.origin_package, m.mutates_receiver});
   for (auto &e : info.embeds)
     ri.embeds.push_back(substitute_impl(e, bindings, memo));
   return result;

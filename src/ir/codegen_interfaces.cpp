@@ -110,21 +110,22 @@ CodeGen::get_or_create_vtable(const TypePtr &concrete,
   return vtable_global;
 }
 
-// A symbol this package cannot see (a struct from package A satisfying an
-// interface from B, boxed in C) is declared against the interface's signature
-// for the linker to resolve.
+// Found the way a direct call finds it, so a generic struct's method is
+// generated for the instance being boxed. A symbol this package cannot see (a
+// struct from package A satisfying an interface from B, boxed in C) is
+// declared against the interface's signature for the linker to resolve.
 llvm::Constant *CodeGen::vtable_method(const StructTypeInfo &sinfo,
                                        const std::string &method,
                                        const FuncTypeInfo *iface_sig) {
-  std::string origin =
-      sinfo.origin_package.empty() ? package_name : sinfo.origin_package;
-  std::string link_name = mangle(origin, sinfo.name + "__" + method);
-  if (auto *fn = module->getFunction(link_name))
+  if (auto *fn = struct_method_callee(sinfo, method))
     return fn;
   if (!iface_sig)
     internal_error("interface method '" + method + "' has no signature to "
-                   "declare '" + link_name + "' against");
-  return forward_declare_method(link_name, *iface_sig);
+                   "declare against");
+  std::string origin =
+      sinfo.origin_package.empty() ? package_name : sinfo.origin_package;
+  return forward_declare_method(mangle(origin, sinfo.name + "__" + method),
+                                *iface_sig);
 }
 
 // A method the struct doesn't declare itself is promoted from an embed. One

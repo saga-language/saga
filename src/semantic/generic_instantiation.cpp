@@ -297,7 +297,7 @@ TypePtr Analyzer::instantiate_generic_struct(
   for (auto &m : info.methods)
     result_info.methods.push_back(
         {m.name, substitute(m.signature, bindings, memo), m.is_public,
-         m.origin_package});
+         m.origin_package, m.mutates_receiver});
   // Record the concrete type arguments.
   for (auto &tp : info.type_params) {
     auto it = bindings.find(tp.id);
