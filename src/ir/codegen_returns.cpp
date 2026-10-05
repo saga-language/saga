@@ -47,6 +47,7 @@ void CodeGen::emit_return_value(llvm::Value *val, const TypePtr &val_sem,
     retain_if_borrowed(val, val_sem, *source);
   auto *placed = val ? coerce_to(val, val_sem, ret_sem) : nullptr;
 
+  write_back_captures(func);
   if (func->arg_size() > 0 &&
       func->hasParamAttribute(0, llvm::Attribute::StructRet)) {
     if (placed)

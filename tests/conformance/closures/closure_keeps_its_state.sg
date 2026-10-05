@@ -1,0 +1,50 @@
+// Spec: a closure "copies that variable into its own internal state"
+// (docs/language.md:75). A write to a captured name changes that state, so
+// the next call sees it; the variable it was copied from is unchanged.
+import "std/io"
+
+fn counter() fn() int {
+  n := 0
+  fn() int {
+    n += 1
+    n
+  }
+}
+
+fn tagger(n int) fn() string {
+  label := "tag{n}"
+  fn() string {
+    label = label + "!"
+    label
+  }
+}
+
+fn drain() fn() int {
+  xs := [1, 2, 3, 4]
+  fn() int {
+    v := xs.Pop()
+    xs.Size() * 10 + v
+  }
+}
+
+pub fn Main() void {
+  n := 0
+  inc := fn() int {
+    n += 1
+    n
+  }
+  a := inc()
+  b := inc()
+  io.Println("{a} {b} {n}")
+
+  c := counter()
+  c()
+  io.Println("{c()} {c()}")
+
+  t := tagger(3)
+  t()
+  io.Println(t())
+
+  d := drain()
+  io.Println("{d()} {d()}")
+}

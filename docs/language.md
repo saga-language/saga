@@ -77,6 +77,22 @@ from outside its scope, it copies that variable into its own internal state. If
 the closure itself escapes its current scope, the closure itself, and its
 captured state, are moved onto the heap.
 
+That state lasts from one call to the next: a call that writes a captured
+variable changes the closure's copy, and the next call sees the change. The
+variable it was copied from is unchanged. Two names for one closure share its
+state until a call through one of them writes it, and that one then gets a
+copy of its own, as with any other value.
+
+```
+n := 0
+inc := fn() int {
+  n += 1
+  n
+}
+inc() // => 1
+inc() // => 2, and n is still 0
+```
+
 It is an error to shadow a variable from an outer scope or to redeclare an 
 identifier from the current scope.
 

@@ -42,8 +42,7 @@ CodeGen::emit_field_function_call(const CallExprNode &node,
     auto [gep, ftype] = struct_field_gep(struct_ptr, obj_sem, method);
     if (!gep) break;
     return emit_function_value_invoke(
-        builder.CreateLoad(ptr_type, gep, "field.fn"),
-        std::get<FuncTypeInfo>(fld.type->detail), node);
+        *node.callee, builder.CreateLoad(ptr_type, gep, "field.fn"), node);
   }
   return std::nullopt;
 }

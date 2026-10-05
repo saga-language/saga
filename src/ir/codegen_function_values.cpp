@@ -24,11 +24,11 @@ llvm::StructType *CodeGen::fn_vtable_type() {
                                {i64_type, ptr_type, i64_type, ptr_type});
 }
 
-// A captured value is copied into each call, so no call writes through the
-// box and the writes mask is empty.
+// A closure that writes its captures sets the one bit its one method has, so
+// a call through a box another name shares copies it first.
 llvm::Constant *CodeGen::fn_vtable(const std::string &name,
                                    llvm::Function *code,
-                                   const TypePtr &env_sem) {
+                                   const TypePtr &env_sem, bool writes) {
   auto *size = llvm::ConstantInt::get(
       i64_type, env_sem ? size_of(llvm_type(env_sem)) : 0);
   auto *ops = env_sem ? elem_ops_for(env_sem)
@@ -39,16 +39,18 @@ llvm::Constant *CodeGen::fn_vtable(const std::string &name,
       llvm::GlobalValue::PrivateLinkage,
       llvm::ConstantStruct::get(
           fn_vtable_type(),
-          {size, ops, llvm::ConstantInt::get(i64_type, 0), code}),
+          {size, ops, llvm::ConstantInt::get(i64_type, writes ? 1 : 0),
+           code}),
       name + ".vtable");
 }
 
 // The box owns its copy of each capture, as any binding of it would.
 llvm::Value *CodeGen::emit_closure_box(
     const std::string &name, llvm::Function *code, const TypePtr &env_sem,
-    const std::vector<Analyzer::CaptureInfo> &captures) {
+    const std::vector<Analyzer::CaptureInfo> &captures, bool writes) {
   auto *box = builder.CreateCall(module->getFunction("saga_box_new"),
-                                 {fn_vtable(name, code, env_sem)}, "closure");
+                                 {fn_vtable(name, code, env_sem, writes)},
+                                 "closure");
   if (!env_sem)
     return box;
   auto *env_st = llvm::cast<llvm::StructType>(llvm_type(env_sem));
@@ -87,7 +89,7 @@ llvm::Value *CodeGen::function_value(llvm::Function *fn,
       *module, box_ty, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
       llvm::ConstantStruct::get(
           box_ty, {llvm::ConstantInt::getSigned(i64_type, -1),
-                   fn_vtable(name, code, nullptr)}),
+                   fn_vtable(name, code, nullptr, false)}),
       name);
   box->setAlignment(llvm::Align(16));
   return box;
@@ -119,28 +121,33 @@ llvm::Function *CodeGen::function_value_thunk(llvm::Function *fn,
 }
 
 llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node) {
-  auto callee_sem = unwrap_alias(semantic_type(*node.callee));
-  if (!callee_sem || callee_sem->kind != TypeKind::Func)
-    internal_error("a call's callee is neither a function nor a function "
-                   "value");
   auto *box = emit_expr(*node.callee);
   if (!box)
     return nullptr;
-  return emit_function_value_invoke(
-      box, std::get<FuncTypeInfo>(callee_sem->detail), node);
+  return emit_function_value_invoke(*node.callee, box, node);
 }
 
-llvm::Value *CodeGen::emit_function_value_invoke(llvm::Value *box,
-                                                 const FuncTypeInfo &fi,
+// The call readies the box the way a call through an interface does, as
+// method 0: a closure that writes its captures gets a box of its own first.
+llvm::Value *CodeGen::emit_function_value_invoke(const Node &callee,
+                                                 llvm::Value *box,
                                                  const CallExprNode &node) {
+  auto fn_sem = unwrap_alias(semantic_type(callee));
+  if (!fn_sem || fn_sem->kind != TypeKind::Func)
+    internal_error("a function value is called with no function type");
+  auto &fi = std::get<FuncTypeInfo>(fn_sem->detail);
+  auto [ready, temporary] = interface_receiver(callee, box, fn_sem, 0);
   auto *ptr_type = llvm::PointerType::getUnqual(context);
   auto *code = builder.CreateLoad(
       ptr_type,
-      builder.CreateStructGEP(fn_vtable_type(), box_vtable(box), kCodeSlot,
+      builder.CreateStructGEP(fn_vtable_type(), box_vtable(ready), kCodeSlot,
                               "fn.code.ptr"),
       "fn.code");
-  return emit_call(code, lower_signature(fi, ptr_type), box_value(box),
-                   emit_arguments(node, &fi, true));
+  auto *result = emit_call(code, lower_signature(fi, ptr_type),
+                           box_value(ready), emit_arguments(node, &fi, true));
+  if (temporary)
+    emit_release(ready, fn_sem);
+  return result;
 }
 
 } // namespace saga

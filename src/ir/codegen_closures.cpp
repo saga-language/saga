@@ -27,7 +27,8 @@ llvm::Value *CodeGen::emit_func_expr(const FuncExprNode &node,
   auto *tramp_fn = emit_closure_trampoline(
       closure_name, node, std::get<FuncTypeInfo>(fn_sem->detail), env_sem,
       captures);
-  return emit_closure_box(closure_name, tramp_fn, env_sem, captures);
+  return emit_closure_box(closure_name, tramp_fn, env_sem, captures,
+                          analyzer.closure_writes_captures(parent));
 }
 
 TypePtr CodeGen::closure_env_type(
@@ -79,21 +80,34 @@ llvm::Function *CodeGen::emit_closure_trampoline(
   return tramp_fn;
 }
 
-// Each call starts from the closure's copy of its captures: a call's locals
-// hold references of their own, so a write to one releases only its own.
+// A captured name is a view of the closure's own field for the call: the
+// field keeps its reference, a write releases and replaces it as it would a
+// local's, and every exit writes the views back (`write_back_captures`), so
+// the closure's state carries from one call to the next.
 void CodeGen::bind_captures(
     llvm::Value *env, const TypePtr &env_sem,
     const std::vector<Analyzer::CaptureInfo> &captures) {
   if (!env_sem)
     return;
+  auto *fn = builder.GetInsertBlock()->getParent();
   auto *env_st = llvm::cast<llvm::StructType>(llvm_type(env_sem));
   for (size_t i = 0; i < captures.size(); ++i) {
-    auto *val = builder.CreateLoad(env_st->getElementType(i),
-                                   builder.CreateStructGEP(env_st, env, i),
-                                   captures[i].name);
-    emit_retain(val, unwrap_alias(captures[i].type));
-    bind_local(captures[i].name, val, captures[i].type);
+    auto *field = builder.CreateStructGEP(env_st, env, i, captures[i].name);
+    auto *field_ll = env_st->getElementType(i);
+    auto *view = create_entry_alloca(fn, captures[i].name, field_ll);
+    builder.CreateStore(builder.CreateLoad(field_ll, field), view);
+    locals[captures[i].name] = view;
+    capture_views_[fn].push_back({view, field});
   }
+}
+
+void CodeGen::write_back_captures(llvm::Function *fn) {
+  auto it = capture_views_.find(fn);
+  if (it == capture_views_.end())
+    return;
+  for (auto &[view, field] : it->second)
+    builder.CreateStore(builder.CreateLoad(view->getAllocatedType(), view),
+                        field);
 }
 
 } // namespace saga

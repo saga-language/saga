@@ -624,17 +624,17 @@ private:
   // ── Function values (codegen_function_values.cpp) ───────────────────
   llvm::StructType *fn_vtable_type();
   llvm::Constant *fn_vtable(const std::string &name, llvm::Function *code,
-                            const TypePtr &env_sem);
+                            const TypePtr &env_sem, bool writes);
   llvm::Value *
   emit_closure_box(const std::string &name, llvm::Function *code,
                    const TypePtr &env_sem,
-                   const std::vector<Analyzer::CaptureInfo> &captures);
+                   const std::vector<Analyzer::CaptureInfo> &captures,
+                   bool writes);
   llvm::Value *function_value(llvm::Function *fn, const TypePtr &fn_sem);
   llvm::Function *function_value_thunk(llvm::Function *fn,
                                        const FuncTypeInfo &fi);
   llvm::Value *emit_function_value_call(const CallExprNode &node);
-  llvm::Value *emit_function_value_invoke(llvm::Value *box,
-                                          const FuncTypeInfo &fi,
+  llvm::Value *emit_function_value_invoke(const Node &callee, llvm::Value *box,
                                           const CallExprNode &node);
   TypePtr closure_env_type(const std::string &closure_name,
                            const std::vector<Analyzer::CaptureInfo> &captures);
@@ -645,6 +645,12 @@ private:
                           const std::vector<Analyzer::CaptureInfo> &captures);
   void bind_captures(llvm::Value *env, const TypePtr &env_sem,
                      const std::vector<Analyzer::CaptureInfo> &captures);
+  void write_back_captures(llvm::Function *fn);
+  /// A closure body's views of its environment, by trampoline, so each
+  /// return writes back its own.
+  std::unordered_map<const llvm::Function *,
+                     std::vector<std::pair<llvm::AllocaInst *, llvm::Value *>>>
+      capture_views_;
   llvm::Value *pack_variadic_args(const CallExprNode &node,
                                   const FuncTypeInfo &fi);
   llvm::Value *emit_direct_call(llvm::Function *callee,
