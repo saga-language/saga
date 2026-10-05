@@ -5,7 +5,6 @@
 
 namespace saga {
 
-namespace {
 bool is_boxed(const TypePtr &t) {
   return t->kind == TypeKind::Interface || t->kind == TypeKind::Func;
 }
@@ -14,7 +13,6 @@ bool is_counted(const TypePtr &t) {
   return t && (t->kind == TypeKind::String || t->kind == TypeKind::Array ||
                t->kind == TypeKind::Map || is_boxed(t));
 }
-} // namespace
 
 // A local owns its value outright: a Task is dropped and a struct with a
 // `Close` is closed when its scope ends.
@@ -36,111 +34,8 @@ void CodeGen::track_managed(llvm::AllocaInst *slot, const TypePtr &sem) {
 void CodeGen::track_reference(llvm::AllocaInst *slot, const TypePtr &sem) {
   if (is_counted(sem))
     managed_locals.push_back({slot, ManagedKind::Counted, sem});
-  else if (owns_managed_fields(sem))
+  else if (walks_references(sem))
     managed_locals.push_back({slot, ManagedKind::Struct, sem});
-}
-
-// An error box escapes through a union and is never freed, so walking one
-// would release a message the box still points at.
-bool CodeGen::owns_managed_fields(const TypePtr &sem) {
-  auto s = unwrap_alias(sem);
-  if (!s || s->kind != TypeKind::Struct) return false;
-
-  auto &info = std::get<StructTypeInfo>(s->detail);
-  if (info.is_error) return false;
-  for (auto &f : info.fields)
-    if (is_counted(unwrap_alias(f.type)) || owns_managed_fields(f.type))
-      return true;
-  for (auto &e : info.embeds)
-    if (owns_managed_fields(e)) return true;
-  return false;
-}
-
-// A struct crosses as an SSA value where one slot is copied into another, and
-// the walk needs an address. The field pointers it counts are the same either
-// way, so a spilled copy answers as well as the original slot.
-void CodeGen::emit_ownership_walk(llvm::Value *val, const TypePtr &sem,
-                                  bool retain) {
-  auto *walker = struct_ownership_fn(sem, retain);
-  if (!walker) return;
-  auto *addr = val->getType()->isPointerTy()
-                   ? val
-                   : spill_aggregate(val, "own.tmp");
-  builder.CreateCall(walker, {addr});
-}
-
-llvm::Function *CodeGen::struct_ownership_fn(const TypePtr &sem, bool retain) {
-  auto &info = std::get<StructTypeInfo>(unwrap_alias(sem)->detail);
-  std::string key = struct_cache_key(info);
-  std::string name = key + (retain ? "__retain_fields" : "__release_fields");
-  if (auto *existing = module->getFunction(name)) return existing;
-
-  auto st_it = struct_types.find(key);
-  if (st_it == struct_types.end()) return nullptr;
-
-  auto *fn = llvm::Function::Create(
-      llvm::FunctionType::get(void_ll_type,
-                              {llvm::PointerType::getUnqual(context)}, false),
-      llvm::Function::InternalLinkage, name, module.get());
-
-  auto saved = builder.saveIP();
-  builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
-  emit_slot_walk(st_it->second, unwrap_alias(sem), fn->getArg(0), retain);
-  builder.CreateRetVoid();
-  builder.restoreIP(saved);
-  return fn;
-}
-
-// Own fields occupy the leading slots and embeds the trailing ones, the layout
-// `struct_field_gep` addresses by name.
-void CodeGen::emit_slot_walk(llvm::StructType *st, const TypePtr &sem,
-                             llvm::Value *self, bool retain) {
-  auto &info = std::get<StructTypeInfo>(sem->detail);
-  unsigned idx = 0;
-  for (auto &f : info.fields)
-    emit_slot_ownership(st, self, idx++, f.type, retain);
-  for (auto &e : info.embeds)
-    emit_slot_ownership(st, self, idx++, e, retain);
-}
-
-void CodeGen::emit_slot_ownership(llvm::StructType *st, llvm::Value *self,
-                                  unsigned idx, const TypePtr &slot,
-                                  bool retain) {
-  if (idx >= st->getNumElements()) return;
-  auto sem = unwrap_alias(slot);
-  if (!is_counted(sem) && !owns_managed_fields(sem)) return;
-
-  auto *gep = builder.CreateStructGEP(st, self, idx);
-  if (!is_counted(sem)) {
-    if (auto *walker = struct_ownership_fn(sem, retain))
-      builder.CreateCall(walker, {gep});
-    return;
-  }
-
-  auto *val = builder.CreateLoad(llvm::PointerType::getUnqual(context), gep);
-  if (retain)
-    emit_retain(val, sem);
-  else
-    emit_release(val, sem);
-}
-
-// The slot owns what it holds, so overwriting it drops that reference first.
-void CodeGen::release_slot(llvm::Value *addr, llvm::Type *slot_ll,
-                           const TypePtr &sem) {
-  auto s = unwrap_alias(sem);
-  if (owns_managed_fields(s))
-    emit_release(addr, s);
-  else if (is_counted(s))
-    emit_release(builder.CreateLoad(slot_ll, addr), s);
-}
-
-void CodeGen::retain_slot(llvm::Value *addr, llvm::Type *slot_ll,
-                          const TypePtr &sem) {
-  auto s = unwrap_alias(sem);
-  if (owns_managed_fields(s))
-    emit_retain(addr, s);
-  else if (is_counted(s))
-    emit_retain(builder.CreateLoad(slot_ll, addr), s);
 }
 
 bool CodeGen::has_close_method(const StructTypeInfo &info) {
@@ -164,7 +59,7 @@ void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_retain_map"), {val});
   else if (is_boxed(sem))
     builder.CreateCall(module->getFunction("saga_box_retain"), {val});
-  else if (owns_managed_fields(sem))
+  else if (walks_references(sem))
     emit_ownership_walk(val, sem, true);
 }
 
@@ -204,7 +99,7 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_release_map"), {val});
   else if (is_boxed(sem))
     builder.CreateCall(module->getFunction("saga_box_release"), {val});
-  else if (owns_managed_fields(sem))
+  else if (walks_references(sem))
     emit_ownership_walk(val, sem, false);
 }
 

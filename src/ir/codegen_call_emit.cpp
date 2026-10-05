@@ -79,13 +79,10 @@ bool CodeGen::param_owns_reference(const TypePtr &param) {
   auto shape = unwrap_alias(param);
   if (!shape)
     return false;
-  if (shape->kind == TypeKind::String || shape->kind == TypeKind::Array ||
-      shape->kind == TypeKind::Map || shape->kind == TypeKind::Interface ||
-      shape->kind == TypeKind::Func)
-    return true;
-  return shape->kind == TypeKind::Struct &&
-         std::get<StructTypeInfo>(shape->detail).name != "Task" &&
-         owns_managed_fields(shape);
+  if (shape->kind == TypeKind::Struct &&
+      std::get<StructTypeInfo>(shape->detail).name == "Task")
+    return false;
+  return holds_references(shape);
 }
 
 // An argument binds the callee's parameter: an error bubbles out of it as out

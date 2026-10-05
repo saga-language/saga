@@ -13,15 +13,13 @@
 
 namespace saga {
 
-// A counted kind's or a box's slot holds its pointer, and a struct's holds
-// its fields. A union element holds references nothing counts yet.
+// A counted kind's or a box's slot holds its pointer, a struct's its fields
+// and a union's its payload.
 bool CodeGen::slot_holds_references(const TypePtr &sem) {
   auto s = unwrap_alias(sem);
   if (!s)
     return false;
-  return s->kind == TypeKind::String || s->kind == TypeKind::Array ||
-         s->kind == TypeKind::Map || s->kind == TypeKind::Interface ||
-         s->kind == TypeKind::Func || owns_managed_fields(s);
+  return holds_references(s);
 }
 
 llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
@@ -40,7 +38,7 @@ llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
   case TypeKind::Func:
     return runtime_elem_ops("saga_box_elem_ops");
   default:
-    return struct_elem_ops(s);
+    return walk_elem_ops(s);
   }
 }
 
@@ -57,16 +55,15 @@ llvm::Constant *CodeGen::runtime_elem_ops(const std::string &name) {
                                   name);
 }
 
-llvm::Constant *CodeGen::struct_elem_ops(const TypePtr &sem) {
-  auto &info = std::get<StructTypeInfo>(sem->detail);
-  std::string name = struct_cache_key(info) + "__elem_ops";
+llvm::Constant *CodeGen::walk_elem_ops(const TypePtr &sem) {
+  auto *retain = ownership_fn(sem, true);
+  auto *release = ownership_fn(sem, false);
+  if (!retain || !release)
+    internal_error("'" + type_to_string(sem) + "' is stored in a collection "
+                   "but has no lowered layout to walk");
+  std::string name = retain->getName().str() + "__elem_ops";
   if (auto *existing = module->getNamedGlobal(name))
     return existing;
-  auto *retain = struct_ownership_fn(sem, true);
-  auto *release = struct_ownership_fn(sem, false);
-  if (!retain || !release)
-    internal_error("struct '" + info.name + "' is stored in a collection but "
-                   "has no lowered layout to walk its fields by");
   return new llvm::GlobalVariable(
       *module, elem_ops_type(), /*isConstant=*/true,
       llvm::GlobalValue::PrivateLinkage,
@@ -149,19 +146,21 @@ void CodeGen::settle_stored(const StoredValue &v, const Node &source,
     retain_if_borrowed(v.val, unwrap_alias(v.val_sem), source);
     emit_release(v.placed, unwrap_alias(slot_sem));
   } else if (slot_holds_references(slot_sem)) {
-    release_handed_over(v.val, source, slot_sem);
+    release_handed_over(v.val, v.val_sem, source, slot_sem);
   } else {
     retain_if_borrowed(v.val, unwrap_alias(v.val_sem), source);
   }
 }
 
 // The collection took a reference of its own or did not keep the value, so
-// one made for the call is released either way.
-void CodeGen::release_handed_over(llvm::Value *val, const Node &source,
+// one made for the call is released either way, at its own type: a string
+// wrapped into a union slot is still the string.
+void CodeGen::release_handed_over(llvm::Value *val, const TypePtr &val_sem,
+                                  const Node &source,
                                   const TypePtr &slot_sem) {
   if (val && slot_holds_references(slot_sem) &&
       value_ownership(source) == Ownership::Owned)
-    emit_release(val, unwrap_alias(slot_sem));
+    emit_release(val, unwrap_alias(val_sem));
 }
 
 } // namespace saga

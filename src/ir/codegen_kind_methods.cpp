@@ -153,7 +153,7 @@ void CodeGen::release_kind_method_args(const CallExprNode &node,
       retain_if_borrowed(v.val, unwrap_alias(v.val_sem), *node.args[i]);
       emit_release(v.placed, unwrap_alias(slot));
     } else {
-      release_handed_over(v.val, *node.args[i], slot);
+      release_handed_over(v.val, v.val_sem, *node.args[i], slot);
     }
   }
 }

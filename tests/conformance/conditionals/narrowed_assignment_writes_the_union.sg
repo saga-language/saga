@@ -1,0 +1,32 @@
+// A variable an `is` test narrowed is still the union it was declared as, so
+// assigning to it in the branch changes that union, and the change is there
+// after the branch, through any depth of narrowing.
+import "std/io"
+
+fn grow(u string | int | bool) string {
+  v := u
+  if v is bool {
+    return "bool"
+  } else {
+    if v is string {
+      v += "!"
+      v = v + "?"
+    }
+  }
+  if v is string { return v }
+  "none"
+}
+
+pub fn Main() void {
+  v string | int = "start"
+  if v is string {
+    v = "changed"
+  }
+  if v is string { io.Println(v) }
+
+  n := 3
+  s := "a{n}"
+  u string | int | bool = s
+  io.Println("{grow(u)} {grow(u)}")
+  if u is string { io.Println(u) }
+}

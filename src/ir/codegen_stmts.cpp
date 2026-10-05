@@ -333,7 +333,7 @@ void CodeGen::emit_destructure(const DestructureNode &node) {
     }
     locals[name] = slot;
     if (borrowed)
-      retain_slot(slot, field_ll, semantic_type(*f.name));
+      walk_slot(slot, semantic_type(*f.name), true);
     track_managed(slot, semantic_type(*f.name));
   }
 }
@@ -423,7 +423,8 @@ void CodeGen::emit_assign(const AssignNode &node) {
       emit_index_assign(*idx_expr, rhs, rhs_sem, *node.values[i]);
       continue;
     }
-    retain_if_borrowed(rhs, rhs_sem, *node.values[i]);
+    if (node.op == Token::Kind::Assignment)
+      retain_if_borrowed(rhs, rhs_sem, *node.values[i]);
     emit_slot_assign(*node.targets[i], node.op, rhs, rhs_sem);
   }
 }
@@ -452,11 +453,14 @@ void CodeGen::emit_slot_assign(const Node &target, Token::Kind op,
   auto [addr, slot_ll] = assign_target_address(target);
   if (!addr)
     return;
+  if (auto *view = llvm::dyn_cast<llvm::AllocaInst>(addr))
+    if (auto it = narrow_origins_.find(view); it != narrow_origins_.end())
+      return emit_narrowed_assign(it->second, view, target, op, rhs, rhs_sem);
 
   auto target_sem = semantic_type(target);
   if (op == Token::Kind::Assignment) {
     auto *placed = coerce_to(rhs, rhs_sem, target_sem);
-    release_slot(addr, slot_ll, target_sem);
+    walk_slot(addr, target_sem, false);
     store_into_slot(addr, slot_ll, placed);
     return;
   }

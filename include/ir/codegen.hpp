@@ -40,6 +40,11 @@ enum class Ownership { Owned, Borrowed };
 // interface box.
 bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem);
 
+// A counted kind is held through one pointer to a refcounted object; a boxed
+// one (an interface or function value) is the counted box the runtime shares.
+bool is_counted(const TypePtr &t);
+bool is_boxed(const TypePtr &t);
+
 // A conditional's merge point. Every branch that reaches it hands over a value
 // already in the conditional's type, and an owned one when `merged` is owned.
 struct BranchJoin {
@@ -823,7 +828,7 @@ private:
   llvm::Constant *elem_ops_for(const TypePtr &sem);
   llvm::StructType *elem_ops_type();
   llvm::Constant *runtime_elem_ops(const std::string &name);
-  llvm::Constant *struct_elem_ops(const TypePtr &sem);
+  llvm::Constant *walk_elem_ops(const TypePtr &sem);
   llvm::Value *emit_new_array(const TypePtr &elem_sem, int64_t cap,
                               const std::string &name);
   llvm::Value *emit_new_map(const TypePtr &key_sem, const TypePtr &val_sem);
@@ -844,8 +849,8 @@ private:
                       const TypePtr &val_sem, const KeyValueNode &entry);
   void settle_stored(const StoredValue &v, const Node &source,
                      const TypePtr &slot_sem);
-  void release_handed_over(llvm::Value *val, const Node &source,
-                           const TypePtr &slot_sem);
+  void release_handed_over(llvm::Value *val, const TypePtr &val_sem,
+                           const Node &source, const TypePtr &slot_sem);
   void fill_range(llvm::Value *arr, llvm::Value *low, llvm::Value *high);
   /// Bytes the runtime copies for one element/key/value of `ll`.
   int64_t element_size_of(llvm::Type *ll);
@@ -1187,6 +1192,22 @@ private:
   /// back when the branch ends, or null if nothing was rebound.
   llvm::AllocaInst *narrow_local(const std::string &name, const TypePtr &from,
                                  const TypePtr &to);
+  void end_narrowing(const std::string &name, llvm::AllocaInst *displaced);
+
+  /// The union variable a narrowed slot views, and every view of it in force.
+  /// Keyed by slot, which belongs to one function, so a nested function body
+  /// never sees its parent's.
+  struct NarrowOrigin {
+    llvm::AllocaInst *slot = nullptr;
+    TypePtr sem;
+  };
+  std::unordered_map<const llvm::AllocaInst *, NarrowOrigin> narrow_origins_;
+  std::unordered_map<const llvm::AllocaInst *,
+                     std::vector<std::pair<llvm::AllocaInst *, TypePtr>>>
+      narrow_views_;
+  void emit_narrowed_assign(const NarrowOrigin &origin, llvm::AllocaInst *view,
+                            const Node &target, Token::Kind op,
+                            llvm::Value *rhs, const TypePtr &rhs_sem);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
   llvm::Value *emit_box_copy(llvm::Value *val, llvm::Type *ll_alt);
@@ -1302,19 +1323,22 @@ private:
   /// method table records rather than one derived from the LLVM type.
   static bool has_close_method(const StructTypeInfo &info);
 
-  /// A struct owns one reference to each managed value it holds, so a copy of
-  /// one retains them and its death releases them. The walk is generated per
-  /// struct type rather than inline, so a nested struct is one call.
-  bool owns_managed_fields(const TypePtr &sem);
+  /// A struct or union owns one reference to each managed value it holds,
+  /// so a copy of one retains them and its death releases them. The walk is
+  /// generated per type rather than inline, so a nested one is one call
+  /// (codegen_walks.cpp).
+  bool walks_references(const TypePtr &sem);
+  bool holds_references(const TypePtr &sem);
   void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
-  llvm::Function *struct_ownership_fn(const TypePtr &sem, bool retain);
+  llvm::Function *ownership_fn(const TypePtr &sem, bool retain);
+  llvm::Function *declare_walk_fn(const std::string &name);
+  llvm::Function *struct_walk_fn(const TypePtr &sem, bool retain);
+  llvm::Function *union_walk_fn(const TypePtr &sem, bool retain);
   void emit_slot_walk(llvm::StructType *st, const TypePtr &sem,
                       llvm::Value *self, bool retain);
-  void emit_slot_ownership(llvm::StructType *st, llvm::Value *self,
-                           unsigned idx, const TypePtr &slot, bool retain);
-  void retain_slot(llvm::Value *addr, llvm::Type *slot_ll, const TypePtr &sem);
-  void release_slot(llvm::Value *addr, llvm::Type *slot_ll,
-                    const TypePtr &sem);
+  void walk_field(llvm::StructType *st, llvm::Value *self, unsigned idx,
+                  const TypePtr &slot, bool retain);
+  void walk_slot(llvm::Value *addr, const TypePtr &slot, bool retain);
   std::string close_link_name(llvm::Type *struct_ll) const;
   void emit_close_call(llvm::AllocaInst *slot);
 };

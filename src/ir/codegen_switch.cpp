@@ -67,7 +67,7 @@ void CodeGen::emit_type_switch(const SwitchExprNode &node, llvm::Value *subject,
                                 : nullptr;
     emit_switch_arm(join, arm.body.get());
     if (displaced)
-      locals[narrowing->name] = displaced;
+      end_narrowing(narrowing->name, displaced);
   }
 
   start_block(default_bb);

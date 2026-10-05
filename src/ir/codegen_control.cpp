@@ -49,8 +49,44 @@ llvm::AllocaInst *CodeGen::narrow_local(const std::string &name,
     return nullptr;
 
   auto *displaced = it->second;
+  auto origin_it = narrow_origins_.find(displaced);
+  auto origin = origin_it != narrow_origins_.end()
+                    ? origin_it->second
+                    : NarrowOrigin{displaced, from};
+  narrow_origins_[slot] = origin;
+  narrow_views_[origin.slot].push_back({slot, to});
   locals[name] = slot;
   return displaced;
+}
+
+void CodeGen::end_narrowing(const std::string &name,
+                            llvm::AllocaInst *displaced) {
+  auto *view = locals[name];
+  narrow_views_[narrow_origins_[view].slot].pop_back();
+  locals[name] = displaced;
+}
+
+// A narrowed name is a view of its union's payload for one branch, but the
+// variable is still the union: a write lands there, and every view of it
+// follows. Neither view holds a reference of its own.
+void CodeGen::emit_narrowed_assign(const NarrowOrigin &origin,
+                                   llvm::AllocaInst *view, const Node &target,
+                                   Token::Kind op, llvm::Value *rhs,
+                                   const TypePtr &rhs_sem) {
+  llvm::Value *val = rhs;
+  TypePtr val_sem = rhs_sem;
+  if (op == Token::Kind::Assignment) {
+    walk_slot(origin.slot, origin.sem, false);
+  } else {
+    val_sem = semantic_type(target);
+    auto *cur = builder.CreateLoad(view->getAllocatedType(), view);
+    val = emit_compound_op(op, cur, rhs, val_sem);
+  }
+  store_into_slot(origin.slot, origin.slot->getAllocatedType(),
+                  coerce_to(val, val_sem, origin.sem));
+  for (auto &[slot, sem] : narrow_views_[origin.slot])
+    store_into_slot(slot, slot->getAllocatedType(),
+                    coerce_to(val, val_sem, sem));
 }
 
 // `if v is T` narrows `v` to T in the then branch.
@@ -112,7 +148,7 @@ void CodeGen::emit_if_branch(BranchJoin &join, const Node *body,
   auto &block = std::get<BlockNode>(body->data);
   auto *val = emit_block(block);
   if (displaced)
-    locals[narrowing->name] = displaced;
+    end_narrowing(narrowing->name, displaced);
   close_branch(join, val, block_result_type(block), body);
 }
 
