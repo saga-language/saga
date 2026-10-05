@@ -110,6 +110,7 @@ void Analyzer::visit_package(const PackageNode &pkg) {
           decl->data);
     }
   }
+  settle_receiver_writes();
 
   pop_module_scope();
 }
@@ -164,6 +165,7 @@ void Analyzer::visit_source(const SourceNode &src) {
                },
                decl->data);
   }
+  settle_receiver_writes();
 
   pop_module_scope();
 }

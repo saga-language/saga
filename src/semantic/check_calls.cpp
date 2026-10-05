@@ -64,8 +64,14 @@ void Analyzer::reject_mutating_call_on_constant(const CallExprNode &node,
   auto sym = lookup(std::string(recv_id->name));
   if (!sym || sym->kind != SymbolKind::Constant)
     return;
-  if (!method_mutates_receiver(recv, sel.field.name))
+  // A method that writes only by calling one that does is found to once
+  // every body has been checked, so the call is looked at again then.
+  if (!method_mutates_receiver(recv, sel.field.name)) {
+    deferred_const_calls_.push_back({node.span, recv,
+                                     std::string(sel.field.name),
+                                     std::string(recv_id->name)});
     return;
+  }
 
   error(node.span,
         std::format("cannot call mutating method '{}' on constant '{}'",
@@ -169,6 +175,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
                                                               : "map");
 
     reject_mutating_call_on_constant(node, *sel, obj_sem);
+    note_receiver_call(*sel, obj_sem);
 
     // kind_methods_ call (Array/Map receiver) where the substituted
     // signature is already concrete, but the body must be re-checked

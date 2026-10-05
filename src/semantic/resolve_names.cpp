@@ -669,6 +669,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
     auto recv_type = resolve_type(*fn.receiver->type);
     declare_local(Symbol::parameter(std::string(fn.receiver->name.name),
                                     recv_type, fn.receiver->name.span));
+    push_method_frame(fn, recv_type);
   }
 
   if (fn.signature.return_type)
@@ -723,6 +724,8 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
     }
   }
 
+  if (fn.receiver)
+    pop_writer_frame();
   pop_scope();
   current_eager_kind_method_decl_ = saved_eager_kind;
 }
