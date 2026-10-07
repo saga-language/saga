@@ -761,6 +761,8 @@ private:
     llvm::BasicBlock *update_bb;
     llvm::BasicBlock *exit_bb;
   };
+  void enter_loop_body(const ForLoopBlocks &bbs);
+  void finish_loop_body(const ForExprNode &node, llvm::BasicBlock *next);
   void emit_for_infinite(const ForExprNode &node, const ForLoopBlocks &bbs);
   void emit_for_c_style(const ForExprNode &node,
                         const ForIterClauseNode &iter,
