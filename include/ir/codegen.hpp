@@ -196,20 +196,26 @@ struct CodeGen {
   /// generic body (see monomorphism_plan.md, Step 4).
   const Analyzer::BodyInstantiation *current_instantiation_ = nullptr;
 
-  // ── FuncEmissionScope (RAII, Step 5a) ────────────────────────────────
+  // ── Error promotion ──────────────────────────────────────────────────
 
-  /// Guards re-entrant function emission.  On construction captures every
-  /// piece of per-function CodeGen state and resets to fresh-function
-  /// defaults; on destruction restores it.  Used by emit_specialisation
-  /// so that emitting a generic specialisation in the middle of another
-  /// function's emission does not leak allocas, loop labels, or the
-  /// instantiation-view pointer.
-  ///
-  /// NOTE: when you add new per-function CodeGen state, update the
-  /// save/restore list in src/ir/codegen_calls.cpp.
+  /// Where a `?` that found an error jumps, and the slot it leaves the error
+  /// in. One per root expression that contains a promotion.
+  struct PromoteLanding {
+    llvm::BasicBlock *err_bb;
+    llvm::Value *slot;
+    TypePtr result_type;
+  };
+  std::vector<PromoteLanding> promote_landings_;
+
+  // ── FuncEmissionScope (RAII) ──────────────────────────────────────────
+
+  /// Saves the per-function state of the body being emitted, since a closure,
+  /// spawn or specialisation is emitted in the middle of another, and starts a
+  /// fresh one under `inst`'s side tables. New per-function state belongs on
+  /// its save/restore list (codegen_generics.cpp).
   class FuncEmissionScope {
   public:
-    explicit FuncEmissionScope(CodeGen &cg);
+    FuncEmissionScope(CodeGen &cg, const Analyzer::BodyInstantiation *inst);
     ~FuncEmissionScope();
     FuncEmissionScope(const FuncEmissionScope &) = delete;
     FuncEmissionScope &operator=(const FuncEmissionScope &) = delete;
@@ -221,6 +227,7 @@ struct CodeGen {
     std::unordered_map<std::string, llvm::AllocaInst *> saved_locals_;
     std::vector<ManagedLocal> saved_managed_locals_;
     std::vector<LoopContext> saved_loop_stack_;
+    std::vector<PromoteLanding> saved_promote_landings_;
     bool saved_current_func_is_main_;
     const Analyzer::BodyInstantiation *saved_current_instantiation_;
     llvm::Value *saved_current_actor_;
@@ -886,6 +893,14 @@ private:
                        const TypePtr &union_sem, BranchJoin &join);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
+  void emit_spawn_body(const SpawnExprNode &node, llvm::Function *outlined_fn,
+                       llvm::StructType *closure_st,
+                       const std::vector<llvm::Type *> &closure_field_types,
+                       const std::vector<Analyzer::SpawnCaptureInfo> &captures);
+  void unpack_spawn_captures(
+      llvm::Function *outlined_fn, llvm::StructType *closure_st,
+      const std::vector<llvm::Type *> &closure_field_types,
+      const std::vector<Analyzer::SpawnCaptureInfo> &captures);
 
   // Selector-callee dispatch in code generation: handles every shape of
   // `obj.method(args)` (module fn, struct method, struct-field call,
@@ -1233,15 +1248,6 @@ private:
                                    const TypePtr &union_sem);
 
   // ── Error promotion ──────────────────────────────────────────────────
-
-  /// Where a `?` that found an error jumps, and the slot it leaves the error
-  /// in. One per root expression that contains a promotion.
-  struct PromoteLanding {
-    llvm::BasicBlock *err_bb;
-    llvm::Value *slot;
-    TypePtr result_type;
-  };
-  std::vector<PromoteLanding> promote_landings_;
 
   llvm::Value *emit_promote_expr(const PromoteExprNode &node);
 

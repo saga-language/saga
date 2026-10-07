@@ -98,6 +98,7 @@ void CodeGen::emit_func_decl(const FuncDeclNode &fn) {
 
   return_sems_[func] =
       is_main ? nullptr : declared_return_sem(fn.signature.return_type);
+  FuncEmissionScope guard(*this, nullptr);
   emit_function_body_inner(fn, func, decl_signature(fn), is_main);
 }
 
@@ -106,10 +107,6 @@ void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
                                        const FuncTypeInfo &fi, bool is_main) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
-
-  // Reset per-function state.
-  locals.clear();
-  managed_locals.clear();
   current_func_is_main = is_main;
 
   // If this is Main and we have spawn expressions, init the executor.
@@ -144,9 +141,6 @@ void CodeGen::emit_receiver_method_body(const FuncDeclNode &fn,
                                         const FuncTypeInfo &fi) {
   auto *entry = llvm::BasicBlock::Create(context, "entry", func);
   builder.SetInsertPoint(entry);
-  locals.clear();
-  managed_locals.clear();
-  current_func_is_main = false;
 
   unsigned self_idx = first_param_index(func, false);
   std::string recv_name(fn.receiver->name.name);
