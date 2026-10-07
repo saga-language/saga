@@ -174,14 +174,6 @@ llvm::Value *CodeGen::emit_block(const BlockNode &block) {
   return emit_root_expr(*block.stmts.back());
 }
 
-void CodeGen::emit_body(const BlockNode &block) {
-  for (auto &stmt : block.stmts) {
-    if (builder.GetInsertBlock()->getTerminator())
-      return;
-    emit_statement(*stmt);
-  }
-}
-
 // ===========================================================================
 // Statement emitters
 // ===========================================================================
@@ -508,8 +500,7 @@ void CodeGen::emit_main_exit(llvm::Value *code) {
   auto *i32_ll = llvm::Type::getInt32Ty(context);
   auto *status = code ? builder.CreateTrunc(code, i32_ll, "main_ret")
                       : llvm::ConstantInt::get(i32_ll, 0);
-  release_temporaries(0);
-  emit_release_locals();
+  release_to({});
   if (has_spawn)
     builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});
   builder.CreateRet(status);

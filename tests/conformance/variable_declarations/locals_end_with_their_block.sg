@@ -1,0 +1,39 @@
+// Spec: a value is cleaned up once nothing refers to it, so it stays alive
+// only while it is "referenced and in-scope" (docs/language.md:100). A local
+// ends with the block that declares it: a path that never entered the block
+// has nothing to clean up, each pass of a loop ends its own, and a branch's
+// value read out of one of its locals outlives the branch.
+import "std/io"
+
+fn describe(loud bool, n int) string {
+  if loud {
+    s := "n={n}"
+    io.Println(s.Upper())
+  }
+  "done {n}"
+}
+
+fn pick(c bool, s string) string {
+  if c {
+    t := s + "!"
+    t
+  } else {
+    s
+  }
+}
+
+pub fn Main() void {
+  io.Println(describe(false, 1))
+  io.Println(describe(true, 2))
+  io.Println(pick(true, "a"))
+  io.Println(pick(false, "b"))
+
+  total := 0
+  for i : 0..3 {
+    w := "w{i}"
+    if i == 1 { next }
+    ws := [w, w]
+    total += ws.Size()
+  }
+  io.Println(total.String())
+}

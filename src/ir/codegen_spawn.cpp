@@ -172,7 +172,7 @@ void CodeGen::emit_spawn_body(
   }
 
   if (auto *block = std::get_if<BlockNode>(&node.body->data))
-    emit_block(*block);
+    emit_body(*block);
   else
     emit_expr(*node.body);
   if (!builder.GetInsertBlock()->getTerminator())

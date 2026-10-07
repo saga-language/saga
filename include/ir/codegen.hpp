@@ -47,11 +47,13 @@ bool is_boxed(const TypePtr &t);
 
 // A conditional's merge point. Every branch that reaches it hands over a value
 // already in the conditional's type, and an owned one when `merged` is owned.
+// A branch's own locals, those past `locals_depth`, end with the branch.
 struct BranchJoin {
   llvm::BasicBlock *merge = nullptr;
   TypePtr result; // null when the conditional yields no value
   Ownership merged = Ownership::Borrowed;
   bool reached = false;
+  size_t locals_depth = 0;
   std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
 };
 
@@ -171,6 +173,13 @@ struct CodeGen {
   /// Picked up by the next DeclAssign to create a companion ".channel" local.
   llvm::AllocaInst *pending_channel_alloca_ = nullptr;
 
+  /// Where a jump out of nested scopes lands: the temporaries and managed
+  /// locals below these depths belong to scopes it stays inside.
+  struct CleanupDepth {
+    size_t temporaries = 0;
+    size_t locals = 0;
+  };
+
   // ── Loop context (for break/next) ────────────────────────────────────
 
   struct LoopContext {
@@ -184,7 +193,7 @@ struct CodeGen {
     llvm::AllocaInst *result_alloca = nullptr;
     TypePtr result_union_type;
     TypePtr result_value_type;
-    size_t temporaries_depth = 0;
+    CleanupDepth body_depth;
   };
   std::vector<LoopContext> loop_stack;
 
@@ -205,7 +214,7 @@ struct CodeGen {
     llvm::BasicBlock *err_bb;
     llvm::Value *slot;
     TypePtr result_type;
-    size_t temporaries_depth;
+    CleanupDepth depth;
   };
   std::vector<PromoteLanding> promote_landings_;
 
@@ -218,6 +227,19 @@ struct CodeGen {
     TypePtr sem;
   };
   std::vector<Temporary> temporaries_;
+
+  /// A block whose locals end with it: a loop's body, a task's.
+  class LocalScope {
+  public:
+    explicit LocalScope(CodeGen &cg);
+    ~LocalScope();
+    LocalScope(const LocalScope &) = delete;
+    LocalScope &operator=(const LocalScope &) = delete;
+
+  private:
+    CodeGen &cg_;
+    size_t depth_;
+  };
 
   /// A statement or condition: what it holds is released where it ends.
   class FullExpression {
@@ -537,7 +559,6 @@ private:
                          const Node *source);
   void emit_void_return(llvm::Value *val, const TypePtr &val_sem,
                         const Node *source);
-  void release_frame();
 
   /// Return the value a body's last expression left, for a body that did not
   /// end in a `return`.
@@ -1343,6 +1364,11 @@ private:
   bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
   Ownership branch_value_ownership(const Node *body, const TypePtr &result);
+  Ownership branch_tail_ownership(const Node *body, const TypePtr &result);
+  bool lends_from_block(const Node *body);
+  bool body_lends_from(const Node *body, Span scope);
+  bool lends_from(const Node &node, Span scope);
+  bool switch_lends_from(const SwitchExprNode &node, Span scope);
   Ownership zero_ownership(const TypePtr &result);
   Ownership or_ownership(const OrExprNode &node);
   Ownership if_ownership(const IfExprNode &node, const Node &parent);
@@ -1364,6 +1390,11 @@ private:
   /// Release what the full expressions above `depth` hold, on a path that
   /// leaves them.
   void release_temporaries(size_t depth);
+  CleanupDepth cleanup_depth() const;
+  void release_to(const CleanupDepth &depth);
+  void release_locals(size_t depth);
+  void release_local(const ManagedLocal &local);
+  void end_local_scope(size_t depth);
 
   /// A full expression of its own whose value, if any, goes nowhere.
   void emit_statement(const Node &stmt);
@@ -1374,6 +1405,8 @@ private:
                        Ownership merged);
   void close_branch(BranchJoin &join, llvm::Value *val, const TypePtr &val_sem,
                     const Node *source);
+  llvm::Value *branch_result(const BranchJoin &join, llvm::Value *val,
+                             const TypePtr &val_sem, const Node *source);
   llvm::Value *join_value(const BranchJoin &join, llvm::Value *val,
                           const TypePtr &val_sem, const Node *source);
   llvm::Value *finish_join(BranchJoin &join, const std::string &name);
@@ -1392,8 +1425,6 @@ private:
   /// Emit release call for a value based on its semantic type.
   void emit_release(llvm::Value *val, const TypePtr &sem);
 
-  /// Emit release calls for all managed locals in the current function.
-  void emit_release_locals();
 
   /// A struct is released by closing it, which needs the link name its own
   /// method table records rather than one derived from the LLVM type.

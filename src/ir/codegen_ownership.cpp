@@ -103,24 +103,6 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
     emit_ownership_walk(val, sem, false);
 }
 
-void CodeGen::emit_release_locals() {
-  for (auto &ml : managed_locals) {
-    if (ml.kind == ManagedKind::Closeable) {
-      emit_close_call(ml.slot);
-      continue;
-    }
-    if (ml.kind == ManagedKind::Struct) {
-      emit_release(ml.slot, ml.sem);
-      continue;
-    }
-    auto *val = builder.CreateLoad(ml.slot->getAllocatedType(), ml.slot);
-    if (ml.kind == ManagedKind::Task)
-      builder.CreateCall(module->getFunction("saga_task_drop"), {val});
-    else
-      emit_release(val, ml.sem);
-  }
-}
-
 // The struct's own name is the origin-qualified key, so `Close` resolves
 // through the same method-link table method calls go through.
 std::string CodeGen::close_link_name(llvm::Type *struct_ll) const {

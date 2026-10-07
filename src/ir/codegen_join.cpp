@@ -23,22 +23,33 @@ BranchJoin CodeGen::open_join(const std::string &name, const TypePtr &result,
   join.merge = llvm::BasicBlock::Create(context, name);
   join.result = yields_value(result) ? materialize_untyped(result) : nullptr;
   join.merged = merged;
+  join.locals_depth = managed_locals.size();
   return join;
 }
 
-// A branch that already returned or broke never reaches the merge, and the
-// value of one whose conditional yields none goes nowhere.
+// A branch that already returned or broke never reaches the merge. One that
+// does ends its own locals on the way, once the join has its value.
 void CodeGen::close_branch(BranchJoin &join, llvm::Value *val,
                            const TypePtr &val_sem, const Node *source) {
   if (builder.GetInsertBlock()->getTerminator())
-    return;
+    return end_local_scope(join.locals_depth);
+  auto *placed = branch_result(join, val, val_sem, source);
+  end_local_scope(join.locals_depth);
   join.reached = true;
   if (join.result)
-    join.incoming.push_back(
-        {join_value(join, val, val_sem, source), builder.GetInsertBlock()});
-  else if (val && branch_value_ownership(source, nullptr) == Ownership::Owned)
-    hold_temporary(val, val_sem);
+    join.incoming.push_back({placed, builder.GetInsertBlock()});
   builder.CreateBr(join.merge);
+}
+
+// The value of a branch whose conditional yields none goes nowhere.
+llvm::Value *CodeGen::branch_result(const BranchJoin &join, llvm::Value *val,
+                                    const TypePtr &val_sem,
+                                    const Node *source) {
+  if (join.result)
+    return join_value(join, val, val_sem, source);
+  if (val && branch_tail_ownership(source, nullptr) == Ownership::Owned)
+    hold_temporary(val, val_sem);
+  return nullptr;
 }
 
 // A borrowed value takes a reference when the merge is owned, and when it is
@@ -49,7 +60,7 @@ llvm::Value *CodeGen::join_value(const BranchJoin &join, llvm::Value *val,
     return emit_zero_value(join.result);
   bool takes_reference =
       join.merged == Ownership::Owned || boxes_into(val_sem, join.result);
-  if (takes_reference && branch_value_ownership(source, join.result) ==
+  if (takes_reference && branch_tail_ownership(source, join.result) ==
                              Ownership::Borrowed)
     emit_retain(val, unwrap_alias(val_sem));
   auto *placed = coerce_to(val, val_sem, join.result);

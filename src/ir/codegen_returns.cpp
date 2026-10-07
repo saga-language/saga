@@ -63,12 +63,12 @@ void CodeGen::emit_return_value(llvm::Value *val, const TypePtr &val_sem,
   if (sret) {
     if (placed)
       store_into_slot(func->getArg(0), func->getParamStructRetType(0), placed);
-    release_frame();
+    release_to({});
     builder.CreateRetVoid();
     return;
   }
   auto *out = as_return_value(placed, func->getReturnType());
-  release_frame();
+  release_to({});
   builder.CreateRet(out);
 }
 
@@ -78,13 +78,8 @@ void CodeGen::emit_void_return(llvm::Value *val, const TypePtr &val_sem,
   if (val && source)
     hold_if_owned(val, val_sem, *source);
   write_back_captures(builder.GetInsertBlock()->getParent());
-  release_frame();
+  release_to({});
   builder.CreateRetVoid();
-}
-
-void CodeGen::release_frame() {
-  release_temporaries(0);
-  emit_release_locals();
 }
 
 llvm::Value *CodeGen::as_return_value(llvm::Value *val, llvm::Type *ret_ll) {

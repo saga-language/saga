@@ -119,7 +119,7 @@ void CodeGen::emit_break(const BreakNode &node) {
   auto &frame = loop_stack.back();
   if (frame.result_alloca && !node.values.empty() && frame.result_value_type)
     store_break_value(frame, *node.values[0]);
-  release_temporaries(frame.temporaries_depth);
+  release_to(frame.body_depth);
   builder.CreateBr(frame.break_bb);
 }
 
@@ -141,7 +141,7 @@ void CodeGen::store_break_value(const LoopContext &frame, const Node &value) {
 void CodeGen::emit_next() {
   if (loop_stack.empty())
     return;
-  release_temporaries(loop_stack.back().temporaries_depth);
+  release_to(loop_stack.back().body_depth);
   builder.CreateBr(loop_stack.back().next_bb);
 }
 
@@ -149,7 +149,7 @@ void CodeGen::emit_next() {
 // only what the body holds. An actor's loop counts toward its reductions, so
 // a long one yields.
 void CodeGen::enter_loop_body(const ForLoopBlocks &bbs) {
-  loop_stack.back().temporaries_depth = temporaries_.size();
+  loop_stack.back().body_depth = cleanup_depth();
   start_block(bbs.body_bb);
   if (current_actor)
     builder.CreateCall(module->getFunction("saga_reduction_tick"),

@@ -32,6 +32,16 @@ bool is_statement(const Node &node) {
          std::holds_alternative<BreakNode>(node.data) ||
          std::holds_alternative<NextNode>(node.data);
 }
+
+const Node *block_tail(const BlockNode &block) {
+  if (block.stmts.empty() || is_statement(*block.stmts.back()))
+    return nullptr;
+  return block.stmts.back().get();
+}
+
+bool within(Span inner, Span outer) {
+  return outer.start <= inner.start && inner.end <= outer.end;
+}
 } // namespace
 
 Ownership CodeGen::value_ownership(const Node &node) {
@@ -116,16 +126,80 @@ Ownership CodeGen::body_ownership(const Node *body, const TypePtr &result) {
   return branch_value_ownership(body, result);
 }
 
+// A value read out of one of the branch's own locals would go with the block,
+// so the join retains it first and the branch hands it over owned.
 Ownership CodeGen::branch_value_ownership(const Node *body,
                                           const TypePtr &result) {
+  if (lends_from_block(body))
+    return Ownership::Owned;
+  return branch_tail_ownership(body, result);
+}
+
+Ownership CodeGen::branch_tail_ownership(const Node *body,
+                                         const TypePtr &result) {
   if (!body)
     return zero_ownership(result);
   auto *block = std::get_if<BlockNode>(&body->data);
   if (!block)
     return value_ownership(*body);
-  if (block->stmts.empty() || is_statement(*block->stmts.back()))
-    return zero_ownership(result);
-  return value_ownership(*block->stmts.back());
+  auto *tail = block_tail(*block);
+  return tail ? value_ownership(*tail) : zero_ownership(result);
+}
+
+bool CodeGen::lends_from_block(const Node *body) {
+  auto *block = body ? std::get_if<BlockNode>(&body->data) : nullptr;
+  return block && body_lends_from(body, block->span);
+}
+
+bool CodeGen::body_lends_from(const Node *body, Span scope) {
+  if (!body)
+    return false;
+  auto *block = std::get_if<BlockNode>(&body->data);
+  auto *tail = block ? block_tail(*block) : body;
+  return tail && value_ownership(*tail) == Ownership::Borrowed &&
+         lends_from(*tail, scope);
+}
+
+// Whether a borrowed value may be read out of a local declared within `scope`;
+// a conditional may hand over the value of any of its branches.
+bool CodeGen::lends_from(const Node &node, Span scope) {
+  return std::visit(
+      overloaded{
+          [&](const IdentifierNode &) {
+            auto *sym = node_symbol(node);
+            return sym && within(sym->decl_span, scope);
+          },
+          [&](const SelectorNode &n) { return lends_from(*n.object, scope); },
+          [&](const IndexExprNode &n) { return lends_from(*n.object, scope); },
+          [&](const GroupExprNode &n) { return lends_from(*n.inner, scope); },
+          [&](const PromoteExprNode &n) {
+            return lends_from(*n.operand, scope);
+          },
+          [&](const CallExprNode &n) {
+            return reads_stored_element(n) &&
+                   lends_from(*std::get<SelectorNode>(n.callee->data).object,
+                              scope);
+          },
+          [&](const OrExprNode &n) {
+            return lends_from(*n.expr, scope) ||
+                   body_lends_from(n.fallback.get(), scope);
+          },
+          [&](const IfExprNode &n) {
+            return body_lends_from(n.then_block.get(), scope) ||
+                   (n.else_block &&
+                    body_lends_from(n.else_block->get(), scope));
+          },
+          [&](const SwitchExprNode &n) { return switch_lends_from(n, scope); },
+          [&](const auto &) { return false; },
+      },
+      node.data);
+}
+
+bool CodeGen::switch_lends_from(const SwitchExprNode &node, Span scope) {
+  for (auto &arm : node.arms)
+    if (body_lends_from(arm.body.get(), scope))
+      return true;
+  return node.else_body && body_lends_from(node.else_body->get(), scope);
 }
 
 Ownership CodeGen::or_ownership(const OrExprNode &node) {

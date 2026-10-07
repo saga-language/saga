@@ -1,11 +1,13 @@
 // Copyright 2026 Rob Thornton
 // SPDX-License-Identifier: MIT
 
-// An owned value its consumer only reads is held in a slot of its own and
-// released when its full expression ends.
+// Where owned values end: a local with its block, a temporary — an owned value
+// its consumer only reads, held in a slot of its own — with its full
+// expression.
 
 #include "codegen_harness.hpp"
 
+#include <llvm/IR/CFG.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 
@@ -44,6 +46,33 @@ bool released_through_slot(llvm::Value *val, llvm::StringRef releaser) {
           if (is_call_to(load_user, releaser))
             return true;
   }
+  return false;
+}
+
+llvm::AllocaInst *local_slot(llvm::Function *fn, llvm::StringRef name) {
+  for (auto &inst : fn->getEntryBlock())
+    if (auto *slot = llvm::dyn_cast<llvm::AllocaInst>(&inst))
+      if (slot->getName() == name)
+        return slot;
+  return nullptr;
+}
+
+// The calls to `callee` that take the value loaded from `slot`.
+std::vector<llvm::CallInst *> calls_on_slot(llvm::Value *slot,
+                                            llvm::StringRef callee) {
+  std::vector<llvm::CallInst *> out;
+  for (auto *user : slot->users())
+    if (auto *load = llvm::dyn_cast<llvm::LoadInst>(user))
+      for (auto *load_user : load->users())
+        if (is_call_to(load_user, callee))
+          out.push_back(llvm::cast<llvm::CallInst>(load_user));
+  return out;
+}
+
+bool branches_to(llvm::BasicBlock *bb, llvm::StringRef prefix) {
+  for (auto *succ : llvm::successors(bb))
+    if (succ->getName().starts_with(prefix))
+      return true;
   return false;
 }
 
@@ -169,6 +198,64 @@ TEST(Temporaries, WalkOfNullIsANoOp) {
   auto *test = llvm::dyn_cast<llvm::ICmpInst>(branch->getCondition());
   ASSERT_NE(test, nullptr);
   EXPECT_EQ(test->getOperand(0), walk->getArg(0));
+}
+
+TEST(Scopes, LoopBodyLocalEndsEachPass) {
+  auto r = CG::from("fn f() int {\n"
+                    "  n := 0\n"
+                    "  for i : 0..3 {\n"
+                    "    s := \"x{i}\"\n"
+                    "    n += s.Size()\n"
+                    "  }\n"
+                    "  n\n"
+                    "}\n"
+                    "pub fn Main() void { _ := f() }");
+  auto *f = r.func("f");
+  auto *slot = local_slot(f, "s");
+  ASSERT_NE(slot, nullptr);
+  auto releases = calls_on_slot(slot, "saga_release_string");
+  ASSERT_EQ(releases.size(), 1u);
+  EXPECT_TRUE(branches_to(releases[0]->getParent(), "for.update"));
+}
+
+// Released only where it was declared, never at the function's exit, where a
+// path that skipped the branch would find its slot unset.
+TEST(Scopes, BranchLocalEndsWithTheBranch) {
+  auto r = CG::from("fn f(c bool) int {\n"
+                    "  if c {\n"
+                    "    s := \"x{c}\"\n"
+                    "    _ := s.Size()\n"
+                    "  }\n"
+                    "  0\n"
+                    "}\n"
+                    "pub fn Main() void { _ := f(true) }");
+  auto *f = r.func("f");
+  auto *slot = local_slot(f, "s");
+  ASSERT_NE(slot, nullptr);
+  auto releases = calls_on_slot(slot, "saga_release_string");
+  ASSERT_EQ(releases.size(), 1u);
+  EXPECT_TRUE(branches_to(releases[0]->getParent(), "merge"));
+}
+
+TEST(Scopes, JoinRetainsAValueReadOutOfABranchLocal) {
+  auto r = CG::from("fn f(c bool) string {\n"
+                    "  if c {\n"
+                    "    t := \"x{c}\"\n"
+                    "    t\n"
+                    "  } else {\n"
+                    "    \"y\"\n"
+                    "  }\n"
+                    "}\n"
+                    "pub fn Main() void { _ := f(true) }");
+  auto *f = r.func("f");
+  auto *slot = local_slot(f, "t");
+  ASSERT_NE(slot, nullptr);
+  auto retains = calls_on_slot(slot, "saga_retain_string");
+  auto releases = calls_on_slot(slot, "saga_release_string");
+  ASSERT_EQ(retains.size(), 1u);
+  ASSERT_EQ(releases.size(), 1u);
+  ASSERT_EQ(retains[0]->getParent(), releases[0]->getParent());
+  EXPECT_TRUE(retains[0]->comesBefore(releases[0]));
 }
 
 } // namespace saga
