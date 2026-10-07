@@ -19,7 +19,7 @@ llvm::Value *CodeGen::emit_receiver(const Node &object, const TypePtr &obj_sem,
   // same runtime buffer and needs the same barrier.
   auto shape = unwrap_alias(obj_sem);
   if (!shape || !kind_method_mutates(shape, method))
-    return emit_expr(object);
+    return emit_borrowed(object);
   return make_binding_unique(object, shape);
 }
 
@@ -93,7 +93,7 @@ CodeGen::emit_alias_method_call(const CallExprNode &node,
     auto *callee = module->getFunction(link_name);
     if (!callee)
       return std::nullopt;
-    auto *self = emit_expr(*sel.object);
+    auto *self = emit_borrowed(*sel.object);
     return emit_call(callee, self,
                      emit_arguments(node, method_signature(ai.methods, method),
                                     true));

@@ -107,7 +107,7 @@ llvm::Value *CodeGen::emit_int_width(const CallExprNode &node, unsigned bits,
 // so any side effects run.
 llvm::Value *CodeGen::emit_intrinsic_is_string(const CallExprNode &node) {
   if (node.args.empty()) return nullptr;
-  (void)emit_expr(*node.args[0]);
+  emit_borrowed(*node.args[0]);
   auto arg_sem = semantic_type(*node.args[0]);
   bool is_string = arg_sem && arg_sem->kind == TypeKind::String;
   return llvm::ConstantInt::get(i1_type, is_string ? 1 : 0);
@@ -141,7 +141,7 @@ llvm::Value *CodeGen::emit_intrinsic_atomic_add(const CallExprNode &node) {
 // The runtime pulls the current actor from a thread-local and no-ops
 // without one.
 llvm::Value *CodeGen::emit_intrinsic_trap(const CallExprNode &node) {
-  auto *reason = emit_expr(*node.args[0]);
+  auto *reason = emit_borrowed(*node.args[0]);
   builder.CreateCall(module->getFunction("saga_actor_trap"), {reason});
   return llvm::Constant::getNullValue(llvm::PointerType::getUnqual(context));
 }
@@ -151,7 +151,7 @@ llvm::Value *CodeGen::emit_intrinsic_trap(const CallExprNode &node) {
 // array{int} and defaulting to 0 past its end.
 llvm::Value *CodeGen::emit_intrinsic_syscall(const CallExprNode &node) {
   auto *num = emit_expr(*node.args[0]);
-  auto *arr = emit_expr(*node.args[1]);
+  auto *arr = emit_borrowed(*node.args[1]);
 
   auto *arr_struct =
       llvm::StructType::getTypeByName(context, "saga_runtime_array");
@@ -191,7 +191,7 @@ llvm::Value *CodeGen::emit_intrinsic_syscall(const CallExprNode &node) {
 // The argument is `string | array{byte}`; either way the payload is a
 // runtime buffer whose first field is the data pointer.
 llvm::Value *CodeGen::emit_intrinsic_ptr(const CallExprNode &node) {
-  auto *val = emit_expr(*node.args[0]);
+  auto *val = emit_borrowed(*node.args[0]);
   auto arg_sem = semantic_type(*node.args[0]);
   llvm::Value *str_ptr = val;
   if (arg_sem && arg_sem->kind == TypeKind::Union) {

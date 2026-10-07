@@ -124,8 +124,7 @@ llvm::Value *CodeGen::emit_selector(const SelectorNode &node,
     }
   }
 
-  // Fallback: emit the object, then GEP into it.
-  auto *obj = emit_expr(*node.object);
+  auto *obj = emit_borrowed(*node.object);
   if (!obj)
     return nullptr;
 

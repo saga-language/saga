@@ -26,7 +26,8 @@ BranchJoin CodeGen::open_join(const std::string &name, const TypePtr &result,
   return join;
 }
 
-// A branch that already returned or broke never reaches the merge.
+// A branch that already returned or broke never reaches the merge, and the
+// value of one whose conditional yields none goes nowhere.
 void CodeGen::close_branch(BranchJoin &join, llvm::Value *val,
                            const TypePtr &val_sem, const Node *source) {
   if (builder.GetInsertBlock()->getTerminator())
@@ -35,6 +36,8 @@ void CodeGen::close_branch(BranchJoin &join, llvm::Value *val,
   if (join.result)
     join.incoming.push_back(
         {join_value(join, val, val_sem, source), builder.GetInsertBlock()});
+  else if (val && branch_value_ownership(source, nullptr) == Ownership::Owned)
+    hold_temporary(val, val_sem);
   builder.CreateBr(join.merge);
 }
 

@@ -16,13 +16,6 @@ Ownership either(Ownership a, Ownership b) {
   return a == Ownership::Owned ? a : b;
 }
 
-bool interpolates(const StringLiteralNode &node) {
-  for (auto &frag : node.fragments)
-    if (!std::holds_alternative<StringFragmentNode>(frag->data))
-      return true;
-  return false;
-}
-
 bool is_slice(const IndexExprNode &node) {
   return std::holds_alternative<SliceNode>(node.index->data);
 }
@@ -58,11 +51,13 @@ Ownership CodeGen::value_ownership(const Node &node) {
           [&](const SpawnExprNode &) { return Owned; },
           [&](const FuncExprNode &) { return Owned; },
           [&](const ForExprNode &n) {
-            return n.accumulator ? Owned : Borrowed;
+            return n.accumulator || break_value_type(n, semantic_type(node))
+                       ? Owned
+                       : Borrowed;
           },
           [&](const CallExprNode &n) { return call_ownership(n); },
           [&](const IndexExprNode &n) {
-            return is_slice(n) ? Owned : Borrowed;
+            return is_slice(n) || indexes_string(n) ? Owned : Borrowed;
           },
           [&](const OrExprNode &n) { return or_ownership(n); },
           [&](const IfExprNode &n) { return if_ownership(n, node); },
@@ -70,6 +65,12 @@ Ownership CodeGen::value_ownership(const Node &node) {
           [&](const auto &) { return Borrowed; },
       },
       node.data);
+}
+
+// A string's element is a string of its own, made for the read.
+bool CodeGen::indexes_string(const IndexExprNode &node) {
+  auto sem = semantic_type(*node.object);
+  return sem && sem->kind == TypeKind::String;
 }
 
 Ownership CodeGen::call_ownership(const CallExprNode &call) {

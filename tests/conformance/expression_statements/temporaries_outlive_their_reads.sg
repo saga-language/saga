@@ -1,0 +1,44 @@
+// Spec: values are reference counted and cleaned up once nothing refers to
+// them (docs/language.md:52, 100). A value made only to be read — a receiver,
+// an operand, the collection a loop walks — is let go when its statement ends,
+// so whatever was read out of it is kept by then, on every path out.
+import "std/io"
+
+struct Tag {
+  name string
+}
+
+fn (t Tag) Shout() void { t.name = t.name.Upper() + "!" }
+
+fn (t Tag) Name() string { t.name }
+
+fn tag(s string) Tag { Tag{name: s + s} }
+
+fn words(s string) array{string} { [s.Lower(), s.Upper(), s + "?"] }
+
+fn first(s string) string { return words(s)[0] or { "" } }
+
+fn nth(s string, i int) int | error { s.Size() + words(s)[i]?.Size() }
+
+pub fn Main() void {
+  tag("ab").Shout()
+  io.Println(tag("cd").Name().Upper())
+
+  found := for w : words("Ef") {
+    if w.Upper() == w { break w }
+  }
+  io.Println(found or { "none" })
+
+  picked := if first("Gh").Size() > 1 { words("Ij")[1] or { "" } } else { "" }
+  io.Println(picked)
+
+  io.Println("{nth("kl", 2) or { -1 }} {nth("kl", 7) or { -1 }}")
+
+  kept := 0
+  for w : words("Mn") {
+    if w.Lower() == w { next }
+    if w.Size() > 2 { break }
+    kept += w.Upper().Size()
+  }
+  io.Println(kept.String())
+}

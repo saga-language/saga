@@ -123,7 +123,7 @@ void CodeGen::emit_function_body_inner(const FuncDeclNode &fn,
 
   if (!builder.GetInsertBlock()->getTerminator()) {
     if (is_main)
-      emit_main_exit(nullptr);
+      emit_main_fallthrough(block, tail_val);
     else
       emit_fallthrough_return(block, tail_val);
   }
@@ -159,33 +159,27 @@ void CodeGen::emit_receiver_method_body(const FuncDeclNode &fn,
 // Block / statement emission
 // ===========================================================================
 
+// The last statement's value is the block's, so it is left in the full
+// expression of whatever takes it.
 llvm::Value *CodeGen::emit_block(const BlockNode &block) {
-  llvm::Value *last = nullptr;
-  for (auto &stmt : block.stmts) {
-    // If we already have a terminator (e.g. from a return), stop.
+  if (block.stmts.empty())
+    return nullptr;
+  for (size_t i = 0; i + 1 < block.stmts.size(); ++i) {
     if (builder.GetInsertBlock()->getTerminator())
-      break;
-    last = emit_root_expr(*stmt);
+      return nullptr;
+    emit_statement(*block.stmts[i]);
   }
-  return last;
+  if (builder.GetInsertBlock()->getTerminator())
+    return nullptr;
+  return emit_root_expr(*block.stmts.back());
 }
 
-void CodeGen::emit_stmt(const Node &node) {
-  std::visit(
-      overloaded{
-          [&](const VarDeclNode &n) { emit_var_decl(n); },
-          [&](const DeclAssignNode &n) { emit_decl_assign(n); },
-          [&](const DestructureNode &n) { emit_destructure(n); },
-          [&](const AssignNode &n) { emit_assign(n); },
-          [&](const ReturnNode &n) { emit_return(n); },
-          [&](const IncrementNode &n) { emit_increment(n); },
-          [&](const DecrementNode &n) { emit_decrement(n); },
-          [&](const auto &) {
-            // Everything else is an expression evaluated for side effects.
-            emit_expr(node);
-          },
-      },
-      node.data);
+void CodeGen::emit_body(const BlockNode &block) {
+  for (auto &stmt : block.stmts) {
+    if (builder.GetInsertBlock()->getTerminator())
+      return;
+    emit_statement(*stmt);
+  }
 }
 
 // ===========================================================================
@@ -297,7 +291,8 @@ void CodeGen::emit_decl_assign(const DeclAssignNode &node) {
 }
 
 // Each name is bound the way `x := value.field` binds one, so a struct field
-// is copied into its own slot rather than aliasing the value's storage.
+// is copied into its own slot and takes a reference of its own, and a value
+// made for the destructuring is released with what it held.
 void CodeGen::emit_destructure(const DestructureNode &node) {
   // unwrap_alias, because a nominal alias of a struct is one to take apart —
   // the analyzer resolves the fields through it, so this must reach the same
@@ -309,7 +304,7 @@ void CodeGen::emit_destructure(const DestructureNode &node) {
 
   auto *base = spill_aggregate(value, "destructure.src");
   auto *func = builder.GetInsertBlock()->getParent();
-  bool borrowed = value_ownership(*node.value) == Ownership::Borrowed;
+  hold_if_owned(base, sem, *node.value);
 
   for (auto &f : node.fields) {
     std::string name(std::get<IdentifierNode>(f.name->data).name);
@@ -326,8 +321,7 @@ void CodeGen::emit_destructure(const DestructureNode &node) {
       builder.CreateStore(builder.CreateLoad(field_ll, gep, name), slot);
     }
     locals[name] = slot;
-    if (borrowed)
-      walk_slot(slot, semantic_type(*f.name), true);
+    walk_slot(slot, semantic_type(*f.name), true);
     track_managed(slot, semantic_type(*f.name));
   }
 }
@@ -419,6 +413,8 @@ void CodeGen::emit_assign(const AssignNode &node) {
     }
     if (node.op == Token::Kind::Assignment)
       retain_if_borrowed(rhs, rhs_sem, *node.values[i]);
+    else
+      hold_if_owned(rhs, rhs_sem, *node.values[i]);
     emit_slot_assign(*node.targets[i], node.op, rhs, rhs_sem);
   }
 }
@@ -512,6 +508,7 @@ void CodeGen::emit_main_exit(llvm::Value *code) {
   auto *i32_ll = llvm::Type::getInt32Ty(context);
   auto *status = code ? builder.CreateTrunc(code, i32_ll, "main_ret")
                       : llvm::ConstantInt::get(i32_ll, 0);
+  release_temporaries(0);
   emit_release_locals();
   if (has_spawn)
     builder.CreateCall(module->getFunction("saga_executor_shutdown"), {});

@@ -87,7 +87,8 @@ bool CodeGen::param_owns_reference(const TypePtr &param) {
 
 // An argument binds the callee's parameter: an error bubbles out of it as out
 // of any operand, it takes the parameter's type, and a borrowed value takes
-// the reference the parameter's slot will own. A C callee owns nothing.
+// the reference the parameter's slot will own. A C callee owns nothing, so it
+// only reads what it is passed.
 llvm::Value *CodeGen::emit_argument(const Node &arg, const TypePtr &param,
                                     bool callee_owns) {
   auto *val = emit_operand(arg);
@@ -96,6 +97,8 @@ llvm::Value *CodeGen::emit_argument(const Node &arg, const TypePtr &param,
   auto arg_sem = operand_type(arg);
   if (callee_owns && param_owns_reference(param))
     retain_if_borrowed(val, arg_sem, arg);
+  else
+    hold_if_owned(val, arg_sem, arg);
   return coerce_to(val, arg_sem, unwrap_alias(param));
 }
 

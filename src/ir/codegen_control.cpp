@@ -114,8 +114,8 @@ CodeGen::else_narrowing(const std::optional<Narrowing> &then) {
 
 llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   if (node.init)
-    emit_expr(**node.init);
-  auto *cond = as_condition(emit_expr(*node.condition));
+    emit_statement(**node.init);
+  auto *cond = emit_condition(*node.condition);
   if (!cond)
     return nullptr;
 

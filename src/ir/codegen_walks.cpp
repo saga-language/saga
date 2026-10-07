@@ -67,6 +67,19 @@ llvm::Function *CodeGen::declare_walk_fn(const std::string &name) {
       llvm::Function::InternalLinkage, name, module.get());
 }
 
+// A temporary's slot is null on a path that never made its value, and walking
+// nothing is a no-op, as releasing a null reference is.
+void CodeGen::open_walk(llvm::Function *fn) {
+  auto *entry = llvm::BasicBlock::Create(context, "entry", fn);
+  auto *none = llvm::BasicBlock::Create(context, "none", fn);
+  auto *walk = llvm::BasicBlock::Create(context, "walk", fn);
+  builder.SetInsertPoint(entry);
+  builder.CreateCondBr(builder.CreateIsNull(fn->getArg(0)), none, walk);
+  builder.SetInsertPoint(none);
+  builder.CreateRetVoid();
+  builder.SetInsertPoint(walk);
+}
+
 llvm::Function *CodeGen::struct_walk_fn(const TypePtr &sem, bool retain) {
   auto &info = std::get<StructTypeInfo>(sem->detail);
   std::string key = struct_cache_key(info);
@@ -78,7 +91,7 @@ llvm::Function *CodeGen::struct_walk_fn(const TypePtr &sem, bool retain) {
 
   auto *fn = declare_walk_fn(name);
   auto saved = builder.saveIP();
-  builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
+  open_walk(fn);
   emit_slot_walk(st_it->second, sem, fn->getArg(0), retain);
   builder.CreateRetVoid();
   builder.restoreIP(saved);
@@ -111,7 +124,7 @@ llvm::Function *CodeGen::union_walk_fn(const TypePtr &sem, bool retain) {
 
   auto *fn = declare_walk_fn(name);
   auto saved = builder.saveIP();
-  builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", fn));
+  open_walk(fn);
   auto *self = fn->getArg(0);
   auto *tag = builder.CreateLoad(llvm::Type::getInt8Ty(context),
                                  builder.CreateStructGEP(union_st, self, 0),

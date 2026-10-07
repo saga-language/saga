@@ -36,7 +36,7 @@ CodeGen::emit_field_function_call(const CallExprNode &node,
       }
     }
     if (!struct_ptr)
-      struct_ptr = emit_expr(*sel.object);
+      struct_ptr = emit_borrowed(*sel.object);
     if (!struct_ptr) return nullptr;
 
     auto [gep, ftype] = struct_field_gep(struct_ptr, obj_sem, method);

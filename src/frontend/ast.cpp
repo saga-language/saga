@@ -696,6 +696,13 @@ void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
 }
 
+bool interpolates(const StringLiteralNode &node) {
+  for (auto &frag : node.fragments)
+    if (!std::holds_alternative<StringFragmentNode>(frag->data))
+      return true;
+  return false;
+}
+
 std::string_view binding_root(const Node &target) {
   for (const Node *cur = &target; cur;) {
     if (auto *id = std::get_if<IdentifierNode>(&cur->data))

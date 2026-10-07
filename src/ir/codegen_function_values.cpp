@@ -121,7 +121,7 @@ llvm::Function *CodeGen::function_value_thunk(llvm::Function *fn,
 }
 
 llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node) {
-  auto *box = emit_expr(*node.callee);
+  auto *box = emit_borrowed(*node.callee);
   if (!box)
     return nullptr;
   return emit_function_value_invoke(*node.callee, box, node);

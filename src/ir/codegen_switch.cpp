@@ -14,8 +14,8 @@ namespace saga {
 llvm::Value *CodeGen::emit_switch_expr(const SwitchExprNode &node,
                                        const Node &parent) {
   if (node.init)
-    emit_expr(**node.init);
-  auto *subject = emit_expr(*node.subject);
+    emit_statement(**node.init);
+  auto *subject = emit_borrowed(*node.subject);
   if (!subject)
     return nullptr;
 
@@ -126,7 +126,7 @@ void CodeGen::branch_on_string_patterns(const CaseArmNode &arm,
   auto *cmp_fn = module->getFunction("saga_string_compare");
   auto *func = builder.GetInsertBlock()->getParent();
   for (size_t pi = 0; pi < arm.patterns.size(); ++pi) {
-    auto *pattern = emit_expr(*arm.patterns[pi]);
+    auto *pattern = emit_borrowed(*arm.patterns[pi]);
     auto *cmp = builder.CreateCall(cmp_fn, {subject, pattern}, "strcmp");
     auto *is_eq = builder.CreateICmpEQ(
         cmp, llvm::ConstantInt::get(i64_type, 0), "sw.eq");

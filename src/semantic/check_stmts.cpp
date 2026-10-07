@@ -411,13 +411,6 @@ bool Analyzer::reject_const(Span span, const std::string &message) {
   return false;
 }
 
-static bool string_has_interpolation(const StringLiteralNode &s) {
-  for (auto &frag : s.fragments)
-    if (!std::get_if<StringFragmentNode>(&frag->data))
-      return true;
-  return false;
-}
-
 bool Analyzer::const_ident_is_value(const IdentifierNode &id, Span span) {
   auto sym = lookup(std::string(id.name));
   if (!sym)
@@ -462,7 +455,7 @@ bool Analyzer::require_const_expr(const Node &expr) {
           [](const IntegerLiteralNode &) { return true; },
           [](const FloatLiteralNode &) { return true; },
           [&](const StringLiteralNode &s) {
-            return string_has_interpolation(s)
+            return interpolates(s)
                        ? reject_const(expr.span,
                                       "an interpolated string is not a "
                                       "compile-time constant")

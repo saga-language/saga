@@ -184,6 +184,7 @@ struct CodeGen {
     llvm::AllocaInst *result_alloca = nullptr;
     TypePtr result_union_type;
     TypePtr result_value_type;
+    size_t temporaries_depth = 0;
   };
   std::vector<LoopContext> loop_stack;
 
@@ -204,8 +205,32 @@ struct CodeGen {
     llvm::BasicBlock *err_bb;
     llvm::Value *slot;
     TypePtr result_type;
+    size_t temporaries_depth;
   };
   std::vector<PromoteLanding> promote_landings_;
+
+  // ── Temporaries (codegen_temporaries.cpp) ─────────────────────────────
+
+  /// An owned value its consumer only read, held until the full expression
+  /// that made it ends. `slot` points at the value, or is null.
+  struct Temporary {
+    llvm::AllocaInst *slot;
+    TypePtr sem;
+  };
+  std::vector<Temporary> temporaries_;
+
+  /// A statement or condition: what it holds is released where it ends.
+  class FullExpression {
+  public:
+    explicit FullExpression(CodeGen &cg);
+    ~FullExpression();
+    FullExpression(const FullExpression &) = delete;
+    FullExpression &operator=(const FullExpression &) = delete;
+
+  private:
+    CodeGen &cg_;
+    size_t depth_;
+  };
 
   // ── FuncEmissionScope (RAII) ──────────────────────────────────────────
 
@@ -228,6 +253,7 @@ struct CodeGen {
     std::vector<ManagedLocal> saved_managed_locals_;
     std::vector<LoopContext> saved_loop_stack_;
     std::vector<PromoteLanding> saved_promote_landings_;
+    std::vector<Temporary> saved_temporaries_;
     bool saved_current_func_is_main_;
     const Analyzer::BodyInstantiation *saved_current_instantiation_;
     llvm::Value *saved_current_actor_;
@@ -505,14 +531,18 @@ private:
   /// Return `val`, of type `val_sem` and emitted from `source`, from the
   /// function being emitted: retained if borrowed, coerced to the semantic
   /// return type, then handed back through sret or as the LLVM return value.
-  /// Releases the frame's locals. Every body emitter and `return` statement
-  /// ends here.
+  /// Releases the frame's locals and temporaries. Every body emitter and
+  /// `return` statement ends here.
   void emit_return_value(llvm::Value *val, const TypePtr &val_sem,
                          const Node *source);
+  void emit_void_return(llvm::Value *val, const TypePtr &val_sem,
+                        const Node *source);
+  void release_frame();
 
   /// Return the value a body's last expression left, for a body that did not
   /// end in a `return`.
   void emit_fallthrough_return(const BlockNode &block, llvm::Value *tail_val);
+  void emit_main_fallthrough(const BlockNode &block, llvm::Value *tail_val);
 
   /// Leave `Main` with exit status `code`, or 0 when it is null.
   void emit_main_exit(llvm::Value *code);
@@ -559,7 +589,8 @@ private:
 
   /// Emit a block, returning the value of the last expression (or nullptr).
   llvm::Value *emit_block(const BlockNode &block);
-  void emit_stmt(const Node &node);
+  /// A block whose value goes nowhere: a loop's body, a task's.
+  void emit_body(const BlockNode &block);
 
   // ── Statement emitters ───────────────────────────────────────────────
 
@@ -761,6 +792,13 @@ private:
     llvm::BasicBlock *update_bb;
     llvm::BasicBlock *exit_bb;
   };
+  void emit_loop(const ForExprNode &node, const ForLoopBlocks &bbs);
+  llvm::AllocaInst *open_accumulator(const AccumulatorNode &acc);
+  TypePtr break_value_type(const ForExprNode &node, const TypePtr &for_sem);
+  llvm::AllocaInst *open_break_result(const TypePtr &for_sem);
+  void emit_break(const BreakNode &node);
+  void store_break_value(const LoopContext &frame, const Node &value);
+  void emit_next();
   void enter_loop_body(const ForLoopBlocks &bbs);
   void finish_loop_body(const ForExprNode &node, llvm::BasicBlock *next);
   void emit_for_infinite(const ForExprNode &node, const ForLoopBlocks &bbs);
@@ -1278,9 +1316,16 @@ private:
   // ── String helpers ───────────────────────────────────────────────────
 
   llvm::Value *make_string_constant(const std::string &text);
-
-  /// Convert a value to an saga_runtime_string* based on its semantic type.
   llvm::Value *emit_to_string(llvm::Value *val, const TypePtr &sem);
+
+  /// A piece of an interpolated string, and whether it was made for it.
+  struct InterpPiece {
+    llvm::Value *val;
+    bool made;
+  };
+  llvm::Value *emit_interpolation(const StringLiteralNode &node);
+  InterpPiece interpolation_piece(const Node &frag);
+  InterpPiece concat_pieces(const InterpPiece &left, const InterpPiece &right);
 
   // ── Reference counting helpers ───────────────────────────────────────
 
@@ -1293,6 +1338,7 @@ private:
 
   Ownership value_ownership(const Node &node);
   Ownership call_ownership(const CallExprNode &call);
+  bool indexes_string(const IndexExprNode &node);
   bool reads_stored_element(const CallExprNode &call);
   bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
@@ -1306,6 +1352,22 @@ private:
   /// is about to land in can release it like any other.
   void retain_if_borrowed(llvm::Value *val, const TypePtr &sem,
                           const Node &source);
+
+  void hold_temporary(llvm::Value *val, const TypePtr &sem);
+  void hold_if_owned(llvm::Value *val, const TypePtr &sem, const Node &source);
+
+  /// A value its consumer only reads: an owned one is held until the end of
+  /// the full expression, so whatever it lends stays alive until then.
+  llvm::Value *emit_borrowed(const Node &node);
+  llvm::Value *emit_borrowed_operand(const Node &node);
+
+  /// Release what the full expressions above `depth` hold, on a path that
+  /// leaves them.
+  void release_temporaries(size_t depth);
+
+  /// A full expression of its own whose value, if any, goes nowhere.
+  void emit_statement(const Node &stmt);
+  llvm::Value *emit_condition(const Node &cond);
 
   // ── Conditional merges (codegen_join.cpp) ────────────────────────────
   BranchJoin open_join(const std::string &name, const TypePtr &result,
@@ -1346,6 +1408,7 @@ private:
   void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
   llvm::Function *ownership_fn(const TypePtr &sem, bool retain);
   llvm::Function *declare_walk_fn(const std::string &name);
+  void open_walk(llvm::Function *fn);
   llvm::Function *struct_walk_fn(const TypePtr &sem, bool retain);
   llvm::Function *union_walk_fn(const TypePtr &sem, bool retain);
   void emit_slot_walk(llvm::StructType *st, const TypePtr &sem,

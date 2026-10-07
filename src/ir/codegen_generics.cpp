@@ -20,6 +20,7 @@ CodeGen::FuncEmissionScope::FuncEmissionScope(
   saved_managed_locals_ = std::move(cg.managed_locals);
   saved_loop_stack_ = std::move(cg.loop_stack);
   saved_promote_landings_ = std::move(cg.promote_landings_);
+  saved_temporaries_ = std::move(cg.temporaries_);
   saved_current_func_is_main_ = cg.current_func_is_main;
   saved_current_instantiation_ = cg.current_instantiation_;
   saved_current_actor_ = cg.current_actor;
@@ -29,6 +30,7 @@ CodeGen::FuncEmissionScope::FuncEmissionScope(
   cg.managed_locals.clear();
   cg.loop_stack.clear();
   cg.promote_landings_.clear();
+  cg.temporaries_.clear();
   cg.current_func_is_main = false;
   cg.current_instantiation_ = inst;
   cg.current_actor = nullptr;
@@ -40,6 +42,7 @@ CodeGen::FuncEmissionScope::~FuncEmissionScope() {
   cg_.managed_locals = std::move(saved_managed_locals_);
   cg_.loop_stack = std::move(saved_loop_stack_);
   cg_.promote_landings_ = std::move(saved_promote_landings_);
+  cg_.temporaries_ = std::move(saved_temporaries_);
   cg_.current_func_is_main = saved_current_func_is_main_;
   cg_.current_instantiation_ = saved_current_instantiation_;
   cg_.current_actor = saved_current_actor_;

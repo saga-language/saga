@@ -79,7 +79,7 @@ llvm::Value *CodeGen::make_binding_unique(const Node &object,
       unique_fn ? assign_target_address(object)
                 : std::pair<llvm::Value *, llvm::Type *>{nullptr, nullptr};
   if (!holder || !holder_ll->isPointerTy())
-    return emit_expr(object);
+    return emit_borrowed(object);
 
   auto *cur = builder.CreateLoad(holder_ll, holder, "cow.cur");
   auto *uniq =

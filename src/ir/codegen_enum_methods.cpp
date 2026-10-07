@@ -108,7 +108,8 @@ llvm::Value *CodeGen::emit_enum_from(const CallExprNode &node,
   auto *ptr_ty = llvm::PointerType::getUnqual(context);
   auto *i64_ty = llvm::Type::getInt64Ty(context);
 
-  llvm::Value *arg = node.args.empty() ? nullptr : emit_expr(*node.args[0]);
+  llvm::Value *arg =
+      node.args.empty() ? nullptr : emit_borrowed(*node.args[0]);
   if (!arg)
     return nullptr;
 

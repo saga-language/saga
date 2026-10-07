@@ -768,4 +768,7 @@ bool writes_through_binding(const Node &node, std::string_view name);
 // a literal) has no root and cannot be written through.
 std::string_view binding_root(const Node &target);
 
+// Whether any fragment is an expression rather than literal text.
+bool interpolates(const StringLiteralNode &node);
+
 } // namespace saga
