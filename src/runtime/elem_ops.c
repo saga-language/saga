@@ -1,8 +1,8 @@
 /* Copyright 2026 Rob Thornton
  * SPDX-License-Identifier: MIT
  *
- * Slot operations for the counted kinds and interface boxes, whose slot
- * holds the pointer.
+ * Slot operations for the counted kinds and the boxes, whose slot holds the
+ * pointer.
  * Struct elements get theirs from codegen, which generates the field walk.
  */
 
@@ -40,6 +40,14 @@ static void box_slot_release(void *slot) {
   saga_box_release(*(saga_runtime_box **)slot);
 }
 
+static void shared_slot_retain(void *slot) {
+  saga_shared_retain(*(void **)slot);
+}
+
+static void shared_slot_release(void *slot) {
+  saga_shared_release(*(void **)slot);
+}
+
 const saga_runtime_elem_ops saga_string_elem_ops = {string_slot_retain,
                                                     string_slot_release};
 const saga_runtime_elem_ops saga_array_elem_ops = {array_slot_retain,
@@ -48,3 +56,5 @@ const saga_runtime_elem_ops saga_map_elem_ops = {map_slot_retain,
                                                  map_slot_release};
 const saga_runtime_elem_ops saga_box_elem_ops = {box_slot_retain,
                                                  box_slot_release};
+const saga_runtime_elem_ops saga_shared_elem_ops = {shared_slot_retain,
+                                                    shared_slot_release};

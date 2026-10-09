@@ -1,0 +1,51 @@
+// Spec: an error is a value like any other (docs/language.md, Error unions),
+// counted and let go once nothing refers to it. Each error here is handed on —
+// returned from a handler, raised by `?` out of a value borrowed or made for
+// the expression, stored in a collection or a field — and read afterwards, so
+// one let go too early reads back wrong.
+import "std/io"
+
+error Bad {
+  code int
+  message = "bad {code}"
+}
+
+struct Holder {
+  err Bad
+  label string
+}
+
+fn check(n int) int | error {
+  if n % 2 == 1 {
+    return Bad{code: n}
+  }
+  n
+}
+
+fn relay(n int) int | error {
+  v := check(n) or |err| { return err }
+  v * 10
+}
+
+fn bump(u int | error) int | error { u? + 1 }
+
+fn pick(names array{string}, n int) string {
+  names.At(check(n)) or |err| { err.message }
+}
+
+fn keep(e Bad) Bad { e }
+
+pub fn Main() void {
+  names := ["a", "b", "c", "d", "e", "f"]
+  for i : 0..4 {
+    r := relay(i) or |err| { err.message.Size() }
+    b := bump(check(i)) or |err| { -err.message.Size() }
+    io.Println("{r} {b} {pick(names, i)}")
+  }
+
+  kept := [Bad{code: 10}, keep(Bad{code: 11})]
+  h := Holder{err: kept.At(1), label: "held"}
+  saved := relay(5)
+  io.Println("{kept.At(0).message} {h.err.message} {h.label}")
+  io.Println("{saved or |err| { err.message.Size() }}")
+}

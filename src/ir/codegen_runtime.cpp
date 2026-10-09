@@ -202,11 +202,18 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
       llvm::Function::ExternalLinkage, "saga_missing_new", module.get());
 
-  // void* saga_error_alloc(i64 size)
-  // Zero-initialised heap block for a user error box laid out by codegen.
+  // void* saga_shared_new(i64 size, saga_runtime_elem_ops* ops)
   llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {i64_type}, false),
-      llvm::Function::ExternalLinkage, "saga_error_alloc", module.get());
+      llvm::FunctionType::get(ptr_type, {i64_type, ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_shared_new", module.get());
+
+  // void saga_shared_retain(void* value) / saga_shared_release(...)
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_shared_retain", module.get());
+  llvm::Function::Create(
+      llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
+      llvm::Function::ExternalLinkage, "saga_shared_release", module.get());
 
   // Zero-initialised heap block for a boxed union alternative.
   llvm::Function::Create(

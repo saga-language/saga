@@ -290,8 +290,7 @@ TEST_F(TrapExecutorTest, WaitErrorBranchCarriesTrapReason) {
   EXPECT_EQ(msg->len, 4);
   EXPECT_EQ(std::memcmp(msg->data, "boom", 4), 0);
 
-  saga_release_string(msg);
-  free(e);
+  saga_shared_release(e);
   saga_task_drop(a);
 }
 

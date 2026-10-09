@@ -39,12 +39,12 @@ TypePtr CodeGen::root_expr_type(const Node &node) const {
 }
 
 llvm::Value *CodeGen::emit_error_escape(llvm::Value *operand,
-                                        const TypePtr &operand_sem) {
+                                        const TypePtr &operand_sem,
+                                        const Node &source) {
   if (!operand || !operand_sem || operand_sem->kind != TypeKind::Union ||
       !is_impure_union(operand_sem) || promote_landings_.empty())
     return operand;
 
-  auto &landing = promote_landings_.back();
   auto *func = builder.GetInsertBlock()->getParent();
   auto *union_st = get_union_llvm_type(operand_sem);
 
@@ -65,26 +65,45 @@ llvm::Value *CodeGen::emit_error_escape(llvm::Value *operand,
   builder.CreateCondBr(tag_is_error(builder, context, tag, operand_sem), err_bb,
                        ok_bb);
 
-  // The error travels in the root's union, whose alternatives differ from this
-  // operand's, so it is converted rather than copied.
   builder.SetInsertPoint(err_bb);
+  raise_to_landing(promote_landings_.back(), union_ptr, operand_sem,
+                   value_ownership(source));
+
+  builder.SetInsertPoint(ok_bb);
+  return emit_union_purified(union_ptr, tag, operand_sem);
+}
+
+// The error travels in the root's union, whose alternatives differ from this
+// operand's, so it is converted rather than copied. It arrives with the root's
+// ownership: a borrowed error takes a reference before what it was read from
+// is released, and an owned one raised into a borrowed root lives until the
+// full expression ends.
+void CodeGen::raise_to_landing(const PromoteLanding &landing,
+                               llvm::Value *union_ptr,
+                               const TypePtr &operand_sem,
+                               Ownership operand_own) {
   auto *raised = emit_union_convert(union_ptr, operand_sem, landing.result_type);
   auto *landing_st = get_union_llvm_type(landing.result_type);
   if (raised)
     builder.CreateStore(builder.CreateLoad(landing_st, raised, "promote.raised"),
                         landing.slot);
+  auto *error = raised_error(union_ptr, operand_sem);
+  auto error_sem = analyzer.builtins.error_base;
+  if (landing.ownership == Ownership::Owned &&
+      operand_own == Ownership::Borrowed)
+    emit_retain(error, error_sem);
   release_to(landing.depth);
+  if (landing.ownership == Ownership::Borrowed &&
+      operand_own == Ownership::Owned)
+    hold_temporary(error, error_sem);
   builder.CreateBr(landing.err_bb);
-
-  builder.SetInsertPoint(ok_bb);
-  return emit_union_purified(union_ptr, tag, operand_sem);
 }
 
 llvm::Value *CodeGen::emit_operand(const Node &node) {
   auto *val = emit_expr(node);
   if (!analyzer.bubbled_operands.count(&node))
     return val;
-  return emit_error_escape(val, semantic_type(node));
+  return emit_error_escape(val, semantic_type(node), node);
 }
 
 TypePtr CodeGen::operand_type(const Node &node) const {
@@ -99,7 +118,7 @@ llvm::Value *CodeGen::emit_promote_expr(const PromoteExprNode &node) {
     internal_error("'?' reached codegen with no landing, which the analyzer "
                    "should have rejected");
   return emit_error_escape(emit_expr(*node.operand),
-                           semantic_type(*node.operand));
+                           semantic_type(*node.operand), *node.operand);
 }
 
 llvm::Value *CodeGen::emit_root_expr(const Node &node) {
@@ -117,7 +136,8 @@ llvm::Value *CodeGen::emit_root_expr(const Node &node) {
   auto *err_bb = llvm::BasicBlock::Create(context, "promote.landing");
   auto *done_bb = llvm::BasicBlock::Create(context, "promote.done");
 
-  promote_landings_.push_back({err_bb, slot, root_type, cleanup_depth()});
+  promote_landings_.push_back(
+      {err_bb, slot, root_type, cleanup_depth(), value_ownership(node)});
   auto *val = emit_expr(node);
   auto value_sem = semantic_type(node);
   promote_landings_.pop_back();

@@ -1238,11 +1238,12 @@ void saga_actor_trap(saga_runtime_string *reason) {
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Error box — the uniform runtime representation of every error value.      */
 /*                                                                           */
-/* An error is a heap pointer to { i64 type_id, saga_runtime_string *message,*/
-/* ...concrete fields }.  The compiler lays out user errors; the built-in    */
-/* Missing (index/map miss, parse failure) and Trapped (Task.Wait) errors    */
-/* carry only the common { type_id, message } prefix.  There is no vtable —  */
-/* errors have no methods, and `.message` is a plain field read.             */
+/* An error is a pointer into a shared box holding { i64 type_id,            */
+/* saga_runtime_string *message, ...concrete fields }.  The compiler lays    */
+/* out user errors; the built-in Missing (index/map miss, parse failure) and */
+/* Trapped (Task.Wait) errors carry only the common { type_id, message }     */
+/* prefix.  There is no vtable — errors have no methods, and `.message` is a */
+/* plain field read.                                                         */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -1250,21 +1251,33 @@ typedef struct {
   saga_runtime_string *message;
 } saga_runtime_error;
 
-/* Zero-initialised heap block sized by the compiler for a user error box
- * whose concrete fields follow the { type_id, message } prefix. */
-void *saga_error_alloc(int64_t size) { return calloc(1, (size_t)size); }
+static void error_prefix_retain(void *e) {
+  saga_retain_string(((saga_runtime_error *)e)->message);
+}
+
+static void error_prefix_release(void *e) {
+  saga_release_string(((saga_runtime_error *)e)->message);
+}
+
+static const saga_runtime_elem_ops error_prefix_ops = {error_prefix_retain,
+                                                       error_prefix_release};
+
+/* The box takes over the message. */
+static void *error_new(int64_t type_id, saga_runtime_string *message) {
+  saga_runtime_error *e = (saga_runtime_error *)saga_shared_new(
+      (int64_t)sizeof(saga_runtime_error), &error_prefix_ops);
+  e->type_id = type_id;
+  e->message = message;
+  return e;
+}
 
 /* Zero-initialised heap block for a union alternative that transitively
  * contains itself, so the union slot holds a pointer and stays finite. */
 void *saga_box_alloc(int64_t size) { return calloc(1, (size_t)size); }
 
 void *saga_missing_new(const char *msg, int64_t len) {
-  saga_runtime_error *e =
-      (saga_runtime_error *)malloc(sizeof(saga_runtime_error));
-  if (!e) return NULL;
-  e->type_id = SAGA_ERR_ID_MISSING;
-  e->message = saga_runtime_alloc_string(msg ? msg : "", msg ? len : 0);
-  return e;
+  return error_new(SAGA_ERR_ID_MISSING,
+                   saga_runtime_alloc_string(msg ? msg : "", msg ? len : 0));
 }
 
 /*
@@ -1275,15 +1288,13 @@ void *saga_missing_new(const char *msg, int64_t len) {
  * Called by the Task.Wait() lowering on the error path.
  */
 void *saga_error_from_trap(saga_runtime_actor *a) {
-  saga_runtime_error *e =
-      (saga_runtime_error *)malloc(sizeof(saga_runtime_error));
-  if (!e) return NULL;
-  e->type_id = SAGA_ERR_ID_TRAPPED;
   saga_runtime_string *reason =
       (a && a->result) ? (saga_runtime_string *)a->result : NULL;
-  if (reason && reason->refcount > 0) reason->refcount++;
-  e->message = reason ? reason : saga_runtime_alloc_string("killed", 6);
-  return e;
+  if (reason)
+    saga_retain_string(reason);
+  else
+    reason = saga_runtime_alloc_string("killed", 6);
+  return error_new(SAGA_ERR_ID_TRAPPED, reason);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */

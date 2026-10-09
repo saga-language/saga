@@ -3,15 +3,19 @@
 
 #include "ir/codegen.hpp"
 
+#include <llvm/IR/Constants.h>
+
 namespace saga {
 
 bool is_boxed(const TypePtr &t) {
   return t->kind == TypeKind::Interface || t->kind == TypeKind::Func;
 }
 
+bool is_shared(const TypePtr &t) { return is_error_valued(t); }
+
 bool is_counted(const TypePtr &t) {
   return t && (t->kind == TypeKind::String || t->kind == TypeKind::Array ||
-               t->kind == TypeKind::Map || is_boxed(t));
+               t->kind == TypeKind::Map || is_boxed(t) || is_shared(t));
 }
 
 // A local owns its value outright: a Task is dropped and a struct with a
@@ -59,8 +63,19 @@ void CodeGen::emit_retain(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_retain_map"), {val});
   else if (is_boxed(sem))
     builder.CreateCall(module->getFunction("saga_box_retain"), {val});
+  else if (is_shared(sem))
+    builder.CreateCall(module->getFunction("saga_shared_retain"), {val});
   else if (walks_references(sem))
     emit_ownership_walk(val, sem, true);
+}
+
+// The box's own operations walk the value it holds, which is laid out as
+// `ll`, so a box is freed without knowing its type.
+llvm::Value *CodeGen::emit_shared_box(const TypePtr &sem, llvm::Type *ll) {
+  return builder.CreateCall(module->getFunction("saga_shared_new"),
+                            {llvm::ConstantInt::get(i64_type, size_of(ll)),
+                             walk_elem_ops(sem)},
+                            "shared.box");
 }
 
 // A write that lands through the binding, rather than through a value the
@@ -99,6 +114,8 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_release_map"), {val});
   else if (is_boxed(sem))
     builder.CreateCall(module->getFunction("saga_box_release"), {val});
+  else if (is_shared(sem))
+    builder.CreateCall(module->getFunction("saga_shared_release"), {val});
   else if (walks_references(sem))
     emit_ownership_walk(val, sem, false);
 }

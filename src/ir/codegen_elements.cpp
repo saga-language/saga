@@ -38,7 +38,8 @@ llvm::Constant *CodeGen::elem_ops_for(const TypePtr &sem) {
   case TypeKind::Func:
     return runtime_elem_ops("saga_box_elem_ops");
   default:
-    return walk_elem_ops(s);
+    return is_shared(s) ? runtime_elem_ops("saga_shared_elem_ops")
+                        : walk_elem_ops(s);
   }
 }
 

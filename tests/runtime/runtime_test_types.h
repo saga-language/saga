@@ -206,6 +206,7 @@ int         saga_context_send(saga_runtime_actor *a, const void *data);
 /* ── Error box plumbing (used by Task.Wait()'s error branch) ──────────── */
 
 void       *saga_error_from_trap(saga_runtime_actor *a);
+void        saga_shared_release(void *value);
 
 /* Mirror of runtime.c's saga_runtime_error: the { type_id, message } prefix
  * shared by every error box. */

@@ -1,8 +1,9 @@
 /* Copyright 2026 Rob Thornton
  * SPDX-License-Identifier: MIT
  *
- * The interface box: a counted, copy-on-write heap copy of the value an
- * interface holds. The layout is in runtime_internal.h.
+ * The interface box, a counted, copy-on-write heap copy of the value an
+ * interface holds; and the shared box, a counted heap copy of a value nothing
+ * writes through. The layouts are in runtime_internal.h.
  */
 
 #include <stdlib.h>
@@ -55,4 +56,34 @@ saga_runtime_box *saga_box_unique_for(saga_runtime_box *b, int64_t method) {
     return b;
   }
   return box_clone(b);
+}
+
+static saga_runtime_shared *shared_header(void *value) {
+  return (saga_runtime_shared *)((char *)value -
+                                 SAGA_RUNTIME_SHARED_VALUE_OFFSET);
+}
+
+/* Zeroed for the caller to fill; the box takes over what it is given. */
+void *saga_shared_new(int64_t size, const saga_runtime_elem_ops *ops) {
+  saga_runtime_shared *h = (saga_runtime_shared *)calloc(
+      1, (size_t)(SAGA_RUNTIME_SHARED_VALUE_OFFSET + size));
+  h->refcount = 1;
+  h->ops = ops;
+  return (char *)h + SAGA_RUNTIME_SHARED_VALUE_OFFSET;
+}
+
+void saga_shared_retain(void *value) {
+  if (!value) return;
+  saga_runtime_shared *h = shared_header(value);
+  if (h->refcount > 0)
+    h->refcount++;
+}
+
+void saga_shared_release(void *value) {
+  if (!value) return;
+  saga_runtime_shared *h = shared_header(value);
+  if (h->refcount < 0 || --h->refcount > 0) return;
+  if (h->ops)
+    h->ops->release(value);
+  free(h);
 }

@@ -10,9 +10,9 @@
 
 namespace saga {
 
-// An error box escapes through a union and is never freed, so walking one
-// would release a message the box still points at. A self-containing union
-// alternative is a heap copy nothing frees yet, so it is not walked either.
+// An error's slot holds a pointer into its shared box, which is counted rather
+// than walked. A self-containing union alternative is a heap copy nothing frees
+// yet, so it is not walked either.
 bool CodeGen::walks_references(const TypePtr &sem) {
   auto s = unwrap_alias(sem);
   if (!s)
@@ -23,11 +23,9 @@ bool CodeGen::walks_references(const TypePtr &sem) {
         return true;
     return false;
   }
-  if (s->kind != TypeKind::Struct)
+  if (s->kind != TypeKind::Struct || is_shared(s))
     return false;
   auto &info = std::get<StructTypeInfo>(s->detail);
-  if (info.is_error)
-    return false;
   for (auto &f : info.fields)
     if (holds_references(f.type))
       return true;

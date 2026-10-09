@@ -116,9 +116,23 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   builder.SetInsertPoint(ok_bb);
   close_branch(join, emit_union_purified(union_ptr, tag, expr_sem), result,
                node.expr.get());
+  // The value path takes an owned subject's value over; this path is left
+  // with its error.
   start_block(err_bb);
-  emit_or_handler(node, union_ptr, expr_sem, join);
+  auto *error = raised_error(union_ptr, expr_sem);
+  if (value_ownership(*node.expr) == Ownership::Owned)
+    hold_temporary(error, analyzer.builtins.error_base);
+  emit_or_handler(node, error, join);
   return finish_join(join, "or.result");
+}
+
+// Every error alternative is a pointer, held in the payload's first word.
+llvm::Value *CodeGen::raised_error(llvm::Value *union_ptr,
+                                   const TypePtr &union_sem) {
+  auto *payload = builder.CreateStructGEP(get_union_llvm_type(union_sem),
+                                          union_ptr, 1, "err.payload.gep");
+  return builder.CreateLoad(llvm::PointerType::getUnqual(context), payload,
+                            "err.payload.val");
 }
 
 llvm::Value *CodeGen::or_union_address(llvm::Value *val,
@@ -146,20 +160,16 @@ llvm::Value *CodeGen::is_error_tag(llvm::Value *tag,
   return is_err;
 }
 
-// The pipe names the error for the handler's duration; the payload's first
-// word is the error's interface pointer, whichever path produced it.
-void CodeGen::emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
-                              const TypePtr &union_sem, BranchJoin &join) {
+// The pipe names the error for the handler's duration, without a reference
+// of its own.
+void CodeGen::emit_or_handler(const OrExprNode &node, llvm::Value *error,
+                              BranchJoin &join) {
   llvm::AllocaInst *displaced = nullptr;
   std::string pipe_name = node.pipe ? std::string(node.pipe->name) : "";
   if (node.pipe) {
-    auto *ptr_type = llvm::PointerType::getUnqual(context);
     auto *slot = create_entry_alloca(builder.GetInsertBlock()->getParent(),
-                                     pipe_name, ptr_type);
-    auto *payload = builder.CreateStructGEP(get_union_llvm_type(union_sem),
-                                            union_ptr, 1, "err.payload.gep");
-    builder.CreateStore(
-        builder.CreateLoad(ptr_type, payload, "err.payload.val"), slot);
+                                     pipe_name, error->getType());
+    builder.CreateStore(error, slot);
     auto it = locals.find(pipe_name);
     displaced = it == locals.end() ? nullptr : it->second;
     locals[pipe_name] = slot;
