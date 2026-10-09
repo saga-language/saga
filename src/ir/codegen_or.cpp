@@ -87,8 +87,12 @@ bool CodeGen::or_has_handler(const OrExprNode &node) const {
   return sem && sem->kind == TypeKind::Union && is_impure_union(sem);
 }
 
+// A subject that holds nothing but errors always runs the handler, which then
+// supplies the value.
 TypePtr CodeGen::or_result_type(const OrExprNode &node) const {
-  return strip_error_from_union(root_expr_type(*node.expr));
+  if (auto purified = strip_error_from_union(root_expr_type(*node.expr)))
+    return purified;
+  return body_result_type(*node.fallback);
 }
 
 llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
