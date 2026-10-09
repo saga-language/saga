@@ -31,7 +31,7 @@ These are only available when the `--allow-unsafe` flag is passed to the compile
 `intrinsic_copy(src, dst Any, len Int) Void`: Raw mem copy
 `intrinsic_panic(String) Void`: Unrecoverable, kills program
 `intrinsic_print(String) Void`: Print to stdout
-`intrinsic_syscall(id Int, args ...Any) Int | Error`: OS syscall
+`intrinsic_syscall(id Int, args ...Any) Int`: OS syscall; a negative errno on failure
 `|T| intrinsic_sizeof() Int`: Byte size of the type
 `|T| intrinsic_typeid() Int`: Unique ID for each type
 `intrinsic_yield() Void`: Release a hardware thread and return an actor the back of the queue. Resets the reduction counter.

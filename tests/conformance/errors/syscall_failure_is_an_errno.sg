@@ -1,0 +1,15 @@
+// A failed syscall comes back from sys.Call as an Errno carrying the kernel's
+// message; a successful one as the kernel's result (std/sys/sys.sg).
+import "std/io"
+import "std/sys"
+import "std/unsafe"
+
+pub fn Main() void {
+  s := "written\n"
+  failed := sys.Call(sys.Number.Write, -1, unsafe.Ptr(s), s.Size()) or |err| {
+    io.Println(err.message)
+    -1
+  }
+  wrote := sys.Call(sys.Number.Write, 1, unsafe.Ptr(s), s.Size()) or { -1 }
+  io.Println("{failed} {wrote}")
+}

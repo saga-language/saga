@@ -17,8 +17,7 @@
 
 // Errno represents a syscall error. The kernel returns a negative value
 // which is converted to its positive errno equivalent; the message is filled
-// with a human-readable string (errnoMessage() is the per-platform lookup)
-// when the failure is boxed.
+// with a human-readable string (errnoMessage() is the per-platform lookup).
 pub error Errno {
   code int
 }
@@ -29,5 +28,9 @@ pub error Errno {
 // The caller is responsible for passing the correct number and types of
 // arguments. Buffer pointers must be obtained via unsafe.Ptr().
 pub fn Call(num Number, args ...int) int | error {
-  intrinsic_syscall(num.Int(), args)
+  result := intrinsic_syscall(num.Int(), args)
+  if result < 0 {
+    return Errno{code: -result, message: errnoMessage(-result)}
+  }
+  result
 }

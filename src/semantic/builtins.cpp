@@ -211,12 +211,13 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
       "intrinsic_trap", SymbolKind::Function,
       make_func_type({types.string_type}, {types.void_type})));
 
-  // intrinsic_syscall(num: Int, args: [Int]) -> Int | error
-  // Raw syscall invocation used by std/sys.
+  // intrinsic_syscall(num: Int, args: [Int]) -> Int
+  // Raw syscall invocation used by std/sys: the kernel's result, a negative
+  // errno on failure.
   global_scope->declare(Symbol::builtin(
       "intrinsic_syscall", SymbolKind::Function,
       make_func_type({types.int_type, make_array_type(types.int_type)},
-                     {make_union_type({types.int_type, types.error_base})})));
+                     {types.int_type})));
 
   // intrinsic_ptr(value: String | [Byte]) -> Int
   // Returns the raw memory address of the backing buffer.
