@@ -79,11 +79,44 @@ void saga_shared_retain(void *value) {
     h->refcount++;
 }
 
+/* Freeing a box releases what it holds, which may free the next box, so a
+ * long list would free itself one stack frame per node. A box whose count
+ * reaches zero while another is being freed is queued instead, and the
+ * outermost release frees the queue: the stack stays flat however deep the
+ * value goes. */
+static __thread struct {
+  void **boxes;
+  size_t len, cap;
+  int freeing;
+} pending;
+
+static void queue_free(void *value) {
+  if (pending.len == pending.cap) {
+    pending.cap = pending.cap ? pending.cap * 2 : 64;
+    pending.boxes = (void **)realloc(pending.boxes,
+                                     pending.cap * sizeof(void *));
+  }
+  pending.boxes[pending.len++] = value;
+}
+
+static void shared_free(void *value) {
+  saga_runtime_shared *h = shared_header(value);
+  if (h->ops)
+    h->ops->release(value);
+  free(h);
+}
+
 void saga_shared_release(void *value) {
   if (!value) return;
   saga_runtime_shared *h = shared_header(value);
   if (h->refcount < 0 || --h->refcount > 0) return;
-  if (h->ops)
-    h->ops->release(value);
-  free(h);
+  if (pending.freeing) {
+    queue_free(value);
+    return;
+  }
+  pending.freeing = 1;
+  shared_free(value);
+  while (pending.len > 0)
+    shared_free(pending.boxes[--pending.len]);
+  pending.freeing = 0;
 }

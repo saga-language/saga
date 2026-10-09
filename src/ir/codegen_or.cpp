@@ -112,18 +112,33 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   builder.CreateCondBr(is_error_tag(tag, expr_sem), err_bb, ok_bb);
 
   auto result = or_result_type(node);
+  auto subject = value_ownership(*node.expr);
   auto join = open_join("or.merge", result, or_ownership(node));
   builder.SetInsertPoint(ok_bb);
-  close_branch(join, emit_union_purified(union_ptr, tag, expr_sem), result,
+  close_branch(join, take_value(union_ptr, tag, expr_sem, subject), result,
                node.expr.get());
   // The value path takes an owned subject's value over; this path is left
   // with its error.
   start_block(err_bb);
   auto *error = raised_error(union_ptr, expr_sem);
-  if (value_ownership(*node.expr) == Ownership::Owned)
+  if (subject == Ownership::Owned)
     hold_temporary(error, analyzer.builtins.error_base);
   emit_or_handler(node, error, join);
   return finish_join(join, "or.result");
+}
+
+// A boxed alternative taken out of a union the expression owns is a copy of
+// what the box holds, so it takes references of its own, and the box goes
+// with the union.
+llvm::Value *CodeGen::take_value(llvm::Value *union_ptr, llvm::Value *tag,
+                                 const TypePtr &union_sem, Ownership own) {
+  auto *value = emit_union_purified(union_ptr, tag, union_sem);
+  auto alt = strip_error_from_union(union_sem);
+  if (!value || own == Ownership::Borrowed || !union_alt_is_boxed(alt))
+    return value;
+  emit_retain(value, alt);
+  emit_release(union_ptr, union_sem);
+  return value;
 }
 
 // Every error alternative is a pointer, held in the payload's first word.

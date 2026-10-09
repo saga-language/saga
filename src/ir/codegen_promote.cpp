@@ -65,12 +65,12 @@ llvm::Value *CodeGen::emit_error_escape(llvm::Value *operand,
   builder.CreateCondBr(tag_is_error(builder, context, tag, operand_sem), err_bb,
                        ok_bb);
 
+  auto own = value_ownership(source);
   builder.SetInsertPoint(err_bb);
-  raise_to_landing(promote_landings_.back(), union_ptr, operand_sem,
-                   value_ownership(source));
+  raise_to_landing(promote_landings_.back(), union_ptr, operand_sem, own);
 
   builder.SetInsertPoint(ok_bb);
-  return emit_union_purified(union_ptr, tag, operand_sem);
+  return take_value(union_ptr, tag, operand_sem, own);
 }
 
 // The error travels in the root's union, whose alternatives differ from this
@@ -143,6 +143,8 @@ llvm::Value *CodeGen::emit_root_expr(const Node &node) {
   promote_landings_.pop_back();
 
   if (val && value_sem) {
+    if (boxes_root_value(node) && shape_ownership(node) == Ownership::Borrowed)
+      emit_retain(val, value_sem);
     if (auto *wrapped = as_union_ptr(val, value_sem, root_type))
       builder.CreateStore(builder.CreateLoad(root_st, wrapped, "promote.ok.val"),
                           slot);

@@ -37,7 +37,8 @@ const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
 enum class Ownership { Owned, Borrowed };
 
 // Whether a value of `val_sem` landing in a slot of `slot_sem` is put in a new
-// interface box.
+// box: an interface's, or the shared box of a union alternative that contains
+// itself.
 bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem);
 
 // A counted kind is held through one pointer to a refcounted object; a boxed
@@ -961,6 +962,8 @@ private:
   void emit_or_handler(const OrExprNode &node, llvm::Value *error,
                        BranchJoin &join);
   llvm::Value *raised_error(llvm::Value *union_ptr, const TypePtr &union_sem);
+  llvm::Value *take_value(llvm::Value *union_ptr, llvm::Value *tag,
+                          const TypePtr &union_sem, Ownership own);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
   void emit_spawn_body(const SpawnExprNode &node, llvm::Function *outlined_fn,
@@ -1303,7 +1306,7 @@ private:
                             llvm::Value *rhs, const TypePtr &rhs_sem);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
-  llvm::Value *emit_box_copy(llvm::Value *val, llvm::Type *ll_alt);
+  llvm::Value *emit_box_copy(llvm::Value *val, const TypePtr &alt);
 
   /// Get the tag index for a type within a union.
   int union_tag_for_type(const TypePtr &alt_type, const TypePtr &union_type);
@@ -1372,8 +1375,11 @@ private:
   void emit_retain(llvm::Value *val, const TypePtr &sem);
 
   Ownership value_ownership(const Node &node);
+  bool boxes_root_value(const Node &node);
+  Ownership shape_ownership(const Node &node);
   Ownership call_ownership(const CallExprNode &call);
   bool indexes_string(const IndexExprNode &node);
+  bool boxes_element(const IndexExprNode &node);
   bool reads_stored_element(const CallExprNode &call);
   bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
@@ -1450,6 +1456,7 @@ private:
   /// (codegen_walks.cpp).
   bool walks_references(const TypePtr &sem);
   bool holds_references(const TypePtr &sem);
+  bool payload_holds_references(const TypePtr &alt);
   void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
   llvm::Function *ownership_fn(const TypePtr &sem, bool retain);
   llvm::Function *declare_walk_fn(const std::string &name);
@@ -1461,6 +1468,7 @@ private:
   void walk_field(llvm::StructType *st, llvm::Value *self, unsigned idx,
                   const TypePtr &slot, bool retain);
   void walk_slot(llvm::Value *addr, const TypePtr &slot, bool retain);
+  void walk_payload(llvm::Value *addr, const TypePtr &alt, bool retain);
   std::string close_link_name(llvm::Type *struct_ll) const;
   void emit_close_call(llvm::AllocaInst *slot);
 };

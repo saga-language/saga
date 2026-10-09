@@ -13,6 +13,15 @@ bool is_boxed(const TypePtr &t) {
 
 bool is_shared(const TypePtr &t) { return is_error_valued(t); }
 
+bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem) {
+  auto slot = unwrap_alias(slot_sem);
+  auto val = unwrap_alias(val_sem);
+  if (!slot || !val || val->kind == TypeKind::Interface)
+    return false;
+  return slot->kind == TypeKind::Interface ||
+         (slot->kind == TypeKind::Union && union_alt_is_boxed(val));
+}
+
 bool is_counted(const TypePtr &t) {
   return t && (t->kind == TypeKind::String || t->kind == TypeKind::Array ||
                t->kind == TypeKind::Map || is_boxed(t) || is_shared(t));

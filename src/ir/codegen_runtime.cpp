@@ -215,11 +215,6 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_shared_release", module.get());
 
-  // Zero-initialised heap block for a boxed union alternative.
-  llvm::Function::Create(
-      llvm::FunctionType::get(ptr_type, {i64_type}, false),
-      llvm::Function::ExternalLinkage, "saga_box_alloc", module.get());
-
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -592,7 +587,7 @@ llvm::Value *CodeGen::emit_union_wrap(llvm::Value *val,
       payload_gep, llvm::PointerType::getUnqual(context), "union.pcast");
   auto *ll_alt = llvm_type(val_type);
   if (union_alt_is_boxed(val_type)) {
-    builder.CreateStore(emit_box_copy(val, ll_alt), cast);
+    builder.CreateStore(emit_box_copy(val, val_type), cast);
   } else if (ll_alt && ll_alt->isStructTy() && val->getType()->isPointerTy()) {
     builder.CreateMemCpy(cast, align_of(ll_alt), val,
                          align_of(ll_alt),
@@ -628,11 +623,11 @@ llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
   return builder.CreateLoad(ll_alt, cast, "union.val");
 }
 
-llvm::Value *CodeGen::emit_box_copy(llvm::Value *val, llvm::Type *ll_alt) {
+// The box takes over what the value holds, as any slot it is stored in does.
+llvm::Value *CodeGen::emit_box_copy(llvm::Value *val, const TypePtr &alt) {
+  auto *ll_alt = llvm_type(alt);
   uint64_t size = size_of(ll_alt);
-  auto *box = builder.CreateCall(
-      module->getFunction("saga_box_alloc"),
-      {llvm::ConstantInt::get(i64_type, size)}, "union.box");
+  auto *box = emit_shared_box(alt, ll_alt);
   if (val->getType()->isPointerTy())
     builder.CreateMemCpy(box, align_of(ll_alt), val,
                          align_of(ll_alt), size);

@@ -1,9 +1,10 @@
 // Copyright 2026 Rob Thornton
 // SPDX-License-Identifier: MIT
 
-// An error lives in a shared box: counted, freed with what it holds once the
-// last reference goes, and handed between an `or` or a `?` and the root
-// expression it escapes to with exactly one reference.
+// An error, and a union alternative that contains itself, live in a shared
+// box: counted, freed with what it holds once the last reference goes, and
+// handed between an `or` or a `?` and the root expression it escapes to with
+// exactly one reference.
 
 #include "codegen_harness.hpp"
 #include "ir_queries.hpp"
@@ -20,6 +21,15 @@ const char *kBad = "error Bad { code int }\n"
                    "  if n > 0 { return Bad{code: n} }\n"
                    "  n\n"
                    "}\n";
+
+const char *kNode = "struct Node {\n"
+                    "  name string\n"
+                    "  tail Node | Missing\n"
+                    "}\n";
+
+bool calls_walk(llvm::Function *fn, llvm::StringRef walk) {
+  return !calls_to(fn, walk).empty();
+}
 
 // The error an `or` handler or a `?` reads out of the union: in the handler,
 // or in the escape to the root's landing.
@@ -101,6 +111,77 @@ TEST(SharedBoxes, OwnedErrorRaisedIntoABorrowedRootIsHeld) {
   ASSERT_NE(error, nullptr);
   EXPECT_FALSE(released_directly(error, "saga_shared_retain"));
   EXPECT_TRUE(released_through_slot(error, "saga_shared_release"));
+}
+
+TEST(SharedBoxes, SelfContainingAlternativeIsASharedBox) {
+  auto r = CG::from(std::string(kNode) +
+                    "fn wrap(n Node) Node | Missing { n }\n"
+                    "pub fn Main() void {\n"
+                    "  _ := wrap(Node{name: \"a\", tail: Missing{}})\n"
+                    "}");
+  auto made = calls_to(r.func("wrap"), "saga_shared_new");
+  ASSERT_EQ(made.size(), 1u);
+  EXPECT_TRUE(made[0]->getArgOperand(1)->getName().contains("Node"));
+}
+
+TEST(SharedBoxes, UnionReleaseReleasesItsBox) {
+  auto r = CG::from(std::string(kNode) +
+                    "pub fn Main() void {\n"
+                    "  _ := Node{name: \"a\", tail: Missing{}}\n"
+                    "}");
+  llvm::Function *walk = nullptr;
+  for (auto &fn : r.mod())
+    if (fn.getName().contains("Node | ") && fn.getName().ends_with("__release"))
+      walk = &fn;
+  ASSERT_NE(walk, nullptr);
+  EXPECT_TRUE(calls_walk(walk, "saga_shared_release"));
+}
+
+// The box takes over what it is given, so a borrowed value is retained first.
+TEST(SharedBoxes, BorrowedValueBoxedTakesItsOwnReferences) {
+  auto r = CG::from(std::string(kNode) +
+                    "fn wrap(n Node) Node | Missing { n }\n"
+                    "pub fn Main() void {\n"
+                    "  _ := wrap(Node{name: \"a\", tail: Missing{}})\n"
+                    "}");
+  EXPECT_TRUE(calls_walk(r.func("wrap"), "Node__retain_fields"));
+}
+
+// A node taken out of a call's result keeps its own references, and the box
+// goes with the result.
+TEST(SharedBoxes, ValueTakenOutOfAnOwnedUnionLeavesTheBox) {
+  auto r = CG::from(std::string(kNode) +
+                    "fn mk() Node | Missing { Missing{} }\n"
+                    "fn f() Node { mk() or { Node{name: \"z\"} } }\n"
+                    "pub fn Main() void { _ := f() }");
+  bool released = false;
+  for (auto *call : calls_to(r.func("f"), "__release"))
+    if (call->getParent()->getName().starts_with("or.ok"))
+      released = true;
+  EXPECT_TRUE(calls_walk(r.func("f"), "Node__retain_fields"));
+  EXPECT_TRUE(released);
+}
+
+TEST(SharedBoxes, BorrowedUnionKeepsItsBox) {
+  auto r = CG::from(std::string(kNode) +
+                    "fn f(u Node | Missing) Node {\n"
+                    "  u or { Node{name: \"z\"} }\n"
+                    "}\n"
+                    "pub fn Main() void { _ := f(Missing{}) }");
+  for (auto *call : calls_to(r.func("f"), "__release"))
+    if (call->getParent()->getName().starts_with("or.ok"))
+      EXPECT_FALSE(call->getCalledFunction()->getName().contains("Node | "));
+}
+
+// An element read out of an array is boxed into the lookup's union, and the
+// box needs references of its own.
+TEST(SharedBoxes, LookupBoxesItsOwnCopy) {
+  auto r = CG::from(std::string(kNode) +
+                    "fn f(nodes array{Node}) Node {\n"
+                    "  nodes[0] or { Node{name: \"z\"} }\n"
+                    "}\n"
+                    "pub fn Main() void { _ := f([]) }");
+  EXPECT_TRUE(calls_walk(r.func("f"), "Node__retain_fields"));
 }
 
 } // namespace saga
