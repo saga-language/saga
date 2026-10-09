@@ -1123,6 +1123,8 @@ private:
   /// pointer to one.
   llvm::Value *struct_slot_address(llvm::AllocaInst *slot, const TypePtr &sem,
                                    const std::string &name);
+  llvm::Value *held_struct_address(llvm::Value *addr, llvm::Type *held_ll,
+                                   const std::string &name);
 
   /// Walk `__embed_<Name>` slots from `struct_ptr` (a pointer to a
   /// `struct_sem` value) down to the embedded struct that *directly* declares
