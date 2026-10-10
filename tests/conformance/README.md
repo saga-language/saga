@@ -11,9 +11,8 @@ test fails, either the implementation has a bug or the spec is wrong.
 tests/conformance/
   README.md
   run_test.sh         # shared runner
-  CMakeLists.txt      # auto-discovers per-section subdirs
+  CMakeLists.txt      # registers every <section_name>/*.sg
   <section_name>/
-    CMakeLists.txt
     <test_name>.sg
     <test_name>.golden     # positive: expected stdout (exact match)
     <other_test>.sg
@@ -28,7 +27,8 @@ tests/conformance/
 - **Negative** (`.sg` + `.error`): build OR run must exit non-zero, and
   combined stderr+stdout must contain the substring in `.error`.
 
-If a `.sg` file has neither sibling, the runner fails it as misconfigured.
+If a `.sg` file has neither sibling, the runner fails it as misconfigured. An
+expectation file with no `.sg` fails the CMake configure step.
 
 ## Naming
 
