@@ -51,16 +51,9 @@ llvm::Function *CodeGen::emit_closure_trampoline(
                                     llvm::Function::InternalLinkage);
   name_params(tramp_fn, tramp_sig, node.signature, "env");
 
-  auto saved_block = builder.GetInsertBlock();
-  auto saved_point = builder.GetInsertPoint();
-  auto saved_locals = locals;
-  auto saved_managed = managed_locals;
-  auto saved_is_main = current_func_is_main;
-
+  // The body is part of the enclosing one, so it reads the same side tables.
+  FuncEmissionScope guard(*this, current_instantiation_);
   builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", tramp_fn));
-  locals.clear();
-  managed_locals.clear();
-  current_func_is_main = false;
   return_sems_[tramp_fn] = declared_return_sem(node.signature.return_type);
 
   unsigned env_idx = first_param_index(tramp_fn, false);
@@ -72,11 +65,6 @@ llvm::Function *CodeGen::emit_closure_trampoline(
   if (!builder.GetInsertBlock()->getTerminator())
     emit_fallthrough_return(block, tail_val);
   verify_function(*tramp_fn);
-
-  builder.SetInsertPoint(saved_block, saved_point);
-  locals = saved_locals;
-  managed_locals = saved_managed;
-  current_func_is_main = saved_is_main;
   return tramp_fn;
 }
 

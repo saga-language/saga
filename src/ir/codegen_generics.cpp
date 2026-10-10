@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Type mangling, generic specialisation emission, and the
-// FuncEmissionScope RAII used to swap codegen state for a fresh function.
+// FuncEmissionScope RAII every function body is emitted under.
 
 #include "ir/codegen.hpp"
 
@@ -10,28 +10,29 @@
 
 namespace saga {
 
-// ---------------------------------------------------------------------------
-// Step 5a — FuncEmissionScope (RAII)
-// ---------------------------------------------------------------------------
-
-CodeGen::FuncEmissionScope::FuncEmissionScope(CodeGen &cg) : cg_(cg) {
+CodeGen::FuncEmissionScope::FuncEmissionScope(
+    CodeGen &cg, const Analyzer::BodyInstantiation *inst)
+    : cg_(cg) {
   saved_bb_ = cg.builder.GetInsertBlock();
   if (saved_bb_)
     saved_ip_ = cg.builder.GetInsertPoint();
   saved_locals_ = std::move(cg.locals);
   saved_managed_locals_ = std::move(cg.managed_locals);
   saved_loop_stack_ = std::move(cg.loop_stack);
+  saved_promote_landings_ = std::move(cg.promote_landings_);
+  saved_temporaries_ = std::move(cg.temporaries_);
   saved_current_func_is_main_ = cg.current_func_is_main;
   saved_current_instantiation_ = cg.current_instantiation_;
   saved_current_actor_ = cg.current_actor;
   saved_pending_channel_alloca_ = cg.pending_channel_alloca_;
 
-  // Reset to fresh-function defaults.
   cg.locals.clear();
   cg.managed_locals.clear();
   cg.loop_stack.clear();
+  cg.promote_landings_.clear();
+  cg.temporaries_.clear();
   cg.current_func_is_main = false;
-  cg.current_instantiation_ = nullptr;
+  cg.current_instantiation_ = inst;
   cg.current_actor = nullptr;
   cg.pending_channel_alloca_ = nullptr;
 }
@@ -40,6 +41,8 @@ CodeGen::FuncEmissionScope::~FuncEmissionScope() {
   cg_.locals = std::move(saved_locals_);
   cg_.managed_locals = std::move(saved_managed_locals_);
   cg_.loop_stack = std::move(saved_loop_stack_);
+  cg_.promote_landings_ = std::move(saved_promote_landings_);
+  cg_.temporaries_ = std::move(saved_temporaries_);
   cg_.current_func_is_main = saved_current_func_is_main_;
   cg_.current_instantiation_ = saved_current_instantiation_;
   cg_.current_actor = saved_current_actor_;
@@ -195,8 +198,7 @@ llvm::Function *CodeGen::emit_specialisation(
   name_params(func, sig, fn);
   return_sems_[func] = fi.return_type;
 
-  FuncEmissionScope guard(*this);
-  current_instantiation_ = inst;
+  FuncEmissionScope guard(*this, inst);
   if (has_receiver)
     emit_receiver_method_body(fn, func, fi);
   else

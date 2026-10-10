@@ -79,7 +79,7 @@ llvm::Value *CodeGen::make_binding_unique(const Node &object,
       unique_fn ? assign_target_address(object)
                 : std::pair<llvm::Value *, llvm::Type *>{nullptr, nullptr};
   if (!holder || !holder_ll->isPointerTy())
-    return emit_expr(object);
+    return emit_borrowed(object);
 
   auto *cur = builder.CreateLoad(holder_ll, holder, "cow.cur");
   auto *uniq =
@@ -101,24 +101,6 @@ void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {
     builder.CreateCall(module->getFunction("saga_box_release"), {val});
   else if (walks_references(sem))
     emit_ownership_walk(val, sem, false);
-}
-
-void CodeGen::emit_release_locals() {
-  for (auto &ml : managed_locals) {
-    if (ml.kind == ManagedKind::Closeable) {
-      emit_close_call(ml.slot);
-      continue;
-    }
-    if (ml.kind == ManagedKind::Struct) {
-      emit_release(ml.slot, ml.sem);
-      continue;
-    }
-    auto *val = builder.CreateLoad(ml.slot->getAllocatedType(), ml.slot);
-    if (ml.kind == ManagedKind::Task)
-      builder.CreateCall(module->getFunction("saga_task_drop"), {val});
-    else
-      emit_release(val, ml.sem);
-  }
 }
 
 // The struct's own name is the origin-qualified key, so `Close` resolves

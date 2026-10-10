@@ -2,20 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 #include "ir/codegen.hpp"
+#include "util/internal_error.hpp"
 
 #include <llvm/IR/Constants.h>
 
+#include <algorithm>
+
 namespace saga {
-
-namespace {
-
-void tick_reduction(CodeGen &cg) {
-  if (cg.current_actor)
-    cg.builder.CreateCall(cg.module->getFunction("saga_reduction_tick"),
-                          {cg.current_actor});
-}
-
-} // namespace
 
 // An accumulator with no initializer starts at the zero value of its type,
 // which is what makes `|acc| { acc += x }` a sum.
@@ -36,61 +29,13 @@ void CodeGen::seed_accumulator(llvm::Value *slot, const AccumulatorNode &acc,
   builder.CreateStore(val, slot);
 }
 
+// An accumulator names a slot the loop writes across iterations, typed as the
+// accumulator rather than the loop: a `break` value would make the loop's type
+// wider than that slot holds.
 llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
                                     const Node &parent) {
   auto *func = builder.GetInsertBlock()->getParent();
-
-  auto for_sem = semantic_type(parent);
-
-  // Accumulator setup: allocate a local seeded to the accumulator's own type,
-  // bind it as `acc`, and load+return it after the loop exits.  Its type is
-  // not the for-expression's — an accumulator names a slot the loop writes
-  // across iterations, and a `break` value would give the loop a wider type
-  // than that slot holds.
-  llvm::AllocaInst *acc_alloca = nullptr;
-  llvm::Type *acc_ll = nullptr;
-  if (node.accumulator) {
-    auto acc_sem = semantic_type(*node.accumulator->name);
-    acc_ll = storage_type(acc_sem);
-    if (acc_ll) {
-      auto &ident = std::get<IdentifierNode>(node.accumulator->name->data);
-      std::string acc_name(ident.name);
-      acc_alloca = create_entry_alloca(func, acc_name, acc_ll);
-      seed_accumulator(acc_alloca, *node.accumulator, acc_sem, acc_ll);
-      locals[acc_name] = acc_alloca;
-    }
-  }
-
-  // break-with-value: if the recorded type is `T | Error`, allocate a
-  // union slot pre-filled with the err tag.  break codegen will wrap
-  // its value with the ok tag and store before branching.
-  llvm::AllocaInst *break_result = nullptr;
-  TypePtr break_value_type;
-  if (!node.accumulator && for_sem && for_sem->kind == TypeKind::Union &&
-      is_impure_union(for_sem)) {
-    auto *union_st = get_union_llvm_type(for_sem);
-    if (union_st) {
-      auto &uinfo = std::get<UnionTypeInfo>(for_sem->detail);
-      int err_tag = -1;
-      for (size_t i = 0; i < uinfo.alternatives.size(); ++i) {
-        auto &alt = uinfo.alternatives[i];
-        if (is_error_valued(alt))
-          err_tag = static_cast<int>(i);
-        else if (alt)
-          break_value_type = alt;
-      }
-      if (err_tag >= 0 && break_value_type) {
-        break_result = create_entry_alloca(func, "for.result", union_st);
-        builder.CreateStore(llvm::Constant::getNullValue(union_st),
-                            break_result);
-        auto *tag_gep =
-            builder.CreateStructGEP(union_st, break_result, 0, "for.tag");
-        builder.CreateStore(
-            llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), err_tag),
-            tag_gep);
-      }
-    }
-  }
+  auto *acc = node.accumulator ? open_accumulator(*node.accumulator) : nullptr;
 
   ForLoopBlocks bbs;
   bbs.cond_bb = llvm::BasicBlock::Create(context, "for.cond", func);
@@ -98,37 +43,128 @@ llvm::Value *CodeGen::emit_for_expr(const ForExprNode &node,
   bbs.update_bb = llvm::BasicBlock::Create(context, "for.update");
   bbs.exit_bb = llvm::BasicBlock::Create(context, "for.exit");
 
-  LoopContext frame{bbs.exit_bb, bbs.update_bb, break_result,
-                    break_result ? for_sem : TypePtr{},
-                    break_value_type};
-  loop_stack.push_back(frame);
-
-  if (!node.mode) {
-    emit_for_infinite(node, bbs);
-  } else {
-    auto &mode_node = *node.mode;
-    if (auto *iter = std::get_if<ForIterClauseNode>(&mode_node->data))
-      emit_for_c_style(node, *iter, bbs);
-    else if (auto *range = std::get_if<ForRangeClauseNode>(&mode_node->data))
-      emit_for_range(node, *range, bbs);
-    else
-      emit_for_condition(node, *mode_node, bbs);
-  }
-
+  auto for_sem = semantic_type(parent);
+  auto value_type = break_value_type(node, for_sem);
+  auto *break_result = value_type ? open_break_result(for_sem) : nullptr;
+  loop_stack.push_back({bbs.exit_bb, bbs.update_bb, break_result,
+                        value_type ? for_sem : TypePtr{}, value_type});
+  emit_loop(node, bbs);
   loop_stack.pop_back();
-  func->insert(func->end(), bbs.exit_bb);
-  builder.SetInsertPoint(bbs.exit_bb);
+  start_block(bbs.exit_bb);
 
-  if (acc_alloca && acc_ll)
-    return builder.CreateLoad(acc_ll, acc_alloca, "for.acc");
-  if (break_result)
-    return break_result;
-  return nullptr;
+  if (acc)
+    return builder.CreateLoad(acc->getAllocatedType(), acc, "for.acc");
+  return break_result;
+}
+
+void CodeGen::emit_loop(const ForExprNode &node, const ForLoopBlocks &bbs) {
+  if (!node.mode)
+    return emit_for_infinite(node, bbs);
+  auto &mode = *node.mode;
+  if (auto *iter = std::get_if<ForIterClauseNode>(&mode->data))
+    emit_for_c_style(node, *iter, bbs);
+  else if (auto *range = std::get_if<ForRangeClauseNode>(&mode->data))
+    emit_for_range(node, *range, bbs);
+  else
+    emit_for_condition(node, *mode, bbs);
+}
+
+llvm::AllocaInst *CodeGen::open_accumulator(const AccumulatorNode &acc) {
+  auto acc_sem = semantic_type(*acc.name);
+  auto *acc_ll = storage_type(acc_sem);
+  std::string name(std::get<IdentifierNode>(acc.name->data).name);
+  auto *slot = create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                   name, acc_ll);
+  seed_accumulator(slot, acc, acc_sem, acc_ll);
+  locals[name] = slot;
+  return slot;
+}
+
+// A for-expression typed `T | Error` yields what a `break` hands it, and an
+// error when it runs out instead.
+TypePtr CodeGen::break_value_type(const ForExprNode &node,
+                                  const TypePtr &for_sem) {
+  if (node.accumulator || !for_sem || for_sem->kind != TypeKind::Union ||
+      !is_impure_union(for_sem))
+    return nullptr;
+  TypePtr value;
+  bool has_error = false;
+  for (auto &alt : std::get<UnionTypeInfo>(for_sem->detail).alternatives) {
+    if (is_error_valued(alt))
+      has_error = true;
+    else if (alt)
+      value = alt;
+  }
+  return has_error ? value : nullptr;
+}
+
+llvm::AllocaInst *CodeGen::open_break_result(const TypePtr &for_sem) {
+  auto *union_st = get_union_llvm_type(for_sem);
+  auto *slot = create_entry_alloca(builder.GetInsertBlock()->getParent(),
+                                   "for.result", union_st);
+  builder.CreateStore(llvm::Constant::getNullValue(union_st), slot);
+  auto &alts = std::get<UnionTypeInfo>(for_sem->detail).alternatives;
+  auto err = std::find_if(alts.rbegin(), alts.rend(), is_error_valued);
+  auto tag = static_cast<uint8_t>(alts.rend() - err - 1);
+  builder.CreateStore(builder.getInt8(tag),
+                      builder.CreateStructGEP(union_st, slot, 0, "for.tag"));
+  return slot;
+}
+
+// `break <value>` from a for-expression typed `T | Error` leaves the value in
+// the loop's result slot, which owns it as a binding would.
+void CodeGen::emit_break(const BreakNode &node) {
+  if (loop_stack.empty())
+    return;
+  auto &frame = loop_stack.back();
+  if (frame.result_alloca && !node.values.empty() && frame.result_value_type)
+    store_break_value(frame, *node.values[0]);
+  release_to(frame.body_depth);
+  builder.CreateBr(frame.break_bb);
+}
+
+void CodeGen::store_break_value(const LoopContext &frame, const Node &value) {
+  auto *val = emit_expr(value);
+  if (!val)
+    return;
+  retain_if_borrowed(val, semantic_type(value), value);
+  auto *wrapped =
+      coerce_to(val, frame.result_value_type, frame.result_union_type);
+  if (!wrapped)
+    internal_error("a break value could not be placed in its loop's result");
+  auto *union_st = get_union_llvm_type(frame.result_union_type);
+  auto al = align_of(union_st);
+  builder.CreateMemCpy(frame.result_alloca, al, wrapped, al,
+                       size_of(union_st));
+}
+
+void CodeGen::emit_next() {
+  if (loop_stack.empty())
+    return;
+  release_to(loop_stack.back().body_depth);
+  builder.CreateBr(loop_stack.back().next_bb);
+}
+
+// `break` and `next` leave the body, not what the loop walks, so they release
+// only what the body holds. An actor's loop counts toward its reductions, so
+// a long one yields.
+void CodeGen::enter_loop_body(const ForLoopBlocks &bbs) {
+  loop_stack.back().body_depth = cleanup_depth();
+  start_block(bbs.body_bb);
+  if (current_actor)
+    builder.CreateCall(module->getFunction("saga_reduction_tick"),
+                       {current_actor});
+}
+
+void CodeGen::finish_loop_body(const ForExprNode &node,
+                               llvm::BasicBlock *next) {
+  emit_body(std::get<BlockNode>(node.body->data));
+  if (!builder.GetInsertBlock()->getTerminator())
+    builder.CreateBr(next);
 }
 
 void CodeGen::emit_for_infinite(const ForExprNode &node,
                                 const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
   builder.CreateBr(bbs.body_bb);
 
   // cond_bb is the "next" trampoline that loops back to body.
@@ -136,66 +172,47 @@ void CodeGen::emit_for_infinite(const ForExprNode &node,
   builder.CreateBr(bbs.body_bb);
   loop_stack.back().next_bb = bbs.cond_bb;
 
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.cond_bb);
+  enter_loop_body(bbs);
+  finish_loop_body(node, bbs.cond_bb);
 }
 
 void CodeGen::emit_for_c_style(const ForExprNode &node,
                                const ForIterClauseNode &iter,
                                const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
 
-  emit_expr(*iter.init);
+  emit_statement(*iter.init);
   builder.CreateBr(bbs.cond_bb);
 
   builder.SetInsertPoint(bbs.cond_bb);
-  auto *cond_val = as_condition(emit_expr(*iter.condition));
+  auto *cond_val = emit_condition(*iter.condition);
   if (cond_val)
     builder.CreateCondBr(cond_val, bbs.body_bb, bbs.exit_bb);
   else
     builder.CreateBr(bbs.body_bb);
 
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
+  enter_loop_body(bbs);
+  finish_loop_body(node, bbs.update_bb);
 
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
-  emit_expr(*iter.update);
+  start_block(bbs.update_bb);
+  emit_statement(*iter.update);
   builder.CreateBr(bbs.cond_bb);
 }
 
 void CodeGen::emit_for_condition(const ForExprNode &node, const Node &mode,
                                  const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
   builder.CreateBr(bbs.cond_bb);
 
   builder.SetInsertPoint(bbs.cond_bb);
-  auto *cond_val = as_condition(emit_expr(mode));
+  auto *cond_val = emit_condition(mode);
   if (cond_val)
     builder.CreateCondBr(cond_val, bbs.body_bb, bbs.exit_bb);
   else
     builder.CreateBr(bbs.body_bb);
 
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
+  enter_loop_body(bbs);
+  finish_loop_body(node, bbs.update_bb);
 
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
+  start_block(bbs.update_bb);
   builder.CreateBr(bbs.cond_bb);
 }
 
@@ -224,15 +241,10 @@ void CodeGen::emit_for_range_counted(const ForExprNode &node,
   builder.CreateCondBr(builder.CreateICmpSLT(v, high, "range.cmp"),
                        bbs.body_bb, bbs.exit_bb);
 
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-  emit_block(std::get<BlockNode>(node.body->data));
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
+  enter_loop_body(bbs);
+  finish_loop_body(node, bbs.update_bb);
 
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
+  start_block(bbs.update_bb);
   auto *upd = builder.CreateLoad(counter_ll, cur, "range.v");
   builder.CreateStore(
       builder.CreateAdd(upd, llvm::ConstantInt::get(counter_ll, 1),
@@ -249,7 +261,7 @@ void CodeGen::emit_for_range(const ForExprNode &node,
     return;
   }
 
-  auto *iterable = emit_expr(*range.iterable);
+  auto *iterable = emit_borrowed(*range.iterable);
   if (!iterable) {
     builder.CreateBr(bbs.exit_bb);
     return;
@@ -279,356 +291,6 @@ void CodeGen::emit_for_range(const ForExprNode &node,
     builder.CreateBr(bbs.exit_bb);
     return;
   }
-}
-
-void CodeGen::emit_for_range_array(const ForExprNode &node,
-                                   const ForRangeClauseNode &range,
-                                   llvm::Value *iterable,
-                                   const TypePtr &iter_sem,
-                                   const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto &arr_info = std::get<ArrayTypeInfo>(iter_sem->detail);
-  auto *elem_ll = llvm_type(arr_info.element);
-  bool struct_elem = arr_info.element &&
-                     arr_info.element->kind == TypeKind::Struct &&
-                     elem_ll && elem_ll->isStructTy();
-
-  auto *size_fn = module->getFunction("saga_array_size");
-  auto *arr_len = builder.CreateCall(size_fn, {iterable}, "arr.len");
-
-  auto *idx_alloca = create_entry_alloca(func, ".idx", i64_type);
-  builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx_alloca);
-
-  llvm::AllocaInst *key_alloca = nullptr;
-  llvm::AllocaInst *val_alloca = nullptr;
-  if (range.vars.size() == 1) {
-    val_alloca =
-        create_entry_alloca(func, std::string(range.vars[0].name), elem_ll);
-    locals[std::string(range.vars[0].name)] = val_alloca;
-  } else if (range.vars.size() == 2) {
-    key_alloca = create_entry_alloca(
-        func, std::string(range.vars[0].name), i64_type);
-    locals[std::string(range.vars[0].name)] = key_alloca;
-    val_alloca = create_entry_alloca(
-        func, std::string(range.vars[1].name), elem_ll);
-    locals[std::string(range.vars[1].name)] = val_alloca;
-  }
-
-  builder.CreateBr(bbs.cond_bb);
-  builder.SetInsertPoint(bbs.cond_bb);
-  auto *cur_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
-  auto *cmp = builder.CreateICmpSLT(cur_idx, arr_len, "range.cmp");
-  builder.CreateCondBr(cmp, bbs.body_bb, bbs.exit_bb);
-
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-
-  auto *at_fn = module->getFunction("saga_array_at");
-  auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
-  auto *elem_ptr = builder.CreateCall(at_fn, {iterable, body_idx}, "at");
-
-  if (key_alloca)
-    builder.CreateStore(body_idx, key_alloca);
-  if (val_alloca) {
-    if (struct_elem) {
-      auto sz = size_of(elem_ll);
-      auto al = align_of(elem_ll);
-      builder.CreateMemCpy(val_alloca, al, elem_ptr, al, sz);
-    } else {
-      auto *elem_val = builder.CreateLoad(elem_ll, elem_ptr, "elem");
-      builder.CreateStore(elem_val, val_alloca);
-    }
-  }
-
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
-
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
-  auto *upd_idx = builder.CreateLoad(i64_type, idx_alloca, "idx");
-  auto *next_idx = builder.CreateAdd(
-      upd_idx, llvm::ConstantInt::get(i64_type, 1), "idx.next");
-  builder.CreateStore(next_idx, idx_alloca);
-  builder.CreateBr(bbs.cond_bb);
-}
-
-void CodeGen::emit_for_range_map(const ForExprNode &node,
-                                 const ForRangeClauseNode &range,
-                                 llvm::Value *iterable,
-                                 const TypePtr &iter_sem,
-                                 const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto &map_info = std::get<MapTypeInfo>(iter_sem->detail);
-
-  auto *size_fn = module->getFunction("saga_map_size");
-  auto *map_len = builder.CreateCall(size_fn, {iterable}, "map.len");
-
-  auto *idx_alloca = create_entry_alloca(func, ".map.idx", i64_type);
-  builder.CreateStore(llvm::ConstantInt::get(i64_type, 0), idx_alloca);
-
-  auto *key_ll = llvm_type(map_info.key);
-  auto *val_ll = llvm_type(map_info.value);
-  llvm::AllocaInst *key_alloca = nullptr;
-  llvm::AllocaInst *val_alloca = nullptr;
-
-  if (range.vars.size() == 1) {
-    val_alloca =
-        create_entry_alloca(func, std::string(range.vars[0].name), val_ll);
-    locals[std::string(range.vars[0].name)] = val_alloca;
-  } else if (range.vars.size() == 2) {
-    key_alloca =
-        create_entry_alloca(func, std::string(range.vars[0].name), key_ll);
-    locals[std::string(range.vars[0].name)] = key_alloca;
-    val_alloca =
-        create_entry_alloca(func, std::string(range.vars[1].name), val_ll);
-    locals[std::string(range.vars[1].name)] = val_alloca;
-  }
-
-  builder.CreateBr(bbs.cond_bb);
-  builder.SetInsertPoint(bbs.cond_bb);
-  auto *cur_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
-  auto *cmp = builder.CreateICmpSLT(cur_idx, map_len, "map.cmp");
-  builder.CreateCondBr(cmp, bbs.body_bb, bbs.exit_bb);
-
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-
-  auto *body_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
-
-  auto load_or_memcpy = [&](llvm::AllocaInst *dst, llvm::Type *ll,
-                            const char *fn_name, const char *vname) {
-    auto *fn = module->getFunction(fn_name);
-    auto *ptr = builder.CreateCall(fn, {iterable, body_idx},
-                                   std::string(vname) + ".ptr");
-    if (ll->isStructTy()) {
-      auto sz = size_of(ll);
-      auto al = align_of(ll);
-      builder.CreateMemCpy(dst, al, ptr, al, sz);
-    } else {
-      auto *v = builder.CreateLoad(ll, ptr, vname);
-      builder.CreateStore(v, dst);
-    }
-  };
-
-  if (key_alloca)
-    load_or_memcpy(key_alloca, key_ll, "saga_map_key_at", "map.key");
-  if (val_alloca)
-    load_or_memcpy(val_alloca, val_ll, "saga_map_value_at", "map.val");
-
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
-
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
-  auto *upd_idx = builder.CreateLoad(i64_type, idx_alloca, "map.idx");
-  auto *next_idx = builder.CreateAdd(
-      upd_idx, llvm::ConstantInt::get(i64_type, 1), "map.idx.next");
-  builder.CreateStore(next_idx, idx_alloca);
-  builder.CreateBr(bbs.cond_bb);
-}
-
-// `for msg : task` reads from a companion channel pointer the spawn site
-// stored in a local variable named `<task>.channel`. Without that
-// companion, no message stream exists, so we fall through to exit.
-void CodeGen::emit_for_range_task(const ForExprNode &node,
-                                  const ForRangeClauseNode &range,
-                                  const StructTypeInfo &st_info,
-                                  const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
-
-  std::string task_name;
-  if (auto *iter_id = std::get_if<IdentifierNode>(&range.iterable->data))
-    task_name = std::string(iter_id->name);
-
-  llvm::Value *ch_ptr = nullptr;
-  if (!task_name.empty()) {
-    auto ch_it = locals.find(task_name + ".channel");
-    if (ch_it != locals.end())
-      ch_ptr = builder.CreateLoad(llvm::PointerType::getUnqual(context),
-                                  ch_it->second, "ch.ptr");
-  }
-  if (!ch_ptr) {
-    builder.CreateBr(bbs.exit_bb);
-    return;
-  }
-
-  llvm::Type *msg_ll = i64_type;
-  TypePtr elem_sem;
-  if (!st_info.type_args.empty())
-    elem_sem = st_info.type_args[0];
-  if (elem_sem)
-    msg_ll = storage_type(elem_sem);
-
-  llvm::AllocaInst *msg_alloca = nullptr;
-  if (!range.vars.empty()) {
-    std::string vname(range.vars[0].name);
-    msg_alloca = create_entry_alloca(func, vname, msg_ll);
-    locals[vname] = msg_alloca;
-  } else {
-    msg_alloca = create_entry_alloca(func, ".msg.buf", msg_ll);
-  }
-
-  builder.CreateBr(bbs.cond_bb);
-  builder.SetInsertPoint(bbs.cond_bb);
-  auto *recv_fn = module->getFunction("saga_channel_recv");
-  auto *rc =
-      builder.CreateCall(recv_fn, {ch_ptr, msg_alloca}, "recv.rc");
-  auto *eof = builder.CreateICmpEQ(
-      rc,
-      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), -1),
-      "recv.eof");
-  builder.CreateCondBr(eof, bbs.exit_bb, bbs.body_bb);
-
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
-
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
-  builder.CreateBr(bbs.cond_bb);
-}
-
-// `for v : iter` calls iter.Next() each step, where Next() returns
-// T | Error. The loop ends when the result tag matches the Error variant.
-void CodeGen::emit_for_range_iterable_struct(const ForExprNode &node,
-                                             const ForRangeClauseNode &range,
-                                             llvm::Value *iterable,
-                                             const TypePtr &iter_sem,
-                                             const ForLoopBlocks &bbs) {
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto &st_info = std::get<StructTypeInfo>(iter_sem->detail);
-
-  auto elem_sem = iterable_next_elem_type_of(*range.iterable);
-  if (!elem_sem) {
-    builder.CreateBr(bbs.exit_bb);
-    return;
-  }
-  auto *elem_ll = llvm_type(elem_sem);
-  auto *ptr_type = llvm::PointerType::getUnqual(context);
-
-  std::string next_link_name;
-  auto ml_it = struct_method_links.find(st_info.name);
-  if (ml_it != struct_method_links.end()) {
-    for (auto &[lname, mname] : ml_it->second)
-      if (mname == "Next") { next_link_name = lname; break; }
-  }
-  if (next_link_name.empty())
-    next_link_name = mangle(st_info.name + "__Next");
-
-  TypePtr next_ret_sem;
-  for (auto &m : st_info.methods) {
-    if (m.name == "Next" && m.signature &&
-        m.signature->kind == TypeKind::Func) {
-      auto &fi = std::get<FuncTypeInfo>(m.signature->detail);
-      if (fi.return_type)
-        next_ret_sem = fi.return_type;
-      break;
-    }
-  }
-  if (!next_ret_sem)
-    next_ret_sem =
-        make_union_type({elem_sem, analyzer.builtins.error_base});
-
-  auto *union_st = get_union_llvm_type(next_ret_sem);
-
-  int error_tag = 1;
-  if (next_ret_sem->kind == TypeKind::Union) {
-    auto &ui = std::get<UnionTypeInfo>(next_ret_sem->detail);
-    for (size_t i = 0; i < ui.alternatives.size(); ++i)
-      if (ui.alternatives[i]->kind == TypeKind::Interface)
-        error_tag = static_cast<int>(i);
-  }
-
-  auto *next_fn = module->getFunction(next_link_name);
-  if (!next_fn && union_st) {
-    auto *ret_ll = static_cast<llvm::Type *>(union_st);
-    auto *fn_type = llvm::FunctionType::get(ret_ll, {ptr_type}, false);
-    next_fn = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage,
-                                     next_link_name, module.get());
-  }
-
-  llvm::Value *self_ptr = nullptr;
-  if (auto *id = std::get_if<IdentifierNode>(&range.iterable->data)) {
-    auto local_it = locals.find(std::string(id->name));
-    if (local_it != locals.end()) {
-      auto *alloca = local_it->second;
-      auto st_it2 = struct_types.find(st_info.name);
-      if (st_it2 != struct_types.end() &&
-          alloca->getAllocatedType() == st_it2->second)
-        self_ptr = alloca;
-    }
-  }
-  if (!self_ptr) {
-    auto st_it2 = struct_types.find(st_info.name);
-    if (st_it2 != struct_types.end() &&
-        iterable->getType() == st_it2->second) {
-      auto *tmp = create_entry_alloca(func, "iter.self", st_it2->second);
-      builder.CreateStore(iterable, tmp);
-      self_ptr = tmp;
-    } else {
-      self_ptr = iterable;
-    }
-  }
-
-  llvm::AllocaInst *val_alloca = nullptr;
-  if (!range.vars.empty()) {
-    std::string vname(range.vars[0].name);
-    val_alloca = create_entry_alloca(func, vname, elem_ll);
-    locals[vname] = val_alloca;
-  }
-
-  llvm::AllocaInst *result_alloca = nullptr;
-  if (union_st)
-    result_alloca = create_entry_alloca(func, "next.result", union_st);
-
-  if (!next_fn || !result_alloca || !self_ptr) {
-    builder.CreateBr(bbs.exit_bb);
-    return;
-  }
-
-  builder.CreateBr(bbs.cond_bb);
-  builder.SetInsertPoint(bbs.cond_bb);
-  auto *next_val = builder.CreateCall(next_fn, {self_ptr}, "next.val");
-  builder.CreateStore(next_val, result_alloca);
-
-  auto *tag_gep = builder.CreateStructGEP(union_st, result_alloca, 0,
-                                          "next.tag.ptr");
-  auto *tag = builder.CreateLoad(llvm::Type::getInt8Ty(context), tag_gep,
-                                 "next.tag");
-  auto *is_err = builder.CreateICmpEQ(
-      tag,
-      llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), error_tag),
-      "next.is_err");
-  builder.CreateCondBr(is_err, bbs.exit_bb, bbs.body_bb);
-
-  func->insert(func->end(), bbs.body_bb);
-  builder.SetInsertPoint(bbs.body_bb);
-  tick_reduction(*this);
-
-  if (val_alloca) {
-    auto *val = emit_union_extract(result_alloca, elem_sem, next_ret_sem);
-    if (val)
-      builder.CreateStore(val, val_alloca);
-  }
-
-  auto &body_block = std::get<BlockNode>(node.body->data);
-  emit_block(body_block);
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateBr(bbs.update_bb);
-
-  func->insert(func->end(), bbs.update_bb);
-  builder.SetInsertPoint(bbs.update_bb);
-  builder.CreateBr(bbs.cond_bb);
 }
 
 } // namespace saga

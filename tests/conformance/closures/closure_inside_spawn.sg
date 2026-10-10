@@ -1,0 +1,15 @@
+// Spec: a function expression is a body of its own wherever it appears, so one
+// written inside a spawned task loops and returns as it would anywhere else.
+import "std/io"
+
+pub fn Main() void {
+  t := spawn {
+    sum := fn(n int) int {
+      total := 0
+      for i : 0..n { total += i }
+      total
+    }
+    io.Println("{sum(4)}")
+  }
+  t.Wait()
+}

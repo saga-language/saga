@@ -55,87 +55,8 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
       module.get());
   outlined_fn->getArg(0)->setName("actor");
 
-  // ── Emit the outlined function body ────────────────────────────────
-  auto saved_block = builder.GetInsertBlock();
-  auto saved_point = builder.GetInsertPoint();
-  auto saved_locals = locals;
-  auto saved_managed = managed_locals;
-  auto saved_is_main = current_func_is_main;
-  auto saved_actor = current_actor;
-
-  auto *entry = llvm::BasicBlock::Create(context, "entry", outlined_fn);
-  builder.SetInsertPoint(entry);
-
-  locals.clear();
-  managed_locals.clear();
-  current_func_is_main = false;
-  current_actor = outlined_fn->getArg(0);
-
-  // Unpack closure data from actor->closure_data via the runtime accessor.
-  // The runtime memcpy'd the closure struct into the actor's arena; we
-  // recover the pointer through saga_runtime_actor_get_closure(actor).
-  if (closure_st && !captures.empty()) {
-    auto *accessor = module->getFunction("saga_runtime_actor_get_closure");
-    if (!accessor) {
-      accessor = llvm::Function::Create(
-          llvm::FunctionType::get(ptr_type, {ptr_type}, false),
-          llvm::Function::ExternalLinkage, "saga_runtime_actor_get_closure",
-          module.get());
-    }
-
-    auto *closure_ptr = builder.CreateCall(accessor, {current_actor},
-                                            "closure.ptr");
-
-    for (size_t i = 0; i < captures.size(); ++i) {
-      auto *field_gep = builder.CreateStructGEP(
-          closure_st, closure_ptr, i, captures[i].name + ".cap");
-      auto *val = builder.CreateLoad(closure_field_types[i], field_gep,
-                                      captures[i].name);
-      auto *alloca = create_entry_alloca(outlined_fn, captures[i].name,
-                                          closure_field_types[i]);
-      builder.CreateStore(val, alloca);
-      locals[captures[i].name] = alloca;
-
-      // Retain shared refcounted captures so they aren't freed while
-      // the spawned actor is still using them.
-      if (captures[i].kind == Analyzer::SpawnCaptureKind::Share) {
-        TypePtr cap_type = captures[i].type;
-        emit_retain(val, cap_type);
-      }
-    }
-  }
-
-  // If the spawn has a pipe variable (|task|), bind it to the actor ptr.
-  if (node.pipe) {
-    std::string pipe_name(node.pipe->name);
-    auto *alloca = create_entry_alloca(outlined_fn, pipe_name, ptr_type);
-    builder.CreateStore(current_actor, alloca);
-    locals[pipe_name] = alloca;
-  }
-
-  // Emit the spawn body.
-  if (auto *block = std::get_if<BlockNode>(&node.body->data)) {
-    emit_block(*block);
-  } else {
-    // Identifier body (function reference) — call it as a trampoline.
-    auto *body_val = emit_expr(*node.body);
-    // If it returned a value, we could use context_exit, but for
-    // simplicity we just ignore it; the function should use task.Exit().
-    (void)body_val;
-  }
-
-  // Add terminator if needed.
-  if (!builder.GetInsertBlock()->getTerminator())
-    builder.CreateRetVoid();
-
-  verify_function(*outlined_fn);
-
-  // ── Restore enclosing function state ───────────────────────────────
-  builder.SetInsertPoint(saved_block, saved_point);
-  locals = saved_locals;
-  managed_locals = saved_managed;
-  current_func_is_main = saved_is_main;
-  current_actor = saved_actor;
+  emit_spawn_body(node, outlined_fn, closure_st, closure_field_types,
+                  captures);
 
   // ── Pack closure data at the spawn site ────────────────────────────
   llvm::Value *closure_ptr_val =
@@ -226,6 +147,67 @@ llvm::Value *CodeGen::emit_spawn_expr(const SpawnExprNode &node,
   }
 
   return actor;
+}
+
+// The body is part of the enclosing one, so it reads the same side tables.
+void CodeGen::emit_spawn_body(
+    const SpawnExprNode &node, llvm::Function *outlined_fn,
+    llvm::StructType *closure_st,
+    const std::vector<llvm::Type *> &closure_field_types,
+    const std::vector<Analyzer::SpawnCaptureInfo> &captures) {
+  FuncEmissionScope guard(*this, current_instantiation_);
+  builder.SetInsertPoint(
+      llvm::BasicBlock::Create(context, "entry", outlined_fn));
+  current_actor = outlined_fn->getArg(0);
+  if (closure_st && !captures.empty())
+    unpack_spawn_captures(outlined_fn, closure_st, closure_field_types,
+                          captures);
+
+  if (node.pipe) {
+    std::string pipe_name(node.pipe->name);
+    auto *alloca = create_entry_alloca(
+        outlined_fn, pipe_name, llvm::PointerType::getUnqual(context));
+    builder.CreateStore(current_actor, alloca);
+    locals[pipe_name] = alloca;
+  }
+
+  if (auto *block = std::get_if<BlockNode>(&node.body->data))
+    emit_body(*block);
+  else
+    emit_expr(*node.body);
+  if (!builder.GetInsertBlock()->getTerminator())
+    builder.CreateRetVoid();
+  verify_function(*outlined_fn);
+}
+
+// The runtime copied the closure struct into the actor's arena; a shared
+// capture takes a reference of its own for as long as the actor runs.
+void CodeGen::unpack_spawn_captures(
+    llvm::Function *outlined_fn, llvm::StructType *closure_st,
+    const std::vector<llvm::Type *> &closure_field_types,
+    const std::vector<Analyzer::SpawnCaptureInfo> &captures) {
+  auto *ptr_type = llvm::PointerType::getUnqual(context);
+  auto *accessor = module->getFunction("saga_runtime_actor_get_closure");
+  if (!accessor)
+    accessor = llvm::Function::Create(
+        llvm::FunctionType::get(ptr_type, {ptr_type}, false),
+        llvm::Function::ExternalLinkage, "saga_runtime_actor_get_closure",
+        module.get());
+  auto *closure_ptr =
+      builder.CreateCall(accessor, {current_actor}, "closure.ptr");
+
+  for (size_t i = 0; i < captures.size(); ++i) {
+    auto *field_gep = builder.CreateStructGEP(closure_st, closure_ptr, i,
+                                              captures[i].name + ".cap");
+    auto *val = builder.CreateLoad(closure_field_types[i], field_gep,
+                                   captures[i].name);
+    auto *alloca = create_entry_alloca(outlined_fn, captures[i].name,
+                                       closure_field_types[i]);
+    builder.CreateStore(val, alloca);
+    locals[captures[i].name] = alloca;
+    if (captures[i].kind == Analyzer::SpawnCaptureKind::Share)
+      emit_retain(val, captures[i].type);
+  }
 }
 
 } // namespace saga

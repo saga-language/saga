@@ -73,6 +73,7 @@ llvm::Value *CodeGen::emit_error_escape(llvm::Value *operand,
   if (raised)
     builder.CreateStore(builder.CreateLoad(landing_st, raised, "promote.raised"),
                         landing.slot);
+  release_to(landing.depth);
   builder.CreateBr(landing.err_bb);
 
   builder.SetInsertPoint(ok_bb);
@@ -116,7 +117,7 @@ llvm::Value *CodeGen::emit_root_expr(const Node &node) {
   auto *err_bb = llvm::BasicBlock::Create(context, "promote.landing");
   auto *done_bb = llvm::BasicBlock::Create(context, "promote.done");
 
-  promote_landings_.push_back({err_bb, slot, root_type});
+  promote_landings_.push_back({err_bb, slot, root_type, cleanup_depth()});
   auto *val = emit_expr(node);
   auto value_sem = semantic_type(node);
   promote_landings_.pop_back();

@@ -72,35 +72,11 @@ llvm::Value *CodeGen::emit_expr(const Node &node) {
             return emit_index_expr(n);
           },
           [&](const BreakNode &n) -> llvm::Value * {
-            if (loop_stack.empty()) return nullptr;
-            auto &frame = loop_stack.back();
-            // `break <value>` inside a for-expression typed `T | Error`:
-            // wrap with ok tag, store to the pre-allocated union slot,
-            // then branch to break_bb.  Without this the value is lost.
-            if (frame.result_alloca && !n.values.empty() &&
-                frame.result_value_type && frame.result_union_type) {
-              auto *val = emit_expr(*n.values[0]);
-              if (val) {
-                auto *wrapped = coerce_to(val, frame.result_value_type,
-                                          frame.result_union_type);
-                if (wrapped) {
-                  auto *union_st =
-                      get_union_llvm_type(frame.result_union_type);
-                  auto sz =
-                      size_of(union_st);
-                  auto al =
-                      align_of(union_st);
-                  builder.CreateMemCpy(frame.result_alloca, al, wrapped,
-                                       al, sz);
-                }
-              }
-            }
-            builder.CreateBr(frame.break_bb);
+            emit_break(n);
             return nullptr;
           },
           [&](const NextNode &) -> llvm::Value * {
-            if (!loop_stack.empty())
-              builder.CreateBr(loop_stack.back().next_bb);
+            emit_next();
             return nullptr;
           },
           [&](const OrExprNode &n) -> llvm::Value * {
@@ -273,129 +249,6 @@ llvm::Value *CodeGen::emit_enum_shorthand(const EnumShorthandNode &n,
   if (it != enum_variants.end())
     return llvm::ConstantInt::get(i64_type, it->second);
   return nullptr;
-}
-
-// ===========================================================================
-// String literals
-// ===========================================================================
-
-/// Convert an LLVM value to an saga_runtime_string* based on its semantic type.
-llvm::Value *CodeGen::emit_to_string(llvm::Value *val, const TypePtr &sem) {
-  if (!val || !sem)
-    return val;
-
-  switch (sem->kind) {
-  case TypeKind::String:
-    return val; // Already a string pointer.
-  case TypeKind::Int: {
-    auto *fn = module->getFunction("saga_int_to_string");
-    return builder.CreateCall(fn, {val}, "istr");
-  }
-  case TypeKind::Float: {
-    auto *fn = module->getFunction("saga_float_to_string");
-    return builder.CreateCall(fn, {val}, "fstr");
-  }
-  case TypeKind::Bool: {
-    auto *ext = builder.CreateZExt(val, i64_type, "bext");
-    auto *fn = module->getFunction("saga_bool_to_string");
-    return builder.CreateCall(fn, {ext}, "bstr");
-  }
-  default:
-    // For types we can't convert, return an empty string placeholder.
-    return make_string_constant("");
-  }
-}
-
-llvm::Value *CodeGen::emit_string_literal(const StringLiteralNode &node) {
-  // Check if this is a plain string (no interpolation).
-  bool has_interp = false;
-  for (auto &frag : node.fragments) {
-    if (!std::holds_alternative<StringFragmentNode>(frag->data)) {
-      has_interp = true;
-      break;
-    }
-  }
-
-  if (!has_interp) {
-    // Plain string — concatenate all text fragments into one constant.
-    std::string text;
-    for (auto &frag : node.fragments) {
-      if (auto *sf = std::get_if<StringFragmentNode>(&frag->data))
-        text += unescape_string_fragment(*sf);
-    }
-    return make_string_constant(text);
-  }
-
-  // Interpolated string — emit each part and concatenate.
-  auto *concat_fn = module->getFunction("saga_string_concat");
-  llvm::Value *result = nullptr;
-  const Node *sole_string = nullptr;
-  int parts = 0;
-
-  for (auto &frag : node.fragments) {
-    llvm::Value *part = nullptr;
-
-    if (auto *sf = std::get_if<StringFragmentNode>(&frag->data)) {
-      std::string text = unescape_string_fragment(*sf);
-      if (text.empty())
-        continue;
-      part = make_string_constant(text);
-    } else {
-      // Interpolated expression — emit it and convert to string.
-      auto *val = emit_expr(*frag);
-      auto frag_sem = semantic_type(*frag);
-      part = emit_to_string(val, frag_sem);
-      if (frag_sem && frag_sem->kind == TypeKind::String)
-        sole_string = frag.get();
-    }
-
-    if (!part)
-      continue;
-    ++parts;
-
-    if (!result) {
-      result = part;
-    } else {
-      result = builder.CreateCall(concat_fn, {result, part}, "interp");
-    }
-  }
-
-  // A lone string part is the result itself, not a copy of it.
-  if (parts == 1 && sole_string)
-    retain_if_borrowed(result, semantic_type(*sole_string), *sole_string);
-  return result ? result : make_string_constant("");
-}
-
-llvm::Value *CodeGen::make_string_constant(const std::string &text) {
-  auto it = string_constants.find(text);
-  if (it != string_constants.end())
-    return it->second;
-
-  auto *char_array =
-      llvm::ConstantDataArray::getString(context, text, /*AddNull=*/false);
-  auto *raw_global = new llvm::GlobalVariable(
-      *module, char_array->getType(), true,
-      llvm::GlobalValue::PrivateLinkage, char_array, ".str");
-  raw_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  raw_global->setAlignment(llvm::Align(1));
-
-  auto *data_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
-      char_array->getType(), raw_global,
-      llvm::ArrayRef<llvm::Constant *>{
-          llvm::ConstantInt::get(i64_type, 0),
-          llvm::ConstantInt::get(i64_type, 0)});
-  auto *length = llvm::ConstantInt::get(i64_type, text.size());
-  auto *refcount = llvm::ConstantInt::getSigned(i64_type, -1); // static
-  auto *str_const =
-      llvm::ConstantStruct::get(string_type, {data_ptr, length, refcount});
-
-  auto *str_global = new llvm::GlobalVariable(
-      *module, string_type, true,
-      llvm::GlobalValue::PrivateLinkage, str_const, ".saga_runtime_str");
-  str_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-
-  string_constants[text] = str_global;
-  return str_global;
 }
 
 // ===========================================================================
@@ -618,7 +471,7 @@ llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
 
   auto *callee =
       forward_declare_method(struct_method_link_name(info, method), *method_fi);
-  auto *self = emit_expr(*node.lhs);
+  auto *self = emit_borrowed(*node.lhs);
   auto *rhs_val = emit_argument(
       *node.rhs, method_fi->params.empty() ? nullptr : method_fi->params[0],
       true);
@@ -688,8 +541,8 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
 
   // ── String operations ────────────────────────────────────────────────
   if (is_string) {
-    auto *lhs = emit_expr(*node.lhs);
-    auto *rhs = emit_expr(*node.rhs);
+    auto *lhs = emit_borrowed_operand(*node.lhs);
+    auto *rhs = emit_borrowed_operand(*node.rhs);
     if (!lhs || !rhs)
       return nullptr;
 
@@ -741,8 +594,8 @@ llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
   }
 
   // ── Numeric / bool operations ────────────────────────────────────────
-  auto *lhs = emit_operand(*node.lhs);
-  auto *rhs = emit_operand(*node.rhs);
+  auto *lhs = emit_borrowed_operand(*node.lhs);
+  auto *rhs = emit_borrowed_operand(*node.rhs);
   if (!lhs || !rhs)
     return nullptr;
 
@@ -873,7 +726,7 @@ llvm::Value *CodeGen::emit_is_expr(const IsExpr &node) {
   if (value_sem && value_sem->kind == TypeKind::Union)
     return emit_union_is(node, value_sem, test_sem);
 
-  emit_expr(*node.value); // evaluate for side effects, then fold
+  emit_borrowed(*node.value); // evaluated for its effects, then folded
   bool same = value_sem && test_sem && types_equal(value_sem, test_sem);
   return llvm::ConstantInt::get(i1, same ? 1 : 0);
 }
@@ -884,7 +737,7 @@ llvm::Value *CodeGen::emit_is_expr(const IsExpr &node) {
 llvm::Value *CodeGen::emit_error_is(const IsExpr &node, const TypePtr &value_sem,
                                     const TypePtr &test_sem) {
   auto *i1 = llvm::Type::getInt1Ty(context);
-  auto *box = emit_expr(*node.value);
+  auto *box = emit_borrowed(*node.value);
   if (!box)
     return nullptr;
   if (is_abstract_error(test_sem))
@@ -906,7 +759,7 @@ llvm::Value *CodeGen::emit_union_is(const IsExpr &node, const TypePtr &value_sem
   auto *i1 = llvm::Type::getInt1Ty(context);
   auto *i8 = llvm::Type::getInt8Ty(context);
   int tag = union_tag_for_type(test_sem, value_sem);
-  auto *union_val = emit_expr(*node.value);
+  auto *union_val = emit_borrowed(*node.value);
   if (!union_val)
     return nullptr;
   if (tag < 0)
@@ -942,8 +795,8 @@ llvm::Value *CodeGen::emit_union_is(const IsExpr &node, const TypePtr &value_sem
 llvm::Value *CodeGen::emit_error_equality(const BinaryExprNode &node,
                                           const TypePtr &lhs_sem,
                                           const TypePtr &rhs_sem) {
-  auto *a = emit_expr(*node.lhs);
-  auto *b = emit_expr(*node.rhs);
+  auto *a = emit_borrowed(*node.lhs);
+  auto *b = emit_borrowed(*node.rhs);
   if (!a || !b)
     return nullptr;
   auto *i1 = llvm::Type::getInt1Ty(context);

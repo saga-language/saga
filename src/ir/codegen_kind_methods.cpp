@@ -124,8 +124,9 @@ CodeGen::box_kind_method_args(const CallExprNode &node, const MethodInfo &m,
   std::vector<llvm::Value *> args;
   for (size_t i = 0; i < node.args.size(); ++i) {
     auto param = fi && i < fi->params.size() ? fi->params[i] : nullptr;
-    auto *val = emit_argument(*node.args[i], param, true);
     bool type_param = param && param->kind == TypeKind::TypeParam;
+    auto *val = type_param ? emit_operand(*node.args[i])
+                           : emit_argument(*node.args[i], param, true);
     values.push_back(
         type_param ? stored_value(val, operand_type(*node.args[i]),
                                   kind_slot_type(obj_sem, param))

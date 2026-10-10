@@ -72,7 +72,7 @@ CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
 }
 
 llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
-  auto *obj = emit_expr(*node.object);
+  auto *obj = emit_borrowed(*node.object);
   if (!obj)
     return nullptr;
 
@@ -130,7 +130,7 @@ llvm::Value *CodeGen::emit_index_expr(const IndexExprNode &node) {
   }
 
   if (obj_sem && obj_sem->kind == TypeKind::Map) {
-    auto *idx = emit_expr(*node.index);
+    auto *idx = emit_borrowed(*node.index);
     if (!idx)
       return nullptr;
 
