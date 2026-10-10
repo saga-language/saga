@@ -5,7 +5,9 @@
 // Anything not known to make a fresh value is borrowed, so a producer missing
 // from this list costs a leak rather than a double free. A conditional is owned
 // when any of its branches is: the join gives each borrowed branch a reference
-// of its own, so the consumer sees one answer for the whole expression.
+// of its own, so the consumer sees one answer for the whole expression. A
+// value put in a new box is owned whatever it was read from, since the box
+// takes references of its own.
 
 #include "ir/codegen.hpp"
 
@@ -44,7 +46,18 @@ bool within(Span inner, Span outer) {
 }
 } // namespace
 
+// A root wraps its value into the union its errors travel in.
 Ownership CodeGen::value_ownership(const Node &node) {
+  return boxes_root_value(node) ? Ownership::Owned : shape_ownership(node);
+}
+
+bool CodeGen::boxes_root_value(const Node &node) {
+  auto it = analyzer.promotion_root_types.find(&node);
+  return it != analyzer.promotion_root_types.end() &&
+         boxes_into(semantic_type(node), it->second);
+}
+
+Ownership CodeGen::shape_ownership(const Node &node) {
   using enum Ownership;
   return std::visit(
       overloaded{
@@ -67,7 +80,9 @@ Ownership CodeGen::value_ownership(const Node &node) {
           },
           [&](const CallExprNode &n) { return call_ownership(n); },
           [&](const IndexExprNode &n) {
-            return is_slice(n) || indexes_string(n) ? Owned : Borrowed;
+            return is_slice(n) || indexes_string(n) || boxes_element(n)
+                       ? Owned
+                       : Borrowed;
           },
           [&](const OrExprNode &n) { return or_ownership(n); },
           [&](const IfExprNode &n) { return if_ownership(n, node); },
@@ -75,6 +90,16 @@ Ownership CodeGen::value_ownership(const Node &node) {
           [&](const auto &) { return Borrowed; },
       },
       node.data);
+}
+
+// A lookup wraps what it finds into a union with the miss's error.
+bool CodeGen::boxes_element(const IndexExprNode &node) {
+  auto obj = unwrap_alias(semantic_type(*node.object));
+  if (obj && obj->kind == TypeKind::Array)
+    return union_alt_is_boxed(std::get<ArrayTypeInfo>(obj->detail).element);
+  if (obj && obj->kind == TypeKind::Map)
+    return union_alt_is_boxed(std::get<MapTypeInfo>(obj->detail).value);
+  return false;
 }
 
 // A string's element is a string of its own, made for the read.

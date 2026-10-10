@@ -1,0 +1,61 @@
+// Spec: a struct may contain itself through a union alternative
+// (docs/language.md, Self-referential structs), and values are counted and let
+// go once nothing refers to them. Each list here is handed on — built up in a
+// loop, stored in a collection, looked up, raised by `?`, taken out of a call's
+// result by `or`, chosen by a conditional — and read afterwards, so one let go
+// too early reads back wrong.
+import "std/io"
+
+struct Node {
+  name string
+  tail Node | Missing
+}
+
+fn len(n Node | Missing) int {
+  if n is Node {
+    1 + len(n.tail)
+  } else {
+    0
+  }
+}
+
+fn names(n Node | Missing) string {
+  if n is Node {
+    n.name + names(n.tail)
+  } else {
+    ""
+  }
+}
+
+fn second(n Node | Missing) Node | error { n?.tail? }
+
+fn build(prefix string, count int) Node | Missing {
+  list Node | Missing = Missing{}
+  for i : 0..count {
+    list = Node{name: "{prefix}{i}", tail: list}
+  }
+  list
+}
+
+fn head(name string, tail Node | Missing) Node {
+  Node{name: name, tail: tail}
+}
+
+pub fn Main() void {
+  a := build("a", 3)
+  b := build("b", 2)
+  nodes := [head("p", a), head("q", b)]
+  index := {"q": head("q", b)}
+  io.Println("{len(a)} {names(a)} {names(b)}")
+
+  for i : 0..3 {
+    found := nodes[i] or { head("x", Missing{}) }
+    looked := index["q"] or { head("y", Missing{}) }
+    io.Println("{names(found)} {names(looked)}")
+  }
+
+  after := second(a) or { Node{name: "none", tail: Missing{}} }
+  last := second(build("c", 1)) or { Node{name: "none", tail: Missing{}} }
+  picked := if len(a) > 2 { a } else { b }
+  io.Println("{names(after)} {names(last)} {names(picked)}")
+}

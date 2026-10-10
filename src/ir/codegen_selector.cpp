@@ -21,11 +21,9 @@ llvm::Value *CodeGen::struct_slot_address(llvm::AllocaInst *slot,
     return nullptr;
 
   auto *slot_type = slot->getAllocatedType();
-  if (slot_type == st_it->second)
-    return slot;
-  if (slot_type->isPointerTy())
-    return builder.CreateLoad(slot_type, slot, name);
-  return nullptr;
+  if (slot_type != st_it->second && !slot_type->isPointerTy())
+    return nullptr;
+  return held_struct_address(slot, slot_type, name);
 }
 
 std::pair<llvm::Value *, TypePtr> CodeGen::struct_lvalue(const Node &node) {
@@ -47,13 +45,22 @@ std::pair<llvm::Value *, TypePtr> CodeGen::struct_lvalue(const Node &node) {
     auto [base, base_sem] = struct_lvalue(*sel->object);
     if (!base)
       return {nullptr, nullptr};
-    auto [gep, _] =
-        struct_field_gep(base, base_sem, std::string(sel->field.name));
+    std::string name(sel->field.name);
+    auto [gep, field_ll] = struct_field_gep(base, base_sem, name);
     if (gep)
-      return {gep, sem};
+      return {held_struct_address(gep, field_ll, name), sem};
   }
 
   return {nullptr, nullptr};
+}
+
+// A struct is held inline, and an error as a pointer to its box.
+llvm::Value *CodeGen::held_struct_address(llvm::Value *addr,
+                                          llvm::Type *held_ll,
+                                          const std::string &name) {
+  if (held_ll->isPointerTy())
+    return builder.CreateLoad(held_ll, addr, name);
+  return addr;
 }
 
 llvm::Value *CodeGen::emit_selector(const SelectorNode &node,

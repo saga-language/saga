@@ -1,0 +1,17 @@
+// Spec: `or` strips the error alternatives and yields what remains
+// (docs/language.md, Error unions). An array of errors indexes to nothing but
+// errors — the element, or the Missing for a bad index — so the handler always
+// runs and its value is the result.
+import "std/io"
+
+error Bad {
+  code int
+}
+
+pub fn Main() void {
+  errs := [Bad{code: 1}, Bad{code: 2}]
+  e := errs[1] or { Bad{code: 7} }
+  m := {"k": Bad{code: 3}}
+  me := m["k"] or { Bad{code: 8} }
+  io.Println("{e.code} {me.code}")
+}

@@ -207,6 +207,18 @@ int         saga_context_send(saga_runtime_actor *a, const void *data);
 
 void       *saga_error_from_trap(saga_runtime_actor *a);
 
+/* ── Shared box ────────────────────────────────────────────────────────── */
+
+/* Mirror of runtime_internal.h: the header sits just before the value. */
+typedef struct {
+  int64_t refcount;
+  const saga_runtime_elem_ops *ops;
+} saga_runtime_shared;
+
+void *saga_shared_new(int64_t size, const saga_runtime_elem_ops *ops);
+void  saga_shared_retain(void *value);
+void  saga_shared_release(void *value);
+
 /* Mirror of runtime.c's saga_runtime_error: the { type_id, message } prefix
  * shared by every error box. */
 typedef struct {

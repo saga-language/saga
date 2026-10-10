@@ -22,13 +22,6 @@ constexpr uint64_t kBoxValueOffset = 16;
 constexpr uint64_t kBoxVtableOffset = 8;
 } // namespace
 
-bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem) {
-  auto slot = unwrap_alias(slot_sem);
-  auto val = unwrap_alias(val_sem);
-  return slot && val && slot->kind == TypeKind::Interface &&
-         val->kind != TypeKind::Interface;
-}
-
 void CodeGen::declare_vtable_type(const std::string &key,
                                   const std::vector<MethodInfo> &methods) {
   auto *ptr_type = llvm::PointerType::getUnqual(context);

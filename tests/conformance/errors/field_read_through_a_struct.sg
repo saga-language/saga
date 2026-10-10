@@ -1,0 +1,23 @@
+// Spec: a struct field may hold an error, and a chain reads through it to the
+// error's own fields (docs/language.md, Error unions: "the message is a plain
+// `.message` field").
+import "std/io"
+
+error Bad {
+  code int
+  message = "bad {code}"
+}
+
+struct Holder {
+  err Bad
+}
+
+struct Outer {
+  inner Holder
+}
+
+pub fn Main() void {
+  h := Holder{err: Bad{code: 4}}
+  o := Outer{inner: h}
+  io.Println("{h.err.code} {o.inner.err.code} {o.inner.err.message}")
+}

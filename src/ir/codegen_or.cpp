@@ -87,8 +87,12 @@ bool CodeGen::or_has_handler(const OrExprNode &node) const {
   return sem && sem->kind == TypeKind::Union && is_impure_union(sem);
 }
 
+// A subject that holds nothing but errors always runs the handler, which then
+// supplies the value.
 TypePtr CodeGen::or_result_type(const OrExprNode &node) const {
-  return strip_error_from_union(root_expr_type(*node.expr));
+  if (auto purified = strip_error_from_union(root_expr_type(*node.expr)))
+    return purified;
+  return body_result_type(*node.fallback);
 }
 
 llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
@@ -108,13 +112,42 @@ llvm::Value *CodeGen::emit_or_expr(const OrExprNode &node) {
   builder.CreateCondBr(is_error_tag(tag, expr_sem), err_bb, ok_bb);
 
   auto result = or_result_type(node);
+  auto subject = value_ownership(*node.expr);
   auto join = open_join("or.merge", result, or_ownership(node));
   builder.SetInsertPoint(ok_bb);
-  close_branch(join, emit_union_purified(union_ptr, tag, expr_sem), result,
+  close_branch(join, take_value(union_ptr, tag, expr_sem, subject), result,
                node.expr.get());
+  // The value path takes an owned subject's value over; this path is left
+  // with its error.
   start_block(err_bb);
-  emit_or_handler(node, union_ptr, expr_sem, join);
+  auto *error = raised_error(union_ptr, expr_sem);
+  if (subject == Ownership::Owned)
+    hold_temporary(error, analyzer.builtins.error_base);
+  emit_or_handler(node, error, join);
   return finish_join(join, "or.result");
+}
+
+// A boxed alternative taken out of a union the expression owns is a copy of
+// what the box holds, so it takes references of its own, and the box goes
+// with the union.
+llvm::Value *CodeGen::take_value(llvm::Value *union_ptr, llvm::Value *tag,
+                                 const TypePtr &union_sem, Ownership own) {
+  auto *value = emit_union_purified(union_ptr, tag, union_sem);
+  auto alt = strip_error_from_union(union_sem);
+  if (!value || own == Ownership::Borrowed || !union_alt_is_boxed(alt))
+    return value;
+  emit_retain(value, alt);
+  emit_release(union_ptr, union_sem);
+  return value;
+}
+
+// Every error alternative is a pointer, held in the payload's first word.
+llvm::Value *CodeGen::raised_error(llvm::Value *union_ptr,
+                                   const TypePtr &union_sem) {
+  auto *payload = builder.CreateStructGEP(get_union_llvm_type(union_sem),
+                                          union_ptr, 1, "err.payload.gep");
+  return builder.CreateLoad(llvm::PointerType::getUnqual(context), payload,
+                            "err.payload.val");
 }
 
 llvm::Value *CodeGen::or_union_address(llvm::Value *val,
@@ -142,20 +175,16 @@ llvm::Value *CodeGen::is_error_tag(llvm::Value *tag,
   return is_err;
 }
 
-// The pipe names the error for the handler's duration; the payload's first
-// word is the error's interface pointer, whichever path produced it.
-void CodeGen::emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
-                              const TypePtr &union_sem, BranchJoin &join) {
+// The pipe names the error for the handler's duration, without a reference
+// of its own.
+void CodeGen::emit_or_handler(const OrExprNode &node, llvm::Value *error,
+                              BranchJoin &join) {
   llvm::AllocaInst *displaced = nullptr;
   std::string pipe_name = node.pipe ? std::string(node.pipe->name) : "";
   if (node.pipe) {
-    auto *ptr_type = llvm::PointerType::getUnqual(context);
     auto *slot = create_entry_alloca(builder.GetInsertBlock()->getParent(),
-                                     pipe_name, ptr_type);
-    auto *payload = builder.CreateStructGEP(get_union_llvm_type(union_sem),
-                                            union_ptr, 1, "err.payload.gep");
-    builder.CreateStore(
-        builder.CreateLoad(ptr_type, payload, "err.payload.val"), slot);
+                                     pipe_name, error->getType());
+    builder.CreateStore(error, slot);
     auto it = locals.find(pipe_name);
     displaced = it == locals.end() ? nullptr : it->second;
     locals[pipe_name] = slot;

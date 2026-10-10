@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Composite literals: arrays, maps and structs. Error values are struct
-// literals too, so their message defaulting and singleton lowering live here.
+// literals too; what only they need is in codegen_error_literals.cpp.
 
 #include "ir/codegen.hpp"
 
@@ -179,19 +179,11 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
     if (auto msg = const_error_message(node, info))
       return emit_error_singleton(info, *msg);
 
-  // Errors are boxed on the heap (they escape via unions/returns) and carry a
-  // type_id in field 0; other structs get a zero-initialised stack alloca.
+  // Errors are boxed on the heap (they escape via unions/returns); other
+  // structs get a zero-initialised stack alloca.
   llvm::Value *storage = nullptr;
   if (info.is_error) {
-    uint64_t size = size_of(st);
-    storage = builder.CreateCall(
-        module->getFunction("saga_error_alloc"),
-        {llvm::ConstantInt::get(i64_type, size)}, info.name + ".box");
-    auto *tid_gep = builder.CreateStructGEP(st, storage, 0, "type_id");
-    builder.CreateStore(
-        llvm::ConstantInt::get(i64_type,
-                               static_cast<uint64_t>(error_type_id(info))),
-        tid_gep);
+    storage = emit_error_box(sem, st);
   } else {
     storage = create_entry_alloca(func, info.name + ".lit", st);
     builder.CreateStore(llvm::Constant::getNullValue(st), storage);
@@ -227,83 +219,6 @@ llvm::Value *CodeGen::emit_struct_literal(const StructLiteralNode &node,
 
   // For a boxed error this is the heap box pointer; for a struct, the alloca.
   return storage;
-}
-
-// An error's `message = Expr` default may interpolate the error's own fields.
-// The referenced fields are already stored in the box, so bind each to a temp
-// local for the duration of the message expression and store the result into
-// the message slot. Unbound temps are dropped by later passes.
-void CodeGen::emit_error_message_default(llvm::Value *box, const TypePtr &sem,
-                                         const StructTypeInfo &info) {
-  const Node *msg_default = nullptr;
-  for (auto &f : info.fields)
-    if (f.name == "message") { msg_default = f.default_value; break; }
-  if (!msg_default)
-    return;
-
-  auto *st = struct_types.at(struct_cache_key(info));
-  auto *func = builder.GetInsertBlock()->getParent();
-  auto saved = locals;
-  for (size_t i = 0; i < info.fields.size() && i < st->getNumElements(); ++i) {
-    auto &f = info.fields[i];
-    if (f.name == "type_id" || f.name == "message")
-      continue;
-    auto *field_ll = st->getElementType(i);
-    auto *gep = builder.CreateStructGEP(st, box, i, f.name);
-    auto *tmp = create_entry_alloca(func, f.name + ".self", field_ll);
-    builder.CreateStore(builder.CreateLoad(field_ll, gep, f.name), tmp);
-    locals[f.name] = tmp;
-  }
-
-  auto [msg_gep, msg_ll] = struct_field_gep(box, sem, "message");
-  if (msg_gep)
-    store_struct_field(msg_gep, msg_ll, analyzer.builtins.string_type,
-                       *msg_default);
-  locals = saved;
-}
-
-std::optional<std::string>
-CodeGen::const_error_message(const StructLiteralNode &node,
-                            const StructTypeInfo &info) {
-  const Node *msg = nullptr;
-  for (auto &fa : node.fields)
-    if (fa.name.name == "message") { msg = fa.value.get(); break; }
-  if (!msg)
-    msg = info.fields[1].default_value;
-  if (!msg)
-    return std::string();
-
-  auto *sl = std::get_if<StringLiteralNode>(&msg->data);
-  if (!sl)
-    return std::nullopt;
-  std::string text;
-  for (auto &frag : sl->fragments) {
-    auto *sf = std::get_if<StringFragmentNode>(&frag->data);
-    if (!sf)
-      return std::nullopt;
-    text += unescape_string_fragment(*sf);
-  }
-  return text;
-}
-
-llvm::Value *CodeGen::emit_error_singleton(const StructTypeInfo &info,
-                                           const std::string &message) {
-  uint64_t tid = error_type_id(info);
-  std::string key = std::to_string(tid) + '\x01' + message;
-  auto it = error_singletons.find(key);
-  if (it != error_singletons.end())
-    return it->second;
-
-  auto *st = struct_types.at(struct_cache_key(info));
-  auto *msg = llvm::cast<llvm::Constant>(make_string_constant(message));
-  auto *init = llvm::ConstantStruct::get(
-      st, {llvm::ConstantInt::get(i64_type, tid), msg});
-  auto *global = new llvm::GlobalVariable(
-      *module, st, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage, init,
-      info.name + ".singleton");
-  global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  error_singletons[key] = global;
-  return global;
 }
 
 void CodeGen::store_struct_field(llvm::Value *gep, llvm::Type *field_ll,

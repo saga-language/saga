@@ -1,8 +1,9 @@
 /* Copyright 2026 Rob Thornton
  * SPDX-License-Identifier: MIT
  *
- * The interface box: a counted, copy-on-write heap copy of the value an
- * interface holds. The layout is in runtime_internal.h.
+ * The interface box, a counted, copy-on-write heap copy of the value an
+ * interface holds; and the shared box, a counted heap copy of a value nothing
+ * writes through. The layouts are in runtime_internal.h.
  */
 
 #include <stdlib.h>
@@ -55,4 +56,67 @@ saga_runtime_box *saga_box_unique_for(saga_runtime_box *b, int64_t method) {
     return b;
   }
   return box_clone(b);
+}
+
+static saga_runtime_shared *shared_header(void *value) {
+  return (saga_runtime_shared *)((char *)value -
+                                 SAGA_RUNTIME_SHARED_VALUE_OFFSET);
+}
+
+/* Zeroed for the caller to fill; the box takes over what it is given. */
+void *saga_shared_new(int64_t size, const saga_runtime_elem_ops *ops) {
+  saga_runtime_shared *h = (saga_runtime_shared *)calloc(
+      1, (size_t)(SAGA_RUNTIME_SHARED_VALUE_OFFSET + size));
+  h->refcount = 1;
+  h->ops = ops;
+  return (char *)h + SAGA_RUNTIME_SHARED_VALUE_OFFSET;
+}
+
+void saga_shared_retain(void *value) {
+  if (!value) return;
+  saga_runtime_shared *h = shared_header(value);
+  if (h->refcount > 0)
+    h->refcount++;
+}
+
+/* Freeing a box releases what it holds, which may free the next box, so a
+ * long list would free itself one stack frame per node. A box whose count
+ * reaches zero while another is being freed is queued instead, and the
+ * outermost release frees the queue: the stack stays flat however deep the
+ * value goes. */
+static __thread struct {
+  void **boxes;
+  size_t len, cap;
+  int freeing;
+} pending;
+
+static void queue_free(void *value) {
+  if (pending.len == pending.cap) {
+    pending.cap = pending.cap ? pending.cap * 2 : 64;
+    pending.boxes = (void **)realloc(pending.boxes,
+                                     pending.cap * sizeof(void *));
+  }
+  pending.boxes[pending.len++] = value;
+}
+
+static void shared_free(void *value) {
+  saga_runtime_shared *h = shared_header(value);
+  if (h->ops)
+    h->ops->release(value);
+  free(h);
+}
+
+void saga_shared_release(void *value) {
+  if (!value) return;
+  saga_runtime_shared *h = shared_header(value);
+  if (h->refcount < 0 || --h->refcount > 0) return;
+  if (pending.freeing) {
+    queue_free(value);
+    return;
+  }
+  pending.freeing = 1;
+  shared_free(value);
+  while (pending.len > 0)
+    shared_free(pending.boxes[--pending.len]);
+  pending.freeing = 0;
 }

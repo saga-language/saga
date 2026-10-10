@@ -10,24 +10,21 @@
 
 namespace saga {
 
-// An error box escapes through a union and is never freed, so walking one
-// would release a message the box still points at. A self-containing union
-// alternative is a heap copy nothing frees yet, so it is not walked either.
+// An error's slot holds a pointer into its shared box, which is counted rather
+// than walked.
 bool CodeGen::walks_references(const TypePtr &sem) {
   auto s = unwrap_alias(sem);
   if (!s)
     return false;
   if (s->kind == TypeKind::Union) {
     for (auto &alt : std::get<UnionTypeInfo>(s->detail).alternatives)
-      if (!union_alt_is_boxed(alt) && holds_references(alt))
+      if (payload_holds_references(alt))
         return true;
     return false;
   }
-  if (s->kind != TypeKind::Struct)
+  if (s->kind != TypeKind::Struct || is_shared(s))
     return false;
   auto &info = std::get<StructTypeInfo>(s->detail);
-  if (info.is_error)
-    return false;
   for (auto &f : info.fields)
     if (holds_references(f.type))
       return true;
@@ -39,6 +36,12 @@ bool CodeGen::walks_references(const TypePtr &sem) {
 
 bool CodeGen::holds_references(const TypePtr &sem) {
   return is_counted(unwrap_alias(sem)) || walks_references(sem);
+}
+
+// A self-containing alternative sits in a shared box, so the payload holds a
+// counted pointer to it.
+bool CodeGen::payload_holds_references(const TypePtr &alt) {
+  return union_alt_is_boxed(alt) || holds_references(alt);
 }
 
 // A struct or union crosses as an SSA value where one slot is copied into
@@ -133,19 +136,28 @@ llvm::Function *CodeGen::union_walk_fn(const TypePtr &sem, bool retain) {
   auto &alts = std::get<UnionTypeInfo>(sem->detail).alternatives;
   auto *sw = builder.CreateSwitch(tag, done, alts.size());
   for (size_t i = 0; i < alts.size(); ++i) {
-    if (union_alt_is_boxed(alts[i]) || !holds_references(alts[i]))
+    if (!payload_holds_references(alts[i]))
       continue;
     auto *arm = llvm::BasicBlock::Create(context, "alt", fn, done);
     sw->addCase(builder.getInt8(static_cast<uint8_t>(i)), arm);
     builder.SetInsertPoint(arm);
-    walk_slot(builder.CreateStructGEP(union_st, self, 1, "payload"), alts[i],
-              retain);
+    walk_payload(builder.CreateStructGEP(union_st, self, 1, "payload"), alts[i],
+                 retain);
     builder.CreateBr(done);
   }
   builder.SetInsertPoint(done);
   builder.CreateRetVoid();
   builder.restoreIP(saved);
   return fn;
+}
+
+void CodeGen::walk_payload(llvm::Value *addr, const TypePtr &alt, bool retain) {
+  if (!union_alt_is_boxed(alt))
+    return walk_slot(addr, alt, retain);
+  auto *box = builder.CreateLoad(llvm::PointerType::getUnqual(context), addr);
+  builder.CreateCall(module->getFunction(retain ? "saga_shared_retain"
+                                                : "saga_shared_release"),
+                     {box});
 }
 
 // What a slot of `slot` type holds: a counted value through its pointer, a

@@ -59,6 +59,8 @@ CodeGen::wrap_indexed_lookup_in_error_union(llvm::Value *elem_ptr,
     ok_wrapped = emit_union_convert(elem_ptr, val_type, result_union);
   } else {
     auto *loaded = builder.CreateLoad(elem_ll, elem_ptr, "elem");
+    if (union_alt_is_boxed(val_type))
+      emit_retain(loaded, val_type);
     ok_wrapped = emit_union_wrap(loaded, val_type, result_union);
   }
   auto *ok_end_bb = builder.GetInsertBlock();

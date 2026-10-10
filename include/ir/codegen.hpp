@@ -37,13 +37,16 @@ const FuncTypeInfo *method_signature(const std::vector<MethodInfo> &methods,
 enum class Ownership { Owned, Borrowed };
 
 // Whether a value of `val_sem` landing in a slot of `slot_sem` is put in a new
-// interface box.
+// box: an interface's, or the shared box of a union alternative that contains
+// itself.
 bool boxes_into(const TypePtr &val_sem, const TypePtr &slot_sem);
 
 // A counted kind is held through one pointer to a refcounted object; a boxed
-// one (an interface or function value) is the counted box the runtime shares.
+// one (an interface or function value) is the counted box the runtime shares,
+// and a shared one (an error) points into a box nothing writes through.
 bool is_counted(const TypePtr &t);
 bool is_boxed(const TypePtr &t);
+bool is_shared(const TypePtr &t);
 
 // A conditional's merge point. Every branch that reaches it hands over a value
 // already in the conditional's type, and an owned one when `merged` is owned.
@@ -130,7 +133,7 @@ struct CodeGen {
 
   // Field-less, const-message error boxes lower to one shared rodata global
   // (keyed by type_id + message), so `E{}` / a `Missing` miss costs 0 allocs.
-  std::unordered_map<std::string, llvm::GlobalVariable *> error_singletons;
+  std::unordered_map<std::string, llvm::Constant *> error_singletons;
 
   // ── Local variable storage (per-function) ────────────────────────────
 
@@ -208,13 +211,15 @@ struct CodeGen {
 
   // ── Error promotion ──────────────────────────────────────────────────
 
-  /// Where a `?` that found an error jumps, and the slot it leaves the error
-  /// in. One per root expression that contains a promotion.
+  /// Where a `?` that found an error jumps, the slot it leaves the error in,
+  /// and the ownership the root's value, and so the error, arrives with. One
+  /// per root expression that contains a promotion.
   struct PromoteLanding {
     llvm::BasicBlock *err_bb;
     llvm::Value *slot;
     TypePtr result_type;
     CleanupDepth depth;
+    Ownership ownership;
   };
   std::vector<PromoteLanding> promote_landings_;
 
@@ -862,6 +867,7 @@ private:
   /// explicit literal fields, which override.
   void apply_struct_field_defaults(llvm::Value *struct_ptr,
                                    const TypePtr &struct_sem);
+  llvm::Value *emit_error_box(const TypePtr &sem, llvm::StructType *st);
   void emit_error_message_default(llvm::Value *box, const TypePtr &sem,
                                   const StructTypeInfo &info);
   /// A field-less error with a compile-time-constant message lowers to one
@@ -869,6 +875,8 @@ private:
   /// cached global pointer.
   llvm::Value *emit_error_singleton(const StructTypeInfo &info,
                                     const std::string &message);
+  llvm::StructType *constant_shared_type(llvm::Type *value_ll);
+  llvm::Constant *constant_shared_box(llvm::Constant *value);
   /// The constant message text of an error literal (explicit or default), or
   /// nullopt when the message is a runtime expression / interpolation.
   std::optional<std::string> const_error_message(const StructLiteralNode &node,
@@ -903,6 +911,7 @@ private:
   llvm::StructType *elem_ops_type();
   llvm::Constant *runtime_elem_ops(const std::string &name);
   llvm::Constant *walk_elem_ops(const TypePtr &sem);
+  llvm::Value *emit_shared_box(const TypePtr &sem, llvm::Type *ll);
   llvm::Value *emit_new_array(const TypePtr &elem_sem, int64_t cap,
                               const std::string &name);
   llvm::Value *emit_new_map(const TypePtr &key_sem, const TypePtr &val_sem);
@@ -950,8 +959,11 @@ private:
   TypePtr or_result_type(const OrExprNode &node) const;
   llvm::Value *or_union_address(llvm::Value *val, const TypePtr &union_sem);
   llvm::Value *is_error_tag(llvm::Value *tag, const TypePtr &union_sem);
-  void emit_or_handler(const OrExprNode &node, llvm::Value *union_ptr,
-                       const TypePtr &union_sem, BranchJoin &join);
+  void emit_or_handler(const OrExprNode &node, llvm::Value *error,
+                       BranchJoin &join);
+  llvm::Value *raised_error(llvm::Value *union_ptr, const TypePtr &union_sem);
+  llvm::Value *take_value(llvm::Value *union_ptr, llvm::Value *tag,
+                          const TypePtr &union_sem, Ownership own);
   llvm::Value *emit_func_expr(const FuncExprNode &node, const Node &parent);
   llvm::Value *emit_spawn_expr(const SpawnExprNode &node, const Node &parent);
   void emit_spawn_body(const SpawnExprNode &node, llvm::Function *outlined_fn,
@@ -1123,6 +1135,8 @@ private:
   /// pointer to one.
   llvm::Value *struct_slot_address(llvm::AllocaInst *slot, const TypePtr &sem,
                                    const std::string &name);
+  llvm::Value *held_struct_address(llvm::Value *addr, llvm::Type *held_ll,
+                                   const std::string &name);
 
   /// Walk `__embed_<Name>` slots from `struct_ptr` (a pointer to a
   /// `struct_sem` value) down to the embedded struct that *directly* declares
@@ -1292,7 +1306,7 @@ private:
                             llvm::Value *rhs, const TypePtr &rhs_sem);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
-  llvm::Value *emit_box_copy(llvm::Value *val, llvm::Type *ll_alt);
+  llvm::Value *emit_box_copy(llvm::Value *val, const TypePtr &alt);
 
   /// Get the tag index for a type within a union.
   int union_tag_for_type(const TypePtr &alt_type, const TypePtr &union_type);
@@ -1316,7 +1330,10 @@ private:
   /// otherwise continue with the value it holds. Returns `operand` untouched
   /// where there is no landing or no error to escape with.
   llvm::Value *emit_error_escape(llvm::Value *operand,
-                                 const TypePtr &operand_sem);
+                                 const TypePtr &operand_sem,
+                                 const Node &source);
+  void raise_to_landing(const PromoteLanding &landing, llvm::Value *union_ptr,
+                        const TypePtr &operand_sem, Ownership operand_own);
 
   /// Emit an operand, escaping through the landing at exactly the nodes the
   /// analyzer bubbled. Plain emit_expr everywhere else.
@@ -1358,8 +1375,11 @@ private:
   void emit_retain(llvm::Value *val, const TypePtr &sem);
 
   Ownership value_ownership(const Node &node);
+  bool boxes_root_value(const Node &node);
+  Ownership shape_ownership(const Node &node);
   Ownership call_ownership(const CallExprNode &call);
   bool indexes_string(const IndexExprNode &node);
+  bool boxes_element(const IndexExprNode &node);
   bool reads_stored_element(const CallExprNode &call);
   bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
@@ -1436,6 +1456,7 @@ private:
   /// (codegen_walks.cpp).
   bool walks_references(const TypePtr &sem);
   bool holds_references(const TypePtr &sem);
+  bool payload_holds_references(const TypePtr &alt);
   void emit_ownership_walk(llvm::Value *val, const TypePtr &sem, bool retain);
   llvm::Function *ownership_fn(const TypePtr &sem, bool retain);
   llvm::Function *declare_walk_fn(const std::string &name);
@@ -1447,6 +1468,7 @@ private:
   void walk_field(llvm::StructType *st, llvm::Value *self, unsigned idx,
                   const TypePtr &slot, bool retain);
   void walk_slot(llvm::Value *addr, const TypePtr &slot, bool retain);
+  void walk_payload(llvm::Value *addr, const TypePtr &alt, bool retain);
   std::string close_link_name(llvm::Type *struct_ll) const;
   void emit_close_call(llvm::AllocaInst *slot);
 };
