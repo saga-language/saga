@@ -8,6 +8,8 @@
 
 set -u
 
+source "$(dirname "${BASH_SOURCE[0]}")/../run_program.sh"
+
 SAGA="$1"
 CASE_DIR="$2"
 TEST_DIR="$3"
@@ -34,7 +36,7 @@ if [ -f "$CASE_DIR/golden.txt" ]; then
     exit 1
   fi
 
-  actual=$("$out_bin" 2>&1)
+  actual=$(run_program "$out_bin" 2>&1)
   run_rc=$?
   if [ $run_rc -ne 0 ]; then
     echo "RUN FAILED (positive test, exit $run_rc):"

@@ -21,7 +21,8 @@ Every package test, here and in the sibling directories, runs through
 `tests/runtime/run_package_test.sh`, which builds `app/` with
 `saga build --build app/ -I <case-dir>`. A positive case must build and run,
 and its stdout must equal `golden.txt`. A negative case must fail to build,
-with `error.txt` a substring of the output.
+with `error.txt` a substring of the output. `SAGA_LEAK_CHECK=1` also
+leak-checks each positive run; see `tests/conformance/README.md`.
 
 ## Adding a case
 

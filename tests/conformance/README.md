@@ -30,6 +30,21 @@ tests/conformance/
 If a `.sg` file has neither sibling, the runner fails it as misconfigured. An
 expectation file with no `.sg` fails the CMake configure step.
 
+## Leak check
+
+```
+SAGA_LEAK_CHECK=1 ctest -j16
+```
+
+Runs every positive test here and every positive package test in
+`tests/runtime/` with libasan preloaded, so a program that leaks, frees
+twice or frees a pointer it doesn't own fails its test. Codegen emits every
+retain and release, so a leak is a compiler bug. The binaries aren't
+instrumented, so a read of freed memory is caught only when it goes through
+a libc call such as `memcpy`. Run it before merging. It's off by default
+because LeakSanitizer can't run where ptrace is denied, as in many
+containers.
+
 ## Naming
 
 - Section dirs use `snake_case` and match the spec section title where
