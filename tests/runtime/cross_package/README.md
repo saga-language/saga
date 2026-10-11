@@ -1,7 +1,7 @@
 # Cross-Package Integration Tests
 
 End-to-end tests for cross-package compilation. Each case is a directory
-containing one or more packages and a `golden.txt` file.
+containing one or more packages and an expectation file.
 
 ## Structure
 
@@ -9,32 +9,25 @@ containing one or more packages and a `golden.txt` file.
 <case>/
   lib/         library package (imported by app)
   app/         binary package that imports lib
-  golden.txt   expected stdout (positive tests) or error fragment (negative)
+  golden.txt   positive: expected stdout
+  error.txt    negative: fragment the build's output must contain
 ```
 
 The `name_collision` case has `pka/`, `pkb/`, and `app/` instead of `lib/`.
 
 ## How tests run
 
-Positive tests (`cross_pkg_*` via `run_test.sh`):
-1. `saga build --build app/ -I <case-dir>` — compiles lib then app
-2. Run the binary; compare stdout to `golden.txt`
-
-Negative tests (cases `generic_method_negative`, `receiver_bind_negative`):
-1. `saga build` is expected to exit non-zero
-2. Compiler stderr must contain the `golden.txt` fragment
+Every package test, here and in the sibling directories, runs through
+`tests/runtime/run_package_test.sh`, which builds `app/` with
+`saga build --build app/ -I <case-dir>`. A positive case must build and run,
+and its stdout must equal `golden.txt`. A negative case must fail to build,
+with `error.txt` a substring of the output. `SAGA_LEAK_CHECK=1` also
+leak-checks each positive run; see `tests/conformance/README.md`.
 
 ## Adding a case
 
 1. Create `tests/runtime/cross_package/<name>/{lib,app}/` with `.sg` sources
-2. Write `golden.txt` — exact expected stdout or error fragment
-3. Add `cross_pkg_test(<name>)` (or `cross_pkg_error_test`) in `CMakeLists.txt`
+2. Write `golden.txt` (expected stdout) or `error.txt` (error fragment)
 
-## Phase schedule
-
-All 19 cases start red. They turn green as phases land:
-- P1 (type-system foundation): no cases green yet
-- P3 (codegen import registry): cases 1–4, 12–13
-- P4 (struct ABI): cases 5–11, 15, 17, 19
-- P5 (analyzer enforcement): cases 16, 18
-- P6 (interfaces + generics): cases 14, 15
+`tests/CMakeLists.txt` registers every `<group>/<case>/app` as the test
+`<group>_<case>`, so the next build picks a new case up.

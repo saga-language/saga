@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_test.sh <saga-bin> <test.sg> <build-dir>
+# run_test.sh <saga-bin> <test.sg> <test-dir>
 #
 # Decides positive/negative by sibling expectation file:
 #   <test>.golden -> positive (build+run must succeed, stdout == golden)
@@ -8,23 +8,19 @@
 
 set -u
 
+source "$(dirname "${BASH_SOURCE[0]}")/../run_program.sh"
+
 SAGA="$1"
 SRC="$2"
-BUILD_DIR="$3"
+TEST_DIR="$3"
 
 base="${SRC%.sg}"
-test_name="$(basename "$base")"
+out_bin="$TEST_DIR/$(basename "$base")"
 
-# Per-test working directory: `saga build` writes its intermediate
-# `<module>.o` into the current directory, so two tests sharing the
-# same category cwd would race on the same .o filename when CTest
-# parallelises.  Give each test its own scratch directory and `cd`
-# into it so artifacts can never collide.
-work_dir="$BUILD_DIR/$test_name.d"
-mkdir -p "$work_dir"
-cd "$work_dir"
-
-out_bin="$BUILD_DIR/$test_name"
+# `saga build` writes its `<module>.o` into the cwd, so parallel tests must not
+# share one.
+mkdir -p "$TEST_DIR"
+cd "$TEST_DIR"
 
 if [ -f "$base.golden" ]; then
   expected="$(cat "$base.golden")"
@@ -37,7 +33,7 @@ if [ -f "$base.golden" ]; then
     exit 1
   fi
 
-  actual=$("$out_bin" 2>&1)
+  actual=$(run_program "$out_bin" 2>&1)
   run_rc=$?
   if [ $run_rc -ne 0 ]; then
     echo "RUN FAILED (positive test, exit $run_rc):"

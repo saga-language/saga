@@ -65,23 +65,26 @@ if(RUNTIME_TEST_SOURCES)
   gtest_discover_tests(runtime_tests)
 endif()
 
-# Cross-package integration tests (shell-script driven, all red until P1+).
-add_subdirectory(runtime/cross_package)
+# Package programs: every runtime/<group>/<case>/app, with run_package_test.sh
+# deciding positive or negative from the case's golden.txt or error.txt.
+function(package_test app_dir)
+  get_filename_component(case_dir "${app_dir}" DIRECTORY)
+  get_filename_component(case "${case_dir}" NAME)
+  get_filename_component(group_dir "${case_dir}" DIRECTORY)
+  get_filename_component(group "${group_dir}" NAME)
+  add_test(
+    NAME ${group}_${case}
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/runtime/run_package_test.sh"
+            "$<TARGET_FILE:saga>" "${case_dir}"
+            "${CMAKE_CURRENT_BINARY_DIR}/runtime/${group}/${case}"
+  )
+endfunction()
 
-# Single-package embed integration tests.
-add_subdirectory(runtime/embed)
-
-# Generic struct ABI / per-instantiation layout regression tests.
-add_subdirectory(runtime/generic_aggregate)
-
-# Integer conversion regression tests (exercises Phase 6 sext/zext path).
-add_subdirectory(runtime/integer_conversion)
-
-# Stdlib method coverage (Array.Equals, Map.Equals, string predicates/Split).
-add_subdirectory(runtime/stdlib_methods)
-
-# Phase 4 spike: user-defined struct keys routed through the runtime ops table.
-add_subdirectory(runtime/protocol_user_key)
+file(GLOB PACKAGE_TEST_APPS LIST_DIRECTORIES true CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/*/*/app")
+foreach(app_dir ${PACKAGE_TEST_APPS})
+  package_test("${app_dir}")
+endforeach()
 
 # Spec conformance tests, organized by docs/language.md section.
 add_subdirectory(conformance)
