@@ -945,6 +945,8 @@ private:
   /// Reports and poisons a binding whose type still holds an inference hole.
   TypePtr resolve_binding_type(TypePtr type, Span span);
   void check_assign(const AssignNode &node);
+  TypePtr assigned_slot_type(const Node &target, TypePtr read_type);
+  void reject_element_compound(Token::Kind op, const Node &target);
   void reject_error_field_mutation(const Node &target);
 
   /// The identifier a write target is rooted at, walking selector and index

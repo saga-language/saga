@@ -1,0 +1,1 @@
+'+=' needs the element's current value, and reading an element can miss
