@@ -200,6 +200,10 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     break;
   }
 
+  if (lhs->kind == TypeKind::TypeParam || rhs->kind == TypeKind::TypeParam)
+    if (auto result = check_type_param_binary(node, lhs, rhs))
+      return *result;
+
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
@@ -327,6 +331,11 @@ TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
     expect_bool(node.operand->span, operand, "logical not");
     return builtins.bool_type;
   }
+  if (operand->kind == TypeKind::TypeParam &&
+      (node.op == Token::Kind::Sub || node.op == Token::Kind::BitwiseNot))
+    return param_admits_operator(node.op, operand, node.operand->span)
+               ? operand
+               : builtins.invalid_type;
   if (node.op == Token::Kind::Sub) {
     if (is_enum_valued(operand) || is_error_valued(operand)) {
       error(node.operand->span,

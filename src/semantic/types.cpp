@@ -5,6 +5,7 @@
 #include "frontend/ast.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <sstream>
 #include <unordered_set>
 
@@ -313,10 +314,18 @@ TypeConstraint constraint_from_name(std::string_view name) {
   return TypeConstraint::None;
 }
 
+bool constraint_within(TypeConstraint inner, TypeConstraint outer) {
+  return inner != TypeConstraint::None &&
+         (inner == outer || outer == TypeConstraint::Numeric);
+}
+
 bool satisfies_constraint(const TypePtr &t, TypeConstraint c) {
   if (c == TypeConstraint::None) return false;
   auto u = unwrap_alias(t);
   if (!u) return false;
+  if (u->kind == TypeKind::TypeParam)
+    return constraint_within(std::get<TypeParamInfo>(u->detail).param.constraint,
+                             c);
   switch (c) {
   case TypeConstraint::Integer: return u->kind == TypeKind::Int;
   case TypeConstraint::Float:   return u->kind == TypeKind::Float;
@@ -325,6 +334,16 @@ bool satisfies_constraint(const TypePtr &t, TypeConstraint c) {
   case TypeConstraint::None:    return false;
   }
   return false;
+}
+
+bool literal_fits_param(const TypePtr &literal, const TypePtr &param) {
+  auto c = std::get<TypeParamInfo>(param->detail).param.constraint;
+  if (literal->kind == TypeKind::Int &&
+      std::get<IntType>(literal->detail).is_untyped)
+    return c != TypeConstraint::None;
+  return literal->kind == TypeKind::Float &&
+         std::get<FloatType>(literal->detail).is_untyped &&
+         c == TypeConstraint::Float;
 }
 
 bool is_ordered(const TypePtr &t) {
@@ -674,6 +693,10 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
       target->kind == TypeKind::Int)
     return true;
 
+  // A literal fits a type parameter whose every admitted type it fits.
+  if (target->kind == TypeKind::TypeParam)
+    return literal_fits_param(source, target);
+
   // Untyped float literal — assignable to any float width.  Mirrors the
   // untyped-int rule so `f32 Float32 = 5.0` compiles.
   if (source->kind == TypeKind::Float && target->kind == TypeKind::Float &&
@@ -954,50 +977,48 @@ static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
 // Generics — unification
 // ===========================================================================
 
-bool has_type_params(const TypePtr &t) {
+bool any_type_param(const TypePtr &t,
+                    const std::function<bool(const TypeParam &)> &pred) {
   if (!t)
     return false;
-  if (t->kind == TypeKind::TypeParam)
-    return true;
-
+  auto any_of = [&](const std::vector<TypePtr> &ts) {
+    return std::any_of(ts.begin(), ts.end(), [&](const TypePtr &e) {
+      return any_type_param(e, pred);
+    });
+  };
   switch (t->kind) {
+  case TypeKind::TypeParam:
+    return pred(std::get<TypeParamInfo>(t->detail).param);
   case TypeKind::Array:
-    return has_type_params(std::get<ArrayTypeInfo>(t->detail).element);
+    return any_type_param(std::get<ArrayTypeInfo>(t->detail).element, pred);
   case TypeKind::Map: {
     auto &m = std::get<MapTypeInfo>(t->detail);
-    return has_type_params(m.key) || has_type_params(m.value);
+    return any_type_param(m.key, pred) || any_type_param(m.value, pred);
   }
   case TypeKind::Func: {
     auto &f = std::get<FuncTypeInfo>(t->detail);
-    for (auto &p : f.params)
-      if (has_type_params(p))
-        return true;
-    if (f.return_type && has_type_params(f.return_type))
-      return true;
-    return false;
+    return any_of(f.params) || any_type_param(f.return_type, pred);
   }
   case TypeKind::Alias:
-    return has_type_params(std::get<AliasTypeInfo>(t->detail).underlying);
-  case TypeKind::Union: {
-    auto &u = std::get<UnionTypeInfo>(t->detail);
-    for (auto &a : u.alternatives)
-      if (has_type_params(a))
-        return true;
-    return false;
-  }
+    return any_type_param(std::get<AliasTypeInfo>(t->detail).underlying, pred);
+  case TypeKind::Union:
+    return any_of(std::get<UnionTypeInfo>(t->detail).alternatives);
   // Only the arguments — descending into fields would not terminate on a
   // self-referential struct (`Node<T> { tail Node<T> }`), and an argument
   // is the only place a caller can leave a struct partly generic.
-  case TypeKind::Struct: {
-    auto &s = std::get<StructTypeInfo>(t->detail);
-    for (auto &a : s.type_args)
-      if (has_type_params(a))
-        return true;
-    return false;
-  }
+  case TypeKind::Struct:
+    return any_of(std::get<StructTypeInfo>(t->detail).type_args);
   default:
     return false;
   }
+}
+
+bool has_type_params(const TypePtr &t) {
+  return any_type_param(t, [](const TypeParam &) { return true; });
+}
+
+bool mentions_type_param(const TypePtr &t, uint32_t id) {
+  return any_type_param(t, [&](const TypeParam &p) { return p.id == id; });
 }
 
 bool same_struct_decl(const TypePtr &a, const TypePtr &b) {

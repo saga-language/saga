@@ -396,7 +396,7 @@ static std::vector<const Symbol *> unread_symbols(const Scope &scope,
 }
 
 void Analyzer::report_unread_locals(const Scope &scope) {
-  if (suppress_unread_reports_)
+  if (instantiating_checked_body_)
     return;
 
   for (const Symbol *sym : unread_symbols(scope, SymbolKind::Variable))

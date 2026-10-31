@@ -217,7 +217,8 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else if (node.op == Token::Kind::DivAssignment) {
         // Division assignment: x /= y — division can fail (div by zero),
         // so validate numeric but note the impure semantics.
-        if (!is_invalid_type(target_type) && !is_numeric(target_type)) {
+        if (!is_invalid_type(target_type) &&
+            !satisfies_constraint(target_type, TypeConstraint::Numeric)) {
           error(node.targets[i]->span,
                 std::format("/= requires numeric type, got {}",
                             type_to_string(target_type)));
@@ -229,7 +230,8 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else {
         // Compound assignment: +=, -=, *=
         // Target must be numeric.
-        if (!is_invalid_type(target_type) && !is_numeric(target_type)) {
+        if (!is_invalid_type(target_type) &&
+            !satisfies_constraint(target_type, TypeConstraint::Numeric)) {
           error(node.targets[i]->span,
                 std::format("compound assignment requires numeric type, "
                             "got {}",
@@ -244,11 +246,21 @@ void Analyzer::check_assign(const AssignNode &node) {
   }
 }
 
+namespace {
+
+bool is_integer_slot(const TypePtr &t) {
+  return t->kind == TypeKind::Int ||
+         (t->kind == TypeKind::TypeParam &&
+          satisfies_constraint(t, TypeConstraint::Integer));
+}
+
+} // namespace
+
 void Analyzer::check_increment(const IncrementNode &node) {
   reject_immutable_target(*node.operand, "increment");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
-  if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
+  if (!is_invalid_type(t) && !is_integer_slot(t)) {
     error(node.span, std::format("increment requires integer type, got {}",
                                  type_to_string(t)));
   }
@@ -258,7 +270,7 @@ void Analyzer::check_decrement(const DecrementNode &node) {
   reject_immutable_target(*node.operand, "decrement");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
-  if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
+  if (!is_invalid_type(t) && !is_integer_slot(t)) {
     error(node.span, std::format("decrement requires integer type, got {}",
                                  type_to_string(t)));
   }

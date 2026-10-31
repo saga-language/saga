@@ -1,0 +1,7 @@
+// A type parameter with no bound does not satisfy another generic's.
+fn Add<T numeric>(a T, b T) T { a + b }
+fn Twice<U>(x U) U { Add(x, x) }
+
+pub fn Main() void {
+  _ := Twice(1)
+}

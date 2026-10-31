@@ -378,12 +378,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // Generic receiver on Array/Map (kind_methods_) is also registered so
   // codegen can drive emit_specialisation per concrete K when the body
   // dispatches through a named protocol on a TypeParam value.
-  bool is_generic_on_kind_recv = false;
-  if (has_generics && fn.receiver) {
-    auto &rt = fn.receiver->type->data;
-    is_generic_on_kind_recv = std::get_if<ArrayTypeNode>(&rt) ||
-                              std::get_if<MapTypeNode>(&rt);
-  }
+  bool is_generic_on_kind_recv = has_generics && is_kind_receiver(fn);
   if (fn_type && (!fn.receiver || is_generic_on_concrete_recv ||
                    is_generic_on_kind_recv)) {
     func_decl_by_type_[fn_type.get()] = &fn;

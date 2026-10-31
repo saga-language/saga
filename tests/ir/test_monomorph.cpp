@@ -156,14 +156,14 @@ TEST(Monomorph, NegativeSpike_ErrorBacktrace) {
 }
 
 // ===========================================================================
-// Uninstantiated spike — broken body, never called
+// A body is checked at its declaration, called or not
 // ===========================================================================
 
-TEST(Monomorph, UninstantiatedSpike) {
+TEST(Monomorph, UninstantiatedBodyIsChecked) {
   auto r = MR::from(
       "pub fn broken<T>(a T) void { a.NoSuchMethod() }\n"
       "pub fn Main() void {}");
-  EXPECT_TRUE(r.ok()) << r.all_errors();
+  EXPECT_TRUE(r.has_err("no member 'NoSuchMethod'")) << r.all_errors();
 }
 
 // ===========================================================================

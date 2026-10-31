@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -78,9 +79,13 @@ std::string_view constraint_name(TypeConstraint c);
 /// does not match any built-in constraint.
 TypeConstraint constraint_from_name(std::string_view name);
 
-/// True if `t` is a member of the named constraint's type set.
-/// Always false for TypeConstraint::None — None is meaningless as a check.
+/// True if `t` is a member of the named constraint's type set, or a type
+/// parameter bounded by a constraint within it. Always false for
+/// TypeConstraint::None — None is meaningless as a check.
 bool satisfies_constraint(const TypePtr &t, TypeConstraint c);
+
+/// Whether every type `inner` admits is one `outer` admits.
+bool constraint_within(TypeConstraint inner, TypeConstraint outer);
 
 // ---------------------------------------------------------------------------
 // TypeParam — a single generic type variable.
@@ -360,6 +365,9 @@ bool is_enum_valued(const TypePtr &t);
 /// True if `t` is a numeric type (Int or Float).
 bool is_numeric(const TypePtr &t);
 
+/// Whether an untyped literal fits every type the parameter `param` admits.
+bool literal_fits_param(const TypePtr &literal, const TypePtr &param);
+
 /// True if `t` is a type that supports ordering comparisons.
 bool is_ordered(const TypePtr &t);
 
@@ -453,6 +461,12 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
 /// Returns true if the type (or any nested type within it) contains at
 /// least one TypeParam node.
 bool has_type_params(const TypePtr &t);
+
+/// Whether any type parameter `t` mentions satisfies `pred`.
+bool any_type_param(const TypePtr &t,
+                    const std::function<bool(const TypeParam &)> &pred);
+
+bool mentions_type_param(const TypePtr &t, uint32_t id);
 
 /// Two struct types that came from the same declaration. A generic
 /// instantiation is a fresh type each time it is resolved, so identity is the

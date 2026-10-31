@@ -296,13 +296,15 @@ struct Analyzer {
   /// `Next() T | Error`.  Codegen reads this to emit the protocol-based loop.
   std::unordered_map<const Node *, TypePtr> iterable_next_elem_type;
 
-  // ── Generic free-function templates (lazy body-analysis) ─────────────
+  // ── Generic templates ────────────────────────────────────────────────
 
-  /// A generic free function's body is not analysed at declaration time;
-  /// it is re-analysed once per distinct binding tuple at instantiation
-  /// time. The signature pass stores the AST and the lexical scope the
-  /// body should resolve names against.
+  /// A generic's body is checked once against its bounds, then again per
+  /// distinct binding tuple for the concrete tables codegen reads. The
+  /// signature pass stores the AST and the lexical scope the body resolves
+  /// names against.
   struct GenericTemplate {
+    enum class BodyCheck : uint8_t { Unchecked, Checking, Passed, Failed };
+
     const FuncDeclNode *decl;   // body reachable via decl->body
     Scope::Ptr decl_scope;      // scope visible to the body when declared
     std::vector<TypeParam> type_params; // ordered (id, name) pairs
@@ -310,12 +312,12 @@ struct Analyzer {
                                 // intrinsic-call gate honours this when the
                                 // body is re-analysed at a user-package
                                 // instantiation site.
+    BodyCheck body_check = BodyCheck::Unchecked;
   };
 
-  /// Generic free-function templates collected during the signature pass.
-  /// Keyed by FuncDeclNode*.  Receiver methods on intrinsic types are
-  /// handled separately via type_methods_/kind_methods_ and are not
-  /// stored here.
+  /// Generic templates collected during the signature pass, keyed by
+  /// declaration: free functions, and methods on a generic struct or on
+  /// Array/Map.
   std::unordered_map<const FuncDeclNode *, GenericTemplate> generic_templates_;
 
   /// Reverse map: signature TypePtr → FuncDeclNode*.  Populated during the
@@ -400,9 +402,10 @@ struct Analyzer {
   /// Set by Analyzer::Silence; makes error() a no-op.
   bool silenced_ = false;
 
-  /// Set while re-analysing a generic body that a previous instantiation has
-  /// already reported on.
-  bool suppress_unread_reports_ = false;
+  /// Set while checking a generic body under concrete bindings. Its
+  /// declaration check has already reported what holds for every
+  /// instantiation: unread locals, writes through a constant.
+  bool instantiating_checked_body_ = false;
 
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
@@ -726,6 +729,10 @@ private:
 
   // Phase 4: Type-check function/method bodies.
   void check_func_decl_body(const FuncDeclNode &fn);
+  void record_template_check(const FuncDeclNode &fn, bool passed);
+  void declare_signature(const FuncDeclNode &fn);
+  void check_function_block(const FuncDeclNode &fn, const BlockNode &block);
+  void check_leading_stmts(const BlockNode &block);
 
   /// Returns true if a node always terminates via `return` on every
   /// control-flow path (e.g. if/else where both branches return, or
@@ -981,6 +988,15 @@ private:
   /// carrying an error that can never arrive.
   bool divisor_is_known_nonzero(const Node &rhs);
 
+  /// An operator on a type parameter, or nullopt for one the bound does not
+  /// govern (`&&`, `||`).
+  std::optional<TypePtr> check_type_param_binary(const BinaryExprNode &node,
+                                                 const TypePtr &lhs,
+                                                 const TypePtr &rhs);
+  bool param_admits_operator(Token::Kind op, const TypePtr &param, Span span);
+  TypePtr type_param_quotient(const BinaryExprNode &node,
+                              const TypePtr &param);
+
   // Struct operator overloading helper.
   TypePtr check_struct_binary_expr(const BinaryExprNode &node,
                                     const Node &parent, const TypePtr &lhs,
@@ -1031,14 +1047,29 @@ private:
       Span call_span,
       std::unordered_map<uint32_t, TypePtr> *out_bindings = nullptr);
 
-  /// Drive Phase 3 and Phase 4 over a generic free function's body with
-  /// the given bindings.  Reuses a cached BodyInstantiation on match (or
-  /// when a re-entrant call re-arrives during in-progress analysis).
+  /// Drive Phase 3 and Phase 4 over a generic's body with the given
+  /// bindings.  Reuses a cached BodyInstantiation on match (or when a
+  /// re-entrant call re-arrives during in-progress analysis).  Null when the
+  /// bindings are abstract or the body fails its declaration check.
   /// `call_node` is pushed onto instantiation_stack_ for error traces.
   BodyInstantiation *instantiate_generic_body(
       const FuncDeclNode &fn,
       const std::unordered_map<uint32_t, TypePtr> &bindings,
       const Node &call_node);
+
+  /// Check a generic's body once against its bounds; false if it failed.
+  bool check_generic_template(GenericTemplate &tpl);
+
+  /// Whether `type` still names a type parameter the generic `fn` declares.
+  bool leaves_own_params(const TypePtr &type, const FuncDeclNode *fn) const;
+
+  class TemplateBodyScope;
+  void check_template_body(const FuncDeclNode &fn);
+  void bind_type_params(const std::vector<TypeParam> &params,
+                        const std::unordered_map<uint32_t, TypePtr> &bindings);
+  BodyInstantiation *
+  cached_instantiation(const FuncDeclNode &fn,
+                       const std::unordered_map<uint32_t, TypePtr> &bindings);
 
   /// Instantiate a generic struct type: infer type-parameter bindings from
   /// field initializer values and return the fully substituted struct type.

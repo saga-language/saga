@@ -343,12 +343,32 @@ TEST(Generics, BoundedGenericBitwiseOnlyOnInteger) {
       "fn f() int { Mask(7, 3) }");
   EXPECT_TRUE(r_ok.ok());
 
-  // Float doesn't support bitwise — the bad body surfaces when the function
-  // is instantiated against a concrete Float.
-  auto r_bad = GR::from(
-      "fn Mask<T float>(x T, m T) T { x & m }\n"
-      "fn f() { Mask(1.5, 2.5) }");
-  EXPECT_FALSE(r_bad.ok());
+  // A float bound doesn't permit bitwise operators, called or not.
+  auto r_bad = GR::from("fn Mask<T float>(x T, m T) T { x & m }");
+  EXPECT_TRUE(r_bad.has_err("operator '&' needs T integer, not T float"));
+}
+
+// The declaration check reports a body's error; its instantiations repeat no
+// part of it, nor of what it reports once every body is checked.
+TEST(Generics, BodyErrorReportedOnceHoweverOftenCalled) {
+  auto r = GR::from(
+      "fn Pick<T>(x T) T { valu }\n"
+      "fn f() int { Pick(1) }\n"
+      "fn g() float { Pick(1.5) }");
+  EXPECT_EQ(r.analyzer->errors.errors.size(), 1u);
+}
+
+TEST(Generics, IndirectConstantWriteReportedOnceHoweverOftenCalled) {
+  auto r = GR::from(
+      "struct Counter { n int }\n"
+      "pub fn (c Counter) Twice() void { c.Bump() }\n"
+      "pub fn (c Counter) Bump() void { c.n = c.n + 1 }\n"
+      "const start = Counter{n: 1}\n"
+      "fn Keep<T>(x T) T {\n  start.Twice()\n  x\n}\n"
+      "fn f() int { Keep(1) }\n"
+      "fn g() float { Keep(1.5) }");
+  ASSERT_EQ(r.analyzer->errors.errors.size(), 1u);
+  EXPECT_TRUE(r.has_err("cannot call mutating method 'Twice' on constant"));
 }
 
 TEST(Generics, InterfaceBoundAcceptsSatisfyingType) {

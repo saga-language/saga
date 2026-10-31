@@ -1,0 +1,28 @@
+// Spec: a bound permits the operators every type it admits supports, and a
+// literal works with a bounded parameter when it fits every one of them.
+import "std/io"
+
+fn Poly<T numeric>(x T) T { x * x - x + 1 }
+fn Halve<T numeric>(x T) T { x / 2 }
+fn Ordered<T numeric>(a T, b T) bool { a < b && a != b }
+fn Neg<T numeric>(x T) T { -x }
+
+fn Mix<T integer>(a T, b T) T { (a % 8) & b | (a << 1) ^ ~b }
+fn Step<T integer>(x T) T {
+  y := x
+  y++
+  y += 3
+  y
+}
+fn Quotient<T integer>(a T, b T) T { a / b or { 0 } }
+
+fn Ratio<T float>(a T, b T) T { a / b * 0.5 }
+
+pub fn Main() void {
+  small int8 = 3
+  io.Println("{Poly(3)} {Poly(small)} {Poly(1.5)}")
+  io.Println("{Halve(7)} {Halve(7.0)}")
+  io.Println("{Ordered(1, 2)} {Ordered(2.5, 2.5)} {Neg(4)}")
+  io.Println("{Mix(13, 6)} {Step(small)}")
+  io.Println("{Quotient(9, 2)} {Quotient(9, 0)} {Ratio(3.0, 4.0)}")
+}

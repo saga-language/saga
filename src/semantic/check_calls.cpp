@@ -30,7 +30,7 @@ void Analyzer::reject_mutating_call_on_constant(const CallExprNode &node,
   if (!recv_id)
     return;
   auto sym = lookup(std::string(recv_id->name));
-  if (!sym || sym->kind != SymbolKind::Constant)
+  if (!sym || sym->kind != SymbolKind::Constant || instantiating_checked_body_)
     return;
   // A method that writes only by calling one that does is found to once
   // every body has been checked, so the call is looked at again then.
@@ -111,11 +111,10 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
         // Substitution stops at a struct boundary, so a generic struct named
         // in the signature keeps its own type parameters however the call
         // binds them. Lowering that reads the value through the wrong layout,
-        // so refuse the call rather than answer wrongly. Only a specialisable
-        // function is checked: elsewhere a leftover parameter means a template
-        // body being checked generically, where nothing is concrete yet.
+        // so refuse the call rather than answer wrongly. A parameter of the
+        // body making the call is not left over: it is bound when that body is.
         if (!is_invalid_type(effective_type) &&
-            has_type_params(effective_type)) {
+            leaves_own_params(effective_type, fd_it->second)) {
           error(node.span,
                 std::format("cannot call '{}': its signature names a generic "
                             "struct that inference does not substitute",
@@ -252,6 +251,15 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
 
   // Return type.
   return fn_info.return_type ? fn_info.return_type : builtins.void_type;
+}
+
+bool Analyzer::leaves_own_params(const TypePtr &type,
+                                 const FuncDeclNode *fn) const {
+  auto &own = generic_templates_.at(fn).type_params;
+  return any_type_param(type, [&](const TypeParam &p) {
+    return std::any_of(own.begin(), own.end(),
+                       [&](const TypeParam &o) { return o.id == p.id; });
+  });
 }
 
 } // namespace saga

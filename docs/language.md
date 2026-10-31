@@ -689,6 +689,13 @@ fn Identity<T>(x T) T { x }
 Generics are monomorphic. The compiler emits one copy per concrete type
 argument, so every argument must be known at compile time.
 
+A generic's body is checked once, where it is declared, with each type
+parameter standing for any type its bound admits. An error in the body is
+reported whether or not anything calls it, and a call fails only when its type
+argument does not meet a bound, never because of what the body does with it.
+A type parameter with no bound can be assigned, passed, returned, stored and
+captured; anything more it gets from its [bound](#Bounded-generics).
+
 A type argument is inferred from the values at the use site and is never
 written there — there is no `Box<int>{...}` form:
 
@@ -808,16 +815,33 @@ value — only in a constraint slot.
 Each constraint implicitly permits the operators that are valid across every
 member of its set:
 
-- `integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
-  `==`, `!=`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
-- `float`: `+`, `-`, `*`, `/`, comparison
-- `numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
+- `integer`: `+`, `-`, `*`, `/`, `%`, `**`, comparison (`<`, `<=`, `>`, `>=`,
+  `==`, `!=`), bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`), `++` and `--`
+- `float`: `+`, `-`, `*`, `/`, `**`, comparison
+- `numeric`: `+`, `-`, `*`, `/`, `**`, comparison (no `%` or bitwise — not
   valid on floats)
 
 Inside a function with a constrained generic, the listed operators are usable
-on the constrained type without further declaration. The compiler validates at
-instantiation that the actual type belongs to the constraint set; if not, the
-call fails with an error naming both the constraint and the offending type.
+on the constrained type without further declaration, and no others are. Both
+operands are the type parameter, except that a literal works with it when it
+fits every member of the set: an integer literal under any of the three
+constraints, a float literal only under `float`.
+
+```
+fn Poly<T numeric>(x T) T { x * x + 1 }   // ok
+fn Scale<T numeric>(x T) T { x * 0.5 }    // error: 0.5 is not every numeric
+fn Sum<T>(a T, b T) T { a + b }           // error: + needs a bound on T
+```
+
+Division keeps the result type of the set it divides: `T | error` under
+`integer`, since an integer divisor can be zero, and `T` under `float`. Under
+`numeric` the two disagree, so `/` there needs a divisor the compiler can see is
+non-zero (`x / 2`), for which both give `T`.
+
+The compiler checks at each call that the type argument belongs to the
+constraint set; if not, the call fails with an error naming both the constraint
+and the offending type. A type parameter meets a constraint when its own does:
+`integer` and `float` are both within `numeric`.
 
 An interface is also nameable as a constraint, which is how a generic requires
 behaviour rather than a built-in type set. The bound's methods are callable on
@@ -835,6 +859,14 @@ pub fn (c Cat) Name() string { "cat" }
 fn Describe<T Named>(x T) string { x.Name() }
 
 Describe(Cat{})  // cat
+```
+
+A type parameter satisfies an interface bound through its own, so a generic
+passes its parameter on only to generics whose bounds its bound meets:
+
+```
+fn Greet<U Named>(x U) string { Describe(x) }  // ok
+fn Shout<U>(x U) string { Describe(x) }        // error: U does not satisfy Named
 ```
 
 ## Type Aliases

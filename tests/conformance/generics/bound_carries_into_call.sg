@@ -1,0 +1,20 @@
+// A type parameter satisfies another generic's bound when its own bound does:
+// `integer` is within `numeric`, and a `Named` bound gives the methods it names.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+pub fn (c Cat) Name() string { "cat" }
+
+fn Add<T numeric>(a T, b T) T { a + b }
+fn Twice<U integer>(x U) U { Add(x, x) }
+
+fn Describe<T Named>(x T) string { x.Name() }
+fn Greet<U Named>(x U) string { "hi {Describe(x)}" }
+
+pub fn Main() void {
+  io.Println("{Twice(21)} {Greet(Cat{})}")
+}

@@ -1,0 +1,7 @@
+// Both operands are the type parameter: an int is not every type `numeric`
+// admits, so it cannot meet a T.
+fn Add<T numeric>(a T, b int) T { a + b }
+
+pub fn Main() void {
+  _ := Add(1, 2)
+}

@@ -81,6 +81,13 @@ static std::vector<MethodInfo> collect_concrete_methods(
   if (!concrete)
     return methods;
 
+  if (concrete->kind == TypeKind::TypeParam) {
+    auto &bound = std::get<TypeParamInfo>(concrete->detail).bound;
+    if (bound)
+      methods = std::get<InterfaceTypeInfo>((*bound)->detail).methods;
+    return methods;
+  }
+
   if (concrete->kind == TypeKind::Struct) {
     auto &s = std::get<StructTypeInfo>(concrete->detail);
     methods = s.methods;
@@ -118,6 +125,15 @@ static std::vector<MethodInfo> collect_concrete_methods(
   return methods;
 }
 
+// A type parameter's methods are its bound's, whose own type stands where the
+// bound's signatures name it.
+static TypePtr method_self(const TypePtr &concrete) {
+  if (concrete->kind != TypeKind::TypeParam)
+    return concrete;
+  auto &bound = std::get<TypeParamInfo>(concrete->detail).bound;
+  return bound ? *bound : concrete;
+}
+
 bool Analyzer::satisfies_interface(const TypePtr &concrete,
                                    const TypePtr &iface) {
   if (!concrete || !iface)
@@ -139,7 +155,7 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
         found = true;
         if (im.signature && cm.signature) {
           if (!signatures_match_with_self(im.signature, cm.signature, iface,
-                                          concrete)) {
+                                          method_self(concrete))) {
             return false;
           }
         }
@@ -251,7 +267,7 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
         continue;
       if (im.signature && cm.signature &&
           !signatures_match_with_self(im.signature, cm.signature, iface,
-                                      concrete))
+                                      method_self(concrete)))
         break;
       ok = true;
       break;

@@ -6,6 +6,8 @@
 // is longer than the syntax suggests.
 
 #include "semantic/analyzer.hpp"
+
+#include <algorithm>
 #include <format>
 
 namespace saga {
@@ -101,6 +103,14 @@ TypePtr substitute_kind_method(TypeKind kind, const TypePtr &effective_type,
   return sig;
 }
 
+bool names_params_beyond(const TypePtr &sig, const std::vector<TypePtr> &args) {
+  return any_type_param(sig, [&](const TypeParam &p) {
+    return std::none_of(args.begin(), args.end(), [&](const TypePtr &a) {
+      return mentions_type_param(a, p.id);
+    });
+  });
+}
+
 } // namespace
 
 TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
@@ -118,10 +128,9 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
       continue;
     auto sig = m.signature ? m.signature : builtins.invalid_type;
     // A method is monomorphised from the receiver's type arguments alone, so
-    // on a concrete instantiation nothing generic may be left in its
-    // signature — neither a method-own type parameter nor a generic struct
-    // the receiver's arguments do not reach.
-    if (!info.type_args.empty() && has_type_params(sig)) {
+    // its signature may name no type parameter they do not — neither a
+    // method-own one nor one of a generic struct they do not reach.
+    if (!info.type_args.empty() && names_params_beyond(sig, info.type_args)) {
       error(field_span,
             std::format("cannot call '{}' on '{}': its signature has type "
                         "parameters that the receiver does not bind",

@@ -780,4 +780,11 @@ std::string_view binding_root(const Node &target);
 // Whether any fragment is an expression rather than literal text.
 bool interpolates(const StringLiteralNode &node);
 
+// An operator token as the source spells it.
+std::string_view operator_spelling(Token::Kind k) noexcept;
+
+// Whether `fn` is a method on an array or map type, a type kind rather than a
+// declaration.
+bool is_kind_receiver(const FuncDeclNode &fn);
+
 } // namespace saga

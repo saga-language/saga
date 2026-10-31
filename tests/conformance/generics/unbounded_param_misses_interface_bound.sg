@@ -1,0 +1,9 @@
+// A type parameter with no bound has no methods to satisfy an interface with.
+interface Named {
+  Name() string
+}
+
+fn Describe<T Named>(x T) string { x.Name() }
+fn Greet<U>(x U) string { Describe(x) }
+
+pub fn Main() void {}
