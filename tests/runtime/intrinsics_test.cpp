@@ -144,25 +144,25 @@ static void free_test_string(saga_runtime_string *s) {
   }
 }
 
-TEST(TrapTest, SetsZombieStatusAndLongjmps) {
+/* The worker publishes the status a trap leaves, once the reason is set, so
+   the trap itself leaves the status alone. */
+TEST(TrapTest, LongjmpsAsATrap) {
   saga_runtime_actor *a = saga_runtime_actor_new([](saga_runtime_actor *){}, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   a->status = SAGA_RUNTIME_ACTOR_RUNNING;
 
   saga_runtime_string *reason = make_test_string("test trap", 9);
 
-  bool jumped = false;
+  int jumped = 0;
   saga_runtime_set_current_actor_for_test(a);
-  if (setjmp(a->trap) == 0) {
+  if ((jumped = setjmp(a->trap)) == 0) {
     saga_actor_trap(reason);
     FAIL() << "Should have longjmp'd";
-  } else {
-    jumped = true;
   }
   saga_runtime_set_current_actor_for_test(nullptr);
 
-  EXPECT_TRUE(jumped);
-  EXPECT_EQ(a->status, SAGA_RUNTIME_ACTOR_ZOMBIE);
+  EXPECT_EQ(jumped, SAGA_RUNTIME_JUMP_TRAP);
+  EXPECT_EQ(a->status, SAGA_RUNTIME_ACTOR_RUNNING);
   ASSERT_NE(a->result, nullptr);
 
   /* Verify the reason string was copied. */
@@ -178,23 +178,20 @@ TEST(TrapTest, SetsZombieStatusAndLongjmps) {
   saga_runtime_actor_release(a);
 }
 
-TEST(TrapTest, NullReasonStillSetsZombie) {
+TEST(TrapTest, NullReasonStillLongjmpsAsATrap) {
   saga_runtime_actor *a = saga_runtime_actor_new([](saga_runtime_actor *){}, nullptr, 0, 0);
   ASSERT_NE(a, nullptr);
   a->status = SAGA_RUNTIME_ACTOR_RUNNING;
 
-  bool jumped = false;
+  int jumped = 0;
   saga_runtime_set_current_actor_for_test(a);
-  if (setjmp(a->trap) == 0) {
+  if ((jumped = setjmp(a->trap)) == 0) {
     saga_actor_trap(nullptr);
     FAIL() << "Should have longjmp'd";
-  } else {
-    jumped = true;
   }
   saga_runtime_set_current_actor_for_test(nullptr);
 
-  EXPECT_TRUE(jumped);
-  EXPECT_EQ(a->status, SAGA_RUNTIME_ACTOR_ZOMBIE);
+  EXPECT_EQ(jumped, SAGA_RUNTIME_JUMP_TRAP);
   EXPECT_EQ(a->result, nullptr); /* no reason → no result string */
 
   saga_runtime_actor_release(a);
@@ -232,9 +229,7 @@ TEST_F(TrapExecutorTest, TrapSetsZombieStatus) {
   int64_t status;
   saga_task_wait(a, &status);
 
-  /* saga_actor_trap sets ZOMBIE, but the worker loop may reclassify.
-     Check that the actor completed in some terminal state. */
-  EXPECT_GE(status, SAGA_RUNTIME_ACTOR_COMPLETED);
+  EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_ZOMBIE);
 
   saga_task_drop(a);
 }
@@ -278,8 +273,7 @@ TEST_F(TrapExecutorTest, WaitErrorBranchCarriesTrapReason) {
   int64_t status = 0;
   saga_task_wait(a, &status);
 
-  /* Worker loop reclassifies ZOMBIE as-is (not COMPLETED).  The only
-     thing the Wait() lowering branches on is status != COMPLETED. */
+  /* The Wait() lowering branches on status != COMPLETED. */
   EXPECT_EQ(status, SAGA_RUNTIME_ACTOR_ZOMBIE);
 
   /* Build the error box the same way codegen does, then read `.message`. */

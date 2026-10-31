@@ -9,29 +9,6 @@
 
 namespace saga {
 
-// A method that writes through its receiver needs somewhere for the write to
-// land that no second name can see, so the receiver is made unique before the
-// callee gets it. The callee takes the collection by value and cannot rebind
-// the caller's slot; only this side knows which slot that is.
-llvm::Value *CodeGen::emit_receiver(const Node &object, const TypePtr &obj_sem,
-                                    const std::string &method) {
-  // The shape, not the declared type: an alias of a collection reaches the
-  // same runtime buffer and needs the same barrier.
-  auto shape = unwrap_alias(obj_sem);
-  if (!shape || !kind_method_mutates(shape, method))
-    return emit_borrowed(object);
-  return make_binding_unique(object, shape);
-}
-
-bool CodeGen::kind_method_mutates(const TypePtr &shape,
-                                  const std::string &method) {
-  auto kind_it = analyzer.kind_method_decls_.find(shape->kind);
-  if (kind_it == analyzer.kind_method_decls_.end())
-    return false;
-  auto m_it = kind_it->second.find(method);
-  return m_it != kind_it->second.end() && m_it->second.mutates_receiver;
-}
-
 llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
                                                  const Node &parent) {
   auto &sel = std::get<SelectorNode>(node.callee->data);
@@ -56,19 +33,55 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
       return *result;
   }
 
-  auto *obj = emit_receiver(*sel.object, obj_sem, method);
-  if (!obj || !obj_sem)
+  if (!obj_sem)
+    return nullptr;
+  auto *view = call_writes_receiver(obj_sem, method)
+                   ? begin_view_write(*sel.object)
+                   : nullptr;
+  auto *result = emit_receiver_call(node, sel, method, obj_sem, parent);
+  end_view_write(view);
+  return result;
+}
+
+// An interface call may rebind its receiver to a box of its own, and only the
+// vtable knows whether it will.
+bool CodeGen::call_writes_receiver(const TypePtr &obj_sem,
+                                   const std::string &method) {
+  return obj_sem->kind == TypeKind::Interface ||
+         analyzer.method_mutates_receiver(obj_sem, method);
+}
+
+llvm::Value *CodeGen::emit_receiver_call(const CallExprNode &node,
+                                         const SelectorNode &sel,
+                                         const std::string &method,
+                                         const TypePtr &obj_sem,
+                                         const Node &parent) {
+  switch (obj_sem->kind) {
+  case TypeKind::Interface:
+    return emit_interface_dispatch(node, sel, method, obj_sem);
+  case TypeKind::Array:
+  case TypeKind::Map:
+    return emit_kind_method_call(node, *sel.object, method, obj_sem);
+  default:
+    return emit_borrowed_receiver_call(node, sel, method, obj_sem, parent);
+  }
+}
+
+// A struct's method writes through the address it is given, so none of these
+// receivers needs one of its own first.
+llvm::Value *CodeGen::emit_borrowed_receiver_call(const CallExprNode &node,
+                                                  const SelectorNode &sel,
+                                                  const std::string &method,
+                                                  const TypePtr &obj_sem,
+                                                  const Node &parent) {
+  auto *obj = emit_borrowed(*sel.object);
+  if (!obj)
     return nullptr;
   switch (obj_sem->kind) {
   case TypeKind::Union:
     return emit_union_method_dispatch(node, method, obj_sem, obj);
-  case TypeKind::Interface:
-    return emit_interface_dispatch(node, sel, method, obj_sem, obj);
   case TypeKind::Enum:
     return emit_enum_method_call(node, method, obj_sem, obj);
-  case TypeKind::Array:
-  case TypeKind::Map:
-    return emit_kind_method_call(node, method, obj_sem, obj);
   case TypeKind::Struct:
     return emit_struct_method_call(node, sel, method, obj_sem, obj, parent);
   default:

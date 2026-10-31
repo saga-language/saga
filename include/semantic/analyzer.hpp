@@ -800,21 +800,17 @@ private:
                                         const SelectorNode &sel,
                                         const TypePtr &recv);
 
-  /// Whether `name` on `recv` writes through the receiver. Codegen asks the
-  /// same question of `kind_method_decls_` to place the copy-on-write barrier.
-  bool method_mutates_receiver(const TypePtr &type,
-                               std::string_view name) const;
-
   // ── What a body writes through its receiver or captures ──────────────
   // (receiver_writes.cpp). A method also writes its receiver by calling one
-  // that does on it, and a closure its captures, which the declaration's
-  // structural answer cannot see; the calls are noted while bodies are
-  // checked and settled once they all are.
+  // that does on it, and a closure its captures; the calls are gathered as
+  // bodies are declared or checked and settled once they all are.
   struct WriterFrame {
-    TypePtr recv_type;            // a method's receiver type, else null
-    std::string method;           // that method's name
-    const Node *closure = nullptr;
+    const Node *closure = nullptr; // null for a body that hides those outside
     std::vector<std::string> bindings;
+  };
+  struct ReceiverMethod {
+    TypePtr owner;
+    const FuncDeclNode *decl;
   };
   struct WriterCall {
     TypePtr caller_recv;
@@ -832,16 +828,25 @@ private:
   std::vector<WriterFrame> writer_frames_;
   std::vector<WriterCall> writer_calls_;
   std::vector<DeferredConstCall> deferred_const_calls_;
+  std::vector<ReceiverMethod> receiver_methods_;
   std::unordered_set<const Node *> closures_writing_captures_;
 
-  void push_method_frame(const FuncDeclNode &fn, const TypePtr &recv_type);
+  void attach_receiver_method(const TypePtr &owner, const FuncDeclNode &fn,
+                              const TypePtr &signature);
   void push_closure_frame(const FuncExprNode &node, const Node &parent);
+  void push_body_frame();
   void pop_writer_frame();
   void note_receiver_call(const SelectorNode &sel, const TypePtr &recv);
+  void note_method_calls();
+  TypePtr declared_path_type(const Node &path, const TypePtr &recv);
   void settle_receiver_writes();
   bool mark_method_writes(const TypePtr &recv_type, const std::string &name);
 
 public:
+  /// Whether `name` on `type` writes through the receiver.
+  bool method_mutates_receiver(const TypePtr &type,
+                               std::string_view name) const;
+
   /// Whether a closure writes a captured binding, directly or through a
   /// method that writes its receiver.
   bool closure_writes_captures(const Node &closure) const {

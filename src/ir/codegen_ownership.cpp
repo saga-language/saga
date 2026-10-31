@@ -87,30 +87,40 @@ llvm::Value *CodeGen::emit_shared_box(const TypePtr &sem, llvm::Type *ll) {
                             "shared.box");
 }
 
-// A write that lands through the binding, rather than through a value the
-// caller stores, needs the buffer to itself first — otherwise a second name
-// sees the edit. The slot takes the unique collection and drops the reference
-// it held, so it still owns exactly one.
-llvm::Value *CodeGen::make_binding_unique(const Node &object,
-                                          const TypePtr &sem) {
-  const char *unique_fn = nullptr;
-  if (sem && sem->kind == TypeKind::Array)
-    unique_fn = "saga_array_make_unique";
-  else if (sem && sem->kind == TypeKind::Map)
-    unique_fn = "saga_map_make_unique";
-
-  auto [holder, holder_ll] =
-      unique_fn ? assign_target_address(object)
-                : std::pair<llvm::Value *, llvm::Type *>{nullptr, nullptr};
-  if (!holder || !holder_ll->isPointerTy())
-    return emit_borrowed(object);
-
-  auto *cur = builder.CreateLoad(holder_ll, holder, "cow.cur");
-  auto *uniq =
-      builder.CreateCall(module->getFunction(unique_fn), {cur}, "cow.uniq");
-  builder.CreateStore(uniq, holder);
+// A write that lands through the receiver, rather than through a value the
+// caller stores, needs it to itself first — otherwise a second name sees the
+// edit. A binding's slot takes the unique value and drops the reference it
+// held, so it still owns exactly one. A temporary has no slot, and may be a
+// borrowed read of one another name holds, so it is counted while the unique
+// value is made, which is the caller's to release once the write is done.
+CodeGen::Claimed CodeGen::claim_receiver(const Node &object,
+                                         llvm::Value *value,
+                                         const TypePtr &sem,
+                                         llvm::Function *make_unique,
+                                         llvm::ArrayRef<llvm::Value *> extra) {
+  auto [holder, holder_ll] = assign_target_address(object);
+  bool bound = holder && holder_ll->isPointerTy();
+  auto *cur = bound ? builder.CreateLoad(holder_ll, holder, "recv.cur") : value;
+  if (!bound)
+    emit_retain(cur, sem);
+  std::vector<llvm::Value *> args{cur};
+  args.insert(args.end(), extra.begin(), extra.end());
+  auto *uniq = builder.CreateCall(make_unique, args, "recv.uniq");
+  if (bound)
+    builder.CreateStore(uniq, holder);
   emit_release(cur, sem);
-  return uniq;
+  return {uniq, !bound};
+}
+
+void CodeGen::release_claim(const Claimed &claimed, const TypePtr &sem) {
+  if (claimed.temporary)
+    emit_release(claimed.value, sem);
+}
+
+llvm::Function *CodeGen::collection_unique_fn(const TypePtr &sem) {
+  return module->getFunction(sem->kind == TypeKind::Map
+                                 ? "saga_map_make_unique"
+                                 : "saga_array_make_unique");
 }
 
 void CodeGen::emit_release(llvm::Value *val, const TypePtr &sem) {

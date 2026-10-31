@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * The interface box, a counted, copy-on-write heap copy of the value an
- * interface holds; and the shared box, a counted heap copy of a value nothing
- * writes through. The layouts are in runtime_internal.h.
+ * interface holds; and the shared box, the counted heap copy every copy of a
+ * value shares. The layouts are in runtime_internal.h.
  */
 
 #include <stdlib.h>
@@ -77,6 +77,23 @@ void saga_shared_retain(void *value) {
   saga_runtime_shared *h = shared_header(value);
   if (h->refcount > 0)
     h->refcount++;
+}
+
+/* Copy-on-write, as for an array: hand back a box no one else holds, with a */
+/* +1 reference for the caller. The header has no size, so the caller passes */
+/* the value's.                                                              */
+void *saga_shared_make_unique(void *value, int64_t size) {
+  if (!value) return NULL;
+  saga_runtime_shared *h = shared_header(value);
+  if (h->refcount == 1) {
+    h->refcount++;
+    return value;
+  }
+  void *copy = saga_shared_new(size, h->ops);
+  memcpy(copy, value, (size_t)size);
+  if (h->ops)
+    h->ops->retain(copy);
+  return copy;
 }
 
 /* Freeing a box releases what it holds, which may free the next box, so a

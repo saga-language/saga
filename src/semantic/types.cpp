@@ -95,6 +95,18 @@ TypePtr make_struct_type(const std::string &name,
                      std::move(methods), {}, std::move(type_params), {}});
 }
 
+TypePtr make_struct_instance(const TypePtr &generic,
+                             std::vector<TypePtr> type_args) {
+  auto &info = std::get<StructTypeInfo>(generic->detail);
+  auto result = make_struct_type(info.name, {}, {}, info.type_params,
+                                 info.origin_package);
+  auto &ri = std::get<StructTypeInfo>(result->detail);
+  ri.type_args = std::move(type_args);
+  ri.is_error = info.is_error;
+  ri.declaration = info.declaration ? info.declaration : generic;
+  return result;
+}
+
 TypePtr make_enum_type(const std::string &name,
                        std::vector<EnumVariant> variants,
                        std::string origin_package, bool string_backed) {
@@ -827,11 +839,8 @@ static TypePtr substitute_struct(const TypePtr &t, const Bindings &bindings,
     return t;
   }
 
-  auto result = make_struct_type(info.name, {}, {}, info.type_params,
-                                 info.origin_package);
+  auto result = make_struct_instance(t, std::move(args));
   auto &ri = std::get<StructTypeInfo>(result->detail);
-  ri.type_args = std::move(args);
-  ri.is_error = info.is_error;
   memo[t.get()] = result;
 
   for (auto &f : info.fields)
@@ -839,7 +848,7 @@ static TypePtr substitute_struct(const TypePtr &t, const Bindings &bindings,
                          f.is_public, f.default_value});
   for (auto &m : info.methods)
     ri.methods.push_back({m.name, substitute_impl(m.signature, bindings, memo),
-                          m.is_public, m.origin_package, m.mutates_receiver});
+                          m.is_public, m.origin_package});
   for (auto &e : info.embeds)
     ri.embeds.push_back(substitute_impl(e, bindings, memo));
   return result;

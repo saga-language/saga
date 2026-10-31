@@ -1,0 +1,32 @@
+// A method that writes its receiver, called on a temporary, writes a copy:
+// the temporary may be read out of storage that another name holds.
+import "std/io"
+
+interface Adder {
+  Add(n int) void
+  Count() int
+}
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Add(n int) void { c.n = c.n + n }
+pub fn (c Counter) Count() int { c.n }
+
+struct Shelf {
+  items array{int}
+  adder Adder
+}
+
+pub fn (s Shelf) Items() array{int} { s.items }
+pub fn (s Shelf) Adder() Adder { s.adder }
+
+pub fn Main() void {
+  s := Shelf{items: [1, 2], adder: Counter{n: 1}}
+  s.Items().Pop()
+  s.Adder().Add(4)
+  names := {"k": [1, 2, 3]}
+  names.At("k").Pop()
+  io.Println("{s.items.Size()} {s.adder.Count()} {names.At("k").Size()}")
+}

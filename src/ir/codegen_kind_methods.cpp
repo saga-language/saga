@@ -13,15 +13,33 @@
 namespace saga {
 
 llvm::Value *CodeGen::emit_kind_method_call(const CallExprNode &node,
+                                            const Node &object,
                                             const std::string &method,
-                                            const TypePtr &obj_sem,
-                                            llvm::Value *obj) {
-  if (auto [spec, concrete] = kind_method_specialisation(method, obj_sem); spec)
-    return emit_call(spec, obj,
-                     emit_arguments(node,
-                                    &std::get<FuncTypeInfo>(concrete->detail),
-                                    true));
-  return emit_opaque_kind_method_call(node, method, obj_sem, obj);
+                                            const TypePtr &obj_sem) {
+  auto *obj = emit_borrowed(object);
+  if (!obj)
+    return nullptr;
+  auto [spec, concrete] = kind_method_specialisation(method, obj_sem);
+  if (!spec)
+    return emit_opaque_kind_method_call(node, object, method, obj_sem, obj);
+  auto args = emit_arguments(node, &std::get<FuncTypeInfo>(concrete->detail),
+                             true);
+  auto recv = kind_receiver(object, obj, obj_sem, method);
+  auto *result = emit_call(spec, recv.value, args);
+  release_claim(recv, obj_sem);
+  return result;
+}
+
+// A method that writes its receiver needs one no other name sees, and the
+// callee takes the collection by value, so only this side can claim it. It
+// is claimed after the arguments run: one that copies the receiver must not
+// see the write.
+CodeGen::Claimed CodeGen::kind_receiver(const Node &object, llvm::Value *obj,
+                                        const TypePtr &obj_sem,
+                                        const std::string &method) {
+  if (!analyzer.method_mutates_receiver(obj_sem, method))
+    return {obj, false};
+  return claim_receiver(object, obj, obj_sem, collection_unique_fn(obj_sem));
 }
 
 // Bindings are keyed by the template's own TypeParam ids so they match the
@@ -54,6 +72,7 @@ CodeGen::kind_method_specialisation(const std::string &method,
 }
 
 llvm::Value *CodeGen::emit_opaque_kind_method_call(const CallExprNode &node,
+                                                   const Node &object,
                                                    const std::string &method,
                                                    const TypePtr &obj_sem,
                                                    llvm::Value *obj) {
@@ -68,11 +87,13 @@ llvm::Value *CodeGen::emit_opaque_kind_method_call(const CallExprNode &node,
       return nullptr;
 
     std::vector<StoredValue> values;
-    auto *result = emit_call(callee, obj,
-                             box_kind_method_args(node, m, obj_sem, values));
+    auto args = box_kind_method_args(node, m, obj_sem, values);
+    auto recv = kind_receiver(object, obj, obj_sem, method);
+    auto *result = emit_call(callee, recv.value, args);
     auto *unboxed =
         result ? unbox_kind_method_result(result, m, obj_sem) : nullptr;
     release_kind_method_args(node, m, obj_sem, values);
+    release_claim(recv, obj_sem);
     return unboxed;
   }
   return nullptr;

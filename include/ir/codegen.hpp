@@ -499,19 +499,13 @@ private:
   llvm::Constant *vtable_method(const StructTypeInfo &sinfo,
                                 const std::string &method,
                                 const FuncTypeInfo *iface_sig);
-  uint64_t writes_mask(const StructTypeInfo &sinfo,
+  uint64_t writes_mask(const TypePtr &shape,
                        const std::vector<std::string> &methods);
-  std::optional<bool> method_writes(const StructTypeInfo &sinfo,
-                                    const std::string &method);
   llvm::Value *emit_interface_box(llvm::Value *concrete_val,
                                    const TypePtr &concrete_type,
                                    const TypePtr &iface_type);
   llvm::Value *box_value(llvm::Value *box);
   llvm::Value *box_vtable(llvm::Value *box);
-  std::pair<llvm::Value *, bool> interface_receiver(const Node &object,
-                                                    llvm::Value *obj,
-                                                    const TypePtr &iface_sem,
-                                                    unsigned method);
 
   /// The one lowering for every function boundary, Saga or extern. `leading`
   /// is a receiver or closure environment, passed as it is.
@@ -700,6 +694,8 @@ private:
   llvm::Value *emit_function_value_call(const CallExprNode &node);
   llvm::Value *emit_function_value_invoke(const Node &callee, llvm::Value *box,
                                           const CallExprNode &node);
+  llvm::Value *call_function_box(const Node &callee, llvm::Value *box,
+                                 const CallExprNode &node);
   TypePtr closure_env_type(const std::string &closure_name,
                            const std::vector<Analyzer::CaptureInfo> &captures);
   llvm::Function *
@@ -981,6 +977,16 @@ private:
   // codegen_method_dispatch.cpp; call only when the callee is a selector.
   llvm::Value *emit_method_or_module_call(const CallExprNode &node,
                                           const Node &parent);
+  bool call_writes_receiver(const TypePtr &obj_sem, const std::string &method);
+  llvm::Value *emit_receiver_call(const CallExprNode &node,
+                                  const SelectorNode &sel,
+                                  const std::string &method,
+                                  const TypePtr &obj_sem, const Node &parent);
+  llvm::Value *emit_borrowed_receiver_call(const CallExprNode &node,
+                                           const SelectorNode &sel,
+                                           const std::string &method,
+                                           const TypePtr &obj_sem,
+                                           const Node &parent);
 
   // Per-callee helpers used by emit_method_or_module_call. Each handles one
   // dispatch shape; the dispatcher gates on `obj_sem->kind` (and the struct
@@ -1038,12 +1044,14 @@ private:
                                        const TypePtr &obj_sem,
                                        llvm::Value *obj);
   llvm::Value *emit_kind_method_call(const CallExprNode &node,
+                                     const Node &object,
                                      const std::string &method,
-                                     const TypePtr &obj_sem, llvm::Value *obj);
+                                     const TypePtr &obj_sem);
   std::pair<llvm::Function *, TypePtr>
   kind_method_specialisation(const std::string &method,
                              const TypePtr &obj_sem);
   llvm::Value *emit_opaque_kind_method_call(const CallExprNode &node,
+                                            const Node &object,
                                             const std::string &method,
                                             const TypePtr &obj_sem,
                                             llvm::Value *obj);
@@ -1088,8 +1096,7 @@ private:
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,
-                                       const TypePtr &obj_sem,
-                                       llvm::Value *obj);
+                                       const TypePtr &obj_sem);
   /// Dispatch a method call on a union receiver without narrowing: switch on
   /// the union tag and, per member, extract the payload and call that
   /// member's `method` (via emit_call), PHI-ing the common result.
@@ -1282,6 +1289,9 @@ private:
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,
                                    const TypePtr &alt_type,
                                    const TypePtr &union_type);
+  llvm::Value *alternative_address(llvm::Value *union_ptr,
+                                   const TypePtr &alt_type,
+                                   const TypePtr &union_type);
 
   /// Rebind a local to the type an `is` test narrowed it to, for the duration
   /// of one branch. Returns the alloca it displaced, which the caller must put
@@ -1290,20 +1300,29 @@ private:
                                  const TypePtr &to);
   void end_narrowing(const std::string &name, llvm::AllocaInst *displaced);
 
-  /// The union variable a narrowed slot views, and every view of it in force.
-  /// Keyed by slot, which belongs to one function, so a nested function body
-  /// never sees its parent's.
+  /// Each narrowed slot's own type and the union variable it views, and each
+  /// union variable's views in force, innermost last. Keyed by slot, which
+  /// belongs to one function, so a nested function body never sees its
+  /// parent's.
   struct NarrowOrigin {
     llvm::AllocaInst *slot = nullptr;
     TypePtr sem;
   };
-  std::unordered_map<const llvm::AllocaInst *, NarrowOrigin> narrow_origins_;
-  std::unordered_map<const llvm::AllocaInst *,
-                     std::vector<std::pair<llvm::AllocaInst *, TypePtr>>>
+  struct NarrowedSlot {
+    TypePtr sem;
+    NarrowOrigin origin;
+  };
+  std::unordered_map<const llvm::AllocaInst *, NarrowedSlot> narrowed_slots_;
+  std::unordered_map<const llvm::AllocaInst *, std::vector<llvm::AllocaInst *>>
       narrow_views_;
-  void emit_narrowed_assign(const NarrowOrigin &origin, llvm::AllocaInst *view,
-                            const Node &target, Token::Kind op,
-                            llvm::Value *rhs, const TypePtr &rhs_sem);
+  /// A view holds a copy of the union's payload and none of its references.
+  void fill_view(llvm::AllocaInst *view);
+  void store_view(llvm::AllocaInst *view);
+  llvm::AllocaInst *narrowed_root(const Node &target);
+  /// Bracket a write to `target`. Returns the view it starts from, or null.
+  llvm::AllocaInst *begin_view_write(const Node &target);
+  void end_view_write(llvm::AllocaInst *view);
+  void unshare_box(const NarrowedSlot &narrowed);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
   llvm::Value *emit_box_copy(llvm::Value *val, const TypePtr &alt);
@@ -1381,7 +1400,6 @@ private:
   bool indexes_string(const IndexExprNode &node);
   bool boxes_element(const IndexExprNode &node);
   bool reads_stored_element(const CallExprNode &call);
-  bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
   Ownership branch_value_ownership(const Node *body, const TypePtr &result);
   Ownership branch_tail_ownership(const Node *body, const TypePtr &result);
@@ -1432,15 +1450,20 @@ private:
   llvm::Value *finish_join(BranchJoin &join, const std::string &name);
   llvm::Value *emit_zero_value(const TypePtr &sem);
 
-  /// The receiver value for a method call, made unique first when the method
-  /// writes through it.
-  llvm::Value *emit_receiver(const Node &object, const TypePtr &obj_sem,
-                             const std::string &method);
-
-  /// Give the binding `object` names a collection no other name shares, so an
-  /// in-place write through it is invisible elsewhere. Falls back to the plain
-  /// value when there is no slot to write back to.
-  llvm::Value *make_binding_unique(const Node &object, const TypePtr &sem);
+  /// A value a write lands in that no other name shares, made by
+  /// `make_unique` from what `object` holds. `value` is `object` already
+  /// evaluated, which a temporary has nowhere else to come from.
+  struct Claimed {
+    llvm::Value *value = nullptr;
+    bool temporary = false;
+  };
+  Claimed claim_receiver(const Node &object, llvm::Value *value,
+                         const TypePtr &sem, llvm::Function *make_unique,
+                         llvm::ArrayRef<llvm::Value *> extra = {});
+  void release_claim(const Claimed &claimed, const TypePtr &sem);
+  llvm::Function *collection_unique_fn(const TypePtr &sem);
+  Claimed kind_receiver(const Node &object, llvm::Value *obj,
+                        const TypePtr &obj_sem, const std::string &method);
 
   /// Emit release call for a value based on its semantic type.
   void emit_release(llvm::Value *val, const TypePtr &sem);

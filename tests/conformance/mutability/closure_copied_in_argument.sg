@@ -1,0 +1,20 @@
+// A closure that writes its captures runs its arguments before it takes
+// state of its own, so an argument that copies the closure keeps the old
+// state.
+import "std/io"
+
+pub fn Main() void {
+  total := 0
+  add := fn(n int) int {
+    total = total + n
+    total
+  }
+  other := add
+  first := add(if true {
+    other = add
+    5
+  } else {
+    0
+  })
+  io.Println("{first} {other(1)}")
+}

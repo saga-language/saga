@@ -1,0 +1,28 @@
+// An instance of a generic struct answers which methods write from its
+// declaration, so one that writes only by calling another copies a shared
+// interface box first.
+import "std/io"
+
+interface Bumper {
+  BumpTwice() void
+  Count() int
+}
+
+struct Box<T> {
+  v T
+  n int
+}
+
+pub fn (b Box<T>) BumpTwice() void {
+  b.Bump()
+  b.Bump()
+}
+pub fn (b Box<T>) Bump() void { b.n = b.n + 1 }
+pub fn (b Box<T>) Count() int { b.n }
+
+pub fn Main() void {
+  a Bumper = Box{v: "x", n: 0}
+  b := a
+  b.BumpTwice()
+  io.Println("{a.Count()} {b.Count()}")
+}

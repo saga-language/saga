@@ -1,0 +1,12 @@
+import "io"
+import "lib"
+
+// A generic method that writes its receiver only by calling one that does is
+// known to write in the package that imports it, though no body there calls
+// it.
+const start = lib.Box{v: 1, n: 0}
+
+pub fn Main() void {
+  start.BumpTwice()
+  io.Println("{start.Count()}")
+}

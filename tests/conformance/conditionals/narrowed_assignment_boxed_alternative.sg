@@ -1,0 +1,22 @@
+// A struct that closes a cycle is held on the heap, which narrowing can't
+// observe: assigning one through a name narrowed inside another narrowing
+// still lands in the union, and every view of it reads the new value.
+import "std/io"
+
+struct Missing {}
+struct Node { value int  tail Node | Missing }
+
+pub fn Main() void {
+  u Node | Missing | int = Node{value: 1, tail: Missing{}}
+  if u is int {} else {
+    if u is Node {
+      u = Node{value: 2, tail: Node{value: 3, tail: Missing{}}}
+      io.Println("{u.value}")
+    }
+    if u is Node { io.Println("{u.value}") }
+  }
+  if u is Node {
+    t := u.tail
+    if t is Node { io.Println("{u.value} {t.value}") }
+  }
+}

@@ -175,8 +175,6 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // receiver types like [T] can resolve T as the function's type parameter.
   if (fn.receiver) {
     auto &recv_type_node = fn.receiver->type;
-    const bool writes_recv =
-        fn.body && writes_through_binding(*fn.body, fn.receiver->name.name);
     // Helper: check D4 — cannot bind a receiver to a type from another package.
     auto check_recv_origin = [&](const std::string &origin,
                                  const std::string &type_name) -> bool {
@@ -240,9 +238,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             // can resolve back to this FuncDeclNode.
             if (stored_sig && stored_sig.get() != fn_type.get())
               func_decl_by_type_[stored_sig.get()] = &fn;
-            struct_info.methods.push_back(
-                {std::string(fn.name.name), stored_sig, fn.is_public,
-                 current_package_name(), writes_recv});
+            attach_receiver_method(recv_sym->type, fn, stored_sig);
           }
         }
       }
@@ -258,9 +254,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                               struct_info.name));
           } else if (check_recv_origin(struct_info.origin_package,
                                        struct_info.name)) {
-            struct_info.methods.push_back(
-                {std::string(fn.name.name), fn_type, fn.is_public,
-                 current_package_name(), writes_recv});
+            attach_receiver_method(recv_sym->type, fn, fn_type);
           }
         } else if (recv_sym->type->kind == TypeKind::Alias) {
           auto &alias_info = std::get<AliasTypeInfo>(recv_sym->type->detail);
@@ -271,9 +265,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                               alias_info.name, alias_info.name,
                               type_to_string(alias_info.underlying)));
           } else {
-            alias_info.methods.push_back(
-                {std::string(fn.name.name), fn_type, fn.is_public,
-                 current_package_name(), writes_recv});
+            attach_receiver_method(recv_sym->type, fn, fn_type);
           }
         } else if (recv_sym->type->kind == TypeKind::Enum) {
           // Enums can also have methods bound to them.
@@ -370,11 +362,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   if (has_generics)
     pop_scope();
 
-  // Update the function symbol.
+  // Only a free function declared a symbol; a method's name may be another
+  // declaration's.
   auto sym_it = current_scope->symbols.find(std::string(fn.name.name));
-  if (sym_it != current_scope->symbols.end()) {
+  if (!fn.receiver && !fn.type_name && sym_it != current_scope->symbols.end())
     sym_it->second.type = fn_type;
-  }
 
   // Record the reverse FuncDecl lookup so that check_call_expr can get
   // from a callee's type back to its AST for body instantiation.

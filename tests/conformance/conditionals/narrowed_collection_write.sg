@@ -1,0 +1,32 @@
+// A collection reached through a narrowed name is written in the union's own
+// copy: an index assignment or a method that writes it lands there, and
+// another copy of the union still sees the old contents.
+import "std/io"
+
+struct Shelf {
+  items array{int}
+  counts map{string: int}
+}
+
+pub fn Main() void {
+  u Shelf | int = Shelf{items: [1, 2, 3], counts: {"a": 1}}
+  copy := u
+  if u is Shelf { u.items[0] = 9 }
+  if u is Shelf { u.items.Pop() }
+  if u is Shelf { u.counts["b"] = 2 }
+  if u is Shelf { u.counts.Set("c", 3) }
+  if u is Shelf { u.counts.Remove("a") }
+  if u is Shelf {
+    io.Println("{u.items.Size()} {u.items.At(0)} {u.counts.Size()}")
+  }
+  if copy is Shelf {
+    io.Println("{copy.items.Size()} {copy.items.At(0)} {copy.counts.Size()}")
+  }
+
+  w array{int} | int = [1, 2, 3]
+  keep := w
+  if w is array{int} { w[0] = 5 }
+  if w is array{int} { w.Pop() }
+  if w is array{int} { io.Println("{w.Size()} {w.At(0)}") }
+  if keep is array{int} { io.Println("{keep.Size()} {keep.At(0)}") }
+}

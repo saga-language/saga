@@ -195,6 +195,10 @@ enum {
   SAGA_RUNTIME_ACTOR_ZOMBIE    = 5
 };
 
+/* What a longjmp to an actor's trap point carries. A trap can't publish its
+   terminal status itself: a waiter would see it before the reason is set. */
+enum { SAGA_RUNTIME_JUMP_STOP = 1, SAGA_RUNTIME_JUMP_TRAP = 2 };
+
 /* Forward declarations — full definitions follow below. */
 typedef struct saga_runtime_actor   saga_runtime_actor;
 typedef struct saga_runtime_channel saga_runtime_channel;
@@ -320,12 +324,12 @@ void saga_reduction_tick(saga_runtime_actor *a) {
 
   /* Status poisoning — killed externally? */
   if (__atomic_load_n(&a->status, __ATOMIC_ACQUIRE) == SAGA_RUNTIME_ACTOR_KILLED)
-    longjmp(a->trap, 1);
+    longjmp(a->trap, SAGA_RUNTIME_JUMP_STOP);
 
   a->reduction_count++;
   if (a->reduction_count > SAGA_RUNTIME_MAX_REDUCTIONS) {
     __atomic_store_n(&a->status, SAGA_RUNTIME_ACTOR_KILLED, __ATOMIC_RELEASE);
-    longjmp(a->trap, 1);
+    longjmp(a->trap, SAGA_RUNTIME_JUMP_STOP);
   }
 
   a->last_cycle = saga_runtime_monotonic_now();
@@ -612,7 +616,8 @@ static void *saga_runtime_worker_loop(void *arg) {
        intrinsics called from any depth can locate it. */
     saga_runtime_current_actor = actor;
 
-    if (setjmp(actor->trap) == 0) {
+    int jumped = setjmp(actor->trap);
+    if (jumped == 0) {
       /* Normal path: run the actor's entry function. */
       actor->entry(actor);
       /* Default to COMPLETED.  context_exit may have set a different
@@ -620,6 +625,8 @@ static void *saga_runtime_worker_loop(void *arg) {
       final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
       if (final_status == SAGA_RUNTIME_ACTOR_RUNNING)
         final_status = SAGA_RUNTIME_ACTOR_COMPLETED;
+    } else if (jumped == SAGA_RUNTIME_JUMP_TRAP) {
+      final_status = SAGA_RUNTIME_ACTOR_ZOMBIE;
     } else {
       /* longjmp path — actor was killed, trapped, or exited. */
       final_status = __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE);
@@ -1012,7 +1019,7 @@ void saga_context_exit(saga_runtime_actor *a, void *value, int64_t size) {
   }
   a->result_in_arena = value;
   a->result_size     = size;
-  longjmp(a->trap, 1);
+  longjmp(a->trap, SAGA_RUNTIME_JUMP_STOP);
 }
 
 /*
@@ -1117,7 +1124,7 @@ int saga_runtime_channel_send(saga_runtime_channel *ch, const void *data, saga_r
     if (actor && __atomic_load_n(&actor->status, __ATOMIC_ACQUIRE)
                     == SAGA_RUNTIME_ACTOR_KILLED) {
       pthread_mutex_unlock(&ch->lock);
-      longjmp(actor->trap, 1);
+      longjmp(actor->trap, SAGA_RUNTIME_JUMP_STOP);
     }
     pthread_cond_wait(&ch->not_full, &ch->lock);
   }
@@ -1215,8 +1222,6 @@ void saga_actor_trap(saga_runtime_string *reason) {
   saga_runtime_actor *a = saga_runtime_current_actor;
   if (!a) return;
 
-  __atomic_store_n(&a->status, SAGA_RUNTIME_ACTOR_ZOMBIE, __ATOMIC_RELEASE);
-
   /* Store a copy of the reason string in heap memory (outlives arena). */
   if (reason) {
     saga_runtime_string *copy = (saga_runtime_string *)malloc(sizeof(saga_runtime_string) + reason->len + 1);
@@ -1232,7 +1237,7 @@ void saga_actor_trap(saga_runtime_string *reason) {
     }
   }
 
-  longjmp(a->trap, 1);
+  longjmp(a->trap, SAGA_RUNTIME_JUMP_TRAP);
 }
 
 /* ───────────────────────────────────────────────────────────────────────── */

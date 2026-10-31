@@ -333,15 +333,15 @@ void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
 
 // `saga_map_set` writes in place and stays that way — it is the stdlib's own
 // path through `map.Set`. Copy-on-write is the caller's to apply, so the map
-// the write lands in is made unique first.
+// the write lands in is claimed once the key has run.
 void CodeGen::emit_map_index_assign(const IndexExprNode &target,
                                     const TypePtr &obj_sem, llvm::Value *rhs,
                                     const TypePtr &rhs_sem,
                                     const Node &rhs_node) {
   auto &info = std::get<MapTypeInfo>(obj_sem->detail);
-  auto *map = make_binding_unique(*target.object, obj_sem);
+  auto *held = emit_borrowed(*target.object);
   auto *key = emit_expr(*target.index);
-  if (!map || !key)
+  if (!held || !key)
     return;
 
   auto key_v = stored_value(key, semantic_type(*target.index), info.key);
@@ -349,8 +349,11 @@ void CodeGen::emit_map_index_assign(const IndexExprNode &target,
   if (!key_v.address || !val_v.address)
     return;
 
+  auto map = claim_receiver(*target.object, held, obj_sem,
+                            collection_unique_fn(obj_sem));
   builder.CreateCall(module->getFunction("saga_map_set"),
-                     {map, key_v.address, val_v.address});
+                     {map.value, key_v.address, val_v.address});
+  release_claim(map, obj_sem);
   settle_stored(key_v, *target.index, info.key);
   settle_stored(val_v, rhs_node, info.value);
 }
@@ -387,10 +390,12 @@ void CodeGen::emit_index_assign(const IndexExprNode &target, llvm::Value *rhs,
   auto obj_sem = unwrap_alias(semantic_type(*target.object));
   if (!obj_sem)
     return;
+  auto *view = begin_view_write(*target.object);
   if (obj_sem->kind == TypeKind::Map)
     emit_map_index_assign(target, obj_sem, rhs, rhs_sem, rhs_node);
   else if (obj_sem->kind == TypeKind::Array)
     emit_array_index_assign(target, obj_sem, rhs, rhs_sem, rhs_node);
+  end_view_write(view);
 }
 
 void CodeGen::emit_assign(const AssignNode &node) {
@@ -435,20 +440,18 @@ void CodeGen::emit_slot_assign(const Node &target, Token::Kind op,
   auto [addr, slot_ll] = assign_target_address(target);
   if (!addr)
     return;
-  if (auto *view = llvm::dyn_cast<llvm::AllocaInst>(addr))
-    if (auto it = narrow_origins_.find(view); it != narrow_origins_.end())
-      return emit_narrowed_assign(it->second, view, target, op, rhs, rhs_sem);
 
+  auto *view = begin_view_write(target);
   auto target_sem = semantic_type(target);
   if (op == Token::Kind::Assignment) {
     auto *placed = coerce_to(rhs, rhs_sem, target_sem);
     walk_slot(addr, target_sem, false);
     store_into_slot(addr, slot_ll, placed);
-    return;
+  } else {
+    auto *cur = builder.CreateLoad(slot_ll, addr);
+    builder.CreateStore(emit_compound_op(op, cur, rhs, target_sem), addr);
   }
-
-  auto *cur = builder.CreateLoad(slot_ll, addr);
-  builder.CreateStore(emit_compound_op(op, cur, rhs, target_sem), addr);
+  end_view_write(view);
 }
 
 llvm::Value *CodeGen::emit_compound_op(Token::Kind op, llvm::Value *cur,
@@ -511,11 +514,13 @@ void CodeGen::emit_step(const Node &target, bool increment) {
   if (!addr)
     return;
 
+  auto *view = begin_view_write(target);
   auto *cur = builder.CreateLoad(type, addr);
   auto *one = llvm::ConstantInt::get(i64_type, 1);
   builder.CreateStore(increment ? builder.CreateAdd(cur, one, "inc")
                                 : builder.CreateSub(cur, one, "dec"),
                       addr);
+  end_view_write(view);
 }
 
 void CodeGen::emit_increment(const IncrementNode &node) {

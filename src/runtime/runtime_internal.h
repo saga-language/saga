@@ -67,10 +67,11 @@ typedef struct {
 /* ───────────────────────────────────────────────────────────────────────── */
 /* Shared box                                                               */
 /*                                                                          */
-/* A counted heap copy of a value nothing writes through, so every copy of  */
-/* the value shares the one box: an error, or a union alternative that      */
-/* contains itself. A pointer to one points at the value; the header sits   */
-/* just before it, so the value's own layout is all a reader needs.         */
+/* A counted heap copy that every copy of the value shares: an error, which */
+/* nothing writes through, or a union alternative that contains itself,     */
+/* which a write makes unique first. A pointer to one points at the value;  */
+/* the header sits just before it, so the value's own layout is all a       */
+/* reader needs.                                                            */
 /* ───────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -202,6 +203,7 @@ void saga_box_release(saga_runtime_box *b);
 void *saga_shared_new(int64_t size, const saga_runtime_elem_ops *ops);
 void saga_shared_retain(void *value);
 void saga_shared_release(void *value);
+void *saga_shared_make_unique(void *value, int64_t size);
 saga_runtime_array *saga_array_new_internal(int64_t elem_size,
                                             int64_t initial_cap,
                                             const saga_runtime_elem_ops *ops);

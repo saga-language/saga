@@ -131,7 +131,7 @@ bool CodeGen::reads_stored_element(const CallExprNode &call) {
   auto *fi = method_signature(km_it->second, method);
   return fi && fi->return_type &&
          fi->return_type->kind == TypeKind::TypeParam &&
-         !kind_method_mutates(obj_sem, method);
+         !analyzer.method_mutates_receiver(obj_sem, method);
 }
 
 // A branch with no value of its own yields the result type's zero, and an

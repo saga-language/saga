@@ -215,6 +215,11 @@ void CodeGen::declare_runtime() {
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
       llvm::Function::ExternalLinkage, "saga_shared_release", module.get());
 
+  // void* saga_shared_make_unique(void* value, i64 size)
+  llvm::Function::Create(
+      llvm::FunctionType::get(ptr_type, {ptr_type, i64_type}, false),
+      llvm::Function::ExternalLinkage, "saga_shared_make_unique", module.get());
+
   // void saga_retain_string(saga_runtime_string* s)
   llvm::Function::Create(
       llvm::FunctionType::get(void_ll_type, {ptr_type}, false),
@@ -604,23 +609,21 @@ llvm::Value *CodeGen::emit_union_extract(llvm::Value *union_ptr,
                                           const TypePtr &union_type) {
   if (!union_ptr || !union_type || union_type->kind != TypeKind::Union)
     return nullptr;
+  return builder.CreateLoad(llvm_type(alt_type),
+                            alternative_address(union_ptr, alt_type, union_type),
+                            "union.val");
+}
 
-  auto *union_st = get_union_llvm_type(union_type);
-  if (!union_st)
-    return nullptr;
-
-  auto *ll_alt = llvm_type(alt_type);
-
-  auto *payload_gep = builder.CreateStructGEP(union_st, union_ptr, 1,
-                                               "union.payload");
-  auto *cast = builder.CreateBitOrPointerCast(
-      payload_gep, llvm::PointerType::getUnqual(context), "union.ecast");
-  if (union_alt_is_boxed(alt_type)) {
-    auto *box = builder.CreateLoad(llvm::PointerType::getUnqual(context), cast,
-                                   "union.box");
-    return builder.CreateLoad(ll_alt, box, "union.val");
-  }
-  return builder.CreateLoad(ll_alt, cast, "union.val");
+// A boxed alternative lives in the box the payload points to.
+llvm::Value *CodeGen::alternative_address(llvm::Value *union_ptr,
+                                          const TypePtr &alt_type,
+                                          const TypePtr &union_type) {
+  auto *payload = builder.CreateStructGEP(get_union_llvm_type(union_type),
+                                          union_ptr, 1, "union.payload");
+  if (!union_alt_is_boxed(alt_type))
+    return payload;
+  return builder.CreateLoad(llvm::PointerType::getUnqual(context), payload,
+                            "union.box");
 }
 
 // The box takes over what the value holds, as any slot it is stored in does.

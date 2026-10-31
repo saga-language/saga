@@ -12,38 +12,6 @@
 
 namespace saga {
 
-namespace {
-
-// The receiver's own method set, which is where the declaration recorded
-// whether the body writes through it.
-const std::vector<MethodInfo> *receiver_methods(const TypePtr &type) {
-  if (!type) return nullptr;
-  if (type->kind == TypeKind::Struct)
-    return &std::get<StructTypeInfo>(type->detail).methods;
-  if (type->kind == TypeKind::Alias)
-    return &std::get<AliasTypeInfo>(type->detail).methods;
-  return nullptr;
-}
-
-} // namespace
-
-// An alias-bound method wins over the underlying type's, the order method
-// dispatch uses. Array and Map keep theirs in `kind_method_decls_` rather than
-// on the type, because the receiver is a type kind and not a declaration — and
-// an alias has to be unwrapped to reach it.
-bool Analyzer::method_mutates_receiver(const TypePtr &type,
-                                       std::string_view name) const {
-  if (!type) return false;
-  if (const auto *methods = receiver_methods(type))
-    for (auto &m : *methods)
-      if (m.name == name) return m.mutates_receiver;
-
-  auto km = kind_method_decls_.find(unwrap_alias(type)->kind);
-  if (km == kind_method_decls_.end()) return false;
-  auto m = km->second.find(std::string(name));
-  return m != km->second.end() && m->second.mutates_receiver;
-}
-
 static std::string callee_display_name(const Node &callee) {
   if (auto *id = std::get_if<IdentifierNode>(&callee.data))
     return std::string(id->name);

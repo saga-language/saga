@@ -1,0 +1,23 @@
+// A write through the receiver counts wherever it sits, here inside a call's
+// argument, so the method cannot run on a constant.
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Show() void {
+  io.Println(if c.n == 0 {
+    c.n = 5
+    "set"
+  } else {
+    "kept"
+  })
+}
+
+const start = Counter{n: 0}
+
+pub fn Main() void {
+  start.Show()
+  io.Println("{start.n}")
+}

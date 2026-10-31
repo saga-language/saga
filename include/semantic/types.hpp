@@ -166,6 +166,10 @@ struct StructTypeInfo {
   std::vector<TypeParam> type_params;          // generic parameters
   std::vector<TypePtr> type_args;              // concrete arguments (instantiated)
   bool is_error = false; // `error Name {...}` — a nominal error, struct-backed
+  /// What an instance instantiates; null on a declaration. It answers for
+  /// what the analyzer settles only after an instance can have been made,
+  /// such as which methods write their receiver.
+  TypePtr declaration;
 };
 
 struct EnumVariant {
@@ -289,6 +293,11 @@ TypePtr make_struct_type(const std::string &name,
                          std::vector<MethodInfo> methods = {},
                          std::vector<TypeParam> type_params = {},
                          std::string origin_package = "");
+/// An instance of the generic struct `generic` names, bound to `type_args`,
+/// with its members left for the caller to substitute. `generic` may itself
+/// be an instance; the result links to the declaration either way.
+TypePtr make_struct_instance(const TypePtr &generic,
+                             std::vector<TypePtr> type_args);
 TypePtr make_enum_type(const std::string &name,
                        std::vector<EnumVariant> variants = {},
                        std::string origin_package = "",
