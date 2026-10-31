@@ -128,9 +128,7 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
       }
     }
   } else if (auto *sel = std::get_if<SelectorNode>(&node.callee->data)) {
-    auto obj_sem = node_types.count(sel->object.get())
-                       ? node_types[sel->object.get()]
-                       : nullptr;
+    auto obj_sem = recorded_type(*sel->object);
     auto recv_shape = unwrap_alias(obj_sem);
     bool kind_recv = recv_shape && (recv_shape->kind == TypeKind::Array ||
                                     recv_shape->kind == TypeKind::Map);

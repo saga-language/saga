@@ -587,6 +587,8 @@ public:
 
   /// Associate a resolved type with an AST node.
   void record_type(const Node &node, TypePtr type);
+  /// The type `record_type` gave `node` in the current view, or null.
+  TypePtr recorded_type(const Node &node) const;
 
   /// Associate a resolved symbol with an AST node.
   void record_symbol(const Node &node, const Symbol &sym);

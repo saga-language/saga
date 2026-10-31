@@ -535,6 +535,13 @@ void Analyzer::record_type(const Node &node, TypePtr type) {
   }
 }
 
+TypePtr Analyzer::recorded_type(const Node &node) const {
+  auto &types =
+      current_instantiation_ ? current_instantiation_->node_types : node_types;
+  auto it = types.find(&node);
+  return it == types.end() ? nullptr : it->second;
+}
+
 void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
   // A package name reaches source only to be used — there is no write form to
   // hold apart, as there is for a variable — so binding one is using it.
