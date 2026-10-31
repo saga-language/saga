@@ -67,4 +67,16 @@ TEST(FileSetTest, PositionAt_EmptySetYieldsNoFile) {
   ASSERT_TRUE(fs.position_at(0).filename.empty());
 }
 
+// An imported package's errors are relayed after its file set is gone.
+TEST(FileSetTest, PositionOutlivesItsFileSet) {
+  Position pos;
+  {
+    FileSet fs;
+    fs.add_file(File::from_source("lib/lib.sg", "abc"));
+    pos = fs.position_at(1);
+  }
+
+  ASSERT_EQ(pos.filename, "lib/lib.sg");
+}
+
 } // namespace saga

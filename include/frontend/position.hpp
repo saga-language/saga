@@ -4,11 +4,13 @@
 #pragma once
 
 #include <format>
-#include <string_view>
+#include <string>
 
 namespace saga {
+// Owns its file name: a diagnostic can outlive the file set that placed it, as
+// an imported package's errors outlive the sub-analysis that found them.
 struct Position {
-  std::string_view filename;
+  std::string filename;
   size_t line;
   size_t column;
 };
