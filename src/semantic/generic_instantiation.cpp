@@ -221,8 +221,11 @@ Analyzer::BodyInstantiation *Analyzer::instantiate_generic_body(
   auto &block = std::get<BlockNode>(fn.body->data);
   resolve_block(block);
 
-  // Phase 4 — type checking over the body.
+  // Phase 4 — type checking over the body. It may be checked from inside a
+  // closure, whose captures it does not see.
+  push_body_frame();
   auto body_type = check_block(block);
+  pop_writer_frame();
 
   // Tail-expression return compatibility (mirrors check_func_decl_body).
   if (!current_scope->return_types.empty() && !block.stmts.empty()) {
@@ -283,10 +286,16 @@ TypePtr Analyzer::instantiate_generic_struct(
   if (bindings.empty())
     return struct_type;
 
+  std::vector<TypePtr> type_args;
+  for (auto &tp : info.type_params) {
+    auto it = bindings.find(tp.id);
+    if (it != bindings.end())
+      type_args.push_back(it->second);
+  }
+
   // Publish the shell before substituting fields, and map the declaration onto
   // it, so a field naming the struct again lands on this instantiation.
-  auto result = make_struct_type(info.name, {}, {}, info.type_params,
-                                 info.origin_package);
+  auto result = make_struct_instance(struct_type, std::move(type_args));
   auto &result_info = std::get<StructTypeInfo>(result->detail);
   SubstMemo memo{{struct_type.get(), result}};
 
@@ -297,13 +306,7 @@ TypePtr Analyzer::instantiate_generic_struct(
   for (auto &m : info.methods)
     result_info.methods.push_back(
         {m.name, substitute(m.signature, bindings, memo), m.is_public,
-         m.origin_package, m.mutates_receiver});
-  // Record the concrete type arguments.
-  for (auto &tp : info.type_params) {
-    auto it = bindings.find(tp.id);
-    if (it != bindings.end())
-      result_info.type_args.push_back(it->second);
-  }
+         m.origin_package});
   result_info.embeds = info.embeds;
 
   return result;

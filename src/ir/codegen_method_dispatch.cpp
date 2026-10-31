@@ -18,18 +18,9 @@ llvm::Value *CodeGen::emit_receiver(const Node &object, const TypePtr &obj_sem,
   // The shape, not the declared type: an alias of a collection reaches the
   // same runtime buffer and needs the same barrier.
   auto shape = unwrap_alias(obj_sem);
-  if (!shape || !kind_method_mutates(shape, method))
+  if (!shape || !analyzer.method_mutates_receiver(shape, method))
     return emit_borrowed(object);
   return make_binding_unique(object, shape);
-}
-
-bool CodeGen::kind_method_mutates(const TypePtr &shape,
-                                  const std::string &method) {
-  auto kind_it = analyzer.kind_method_decls_.find(shape->kind);
-  if (kind_it == analyzer.kind_method_decls_.end())
-    return false;
-  auto m_it = kind_it->second.find(method);
-  return m_it != kind_it->second.end() && m_it->second.mutates_receiver;
 }
 
 llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,

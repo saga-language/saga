@@ -767,6 +767,11 @@ void for_each_child(const Node &node,
 /// it answers what this body writes, not what anything it calls might write.
 bool writes_through_binding(const Node &node, std::string_view name);
 
+/// Every method call in `node` whose receiver is rooted at `name`, by its
+/// callee. A closure or a task holds copies of its own and is not searched.
+std::vector<const SelectorNode *> calls_through_binding(const Node &node,
+                                                        std::string_view name);
+
 // The binding an assignment target or a call's receiver ultimately names:
 // `c`, `c.at.n` and `c.xs[0]` all root at `c`. Anything else (a call result,
 // a literal) has no root and cannot be written through.

@@ -1,0 +1,21 @@
+// A method promoted from an embedded struct writes the embed's storage, which
+// is the child's own, so it cannot run on a constant of the child either.
+import "std/io"
+
+struct Base {
+  label int
+}
+
+pub fn (b Base) Bump() void { b.label = b.label + 1 }
+
+struct Wrap {
+  Base
+  other int
+}
+
+const start = Wrap{other: 2}
+
+pub fn Main() void {
+  start.Bump()
+  io.Println("{start.label}")
+}

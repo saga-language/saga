@@ -1,0 +1,21 @@
+// A generic method that writes its receiver only by calling one that does
+// still writes it, though its body is checked only per instantiation.
+import "std/io"
+
+struct Box<T> {
+  v T
+  n int
+}
+
+pub fn (b Box<T>) BumpTwice() void {
+  b.Bump()
+  b.Bump()
+}
+pub fn (b Box<T>) Bump() void { b.n = b.n + 1 }
+
+const start = Box{v: 1, n: 0}
+
+pub fn Main() void {
+  start.BumpTwice()
+  io.Println("{start.n}")
+}

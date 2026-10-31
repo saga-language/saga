@@ -215,12 +215,10 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
         {m.name, substitute(m.signature, bindings), m.is_public,
          m.origin_package});
 
-  auto result =
-      make_struct_type(info.name, std::move(new_fields), std::move(new_methods),
-                       {}, info.origin_package);
+  auto result = make_struct_instance(base, std::move(args));
   auto &ri = std::get<StructTypeInfo>(result->detail);
-  ri.type_params = info.type_params;
-  ri.type_args = std::move(args);
+  ri.fields = std::move(new_fields);
+  ri.methods = std::move(new_methods);
   ri.embeds = info.embeds;
   return result;
 }

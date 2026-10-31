@@ -1,9 +1,9 @@
 // Copyright 2026 Rob Thornton
 // SPDX-License-Identifier: MIT
 
-// Walking a body, and what it writes through a binding it names: where `if`,
-// `switch` and `for` are expressions, a write can sit inside any operand, so
-// the question is answered over the whole tree.
+// Walking a body, and what it does through a binding it names: where `if`,
+// `switch` and `for` are expressions, a write or a call can sit inside any
+// operand, so every question is answered over the whole tree.
 
 #include "frontend/ast.hpp"
 
@@ -161,6 +161,19 @@ bool writes_directly(const Node &node, std::string_view name) {
   return false;
 }
 
+void collect_calls(const Node &node, std::string_view name,
+                   std::vector<const SelectorNode *> &out) {
+  if (holds_own_copies(node))
+    return;
+  if (auto *call = std::get_if<CallExprNode>(&node.data))
+    if (auto *sel = std::get_if<SelectorNode>(&call->callee->data))
+      if (binding_root(*sel->object) == name)
+        out.push_back(sel);
+  for_each_child(node, [&](const Node &child) {
+    collect_calls(child, name, out);
+  });
+}
+
 } // namespace
 
 bool writes_through_binding(const Node &node, std::string_view name) {
@@ -173,6 +186,14 @@ bool writes_through_binding(const Node &node, std::string_view name) {
     writes = writes || writes_through_binding(child, name);
   });
   return writes;
+}
+
+std::vector<const SelectorNode *> calls_through_binding(const Node &node,
+                                                        std::string_view name) {
+  std::vector<const SelectorNode *> calls;
+  if (!name.empty())
+    collect_calls(node, name, calls);
+  return calls;
 }
 
 } // namespace saga

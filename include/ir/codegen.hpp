@@ -499,10 +499,8 @@ private:
   llvm::Constant *vtable_method(const StructTypeInfo &sinfo,
                                 const std::string &method,
                                 const FuncTypeInfo *iface_sig);
-  uint64_t writes_mask(const StructTypeInfo &sinfo,
+  uint64_t writes_mask(const TypePtr &shape,
                        const std::vector<std::string> &methods);
-  std::optional<bool> method_writes(const StructTypeInfo &sinfo,
-                                    const std::string &method);
   llvm::Value *emit_interface_box(llvm::Value *concrete_val,
                                    const TypePtr &concrete_type,
                                    const TypePtr &iface_type);
@@ -1381,7 +1379,6 @@ private:
   bool indexes_string(const IndexExprNode &node);
   bool boxes_element(const IndexExprNode &node);
   bool reads_stored_element(const CallExprNode &call);
-  bool kind_method_mutates(const TypePtr &shape, const std::string &method);
   Ownership body_ownership(const Node *body, const TypePtr &result);
   Ownership branch_value_ownership(const Node *body, const TypePtr &result);
   Ownership branch_tail_ownership(const Node *body, const TypePtr &result);

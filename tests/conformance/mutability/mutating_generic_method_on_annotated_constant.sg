@@ -1,0 +1,17 @@
+// A generic struct named with its type argument written out is the same
+// instance as one inferred from a literal, and keeps which methods write.
+import "std/io"
+
+struct Box<T> {
+  v T
+  n int
+}
+
+pub fn (b Box<T>) Bump() void { b.n = b.n + 1 }
+
+const start Box<int> = Box{v: 1, n: 0}
+
+pub fn Main() void {
+  start.Bump()
+  io.Println("{start.n}")
+}

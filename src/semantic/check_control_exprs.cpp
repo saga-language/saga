@@ -549,12 +549,10 @@ TypePtr Analyzer::instantiate_task_type(const TypePtr &chan_type) {
     new_methods.push_back({m.name, substitute(m.signature, bindings),
                            m.is_public, m.origin_package});
 
-  auto result = make_struct_type(info.name, std::move(new_fields),
-                                 std::move(new_methods), {},
-                                 info.origin_package);
+  auto result = make_struct_instance(builtins.task_type, {chan_type});
   auto &ri = std::get<StructTypeInfo>(result->detail);
-  ri.type_params = info.type_params;
-  ri.type_args.push_back(chan_type);
+  ri.fields = std::move(new_fields);
+  ri.methods = std::move(new_methods);
   ri.embeds = info.embeds;
   return result;
 }

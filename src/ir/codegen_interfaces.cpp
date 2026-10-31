@@ -86,7 +86,7 @@ CodeGen::get_or_create_vtable(const TypePtr &concrete,
       llvm::ConstantInt::get(i64_type, size_of(llvm_type(concrete))),
       elem_ops_for(concrete),
       llvm::ConstantInt::get(i64_type,
-                             sinfo ? writes_mask(*sinfo, method_names) : 0)};
+                             sinfo ? writes_mask(shape, method_names) : 0)};
   for (size_t mi = 0; mi < method_names.size(); ++mi) {
     auto *sig = func_info(iinfo.methods[mi]);
     entries.push_back(
@@ -121,31 +121,13 @@ llvm::Constant *CodeGen::vtable_method(const StructTypeInfo &sinfo,
                                 *iface_sig);
 }
 
-// A method the struct doesn't declare itself is promoted from an embed. One
-// found nowhere is taken to write, which costs a copy rather than letting a
-// shared box see the write.
-uint64_t CodeGen::writes_mask(const StructTypeInfo &sinfo,
+uint64_t CodeGen::writes_mask(const TypePtr &shape,
                               const std::vector<std::string> &methods) {
   uint64_t mask = 0;
   for (size_t i = 0; i < methods.size(); ++i)
-    if (method_writes(sinfo, methods[i]).value_or(true))
+    if (analyzer.method_mutates_receiver(shape, methods[i]))
       mask |= uint64_t{1} << i;
   return mask;
-}
-
-std::optional<bool> CodeGen::method_writes(const StructTypeInfo &sinfo,
-                                           const std::string &method) {
-  for (auto &m : sinfo.methods)
-    if (m.name == method)
-      return m.mutates_receiver;
-  for (auto &embed : sinfo.embeds) {
-    auto shape = unwrap_alias(embed);
-    if (shape && shape->kind == TypeKind::Struct)
-      if (auto writes = method_writes(
-              std::get<StructTypeInfo>(shape->detail), method))
-        return writes;
-  }
-  return std::nullopt;
 }
 
 // The box takes over the value's references: whoever boxes a borrowed value
