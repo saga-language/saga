@@ -362,11 +362,11 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   if (has_generics)
     pop_scope();
 
-  // Update the function symbol.
+  // Only a free function declared a symbol; a method's name may be another
+  // declaration's.
   auto sym_it = current_scope->symbols.find(std::string(fn.name.name));
-  if (sym_it != current_scope->symbols.end()) {
+  if (!fn.receiver && !fn.type_name && sym_it != current_scope->symbols.end())
     sym_it->second.type = fn_type;
-  }
 
   // Record the reverse FuncDecl lookup so that check_call_expr can get
   // from a callee's type back to its AST for body instantiation.

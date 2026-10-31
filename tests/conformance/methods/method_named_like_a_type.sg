@@ -1,0 +1,22 @@
+// A method belongs to its receiver's type, so it can share a name with a
+// package-level type or function without hiding either.
+import "std/io"
+
+struct Point {
+  x int
+}
+
+fn Twice(n int) int { n * 2 }
+
+struct Shape {
+  p Point
+}
+
+pub fn (s Shape) Point() Point { s.p }
+pub fn (s Shape) Twice() int { s.p.x * 2 }
+
+pub fn Main() void {
+  s := Shape{p: Point{x: 3}}
+  q := Point{x: 4}
+  io.Println("{s.Point().x} {q.x} {s.Twice()} {Twice(5)}")
+}
