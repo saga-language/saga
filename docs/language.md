@@ -750,12 +750,28 @@ pub fn (p Pair<A, B>) Second() B { p.second }
 p := Pair{first: 1, second: "two"}
 ```
 
-Every type parameter a method uses must come from its receiver — that is the
-only place a call site has anything to bind one from. A method that declares
-its own is rejected:
+Every type parameter a method uses comes from its receiver — that is the only
+place a call site has anything to bind one from — so a method has no
+type-parameter list of its own:
 
 ```
-pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: U is unbound
+pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: no list here
+```
+
+A method is declared on every instance of its type, so the receiver names the
+type's parameters, never a type: `fn (n Node<int>) Sum()` is an error. Like any
+binding, a parameter may not shadow a type of the same name.
+
+A method may bound its receiver's parameter, by the same adjacency as any
+[bounded generic](#Bounded-generics). It is then a method of only the
+instances whose arguments meet the bound; on any other it is not callable and
+does not count toward an interface:
+
+```
+pub fn (b Box<T numeric>) Twice() T { b.value + b.value }
+
+Box{value: 21}.Twice()      // 42
+Box{value: "saga"}.Twice()  // error: Box<string> has no method 'Twice'
 ```
 
 A signature may name a generic struct, including the receiver's own type. The
@@ -1283,9 +1299,9 @@ struct Node<T> {
 Walk a recursive shape by narrowing, the same as any other union:
 
 ```
-fn (n Node) Sum() int {
+fn (n Node<T numeric>) Sum() T {
   t := n.tail
-  if t is Node {
+  if t is Node<T> {
     n.value + t.Sum()
   } else {
     n.value

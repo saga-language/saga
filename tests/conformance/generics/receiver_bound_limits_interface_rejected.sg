@@ -1,0 +1,19 @@
+// An instance that misses a method's receiver bound lacks the method, so it
+// does not satisfy an interface that needs it.
+interface Shower {
+  Show() string
+}
+
+struct Cat {}
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T Stringable>) Show() string { b.value.String() }
+
+fn show(s Shower) string { s.Show() }
+
+pub fn Main() void {
+  _ := show(Box{value: Cat{}})
+}

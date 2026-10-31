@@ -242,6 +242,24 @@ static void write_func_export(std::ostringstream &os, const std::string &name,
   os << "\n";
 }
 
+/// `bound <method> <index> <constraint or interface>`, one per receiver
+/// parameter the method bounds, so an importer finds which instances have it.
+static void write_receiver_bounds(std::ostringstream &os,
+                                  const MethodInfo &method) {
+  for (size_t i = 0; i < method.receiver_params.size(); ++i) {
+    auto &param = method.receiver_params[i];
+    if (!param || param->kind != TypeKind::TypeParam)
+      continue;
+    auto &info = std::get<TypeParamInfo>(param->detail);
+    if (info.param.constraint != TypeConstraint::None)
+      os << "  bound " << method.name << " " << i << " "
+         << constraint_name(info.param.constraint) << "\n";
+    else if (info.bound)
+      os << "  bound " << method.name << " " << i << " "
+         << type_to_sgi(*info.bound) << "\n";
+  }
+}
+
 /// Serialize a struct type as a struct block.
 static void write_struct_export(std::ostringstream &os,
                                  const std::string &name, const TypePtr &t,
@@ -303,6 +321,9 @@ static void write_struct_export(std::ostringstream &os,
   for (auto &method : info.methods)
     if (method.is_public && method.mutates_receiver)
       os << "  writes " << method.name << "\n";
+  for (auto &method : info.methods)
+    if (method.is_public)
+      write_receiver_bounds(os, method);
 
   os << "}\n";
 }
@@ -877,6 +898,37 @@ struct SgiParser {
     return stub;
   }
 
+  /// The rest of a `bound <method> <index> <bound>` line.
+  void parse_receiver_bound(std::vector<MethodInfo> &methods,
+                            const std::vector<TypeParam> &struct_params) {
+    skip_whitespace();
+    std::string mname = read_word();
+    skip_whitespace();
+    std::string index_word = read_word();
+    skip_whitespace();
+    size_t saved = pos;
+    auto constraint = constraint_from_name(read_word());
+    TypePtr bound;
+    if (constraint == TypeConstraint::None) {
+      pos = saved;
+      bound = parse_type();
+    }
+    skip_line();
+    size_t index = index_word.empty() ? 0 : std::stoul(index_word);
+    if (index >= struct_params.size())
+      return;
+    for (auto &m : methods) {
+      if (m.name != mname)
+        continue;
+      auto &sp = struct_params[index];
+      auto param = make_type_param(
+          sp.id, sp.name, bound ? std::optional<TypePtr>(bound) : std::nullopt);
+      std::get<TypeParamInfo>(param->detail).param.constraint = constraint;
+      m.receiver_params.resize(struct_params.size());
+      m.receiver_params[index] = param;
+    }
+  }
+
   /// Parse an optional `|T#id, U#id, ...|` declaration list. Returns the
   /// parsed params (empty if no `|` follows). Each parsed param is also
   /// bound in the current (innermost) type-param scope so subsequent
@@ -1057,6 +1109,8 @@ struct SgiParser {
         for (auto &m : methods)
           if (m.name == mname)
             m.mutates_receiver = true;
+      } else if (kw == "bound") {
+        parse_receiver_bound(methods, type_params);
       } else if (kw == "fn") {
         // Private method — skip
         push_type_param_scope();

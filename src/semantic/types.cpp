@@ -979,8 +979,16 @@ bool has_type_params(const TypePtr &t) {
   return any_type_param(t, [](const TypeParam &) { return true; });
 }
 
-bool mentions_type_param(const TypePtr &t, uint32_t id) {
-  return any_type_param(t, [&](const TypeParam &p) { return p.id == id; });
+std::vector<MethodInfo> *declared_methods(const TypePtr &type) {
+  if (!type) return nullptr;
+  if (type->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(type->detail);
+    return info.declaration ? declared_methods(info.declaration)
+                            : &info.methods;
+  }
+  if (type->kind == TypeKind::Alias)
+    return &std::get<AliasTypeInfo>(type->detail).methods;
+  return nullptr;
 }
 
 bool same_struct_decl(const TypePtr &a, const TypePtr &b) {

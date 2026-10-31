@@ -157,6 +157,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   bool has_generics = fn.generic.has_value();
   std::vector<TypeParam> generic_params;
   if (has_generics) {
+    reject_shadowed_types(*fn.generic);
     push_scope(ScopeKind::Block);
     generic_params = enter_generics(*fn.generic);
   }
@@ -206,11 +207,13 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             // e.g. fn |T#5| (b |T#5| Box) Get() T#5  →  Get() T#0 (struct's T)
             TypePtr stored_sig = fn_type;
             std::unordered_map<uint32_t, uint32_t> id_remap;
+            std::vector<TypePtr> receiver_params;
             if (!struct_info.type_params.empty() &&
                 gapp->type_args.size() == struct_info.type_params.size()) {
               std::unordered_map<uint32_t, TypePtr> remap;
               for (size_t i = 0; i < gapp->type_args.size(); ++i) {
                 auto arg_t = resolve_type(*gapp->type_args[i]);
+                receiver_params.push_back(arg_t);
                 if (arg_t && arg_t->kind == TypeKind::TypeParam) {
                   auto &tp = std::get<TypeParamInfo>(arg_t->detail);
                   remap[tp.param.id] =
@@ -238,7 +241,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             // can resolve back to this FuncDeclNode.
             if (stored_sig && stored_sig.get() != fn_type.get())
               func_decl_by_type_[stored_sig.get()] = &fn;
-            attach_receiver_method(recv_sym->type, fn, stored_sig);
+            attach_receiver_method(recv_sym->type, fn, stored_sig,
+                                   std::move(receiver_params));
           }
         }
       }
@@ -458,6 +462,7 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   // If the struct is generic, push a temporary scope for type params.
   bool has_generics = s.generic.has_value();
   if (has_generics) {
+    reject_shadowed_types(*s.generic);
     push_scope(ScopeKind::Block);
     type_params = enter_generics(*s.generic);
   }
@@ -600,6 +605,7 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
 
   bool has_generics = i.generic.has_value();
   if (has_generics) {
+    reject_shadowed_types(*i.generic);
     push_scope(ScopeKind::Block);
     type_params = enter_generics(*i.generic);
   }

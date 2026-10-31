@@ -160,6 +160,9 @@ struct MethodInfo {
   /// The body writes through the receiver, so the call needs somewhere for
   /// the write to land — a constant has nowhere.
   bool mutates_receiver = false;
+  /// A generic struct's method: its receiver's type parameters, in the
+  /// struct's order, each carrying the bound the method puts on it.
+  std::vector<TypePtr> receiver_params;
 };
 
 struct StructTypeInfo {
@@ -466,7 +469,9 @@ bool has_type_params(const TypePtr &t);
 bool any_type_param(const TypePtr &t,
                     const std::function<bool(const TypeParam &)> &pred);
 
-bool mentions_type_param(const TypePtr &t, uint32_t id);
+/// The methods a struct or alias declares; an instance's are its
+/// declaration's, which alone record what each method writes and bounds.
+std::vector<MethodInfo> *declared_methods(const TypePtr &type);
 
 /// Two struct types that came from the same declaration. A generic
 /// instantiation is a fresh type each time it is resolved, so identity is the

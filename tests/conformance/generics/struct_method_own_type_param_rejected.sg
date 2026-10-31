@@ -1,6 +1,6 @@
-// A method is monomorphised from the receiver's type arguments alone, so a
-// type parameter of its own has nothing to bind it — rejected in the
-// declaring package exactly as it is across one.
+// Spec: a method takes its type parameters from its receiver, the only place a
+// call has anything to bind one from, so it has no list of its own to declare
+// another in.
 import "std/io"
 
 struct Box<T> {

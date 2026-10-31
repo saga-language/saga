@@ -1,1 +1,1 @@
-type parameters that the receiver does not bind
+lib.sg:5:22] Error: expected '(', got '<'

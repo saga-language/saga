@@ -478,6 +478,22 @@ TypePtr Analyzer::resolve_constraint_bound(const IdentifierNode &constraint) {
   return nullptr;
 }
 
+// A type parameter is a binding like any other, and shadowing one is an error;
+// it would leave the type of that name unreachable inside the declaration.
+void Analyzer::reject_shadowed_types(const GenericNode &generic) {
+  for (auto &tp_node : generic.type_params) {
+    auto name = type_param_name(*tp_node);
+    if (!name)
+      continue;
+    auto sym = lookup(std::string(*name));
+    if (sym && (sym->kind == SymbolKind::Type ||
+                sym->kind == SymbolKind::TypeParam))
+      error(tp_node->span,
+            std::format("type parameter '{}' shadows a type of the same name",
+                        *name));
+  }
+}
+
 std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
   std::vector<TypeParam> params;
   for (auto &tp_node : generic.type_params) {

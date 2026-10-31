@@ -582,6 +582,14 @@ public:
   /// Enter generic parameters into the current scope and return a mapping
   /// from their ids to the TypeParam types.  Call after push_scope.
   std::vector<TypeParam> enter_generics(const GenericNode &generic);
+  /// Once per declaration, before enter_generics.
+  void reject_shadowed_types(const GenericNode &generic);
+
+  /// Why `instance` lacks the method `name` its declaration has: the method
+  /// bounds a receiver parameter the instance's argument does not meet.
+  std::optional<std::string> unmet_receiver_bound(const TypePtr &instance,
+                                                  std::string_view name);
+  bool meets_param(const TypePtr &arg, const TypePtr &param);
 
   /// Collect current type bindings for substitution.
   std::unordered_map<uint32_t, TypePtr> current_type_bindings() const;
@@ -841,7 +849,8 @@ private:
   std::unordered_set<const Node *> closures_writing_captures_;
 
   void attach_receiver_method(const TypePtr &owner, const FuncDeclNode &fn,
-                              const TypePtr &signature);
+                              const TypePtr &signature,
+                              std::vector<TypePtr> receiver_params = {});
   void push_closure_frame(const FuncExprNode &node, const Node &parent);
   void push_body_frame();
   void pop_writer_frame();
@@ -1083,6 +1092,7 @@ private:
 
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
+  std::vector<MethodInfo> concrete_methods(const TypePtr &concrete);
 
   /// Resolve a `<T C>` constraint name that is not a built-in type-set
   /// (integer/float/numeric) to its interface bound.  A same-scope

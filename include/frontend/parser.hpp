@@ -246,17 +246,12 @@ private:
   SignatureNode parse_interface_signature();
   ParameterNode parse_parameter();
 
-  /// In a method receiver, type arguments are type-parameter bindings, not
-  /// concrete instantiations (you cannot define a method on `array{int}`).
-  /// Returns one TypeParamNode per bare identifier appearing as a type
-  /// argument of the receiver (`Box<T>`, `array{T}`, `map{K:V}`), so the
-  /// caller can fold them into the function's generic list.
-  std::vector<NodePtr> lift_receiver_type_params(const Node &recv_type);
-
   FieldSpecNode parse_field_spec();
   EnumFieldNode parse_enum_field();
   CaseArmNode parse_case_arm();
-  std::optional<ReceiverNode> parse_receiver();
+  std::optional<ReceiverNode> parse_receiver(std::vector<NodePtr> &params);
+  NodePtr parse_receiver_type(std::vector<NodePtr> &params);
+  NodePtr parse_receiver_param(std::vector<NodePtr> &params);
 
   /// EmbedName = Identifier [ "." Identifier ]
   /// Returns IdentifierNode for "Foo" or SelectorNode for "lib.Foo".

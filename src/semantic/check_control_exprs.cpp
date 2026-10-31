@@ -658,8 +658,10 @@ TypePtr Analyzer::check_func_expr(const FuncExprNode &node,
   push_scope(ScopeKind::Function);
   push_closure_frame(node, parent);
 
-  if (node.generic)
+  if (node.generic) {
+    reject_shadowed_types(*node.generic);
     enter_generics(*node.generic);
+  }
 
   auto fn_type = resolve_signature(node.signature);
 

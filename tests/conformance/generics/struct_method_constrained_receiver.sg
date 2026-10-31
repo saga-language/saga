@@ -1,12 +1,12 @@
-// Spec: a constraint on the receiver's type parameter is honoured per
-// instantiation — `numeric` admits both int and float.
+// Spec: a method may bound its receiver's type parameter, and is then a method
+// of every instance the bound admits — `numeric` admits both int and float.
 import "std/io"
 
 struct Box<T> {
   value T
 }
 
-pub fn (b Box<T>) Twice<T numeric>() T { b.value + b.value }
+pub fn (b Box<T numeric>) Twice() T { b.value + b.value }
 
 pub fn Main() void {
   n := Box{value: 21}

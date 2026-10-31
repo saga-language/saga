@@ -1727,26 +1727,25 @@ EnumFieldNode Parser::parse_enum_field() {
   return EnumFieldNode{span_from(start), std::move(name), std::move(value)};
 }
 
-// parse_func_decl — FuncDecl = "fn" [ Generic ] [ Receiver ] Identifier
+// parse_func_decl — FuncDecl = "fn" [ Receiver ] Identifier [ Generic ]
 //                              Signature Block
 //
 // Grammar:
-//   Generic   = "|" TypeList "|"
-//   Receiver  = "(" Identifier Type ")"
+//   Generic   = "<" TypeParam { "," TypeParam } ">"
+//   Receiver  = "(" Identifier ReceiverType ")"
 //   Signature = "(" [ ParameterList ] ")" TypeList
 //   Block     = "{" { Statement | Expression } "}"
 //
-// Disambiguation of Receiver vs Identifier:
-//   After "fn" and the optional Generic, if the current token is "(" the
-//   next production is a Receiver (e.g. `fn (u User) Name(…) …`).  Otherwise,
-//   the current token must be the function name Identifier (e.g. `fn Name(…)
-//   …`). This is unambiguous because the function name is always a plain
-//   identifier and Signature's opening "(" only appears after the name.
+// Disambiguation of Receiver vs Identifier: if the token after "fn" is "(" the
+// next production is a Receiver (e.g. `fn (u User) Name(…) …`); otherwise it
+// is the function name. A method takes its type parameters from its receiver,
+// so only a function without one has a Generic list.
 NodePtr Parser::parse_func_decl(bool is_public) {
   auto start = mark();
   expect(Token::Kind::Fn); // consume "fn"
 
-  std::optional<ReceiverNode> receiver = parse_receiver();
+  std::vector<NodePtr> receiver_params;
+  std::optional<ReceiverNode> receiver = parse_receiver(receiver_params);
 
   auto name_start = mark();
   Token name_tok = expect(Token::Kind::Identifier);
@@ -1761,35 +1760,11 @@ NodePtr Parser::parse_func_decl(bool is_public) {
     name = IdentifierNode{span_from(method_start), method_tok.literal};
   }
 
-  std::optional<GenericNode> generic = parse_generic_params();
-
-  if (receiver) {
-    auto lifted = lift_receiver_type_params(*receiver->type);
-    if (!lifted.empty()) {
-      Span gspan = generic ? generic->span : receiver->span;
-      if (generic) {
-        // An explicit type param that re-uses a receiver-lifted name annotates
-        // that param (e.g. supplies its constraint) instead of re-declaring it;
-        // explicit params with new names are method-own generics and append.
-        for (auto &p : generic->type_params) {
-          auto *ep = std::get_if<TypeParamNode>(&p->data);
-          bool merged = false;
-          if (ep)
-            for (auto &l : lifted) {
-              auto *lp = std::get_if<TypeParamNode>(&l->data);
-              if (lp && lp->name.name == ep->name.name) {
-                l = std::move(p);
-                merged = true;
-                break;
-              }
-            }
-          if (!merged)
-            lifted.push_back(std::move(p));
-        }
-      }
-      generic = GenericNode{gspan, std::move(lifted)};
-    }
-  }
+  std::optional<GenericNode> generic;
+  if (!receiver)
+    generic = parse_generic_params();
+  else if (!receiver_params.empty())
+    generic = GenericNode{receiver->span, std::move(receiver_params)};
 
   SignatureNode sig = parse_signature();
 
@@ -1800,31 +1775,6 @@ NodePtr Parser::parse_func_decl(bool is_public) {
       span_from(start), is_public, /*is_extern=*/false, std::move(generic),
       std::move(receiver), std::move(type_name), std::move(name),
       std::move(sig), std::move(body));
-}
-
-// lift_receiver_type_params — see header. The receiver's *base* (e.g. `Box`)
-// and any concrete keyword types are left alone; only bare identifiers in type-
-// argument position become parameters. Receiver params carry no constraint.
-std::vector<NodePtr>
-Parser::lift_receiver_type_params(const Node &recv_type) {
-  std::vector<NodePtr> params;
-  auto add_if_ident = [&](const NodePtr &n) {
-    if (auto *id = std::get_if<IdentifierNode>(&n->data))
-      params.push_back(make_node<TypeParamNode>(
-          id->span, IdentifierNode{id->span, id->name},
-          std::optional<IdentifierNode>{}));
-  };
-
-  if (auto *gapp = std::get_if<GenericTypeAppNode>(&recv_type.data)) {
-    for (auto &arg : gapp->type_args)
-      add_if_ident(arg);
-  } else if (auto *arr = std::get_if<ArrayTypeNode>(&recv_type.data)) {
-    add_if_ident(arr->element_type);
-  } else if (auto *m = std::get_if<MapTypeNode>(&recv_type.data)) {
-    add_if_ident(m->key_type);
-    add_if_ident(m->value_type);
-  }
-  return params;
 }
 
 // parse_extern_decl — ExternFuncDecl = "extern" "fn" [ Generic ] Identifier
@@ -1875,14 +1825,13 @@ NodePtr Parser::parse_extern_decl() {
       NodePtr{});
 }
 
-// parse_receiver — Receiver = "(" Identifier Type ")"
+// parse_receiver — Receiver = "(" Identifier ReceiverType ")"
 //
 // Returns std::nullopt when the current token is not "(" (leaving the
 // token stream unchanged so the caller can treat the receiver as absent).
-//
-// Inside the parentheses exactly two things appear: a binding name (an
-// Identifier token) and a Type.  Example: `(u User)`, `(s *MyStruct)`.
-std::optional<ReceiverNode> Parser::parse_receiver() {
+// The receiver's type parameters are appended to `params`.
+std::optional<ReceiverNode>
+Parser::parse_receiver(std::vector<NodePtr> &params) {
   if (!check(Token::Kind::LeftParenthesis))
     return std::nullopt;
 
@@ -1893,11 +1842,79 @@ std::optional<ReceiverNode> Parser::parse_receiver() {
   Token name_tok = expect(Token::Kind::Identifier);
   IdentifierNode name{span_from(name_start), name_tok.literal};
 
-  NodePtr type = parse_type();
+  NodePtr type = parse_receiver_type(params);
 
   expect(Token::Kind::RightParenthesis); // ")"
 
   return ReceiverNode{span_from(start), std::move(name), std::move(type)};
+}
+
+// parse_receiver_type — ReceiverType = Identifier "<" ReceiverParam
+//                                       { "," ReceiverParam } ">"
+//                                    | "array" "{" ReceiverParam "}"
+//                                    | "map" "{" ReceiverParam ":"
+//                                                ReceiverParam "}"
+//                                    | Type
+//
+// A method is declared on every instantiation of its type, so each type
+// argument names a parameter, never a type: `(b Box<T numeric>)`.
+NodePtr Parser::parse_receiver_type(std::vector<NodePtr> &params) {
+  auto start = mark();
+  if (match(Token::Kind::Array)) {
+    expect(Token::Kind::LeftBrace);
+    NodePtr element = parse_receiver_param(params);
+    expect(Token::Kind::RightBrace);
+    return make_node<ArrayTypeNode>(span_from(start), std::move(element),
+                                    NodePtr{});
+  }
+  if (match(Token::Kind::Map)) {
+    expect(Token::Kind::LeftBrace);
+    NodePtr key = parse_receiver_param(params);
+    expect(Token::Kind::Colon);
+    NodePtr value = parse_receiver_param(params);
+    expect(Token::Kind::RightBrace);
+    return make_node<MapTypeNode>(span_from(start), std::move(key),
+                                  std::move(value), NodePtr{});
+  }
+  if (!check(Token::Kind::Identifier) ||
+      peek().kind != Token::Kind::LessThan)
+    return parse_type();
+
+  Token base_tok = advance();
+  auto base = make_node<IdentifierNode>(span_from(start), base_tok.literal);
+  advance(); // consume "<"
+  std::vector<NodePtr> args;
+  args.push_back(parse_receiver_param(params));
+  while (match(Token::Kind::Comma))
+    args.push_back(parse_receiver_param(params));
+  consume_close_angle();
+  return make_node<GenericTypeAppNode>(span_from(start), std::move(args),
+                                       std::move(base));
+}
+
+// ReceiverParam = Identifier [ Constraint ]. The parameter, with its bound,
+// goes to `params`; the receiver's type keeps only its name.
+NodePtr Parser::parse_receiver_param(std::vector<NodePtr> &params) {
+  auto start = mark();
+  if (!check(Token::Kind::Identifier)) {
+    error("expected a type parameter name, got " +
+          std::string(token_kind_name(current.kind)));
+    return parse_type();
+  }
+  Token name_tok = advance();
+  IdentifierNode name{span_from(start), name_tok.literal};
+
+  std::optional<IdentifierNode> constraint;
+  if (!check(Token::Kind::Comma) && !check(Token::Kind::GreaterThan) &&
+      !check(Token::Kind::RightShift) && !check(Token::Kind::RightBrace) &&
+      !check(Token::Kind::Colon)) {
+    auto c_start = mark();
+    Token c_tok = advance();
+    constraint = IdentifierNode{span_from(c_start), c_tok.literal};
+  }
+  params.push_back(make_node<TypeParamNode>(span_from(start), name,
+                                            std::move(constraint)));
+  return make_node<IdentifierNode>(name.span, name.name);
 }
 
 // parse_interface_decl — InterfaceDecl = "interface" [ Generic ] Identifier
