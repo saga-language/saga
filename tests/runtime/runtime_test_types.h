@@ -38,6 +38,9 @@ enum {
   SAGA_RUNTIME_ACTOR_ZOMBIE    = 5
 };
 
+/* What a longjmp to an actor's trap point carries. */
+enum { SAGA_RUNTIME_JUMP_STOP = 1, SAGA_RUNTIME_JUMP_TRAP = 2 };
+
 /* ── Actor ─────────────────────────────────────────────────────────────── */
 
 typedef struct saga_runtime_actor {
