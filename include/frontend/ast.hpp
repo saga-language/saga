@@ -6,6 +6,7 @@
 #include "span.hpp"
 #include "token.hpp"
 
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <optional>
@@ -756,11 +757,14 @@ void dump_ast(const Node &node, std::ostream &os, int indent = 0);
 // ---------------------------------------------------------------------------
 std::optional<std::string_view> type_param_name(const Node &node);
 
-// ---------------------------------------------------------------------------
-// True when `node` assigns through the binding `name` — to the binding itself,
-// to one of its fields at any depth, or to one of its elements. Structural: it
-// answers what this body writes, not what anything it calls might write.
-// ---------------------------------------------------------------------------
+/// Calls `visit` on each node directly under `node` that can hold an
+/// expression. Type annotations are skipped.
+void for_each_child(const Node &node,
+                    const std::function<void(const Node &)> &visit);
+
+/// True when `node` assigns or steps through the binding `name` — the binding
+/// itself, one of its fields at any depth, or one of its elements. Structural:
+/// it answers what this body writes, not what anything it calls might write.
 bool writes_through_binding(const Node &node, std::string_view name);
 
 // The binding an assignment target or a call's receiver ultimately names:
