@@ -90,10 +90,13 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
   auto effective_type = callee_type;
   if (has_type_params(callee_type)) {
     std::unordered_map<uint32_t, TypePtr> bindings;
+    // A failed instantiation has reported why; checking the arguments
+    // against the unbound signature would only repeat it in terms of T.
     auto instantiated =
         instantiate_generic_call(callee_type, arg_types, node.span, &bindings);
-    if (!is_invalid_type(instantiated))
-      effective_type = instantiated;
+    if (is_invalid_type(instantiated))
+      return builtins.invalid_type;
+    effective_type = instantiated;
 
     // For generic free functions, analyse the body with these concrete
     // bindings so member-access, operator-overloading and capture

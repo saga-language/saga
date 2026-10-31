@@ -315,6 +315,14 @@ TEST(Generics, BoundedGenericNumericRejectsString) {
   EXPECT_TRUE(r.has_err("numeric"));
 }
 
+TEST(Generics, ConstraintViolationReportedOnce) {
+  auto r = GR::from(
+      "fn Add<T numeric>(a T, b T) T { a + b }\n"
+      "fn f() string { Add(\"a\", \"b\") }");
+  ASSERT_EQ(r.analyzer->errors.errors.size(), 1u);
+  EXPECT_TRUE(r.has_err("does not satisfy constraint numeric"));
+}
+
 TEST(Generics, BoundedGenericUnknownConstraintRejected) {
   auto r = GR::from("fn Id<T Bogus>(x T) T { x }");
   EXPECT_TRUE(r.has_err("Bogus"));
