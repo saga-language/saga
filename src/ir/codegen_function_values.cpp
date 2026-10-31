@@ -136,17 +136,20 @@ llvm::Value *CodeGen::emit_function_value_invoke(const Node &callee,
   if (!fn_sem || fn_sem->kind != TypeKind::Func)
     internal_error("a function value is called with no function type");
   auto &fi = std::get<FuncTypeInfo>(fn_sem->detail);
-  auto [ready, temporary] = interface_receiver(callee, box, fn_sem, 0);
+  auto args = emit_arguments(node, &fi, true);
+  auto ready = claim_receiver(callee, box, fn_sem,
+                              module->getFunction("saga_box_unique_for"),
+                              {llvm::ConstantInt::get(i64_type, 0)});
   auto *ptr_type = llvm::PointerType::getUnqual(context);
   auto *code = builder.CreateLoad(
       ptr_type,
-      builder.CreateStructGEP(fn_vtable_type(), box_vtable(ready), kCodeSlot,
-                              "fn.code.ptr"),
+      builder.CreateStructGEP(fn_vtable_type(), box_vtable(ready.value),
+                              kCodeSlot, "fn.code.ptr"),
       "fn.code");
-  auto *result = emit_call(code, lower_signature(fi, ptr_type),
-                           box_value(ready), emit_arguments(node, &fi, true));
-  if (temporary)
-    emit_release(ready, fn_sem);
+  auto *result =
+      emit_call(code, lower_signature(fi, ptr_type), box_value(ready.value),
+                args);
+  release_claim(ready, fn_sem);
   return result;
 }
 

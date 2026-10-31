@@ -1,0 +1,15 @@
+// An index assignment runs its key before it writes the map, so a key that
+// copies the map keeps what the map held before the write.
+import "std/io"
+
+pub fn Main() void {
+  m := {"a": 1}
+  other := {"z": 0}
+  m[if true {
+    other = m
+    "b"
+  } else {
+    "c"
+  }] = 2
+  io.Println("{other.Size()} {m.Size()}")
+}

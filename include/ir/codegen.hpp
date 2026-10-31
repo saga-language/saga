@@ -506,10 +506,6 @@ private:
                                    const TypePtr &iface_type);
   llvm::Value *box_value(llvm::Value *box);
   llvm::Value *box_vtable(llvm::Value *box);
-  std::pair<llvm::Value *, bool> interface_receiver(const Node &object,
-                                                    llvm::Value *obj,
-                                                    const TypePtr &iface_sem,
-                                                    unsigned method);
 
   /// The one lowering for every function boundary, Saga or extern. `leading`
   /// is a receiver or closure environment, passed as it is.
@@ -979,6 +975,11 @@ private:
   // codegen_method_dispatch.cpp; call only when the callee is a selector.
   llvm::Value *emit_method_or_module_call(const CallExprNode &node,
                                           const Node &parent);
+  llvm::Value *emit_borrowed_receiver_call(const CallExprNode &node,
+                                           const SelectorNode &sel,
+                                           const std::string &method,
+                                           const TypePtr &obj_sem,
+                                           const Node &parent);
 
   // Per-callee helpers used by emit_method_or_module_call. Each handles one
   // dispatch shape; the dispatcher gates on `obj_sem->kind` (and the struct
@@ -1036,12 +1037,14 @@ private:
                                        const TypePtr &obj_sem,
                                        llvm::Value *obj);
   llvm::Value *emit_kind_method_call(const CallExprNode &node,
+                                     const Node &object,
                                      const std::string &method,
-                                     const TypePtr &obj_sem, llvm::Value *obj);
+                                     const TypePtr &obj_sem);
   std::pair<llvm::Function *, TypePtr>
   kind_method_specialisation(const std::string &method,
                              const TypePtr &obj_sem);
   llvm::Value *emit_opaque_kind_method_call(const CallExprNode &node,
+                                            const Node &object,
                                             const std::string &method,
                                             const TypePtr &obj_sem,
                                             llvm::Value *obj);
@@ -1086,8 +1089,7 @@ private:
   llvm::Value *emit_interface_dispatch(const CallExprNode &node,
                                        const SelectorNode &sel,
                                        const std::string &method,
-                                       const TypePtr &obj_sem,
-                                       llvm::Value *obj);
+                                       const TypePtr &obj_sem);
   /// Dispatch a method call on a union receiver without narrowing: switch on
   /// the union tag and, per member, extract the payload and call that
   /// member's `method` (via emit_call), PHI-ing the common result.
@@ -1429,15 +1431,20 @@ private:
   llvm::Value *finish_join(BranchJoin &join, const std::string &name);
   llvm::Value *emit_zero_value(const TypePtr &sem);
 
-  /// The receiver value for a method call, made unique first when the method
-  /// writes through it.
-  llvm::Value *emit_receiver(const Node &object, const TypePtr &obj_sem,
-                             const std::string &method);
-
-  /// Give the binding `object` names a collection no other name shares, so an
-  /// in-place write through it is invisible elsewhere. Falls back to the plain
-  /// value when there is no slot to write back to.
-  llvm::Value *make_binding_unique(const Node &object, const TypePtr &sem);
+  /// A value a write lands in that no other name shares, made by
+  /// `make_unique` from what `object` holds. `value` is `object` already
+  /// evaluated, which a temporary has nowhere else to come from.
+  struct Claimed {
+    llvm::Value *value = nullptr;
+    bool temporary = false;
+  };
+  Claimed claim_receiver(const Node &object, llvm::Value *value,
+                         const TypePtr &sem, llvm::Function *make_unique,
+                         llvm::ArrayRef<llvm::Value *> extra = {});
+  void release_claim(const Claimed &claimed, const TypePtr &sem);
+  llvm::Function *collection_unique_fn(const TypePtr &sem);
+  Claimed kind_receiver(const Node &object, llvm::Value *obj,
+                        const TypePtr &obj_sem, const std::string &method);
 
   /// Emit release call for a value based on its semantic type.
   void emit_release(llvm::Value *val, const TypePtr &sem);

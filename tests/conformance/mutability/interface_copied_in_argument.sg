@@ -1,0 +1,27 @@
+// A call through an interface runs its arguments before it takes a box of
+// its own, so an argument that copies the interface keeps the old value.
+import "std/io"
+
+interface Adder {
+  Add(n int) void
+  Count() int
+}
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Add(n int) void { c.n = c.n + n }
+pub fn (c Counter) Count() int { c.n }
+
+pub fn Main() void {
+  a Adder = Counter{n: 1}
+  other Adder = Counter{n: 0}
+  a.Add(if true {
+    other = a
+    5
+  } else {
+    0
+  })
+  io.Println("{other.Count()} {a.Count()}")
+}

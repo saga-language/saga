@@ -1,0 +1,15 @@
+// A call that writes its receiver runs its arguments first, so an argument
+// that copies the receiver keeps what the receiver held before the write.
+import "std/io"
+
+pub fn Main() void {
+  m := {"a": 1}
+  other := {"z": 0}
+  m.Set("b", if true {
+    other = m
+    2
+  } else {
+    3
+  })
+  io.Println("{other.Size()} {m.Size()}")
+}

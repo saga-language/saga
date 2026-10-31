@@ -333,15 +333,15 @@ void CodeGen::store_into_slot(llvm::Value *slot, llvm::Type *slot_ll,
 
 // `saga_map_set` writes in place and stays that way — it is the stdlib's own
 // path through `map.Set`. Copy-on-write is the caller's to apply, so the map
-// the write lands in is made unique first.
+// the write lands in is claimed once the key has run.
 void CodeGen::emit_map_index_assign(const IndexExprNode &target,
                                     const TypePtr &obj_sem, llvm::Value *rhs,
                                     const TypePtr &rhs_sem,
                                     const Node &rhs_node) {
   auto &info = std::get<MapTypeInfo>(obj_sem->detail);
-  auto *map = make_binding_unique(*target.object, obj_sem);
+  auto *held = emit_borrowed(*target.object);
   auto *key = emit_expr(*target.index);
-  if (!map || !key)
+  if (!held || !key)
     return;
 
   auto key_v = stored_value(key, semantic_type(*target.index), info.key);
@@ -349,8 +349,11 @@ void CodeGen::emit_map_index_assign(const IndexExprNode &target,
   if (!key_v.address || !val_v.address)
     return;
 
+  auto map = claim_receiver(*target.object, held, obj_sem,
+                            collection_unique_fn(obj_sem));
   builder.CreateCall(module->getFunction("saga_map_set"),
-                     {map, key_v.address, val_v.address});
+                     {map.value, key_v.address, val_v.address});
+  release_claim(map, obj_sem);
   settle_stored(key_v, *target.index, info.key);
   settle_stored(val_v, rhs_node, info.value);
 }

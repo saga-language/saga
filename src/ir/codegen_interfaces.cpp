@@ -158,11 +158,13 @@ llvm::Value *CodeGen::box_vtable(llvm::Value *box) {
       "vtable");
 }
 
+// A call through a method that writes gets a box no other name shares, so
+// the write is the binding's own. The vtable knows which methods write, so
+// the box is claimed for every call, after the arguments run.
 llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
                                               const SelectorNode &sel,
                                               const std::string &method,
-                                              const TypePtr &obj_sem,
-                                              llvm::Value *obj) {
+                                              const TypePtr &obj_sem) {
   auto &iface_info = std::get<InterfaceTypeInfo>(obj_sem->detail);
   // key_for falls back to package_name for local types; bare "Error" stays
   // bare since its origin_package is empty and the built-in uses bare key.
@@ -178,41 +180,26 @@ llvm::Value *CodeGen::emit_interface_dispatch(const CallExprNode &node,
     return nullptr;
   unsigned method_idx = static_cast<unsigned>(pos - mn_it->second.begin());
 
-  auto [box, temporary] =
-      interface_receiver(*sel.object, obj, obj_sem, method_idx);
+  auto *obj = emit_borrowed(*sel.object);
+  if (!obj)
+    return nullptr;
+  auto args = emit_arguments(node, fi, true);
+  auto box = claim_receiver(*sel.object, obj, obj_sem,
+                            module->getFunction("saga_box_unique_for"),
+                            {llvm::ConstantInt::get(i64_type, method_idx)});
   auto *ptr_type = llvm::PointerType::getUnqual(context);
   auto *fn_ptr = builder.CreateLoad(
       ptr_type,
-      builder.CreateStructGEP(vt_it->second, box_vtable(box),
+      builder.CreateStructGEP(vt_it->second, box_vtable(box.value),
                               kVtablePrefix + method_idx, "vfn.ptr"),
       "vfn");
 
   // The vtable holds the concrete type's method itself, so the call takes
   // the ABI that method was declared with: the boxed value as its receiver.
   auto *result = emit_call(fn_ptr, lower_signature(*fi, ptr_type),
-                           box_value(box), emit_arguments(node, fi, true));
-  if (temporary)
-    emit_release(box, obj_sem);
+                           box_value(box.value), args);
+  release_claim(box, obj_sem);
   return result;
-}
-
-// A call through a method that writes gets a box no other name shares, so
-// the write is the binding's own. A binding keeps that box; a temporary's is
-// released once the call is done.
-std::pair<llvm::Value *, bool>
-CodeGen::interface_receiver(const Node &object, llvm::Value *obj,
-                            const TypePtr &iface_sem, unsigned method) {
-  auto *unique_for = module->getFunction("saga_box_unique_for");
-  auto *index = llvm::ConstantInt::get(i64_type, method);
-  auto [holder, holder_ll] = assign_target_address(object);
-  if (!holder || !holder_ll->isPointerTy())
-    return {builder.CreateCall(unique_for, {obj, index}, "box.call"), true};
-
-  auto *cur = builder.CreateLoad(holder_ll, holder, "box.cur");
-  auto *box = builder.CreateCall(unique_for, {cur, index}, "box.call");
-  builder.CreateStore(box, holder);
-  emit_release(cur, iface_sem);
-  return {box, false};
 }
 
 } // namespace saga
