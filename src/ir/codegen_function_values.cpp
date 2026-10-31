@@ -127,11 +127,21 @@ llvm::Value *CodeGen::emit_function_value_call(const CallExprNode &node) {
   return emit_function_value_invoke(*node.callee, box, node);
 }
 
-// The call readies the box the way a call through an interface does, as
-// method 0: a closure that writes its captures gets a box of its own first.
+// A closure that writes its captures takes a box of its own, which a callee
+// reached through a narrowed name puts back in the union.
 llvm::Value *CodeGen::emit_function_value_invoke(const Node &callee,
                                                  llvm::Value *box,
                                                  const CallExprNode &node) {
+  auto *view = begin_view_write(callee);
+  auto *result = call_function_box(callee, box, node);
+  end_view_write(view);
+  return result;
+}
+
+// The call readies the box the way a call through an interface does, as
+// method 0: a closure that writes its captures gets a box of its own first.
+llvm::Value *CodeGen::call_function_box(const Node &callee, llvm::Value *box,
+                                        const CallExprNode &node) {
   auto fn_sem = unwrap_alias(semantic_type(callee));
   if (!fn_sem || fn_sem->kind != TypeKind::Func)
     internal_error("a function value is called with no function type");

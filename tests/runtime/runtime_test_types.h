@@ -221,6 +221,7 @@ typedef struct {
 void *saga_shared_new(int64_t size, const saga_runtime_elem_ops *ops);
 void  saga_shared_retain(void *value);
 void  saga_shared_release(void *value);
+void *saga_shared_make_unique(void *value, int64_t size);
 
 /* Mirror of runtime.c's saga_runtime_error: the { type_id, message } prefix
  * shared by every error box. */

@@ -1,0 +1,57 @@
+// A call through a narrowed name that writes its receiver lands in the union:
+// a method of the struct, one promoted from an embed, a generic one that
+// writes by calling another, and a call through an interface or a closure
+// held in a field. Another copy of the union keeps its own.
+import "std/io"
+
+interface Adder {
+  Add(n int) void
+  Count() int
+}
+
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Add(n int) void { c.n = c.n + n }
+pub fn (c Counter) Count() int { c.n }
+
+struct Holder {
+  Counter
+  adder Adder
+  step fn(int) int
+}
+
+struct Box<T> {
+  v T
+  n int
+}
+
+pub fn (b Box<T>) BumpTwice() void {
+  b.Bump()
+  b.Bump()
+}
+pub fn (b Box<T>) Bump() void { b.n = b.n + 1 }
+
+pub fn Main() void {
+  total := 0
+  u Holder | int = Holder{
+    adder: Counter{n: 1},
+    step: fn(n int) int {
+      total = total + n
+      total
+    },
+  }
+  copy := u
+  if u is Holder { u.Add(2) }
+  if u is Holder { u.adder.Add(4) }
+  if u is Holder { u.step(3) }
+  if u is Holder { io.Println("{u.n} {u.adder.Count()} {u.step(1)}") }
+  if copy is Holder {
+    io.Println("{copy.n} {copy.adder.Count()} {copy.step(1)}")
+  }
+
+  g Box<string> | int = Box{v: "x", n: 0}
+  if g is Box<string> { g.BumpTwice() }
+  if g is Box<string> { io.Println("{g.n}") }
+}

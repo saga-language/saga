@@ -35,6 +35,27 @@ llvm::Value *CodeGen::emit_method_or_module_call(const CallExprNode &node,
 
   if (!obj_sem)
     return nullptr;
+  auto *view = call_writes_receiver(obj_sem, method)
+                   ? begin_view_write(*sel.object)
+                   : nullptr;
+  auto *result = emit_receiver_call(node, sel, method, obj_sem, parent);
+  end_view_write(view);
+  return result;
+}
+
+// An interface call may rebind its receiver to a box of its own, and only the
+// vtable knows whether it will.
+bool CodeGen::call_writes_receiver(const TypePtr &obj_sem,
+                                   const std::string &method) {
+  return obj_sem->kind == TypeKind::Interface ||
+         analyzer.method_mutates_receiver(obj_sem, method);
+}
+
+llvm::Value *CodeGen::emit_receiver_call(const CallExprNode &node,
+                                         const SelectorNode &sel,
+                                         const std::string &method,
+                                         const TypePtr &obj_sem,
+                                         const Node &parent) {
   switch (obj_sem->kind) {
   case TypeKind::Interface:
     return emit_interface_dispatch(node, sel, method, obj_sem);

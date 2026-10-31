@@ -1,0 +1,33 @@
+// A write through a narrowed name is in the union before the next operand
+// runs, so returning from inside a later argument keeps it, and leaves the
+// rest of the union as it was.
+import "std/io"
+
+error NotFound {}
+
+struct Counter {
+  n int
+  seen map{string: int}
+}
+
+fn pick(ok bool) string | NotFound {
+  if ok { return "k" }
+  NotFound{}
+}
+
+fn touch(u Counter | int, ok bool) Counter | int {
+  if u is Counter {
+    u.n = 2
+    u.seen.Set(pick(ok) or { return u }, 9)
+  }
+  u
+}
+
+pub fn Main() void {
+  u Counter | int = Counter{n: 1, seen: {"a": 1}}
+  r := touch(u, false)
+  if r is Counter { io.Println("{r.n} {r.seen.Size()}") }
+  s := touch(u, true)
+  if s is Counter { io.Println("{s.n} {s.seen.Size()}") }
+  if u is Counter { io.Println("{u.n} {u.seen.Size()}") }
+}

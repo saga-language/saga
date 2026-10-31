@@ -1,0 +1,22 @@
+// A write to a field of a narrowed name, by assignment, compound assignment
+// or a step, lands in the union, and another copy of the union keeps its own.
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+pub fn Main() void {
+  u Counter | int = Counter{n: 1}
+  copy := u
+  if u is Counter { u.n = 5 }
+  if u is Counter { u.n += 2 }
+  if u is Counter { u.n++ }
+  if u is Counter { io.Println("{u.n}") }
+  if copy is Counter { io.Println("{copy.n}") }
+
+  v int | string = 1
+  if v is int { v++ }
+  if v is int { v += 3 }
+  if v is int { io.Println("{v}") }
+}

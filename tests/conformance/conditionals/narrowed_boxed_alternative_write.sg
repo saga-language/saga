@@ -1,0 +1,30 @@
+// A struct that closes a cycle is held in a box another copy of the union can
+// share, so a write through a narrowed name gives the union a box of its own
+// first. A narrower union that keeps several alternatives is written whole.
+import "std/io"
+
+struct Missing {}
+
+struct Node {
+  value int
+  items array{int}
+  tail Node | Missing
+}
+
+pub fn Main() void {
+  n := Node{value: 1, items: [1], tail: Node{value: 2, items: [2], tail: Missing{}}}
+  t := n.tail
+  if t is Node {
+    t.value = 5
+    t.items.Pop()
+  }
+  if t is Node { io.Println("{t.value} {t.items.Size()}") }
+  k := n.tail
+  if k is Node { io.Println("{k.value} {k.items.Size()}") }
+
+  sub Node | Missing | int = Node{value: 8, items: [], tail: Missing{}}
+  if sub is int {} else {
+    sub = Node{value: 9, items: [4], tail: Missing{}}
+  }
+  if sub is Node { io.Println("{sub.value} {sub.items.At(0)}") }
+}

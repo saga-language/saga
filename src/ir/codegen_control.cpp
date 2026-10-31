@@ -27,68 +27,6 @@ void CodeGen::start_block(llvm::BasicBlock *block) {
   builder.SetInsertPoint(block);
 }
 
-llvm::AllocaInst *CodeGen::narrow_local(const std::string &name,
-                                        const TypePtr &from,
-                                        const TypePtr &to) {
-  auto it = locals.find(name);
-  if (it == locals.end() || !to)
-    return nullptr;
-
-  llvm::AllocaInst *slot = nullptr;
-  if (to->kind == TypeKind::Union) {
-    // More than one alternative survives, so the value stays a union — a
-    // narrower one, with its own tag numbering.
-    slot = llvm::dyn_cast_or_null<llvm::AllocaInst>(
-        emit_union_convert(it->second, from, to));
-  } else if (auto *val = emit_union_extract(it->second, to, from)) {
-    auto *func = builder.GetInsertBlock()->getParent();
-    slot = create_entry_alloca(func, name + ".narrowed", storage_type(to));
-    builder.CreateStore(val, slot);
-  }
-  if (!slot || slot == it->second)
-    return nullptr;
-
-  auto *displaced = it->second;
-  auto origin_it = narrow_origins_.find(displaced);
-  auto origin = origin_it != narrow_origins_.end()
-                    ? origin_it->second
-                    : NarrowOrigin{displaced, from};
-  narrow_origins_[slot] = origin;
-  narrow_views_[origin.slot].push_back({slot, to});
-  locals[name] = slot;
-  return displaced;
-}
-
-void CodeGen::end_narrowing(const std::string &name,
-                            llvm::AllocaInst *displaced) {
-  auto *view = locals[name];
-  narrow_views_[narrow_origins_[view].slot].pop_back();
-  locals[name] = displaced;
-}
-
-// A narrowed name is a view of its union's payload for one branch, but the
-// variable is still the union: a write lands there, and every view of it
-// follows. Neither view holds a reference of its own.
-void CodeGen::emit_narrowed_assign(const NarrowOrigin &origin,
-                                   llvm::AllocaInst *view, const Node &target,
-                                   Token::Kind op, llvm::Value *rhs,
-                                   const TypePtr &rhs_sem) {
-  llvm::Value *val = rhs;
-  TypePtr val_sem = rhs_sem;
-  if (op == Token::Kind::Assignment) {
-    walk_slot(origin.slot, origin.sem, false);
-  } else {
-    val_sem = semantic_type(target);
-    auto *cur = builder.CreateLoad(view->getAllocatedType(), view);
-    val = emit_compound_op(op, cur, rhs, val_sem);
-  }
-  store_into_slot(origin.slot, origin.slot->getAllocatedType(),
-                  coerce_to(val, val_sem, origin.sem));
-  for (auto &[slot, sem] : narrow_views_[origin.slot])
-    store_into_slot(slot, slot->getAllocatedType(),
-                    coerce_to(val, val_sem, sem));
-}
-
 // `if v is T` narrows `v` to T in the then branch.
 std::optional<CodeGen::Narrowing>
 CodeGen::if_narrowing(const IfExprNode &node) {

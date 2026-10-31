@@ -694,6 +694,8 @@ private:
   llvm::Value *emit_function_value_call(const CallExprNode &node);
   llvm::Value *emit_function_value_invoke(const Node &callee, llvm::Value *box,
                                           const CallExprNode &node);
+  llvm::Value *call_function_box(const Node &callee, llvm::Value *box,
+                                 const CallExprNode &node);
   TypePtr closure_env_type(const std::string &closure_name,
                            const std::vector<Analyzer::CaptureInfo> &captures);
   llvm::Function *
@@ -975,6 +977,11 @@ private:
   // codegen_method_dispatch.cpp; call only when the callee is a selector.
   llvm::Value *emit_method_or_module_call(const CallExprNode &node,
                                           const Node &parent);
+  bool call_writes_receiver(const TypePtr &obj_sem, const std::string &method);
+  llvm::Value *emit_receiver_call(const CallExprNode &node,
+                                  const SelectorNode &sel,
+                                  const std::string &method,
+                                  const TypePtr &obj_sem, const Node &parent);
   llvm::Value *emit_borrowed_receiver_call(const CallExprNode &node,
                                            const SelectorNode &sel,
                                            const std::string &method,
@@ -1282,6 +1289,9 @@ private:
   llvm::Value *emit_union_extract(llvm::Value *union_ptr,
                                    const TypePtr &alt_type,
                                    const TypePtr &union_type);
+  llvm::Value *alternative_address(llvm::Value *union_ptr,
+                                   const TypePtr &alt_type,
+                                   const TypePtr &union_type);
 
   /// Rebind a local to the type an `is` test narrowed it to, for the duration
   /// of one branch. Returns the alloca it displaced, which the caller must put
@@ -1290,20 +1300,29 @@ private:
                                  const TypePtr &to);
   void end_narrowing(const std::string &name, llvm::AllocaInst *displaced);
 
-  /// The union variable a narrowed slot views, and every view of it in force.
-  /// Keyed by slot, which belongs to one function, so a nested function body
-  /// never sees its parent's.
+  /// Each narrowed slot's own type and the union variable it views, and each
+  /// union variable's views in force, innermost last. Keyed by slot, which
+  /// belongs to one function, so a nested function body never sees its
+  /// parent's.
   struct NarrowOrigin {
     llvm::AllocaInst *slot = nullptr;
     TypePtr sem;
   };
-  std::unordered_map<const llvm::AllocaInst *, NarrowOrigin> narrow_origins_;
-  std::unordered_map<const llvm::AllocaInst *,
-                     std::vector<std::pair<llvm::AllocaInst *, TypePtr>>>
+  struct NarrowedSlot {
+    TypePtr sem;
+    NarrowOrigin origin;
+  };
+  std::unordered_map<const llvm::AllocaInst *, NarrowedSlot> narrowed_slots_;
+  std::unordered_map<const llvm::AllocaInst *, std::vector<llvm::AllocaInst *>>
       narrow_views_;
-  void emit_narrowed_assign(const NarrowOrigin &origin, llvm::AllocaInst *view,
-                            const Node &target, Token::Kind op,
-                            llvm::Value *rhs, const TypePtr &rhs_sem);
+  /// A view holds a copy of the union's payload and none of its references.
+  void fill_view(llvm::AllocaInst *view);
+  void store_view(llvm::AllocaInst *view);
+  llvm::AllocaInst *narrowed_root(const Node &target);
+  /// Bracket a write to `target`. Returns the view it starts from, or null.
+  llvm::AllocaInst *begin_view_write(const Node &target);
+  void end_view_write(llvm::AllocaInst *view);
+  void unshare_box(const NarrowedSlot &narrowed);
 
   /// Heap-copy `val` into a fresh box, returning the box pointer.
   llvm::Value *emit_box_copy(llvm::Value *val, const TypePtr &alt);

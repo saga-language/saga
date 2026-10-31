@@ -1,0 +1,18 @@
+// A call through a narrowed name runs its arguments before it writes, so an
+// argument that copies the union keeps what it held before the write.
+import "std/io"
+
+pub fn Main() void {
+  u map{string: int} | int = {"a": 1}
+  other map{string: int} | int = 0
+  if u is map{string: int} {
+    u.Set("b", if true {
+      other = u
+      2
+    } else {
+      3
+    })
+  }
+  if u is map{string: int} { io.Println("{u.Size()}") }
+  if other is map{string: int} { io.Println("{other.Size()}") }
+}

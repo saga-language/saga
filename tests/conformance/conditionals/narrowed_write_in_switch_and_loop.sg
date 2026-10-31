@@ -1,0 +1,28 @@
+// A name narrowed by a `switch` arm, by the `else` of an `is` test, or inside
+// a loop writes the union the same way.
+import "std/io"
+
+struct Counter {
+  n int
+}
+
+pub fn Main() void {
+  u Counter | int | string = Counter{n: 1}
+  switch u {
+  case Counter: {
+    u.n = 3
+  }
+  else: {}
+  }
+  if u is Counter { io.Println("{u.n}") }
+  if u is int {} else {
+    if u is string {} else {
+      u.n = 4
+    }
+  }
+  if u is Counter { io.Println("{u.n}") }
+  for i : [0..3] {
+    if u is Counter { u.n += i }
+  }
+  if u is Counter { io.Println("{u.n}") }
+}
