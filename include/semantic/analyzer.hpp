@@ -12,6 +12,7 @@
 
 #include <list>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -401,6 +402,10 @@ struct Analyzer {
 
   /// Set by Analyzer::Silence; makes error() a no-op.
   bool silenced_ = false;
+
+  /// Each pass resolves a declaration's type nodes against its own scope, so
+  /// one mistake would otherwise be reported once per pass.
+  std::set<std::pair<std::size_t, std::string>> reported_;
 
   /// Set while checking a generic body under concrete bindings. Its
   /// declaration check has already reported what holds for every

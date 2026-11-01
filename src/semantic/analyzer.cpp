@@ -512,7 +512,8 @@ void Analyzer::error(Span span, const std::string &message) {
                         fileset.position_at(call_node->span.start));
   }
 
-  errors.report_error(pos, full);
+  if (reported_.emplace(span.start, full).second)
+    errors.report_error(pos, full);
 }
 
 TypePtr Analyzer::poison(Span span, std::string reason) {
