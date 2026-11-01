@@ -670,11 +670,9 @@ void Analyzer::flatten_interface(
   state[key] = 1;
 
   auto sym = lookup(key);
-  if (sym && sym->type && sym->type->kind == TypeKind::Interface) {
-    auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+  if (sym && sym->type && sym->type->kind == TypeKind::Interface)
     for (auto &embed_node : decl.embeds)
-      merge_embed(info, *embed_node, by_name, state);
-  }
+      merge_embed(sym->type, *embed_node, by_name, state);
 
   state[key] = 2;
 }
@@ -682,7 +680,7 @@ void Analyzer::flatten_interface(
 // Resolve a single embedded name to an interface and fold its methods in,
 // recursing first when the embed names another local interface.
 void Analyzer::merge_embed(
-    InterfaceTypeInfo &info, const Node &embed_node,
+    const TypePtr &target, const Node &embed_node,
     const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
     std::unordered_map<std::string, int> &state) {
   if (auto *id = std::get_if<IdentifierNode>(&embed_node.data)) {
@@ -700,19 +698,22 @@ void Analyzer::merge_embed(
                       type_to_string(embedded)));
     return;
   }
-  merge_embedded_methods(info, embedded, embed_node);
+  merge_embedded_methods(target, embedded, embed_node);
 }
 
-void Analyzer::merge_embedded_methods(InterfaceTypeInfo &target,
+// Where the embedded interface names itself it means whatever satisfies it, so
+// in the embedder that is the embedder.
+void Analyzer::merge_embedded_methods(const TypePtr &target,
                                       const TypePtr &embedded,
                                       const Node &embed_node) {
-  auto &source = std::get<InterfaceTypeInfo>(embedded->detail);
-  for (auto &method : source.methods) {
+  auto &methods = std::get<InterfaceTypeInfo>(target->detail).methods;
+  for (auto method : std::get<InterfaceTypeInfo>(embedded->detail).methods) {
+    method.signature = substitute_self(method.signature, embedded, target);
     auto existing =
-        std::find_if(target.methods.begin(), target.methods.end(),
+        std::find_if(methods.begin(), methods.end(),
                      [&](const MethodInfo &m) { return m.name == method.name; });
-    if (existing == target.methods.end()) {
-      target.methods.push_back(method);
+    if (existing == methods.end()) {
+      methods.push_back(std::move(method));
       continue;
     }
     if (!types_equal(existing->signature, method.signature))
