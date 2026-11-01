@@ -135,74 +135,6 @@ std::string pad(int n) {
   return std::string(static_cast<std::size_t>(n) * 2, ' ');
 }
 
-// Human-readable symbol for operator token kinds.
-std::string_view kind_name(Token::Kind k) noexcept {
-  using K = Token::Kind;
-  switch (k) {
-  // Arithmetic
-  case K::Add:
-    return "+";
-  case K::Sub:
-    return "-";
-  case K::Multiply:
-    return "*";
-  case K::Divide:
-    return "/";
-  case K::Modulo:
-    return "%";
-  case K::Pow:
-    return "**";
-  // Bitwise
-  case K::BitwiseAnd:
-    return "&";
-  case K::BitwiseOr:
-    return "|";
-  case K::BitwiseXor:
-    return "^";
-  case K::BitwiseNot:
-    return "~";
-  case K::LeftShift:
-    return "<<";
-  case K::RightShift:
-    return ">>";
-  // Comparison / logical
-  case K::Equal:
-    return "==";
-  case K::NotEqual:
-    return "!=";
-  case K::LessThan:
-    return "<";
-  case K::LessThanEqual:
-    return "<=";
-  case K::GreaterThan:
-    return ">";
-  case K::GreaterThanEqual:
-    return ">=";
-  case K::LogicalAnd:
-    return "&&";
-  case K::LogicalOr:
-    return "||";
-  // Unary
-  case K::Not:
-    return "!";
-  // Assignment
-  case K::Assignment:
-    return "=";
-  case K::DeclAssignment:
-    return ":=";
-  case K::AddAssignment:
-    return "+=";
-  case K::SubAssignment:
-    return "-=";
-  case K::MulAssignment:
-    return "*=";
-  case K::DivAssignment:
-    return "/=";
-  default:
-    return "?";
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Forward declaration — helpers and the visitor are mutually recursive.
 // ---------------------------------------------------------------------------
@@ -450,13 +382,15 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
           // -----------------------------------------------------------------------
 
           [&](const BinaryExprNode &n) {
-            os << pad(indent) << "BinaryExprNode op=" << kind_name(n.op)
+            os << pad(indent)
+               << "BinaryExprNode op=" << operator_spelling(n.op)
                << "\n";
             dump_ptr(n.lhs, os, c);
             dump_ptr(n.rhs, os, c);
           },
           [&](const UnaryExprNode &n) {
-            os << pad(indent) << "UnaryExprNode op=" << kind_name(n.op) << "\n";
+            os << pad(indent) << "UnaryExprNode op=" << operator_spelling(n.op)
+               << "\n";
             dump_ptr(n.operand, os, c);
           },
           [&](const IsExpr &n) {
@@ -567,7 +501,8 @@ void dump_impl(const Node &node, std::ostream &os, int indent) {
             dump_ptr(n.value, os, c);
           },
           [&](const AssignNode &n) {
-            os << pad(indent) << "AssignNode op=" << kind_name(n.op) << "\n";
+            os << pad(indent) << "AssignNode op=" << operator_spelling(n.op)
+               << "\n";
             for (const auto &t : n.targets)
               dump_ptr(t, os, c);
             for (const auto &v : n.values)
@@ -696,11 +631,86 @@ void dump_ast(const Node &node, std::ostream &os, int indent) {
   dump_impl(node, os, indent);
 }
 
+std::string_view operator_spelling(Token::Kind k) noexcept {
+  using K = Token::Kind;
+  switch (k) {
+  // Arithmetic
+  case K::Add:
+    return "+";
+  case K::Sub:
+    return "-";
+  case K::Multiply:
+    return "*";
+  case K::Divide:
+    return "/";
+  case K::Modulo:
+    return "%";
+  case K::Pow:
+    return "**";
+  // Bitwise
+  case K::BitwiseAnd:
+    return "&";
+  case K::BitwiseOr:
+    return "|";
+  case K::BitwiseXor:
+    return "^";
+  case K::BitwiseNot:
+    return "~";
+  case K::LeftShift:
+    return "<<";
+  case K::RightShift:
+    return ">>";
+  // Comparison / logical
+  case K::Equal:
+    return "==";
+  case K::NotEqual:
+    return "!=";
+  case K::LessThan:
+    return "<";
+  case K::LessThanEqual:
+    return "<=";
+  case K::GreaterThan:
+    return ">";
+  case K::GreaterThanEqual:
+    return ">=";
+  case K::LogicalAnd:
+    return "&&";
+  case K::LogicalOr:
+    return "||";
+  // Unary
+  case K::Not:
+    return "!";
+  // Assignment
+  case K::Assignment:
+    return "=";
+  case K::DeclAssignment:
+    return ":=";
+  case K::AddAssignment:
+    return "+=";
+  case K::SubAssignment:
+    return "-=";
+  case K::MulAssignment:
+    return "*=";
+  case K::DivAssignment:
+    return "/=";
+  default:
+    return "?";
+  }
+}
+
 bool interpolates(const StringLiteralNode &node) {
   for (auto &frag : node.fragments)
     if (!std::holds_alternative<StringFragmentNode>(frag->data))
       return true;
   return false;
+}
+
+bool is_kind_receiver(const FuncDeclNode &fn) {
+  if (!fn.receiver)
+    return false;
+  auto &type = fn.receiver->type->data;
+  return std::holds_alternative<ArrayTypeNode>(type) ||
+         std::holds_alternative<MapTypeNode>(type);
 }
 
 std::optional<std::string_view> type_param_name(const Node &node) {

@@ -135,6 +135,29 @@ TEST(Analyzer, ErrorReporting) {
   EXPECT_EQ(a.errors.errors[0].message, "test error");
 }
 
+TEST(Analyzer, SameErrorAtSameSpanReportedOnce) {
+  FileSet fs;
+  fs.add_file(File::from_source("test.sg", "hello"));
+  Analyzer a(fs);
+
+  a.error(Span{0, 5}, "test error");
+  a.error(Span{0, 5}, "test error");
+  a.error(Span{1, 5}, "test error");
+  a.error(Span{0, 5}, "other error");
+  EXPECT_EQ(a.errors.errors.size(), 3u);
+}
+
+TEST(Analyzer, SignatureErrorsReportedOnceAcrossPasses) {
+  auto r = AnalysisResult::from("struct Box<T> { v T }\n"
+                                "fn show(a int, a int, b Box<int, int>) int "
+                                "{ a }\n"
+                                "fn (n Nope) M() void {}");
+  EXPECT_EQ(r.error_count(), 3u);
+  EXPECT_TRUE(r.has_error_containing("'a' already declared"));
+  EXPECT_TRUE(r.has_error_containing("expected 1 type argument(s), got 2"));
+  EXPECT_TRUE(r.has_error_containing("undefined name 'Nope'"));
+}
+
 TEST(Analyzer, TypeErrorFormatting) {
   FileSet fs;
   fs.add_file(File::from_source("test.sg", "x"));

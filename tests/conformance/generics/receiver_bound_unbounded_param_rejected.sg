@@ -1,0 +1,10 @@
+// A parameter with no bound meets no method's bound.
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T numeric>) Twice() T { b.value + b.value }
+
+fn Again<U>(b Box<U>) U { b.Twice() }
+
+pub fn Main() void {}

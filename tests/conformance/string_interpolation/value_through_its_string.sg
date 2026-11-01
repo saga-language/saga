@@ -1,0 +1,14 @@
+// `{x}` is `x.String()`: a struct, an enum, an array and a map each show as
+// their String() does.
+import "std/io"
+
+struct Point { x, y int }
+
+pub fn (p Point) String() string { "({p.x}, {p.y})" }
+
+enum Color { Red }
+
+pub fn Main() void {
+  p := Point{x: 1, y: 2}
+  io.Println("{p} {Color.Red} {[p]} {{"a": [1, 2]}}")
+}

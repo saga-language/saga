@@ -1,0 +1,7 @@
+import "std/io"
+import "lib"
+
+pub fn Main() void {
+  b := lib.Box{v: "s"}
+  io.Println("{b.Twice()}")
+}

@@ -1,0 +1,4 @@
+// An unbounded T has no methods: Equals belongs to a bound such as Hashable.
+fn same<T>(a T, b T) bool { a.Equals(b) }
+
+pub fn Main() void {}

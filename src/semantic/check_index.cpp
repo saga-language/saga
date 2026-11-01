@@ -117,15 +117,10 @@ TypePtr Analyzer::resolve_struct_member(const TypePtr &owner_type,
     if (m.name != field_name)
       continue;
     auto sig = m.signature ? m.signature : builtins.invalid_type;
-    // A method is monomorphised from the receiver's type arguments alone, so
-    // on a concrete instantiation nothing generic may be left in its
-    // signature — neither a method-own type parameter nor a generic struct
-    // the receiver's arguments do not reach.
-    if (!info.type_args.empty() && has_type_params(sig)) {
-      error(field_span,
-            std::format("cannot call '{}' on '{}': its signature has type "
-                        "parameters that the receiver does not bind",
-                        field_name, type_to_string(owner_type)));
+    if (auto unmet = unmet_receiver_bound(owner_type, field_name)) {
+      error(field_span, std::format("{} has no method '{}': {}",
+                                    type_to_string(owner_type), field_name,
+                                    *unmet));
       return builtins.invalid_type;
     }
     return sig;
@@ -271,6 +266,11 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
       if (!m.signature)
         return poison(span,
                       "kind method '" + field_name + "' has no signature");
+      if (auto unmet = unmet_receiver_bound(effective_type, field_name)) {
+        error(span, std::format("{} has no method '{}': {}",
+                                type_to_string(obj_type), field_name, *unmet));
+        return builtins.invalid_type;
+      }
       if (has_type_params(m.signature))
         return substitute_kind_method(effective_kind, effective_type,
                                       m.signature);
@@ -290,70 +290,43 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     return m.signature;
   }
 
-  // Named-protocol fallback for TypeParam values inside generic bodies.
-  // A method call on a value of TypeParam type is accepted if the called
-  // method belongs to a compiler-known protocol (Hashable, Stringable);
-  // satisfaction by the concrete type is verified at the monomorphisation
-  // site.  Self-typed positions in the protocol signature are rewritten to
-  // refer to the TypeParam.
-  if (obj_type->kind == TypeKind::TypeParam) {
-    auto subst_self = [](const TypePtr &sig, const TypePtr &iface,
-                          const TypePtr &concrete) -> TypePtr {
-      if (!sig || sig->kind != TypeKind::Func) return sig;
-      auto &fi = std::get<FuncTypeInfo>(sig->detail);
-      auto &iinfo = std::get<InterfaceTypeInfo>(iface->detail);
-      auto subst_one = [&](const TypePtr &t) -> TypePtr {
-        if (t && t->kind == TypeKind::Interface) {
-          auto &ti = std::get<InterfaceTypeInfo>(t->detail);
-          if (ti.name == iinfo.name &&
-              ti.origin_package == iinfo.origin_package)
-            return concrete;
-        }
-        return t;
-      };
-      std::vector<TypePtr> nparams;
-      for (auto &p : fi.params)  nparams.push_back(subst_one(p));
-      TypePtr nret = fi.return_type ? subst_one(fi.return_type) : nullptr;
-      auto out = make_func_type(std::move(nparams), std::move(nret));
-      std::get<FuncTypeInfo>(out->detail).is_variadic = fi.is_variadic;
-      return out;
-    };
-    auto try_protocol = [&](const TypePtr &iface) -> TypePtr {
-      if (!iface || iface->kind != TypeKind::Interface) return nullptr;
-      auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
-      for (auto &m : ii.methods)
-        if (m.name == field_name && m.signature)
-          return subst_self(m.signature, iface, obj_type);
-      return nullptr;
-    };
-    auto record_dispatch = [&]() {
-      if (current_eager_kind_method_decl_)
-        kind_method_uses_typeparam_dispatch_.insert(
-            current_eager_kind_method_decl_);
-    };
-    auto &tpinfo = std::get<TypeParamInfo>(obj_type->detail);
-    if (tpinfo.bound) {
-      if (auto t = try_protocol(*tpinfo.bound)) {
-        record_dispatch();
-        return t;
-      }
-      return nullptr;
-    }
-    if (auto t = try_protocol(builtins.stringable_iface)) {
-      record_dispatch();
-      return t;
-    }
-    if (auto t = try_protocol(builtins.hashable_iface)) {
-      record_dispatch();
-      return t;
-    }
-  }
+  if (obj_type->kind == TypeKind::TypeParam)
+    return resolve_param_method(obj_type, field_name);
 
   if (auto u = unwrap_structural_alias(obj_type);
       u && u->kind == TypeKind::Union)
     return resolve_union_method(u, field_name);
 
   return nullptr;
+}
+
+// A type parameter has the methods its bound gives it and no others.
+TypePtr Analyzer::resolve_param_method(const TypePtr &param,
+                                       const std::string &name) {
+  auto methods = concrete_methods(param);
+  for (auto &m : methods) {
+    if (m.name != name || !m.signature)
+      continue;
+    if (current_eager_kind_method_decl_)
+      kind_method_uses_typeparam_dispatch_.insert(
+          current_eager_kind_method_decl_);
+    return m.signature;
+  }
+  return nullptr;
+}
+
+// `{x}` reads as `x.String()`, which exists when x is Stringable; the method
+// is then looked up as any other. A scalar needs none: the runtime converts
+// one itself.
+std::optional<TypePtr>
+Analyzer::check_interpolated(const SelectorNode &node,
+                             const TypePtr &obj_type) {
+  if (converts_to_string_natively(obj_type))
+    return make_func_type({}, builtins.string_type);
+  if (!check_satisfies_protocol(obj_type, ProtocolKind::Stringable,
+                                node.object->span, "interpolated expression"))
+    return builtins.invalid_type;
+  return std::nullopt;
 }
 
 TypePtr Analyzer::resolve_union_method(const TypePtr &union_type,
@@ -434,6 +407,9 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
   auto obj_type = check_type_or_value_expr(*node.object);
   if (is_invalid_type(obj_type))
     return builtins.invalid_type;
+  if (node.interpolated)
+    if (auto settled = check_interpolated(node, obj_type))
+      return *settled;
 
   std::string field_name(node.field.name);
 

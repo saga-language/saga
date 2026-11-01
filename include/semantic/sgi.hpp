@@ -132,15 +132,18 @@ bool write_sgi(const std::string &path,
 
 /// Parse .sgi text content into an SgiFile structure.
 /// Returns std::nullopt on parse error.  When `error_out` is non-null, fills
-/// it with a human-readable description of the failure.
+/// it with a human-readable description of the failure.  `prelude` holds the
+/// types a file may name without declaring, such as Stringable.
 std::optional<SgiFile> parse_sgi(const std::string &content,
-                                  std::string *error_out = nullptr);
+                                  std::string *error_out = nullptr,
+                                  const std::vector<TypePtr> &prelude = {});
 
 /// Load and parse a .sgi file from disk.
 /// Returns std::nullopt if the file can't be read or parsed.  When
 /// `error_out` is non-null, fills it with a human-readable description.
 std::optional<SgiFile> load_sgi(const std::string &path,
-                                 std::string *error_out = nullptr);
+                                 std::string *error_out = nullptr,
+                                 const std::vector<TypePtr> &prelude = {});
 
 /// Convert a parsed SgiFile into a ModuleType suitable for import resolution.
 /// `import_path` is the full import path (e.g. "std/io").

@@ -1,0 +1,3 @@
+pub struct Box<T Stringable> { pub v T }
+
+pub fn (b Box<T>) Show() string { "<{b.v.String()}>" }

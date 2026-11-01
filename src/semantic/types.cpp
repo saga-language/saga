@@ -5,6 +5,7 @@
 #include "frontend/ast.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <sstream>
 #include <unordered_set>
 
@@ -185,12 +186,34 @@ bool is_empty_shape(const TypePtr &t) {
   return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
 }
 
-TypePtr make_type_param(uint32_t id, const std::string &name,
-                        std::optional<TypePtr> bound) {
-  return std::make_shared<Type>(
-      TypeKind::TypeParam,
-      TypeParamInfo{TypeParam{id, name, TypeConstraint::None},
-                    std::move(bound)});
+bool is_unbounded_param(const TypePtr &t) {
+  if (!t || t->kind != TypeKind::TypeParam)
+    return false;
+  auto &p = std::get<TypeParamInfo>(t->detail).param;
+  return p.constraint == TypeConstraint::None && p.interfaces.empty();
+}
+
+bool converts_to_string_natively(const TypePtr &t) {
+  if (!t)
+    return false;
+  switch (t->kind) {
+  case TypeKind::String:
+  case TypeKind::Int:
+  case TypeKind::Float:
+  case TypeKind::Bool:
+    return true;
+  default:
+    return false;
+  }
+}
+
+TypePtr make_type_param(uint32_t id, const std::string &name) {
+  return make_type_param(TypeParam{id, name});
+}
+
+TypePtr make_type_param(TypeParam param) {
+  return std::make_shared<Type>(TypeKind::TypeParam,
+                                TypeParamInfo{std::move(param)});
 }
 
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
@@ -313,10 +336,18 @@ TypeConstraint constraint_from_name(std::string_view name) {
   return TypeConstraint::None;
 }
 
+bool constraint_within(TypeConstraint inner, TypeConstraint outer) {
+  return inner != TypeConstraint::None &&
+         (inner == outer || outer == TypeConstraint::Numeric);
+}
+
 bool satisfies_constraint(const TypePtr &t, TypeConstraint c) {
   if (c == TypeConstraint::None) return false;
   auto u = unwrap_alias(t);
   if (!u) return false;
+  if (u->kind == TypeKind::TypeParam)
+    return constraint_within(std::get<TypeParamInfo>(u->detail).param.constraint,
+                             c);
   switch (c) {
   case TypeConstraint::Integer: return u->kind == TypeKind::Int;
   case TypeConstraint::Float:   return u->kind == TypeKind::Float;
@@ -325,6 +356,16 @@ bool satisfies_constraint(const TypePtr &t, TypeConstraint c) {
   case TypeConstraint::None:    return false;
   }
   return false;
+}
+
+bool literal_fits_param(const TypePtr &literal, const TypePtr &param) {
+  auto c = std::get<TypeParamInfo>(param->detail).param.constraint;
+  if (literal->kind == TypeKind::Int &&
+      std::get<IntType>(literal->detail).is_untyped)
+    return c != TypeConstraint::None;
+  return literal->kind == TypeKind::Float &&
+         std::get<FloatType>(literal->detail).is_untyped &&
+         c == TypeConstraint::Float;
 }
 
 bool is_ordered(const TypePtr &t) {
@@ -674,6 +715,10 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
       target->kind == TypeKind::Int)
     return true;
 
+  // A literal fits a type parameter whose every admitted type it fits.
+  if (target->kind == TypeKind::TypeParam)
+    return literal_fits_param(source, target);
+
   // Untyped float literal — assignable to any float width.  Mirrors the
   // untyped-int rule so `f32 Float32 = 5.0` compiles.
   if (source->kind == TypeKind::Float && target->kind == TypeKind::Float &&
@@ -721,44 +766,6 @@ bool is_assignable_to(const TypePtr &source, const TypePtr &target) {
       if (!is_assignable_to(alt, target))
         return false;
     return true;
-  }
-
-  // Interface satisfaction: concrete type can be assigned to an interface
-  // if it implements all methods required by the interface.
-  if (target->kind == TypeKind::Interface) {
-    // Check whether the source type has all methods required by the
-    // interface.  We do a structural check here — the full
-    // satisfies_interface logic lives in the Analyzer, but for
-    // is_assignable_to we replicate the method-matching check so it
-    // works without an Analyzer instance.
-    auto &iface_info = std::get<InterfaceTypeInfo>(target->detail);
-
-    std::vector<MethodInfo> concrete_methods;
-    if (source->kind == TypeKind::Struct) {
-      concrete_methods = std::get<StructTypeInfo>(source->detail).methods;
-    }
-    // For non-struct types, builtin_methods would be needed but we don't
-    // have access to builtins here.  Return false for now; the Analyzer's
-    // satisfies_interface handles the full check.
-    if (concrete_methods.empty() && source->kind != TypeKind::Struct)
-      return false;
-
-    bool satisfied = true;
-    for (auto &im : iface_info.methods) {
-      bool found = false;
-      for (auto &cm : concrete_methods) {
-        if (cm.name == im.name) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        satisfied = false;
-        break;
-      }
-    }
-    if (satisfied)
-      return true;
   }
 
   return false;
@@ -864,6 +871,36 @@ TypePtr substitute(const TypePtr &t, const Bindings &bindings,
   return substitute_impl(t, bindings, memo);
 }
 
+// `.sgi` loads make fresh interface types, so identity is name and package.
+static bool names_interface(const TypePtr &t, const InterfaceTypeInfo &iface) {
+  if (!t || t->kind != TypeKind::Interface)
+    return false;
+  auto &info = std::get<InterfaceTypeInfo>(t->detail);
+  return info.name == iface.name && info.origin_package == iface.origin_package;
+}
+
+TypePtr substitute_self(const TypePtr &sig, const TypePtr &iface,
+                        const TypePtr &self) {
+  auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+  return replace_in_signature(
+      sig, [&](const TypePtr &t) { return names_interface(t, ii); }, self);
+}
+
+TypePtr replace_in_signature(const TypePtr &sig,
+                             const std::function<bool(const TypePtr &)> &is,
+                             const TypePtr &with) {
+  if (!sig || sig->kind != TypeKind::Func)
+    return sig;
+  auto &fi = std::get<FuncTypeInfo>(sig->detail);
+  auto one = [&](const TypePtr &t) { return is(t) ? with : t; };
+  std::vector<TypePtr> params;
+  for (auto &p : fi.params)
+    params.push_back(one(p));
+  return make_func_type(std::move(params),
+                        fi.return_type ? one(fi.return_type) : nullptr,
+                        fi.is_variadic);
+}
+
 static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
                                SubstMemo &memo) {
   if (!t || bindings.empty())
@@ -954,50 +991,56 @@ static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,
 // Generics — unification
 // ===========================================================================
 
-bool has_type_params(const TypePtr &t) {
+bool any_type_param(const TypePtr &t,
+                    const std::function<bool(const TypeParam &)> &pred) {
   if (!t)
     return false;
-  if (t->kind == TypeKind::TypeParam)
-    return true;
-
+  auto any_of = [&](const std::vector<TypePtr> &ts) {
+    return std::any_of(ts.begin(), ts.end(), [&](const TypePtr &e) {
+      return any_type_param(e, pred);
+    });
+  };
   switch (t->kind) {
+  case TypeKind::TypeParam:
+    return pred(std::get<TypeParamInfo>(t->detail).param);
   case TypeKind::Array:
-    return has_type_params(std::get<ArrayTypeInfo>(t->detail).element);
+    return any_type_param(std::get<ArrayTypeInfo>(t->detail).element, pred);
   case TypeKind::Map: {
     auto &m = std::get<MapTypeInfo>(t->detail);
-    return has_type_params(m.key) || has_type_params(m.value);
+    return any_type_param(m.key, pred) || any_type_param(m.value, pred);
   }
   case TypeKind::Func: {
     auto &f = std::get<FuncTypeInfo>(t->detail);
-    for (auto &p : f.params)
-      if (has_type_params(p))
-        return true;
-    if (f.return_type && has_type_params(f.return_type))
-      return true;
-    return false;
+    return any_of(f.params) || any_type_param(f.return_type, pred);
   }
   case TypeKind::Alias:
-    return has_type_params(std::get<AliasTypeInfo>(t->detail).underlying);
-  case TypeKind::Union: {
-    auto &u = std::get<UnionTypeInfo>(t->detail);
-    for (auto &a : u.alternatives)
-      if (has_type_params(a))
-        return true;
-    return false;
-  }
+    return any_type_param(std::get<AliasTypeInfo>(t->detail).underlying, pred);
+  case TypeKind::Union:
+    return any_of(std::get<UnionTypeInfo>(t->detail).alternatives);
   // Only the arguments — descending into fields would not terminate on a
   // self-referential struct (`Node<T> { tail Node<T> }`), and an argument
   // is the only place a caller can leave a struct partly generic.
-  case TypeKind::Struct: {
-    auto &s = std::get<StructTypeInfo>(t->detail);
-    for (auto &a : s.type_args)
-      if (has_type_params(a))
-        return true;
-    return false;
-  }
+  case TypeKind::Struct:
+    return any_of(std::get<StructTypeInfo>(t->detail).type_args);
   default:
     return false;
   }
+}
+
+bool has_type_params(const TypePtr &t) {
+  return any_type_param(t, [](const TypeParam &) { return true; });
+}
+
+std::vector<MethodInfo> *declared_methods(const TypePtr &type) {
+  if (!type) return nullptr;
+  if (type->kind == TypeKind::Struct) {
+    auto &info = std::get<StructTypeInfo>(type->detail);
+    return info.declaration ? declared_methods(info.declaration)
+                            : &info.methods;
+  }
+  if (type->kind == TypeKind::Alias)
+    return &std::get<AliasTypeInfo>(type->detail).methods;
+  return nullptr;
 }
 
 bool same_struct_decl(const TypePtr &a, const TypePtr &b) {

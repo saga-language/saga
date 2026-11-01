@@ -200,6 +200,10 @@ TypePtr Analyzer::check_binary_expr(const BinaryExprNode &node,
     break;
   }
 
+  if (lhs->kind == TypeKind::TypeParam || rhs->kind == TypeKind::TypeParam)
+    if (auto result = check_type_param_binary(node, lhs, rhs))
+      return *result;
+
   // ── Struct operator overloading ──────────────────────────────────────────
   // Dispatch to method-based overloading before the built-in numeric/string
   // paths, so user types can override operators on structs.
@@ -327,6 +331,11 @@ TypePtr Analyzer::check_unary_expr(const UnaryExprNode &node) {
     expect_bool(node.operand->span, operand, "logical not");
     return builtins.bool_type;
   }
+  if (operand->kind == TypeKind::TypeParam &&
+      (node.op == Token::Kind::Sub || node.op == Token::Kind::BitwiseNot))
+    return param_admits_operator(node.op, operand, node.operand->span)
+               ? operand
+               : builtins.invalid_type;
   if (node.op == Token::Kind::Sub) {
     if (is_enum_valued(operand) || is_error_valued(operand)) {
       error(node.operand->span,
@@ -363,6 +372,16 @@ TypePtr Analyzer::check_is_expr(const IsExpr &node) {
 
   if (is_invalid_type(value_type) || is_invalid_type(test_type))
     return builtins.bool_type;
+
+  // The body is checked once for every type the parameter stands for, so no
+  // one of them can be singled out.
+  if (value_type->kind == TypeKind::TypeParam) {
+    error(node.value->span,
+          std::format("'is' cannot test {0}, a type parameter: the body "
+                      "must hold for every type {0} stands for",
+                      type_to_string(value_type)));
+    return builtins.bool_type;
+  }
 
   if (value_type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(value_type->detail);

@@ -1,0 +1,19 @@
+// An instance that meets a method's receiver bound has the method, so the
+// method counts toward an interface.
+import "std/io"
+
+interface Shower {
+  Show() string
+}
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T Stringable>) Show() string { "<{b.value.String()}>" }
+
+fn show(s Shower) string { s.Show() }
+
+pub fn Main() void {
+  io.Println(show(Box{value: 7}))
+}

@@ -1,0 +1,11 @@
+pub interface Named {
+  Name() string
+}
+
+pub struct Box<T numeric> { pub v T }
+
+pub fn (b Box<T>) Twice() T { b.v + b.v }
+
+pub struct Shelf<T Named> { pub item T }
+
+pub fn (s Shelf<T>) Label() string { "[{s.item.Name()}]" }

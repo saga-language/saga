@@ -1,0 +1,24 @@
+// An element assignment writes the slot, which holds the element type: a value
+// that satisfies the element's interface goes in, as it would anywhere else.
+import "std/io"
+
+interface Counter {
+  Count() int
+}
+
+struct Tally {
+  n int
+}
+
+pub fn (t Tally) Count() int { t.n }
+
+pub fn Main() void {
+  xs array{Counter} = []
+  xs = xs.Append(Tally{n: 1})
+  xs[0] = Tally{n: 2}
+  m map{string: Counter} = {}
+  m["a"] = Tally{n: 4}
+  first := xs[0] or { return }
+  only := m["a"] or { return }
+  io.Println("{first.Count()} {only.Count()}")
+}

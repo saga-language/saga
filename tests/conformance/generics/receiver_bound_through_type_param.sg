@@ -1,0 +1,15 @@
+// A generic body may call a bounded method on its own parameter's instance
+// when the parameter's bound is within the method's.
+import "std/io"
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T numeric>) Twice() T { b.value + b.value }
+
+fn Quadruple<U integer>(b Box<U>) U { b.Twice() + b.Twice() }
+
+pub fn Main() void {
+  io.Println("{Quadruple(Box{value: 5})}")
+}

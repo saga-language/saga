@@ -9,6 +9,7 @@
 #include "semantic/analyzer_detail.hpp"
 #include <algorithm>
 #include <format>
+#include <span>
 
 namespace saga {
 
@@ -157,8 +158,9 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   bool has_generics = fn.generic.has_value();
   std::vector<TypeParam> generic_params;
   if (has_generics) {
+    reject_shadowed_types(*fn.generic);
     push_scope(ScopeKind::Block);
-    generic_params = enter_generics(*fn.generic);
+    generic_params = enter_func_generics(fn);
   }
 
   auto fn_type = resolve_signature(fn.signature);
@@ -206,17 +208,20 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             // e.g. fn |T#5| (b |T#5| Box) Get() T#5  →  Get() T#0 (struct's T)
             TypePtr stored_sig = fn_type;
             std::unordered_map<uint32_t, uint32_t> id_remap;
+            std::vector<TypePtr> receiver_params;
             if (!struct_info.type_params.empty() &&
                 gapp->type_args.size() == struct_info.type_params.size()) {
               std::unordered_map<uint32_t, TypePtr> remap;
               for (size_t i = 0; i < gapp->type_args.size(); ++i) {
                 auto arg_t = resolve_type(*gapp->type_args[i]);
+                receiver_params.push_back(arg_t);
                 if (arg_t && arg_t->kind == TypeKind::TypeParam) {
-                  auto &tp = std::get<TypeParamInfo>(arg_t->detail);
-                  remap[tp.param.id] =
-                      make_type_param(struct_info.type_params[i].id,
-                                      struct_info.type_params[i].name);
-                  id_remap[tp.param.id] = struct_info.type_params[i].id;
+                  auto aligned = std::get<TypeParamInfo>(arg_t->detail).param;
+                  aligned.id = struct_info.type_params[i].id;
+                  remap[std::get<TypeParamInfo>(arg_t->detail).param.id] =
+                      make_type_param(aligned);
+                  id_remap[std::get<TypeParamInfo>(arg_t->detail).param.id] =
+                      aligned.id;
                 }
               }
               if (!remap.empty())
@@ -238,7 +243,8 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             // can resolve back to this FuncDeclNode.
             if (stored_sig && stored_sig.get() != fn_type.get())
               func_decl_by_type_[stored_sig.get()] = &fn;
-            attach_receiver_method(recv_sym->type, fn, stored_sig);
+            attach_receiver_method(recv_sym->type, fn, stored_sig,
+                                   std::move(receiver_params));
           }
         }
       }
@@ -294,65 +300,13 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
             "cannot bind receiver method to type from another package");
     } else if (auto *arr_tn =
                    std::get_if<ArrayTypeNode>(&recv_type_node->data)) {
-      // Generic array receiver: pub fn (self [T]) Method(...) ...
-      // Stdlib only. Normalize the T type-param ID to the sentinel 9990 so
-      // that check_selector's existing substitution logic handles it.
-      if (!is_stdlib) {
-        error(fn.receiver->name.span,
-              "receiver methods on generic types can only be "
-              "defined in stdlib packages");
-      } else {
-        auto elem_type = resolve_type(*arr_tn->element_type);
-        TypePtr normalized = fn_type;
-        if (elem_type && elem_type->kind == TypeKind::TypeParam) {
-          auto &tp = std::get<TypeParamInfo>(elem_type->detail);
-          std::unordered_map<uint32_t, TypePtr> subst;
-          subst[tp.param.id] = make_type_param(9990, "T");
-          normalized = substitute(fn_type, subst);
-        }
-        auto &vec = kind_methods_[TypeKind::Array];
-        bool dup = false;
-        for (auto &e : vec)
-          if (e.name == std::string(fn.name.name)) { dup = true; break; }
-        if (!dup) {
-          vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
-          kind_method_decls_[TypeKind::Array][std::string(fn.name.name)] =
-              KindMethodDecl{&fn, fn_type, generic_params,
-                             is_kind_method_mutating(fn)};
-        }
-      }
+      attach_kind_method(fn, fn_type, generic_params, TypeKind::Array,
+                         {resolve_type(*arr_tn->element_type)});
     } else if (auto *map_tn =
                    std::get_if<MapTypeNode>(&recv_type_node->data)) {
-      // Generic map receiver: pub fn (self {K:V}) Method(...) ...
-      // Stdlib only. Normalize K→9991, V→9992.
-      if (!is_stdlib) {
-        error(fn.receiver->name.span,
-              "receiver methods on generic types can only be "
-              "defined in stdlib packages");
-      } else {
-        auto key_type = resolve_type(*map_tn->key_type);
-        auto val_type = resolve_type(*map_tn->value_type);
-        TypePtr normalized = fn_type;
-        std::unordered_map<uint32_t, TypePtr> subst;
-        if (key_type && key_type->kind == TypeKind::TypeParam)
-          subst[std::get<TypeParamInfo>(key_type->detail).param.id] =
-              make_type_param(9991, "K");
-        if (val_type && val_type->kind == TypeKind::TypeParam)
-          subst[std::get<TypeParamInfo>(val_type->detail).param.id] =
-              make_type_param(9992, "V");
-        if (!subst.empty())
-          normalized = substitute(fn_type, subst);
-        auto &vec = kind_methods_[TypeKind::Map];
-        bool dup = false;
-        for (auto &e : vec)
-          if (e.name == std::string(fn.name.name)) { dup = true; break; }
-        if (!dup) {
-          vec.push_back({std::string(fn.name.name), normalized, fn.is_public});
-          kind_method_decls_[TypeKind::Map][std::string(fn.name.name)] =
-              KindMethodDecl{&fn, fn_type, generic_params,
-                             is_kind_method_mutating(fn)};
-        }
-      }
+      attach_kind_method(fn, fn_type, generic_params, TypeKind::Map,
+                         {resolve_type(*map_tn->key_type),
+                          resolve_type(*map_tn->value_type)});
     }
   }
 
@@ -378,12 +332,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   // Generic receiver on Array/Map (kind_methods_) is also registered so
   // codegen can drive emit_specialisation per concrete K when the body
   // dispatches through a named protocol on a TypeParam value.
-  bool is_generic_on_kind_recv = false;
-  if (has_generics && fn.receiver) {
-    auto &rt = fn.receiver->type->data;
-    is_generic_on_kind_recv = std::get_if<ArrayTypeNode>(&rt) ||
-                              std::get_if<MapTypeNode>(&rt);
-  }
+  bool is_generic_on_kind_recv = has_generics && is_kind_receiver(fn);
   if (fn_type && (!fn.receiver || is_generic_on_concrete_recv ||
                    is_generic_on_kind_recv)) {
     func_decl_by_type_[fn_type.get()] = &fn;
@@ -463,6 +412,7 @@ void Analyzer::resolve_struct_decl(const StructDeclNode &s) {
   // If the struct is generic, push a temporary scope for type params.
   bool has_generics = s.generic.has_value();
   if (has_generics) {
+    reject_shadowed_types(*s.generic);
     push_scope(ScopeKind::Block);
     type_params = enter_generics(*s.generic);
   }
@@ -605,6 +555,7 @@ void Analyzer::resolve_interface_decl(const InterfaceDeclNode &i) {
 
   bool has_generics = i.generic.has_value();
   if (has_generics) {
+    reject_shadowed_types(*i.generic);
     push_scope(ScopeKind::Block);
     type_params = enter_generics(*i.generic);
   }
@@ -669,11 +620,9 @@ void Analyzer::flatten_interface(
   state[key] = 1;
 
   auto sym = lookup(key);
-  if (sym && sym->type && sym->type->kind == TypeKind::Interface) {
-    auto &info = std::get<InterfaceTypeInfo>(sym->type->detail);
+  if (sym && sym->type && sym->type->kind == TypeKind::Interface)
     for (auto &embed_node : decl.embeds)
-      merge_embed(info, *embed_node, by_name, state);
-  }
+      merge_embed(sym->type, *embed_node, by_name, state);
 
   state[key] = 2;
 }
@@ -681,7 +630,7 @@ void Analyzer::flatten_interface(
 // Resolve a single embedded name to an interface and fold its methods in,
 // recursing first when the embed names another local interface.
 void Analyzer::merge_embed(
-    InterfaceTypeInfo &info, const Node &embed_node,
+    const TypePtr &target, const Node &embed_node,
     const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
     std::unordered_map<std::string, int> &state) {
   if (auto *id = std::get_if<IdentifierNode>(&embed_node.data)) {
@@ -699,19 +648,22 @@ void Analyzer::merge_embed(
                       type_to_string(embedded)));
     return;
   }
-  merge_embedded_methods(info, embedded, embed_node);
+  merge_embedded_methods(target, embedded, embed_node);
 }
 
-void Analyzer::merge_embedded_methods(InterfaceTypeInfo &target,
+// Where the embedded interface names itself it means whatever satisfies it, so
+// in the embedder that is the embedder.
+void Analyzer::merge_embedded_methods(const TypePtr &target,
                                       const TypePtr &embedded,
                                       const Node &embed_node) {
-  auto &source = std::get<InterfaceTypeInfo>(embedded->detail);
-  for (auto &method : source.methods) {
+  auto &methods = std::get<InterfaceTypeInfo>(target->detail).methods;
+  for (auto method : std::get<InterfaceTypeInfo>(embedded->detail).methods) {
+    method.signature = substitute_self(method.signature, embedded, target);
     auto existing =
-        std::find_if(target.methods.begin(), target.methods.end(),
+        std::find_if(methods.begin(), methods.end(),
                      [&](const MethodInfo &m) { return m.name == method.name; });
-    if (existing == target.methods.end()) {
-      target.methods.push_back(method);
+    if (existing == methods.end()) {
+      methods.push_back(std::move(method));
       continue;
     }
     if (!types_equal(existing->signature, method.signature))
@@ -720,6 +672,57 @@ void Analyzer::merge_embedded_methods(InterfaceTypeInfo &target,
                         "method of the same name",
                         method.name));
   }
+}
+
+// An array or map receiver's parameters, renumbered to the sentinel ids an
+// instance's element, key and value substitute for.
+static std::vector<TypePtr>
+sentinel_params(TypeKind kind, const std::vector<TypePtr> &params,
+                std::unordered_map<uint32_t, TypePtr> &renumber) {
+  static const TypeParam array_params[] = {{9990, "T"}};
+  static const TypeParam map_params[] = {{9991, "K"}, {9992, "V"}};
+  std::span<const TypeParam> sentinels = map_params;
+  if (kind == TypeKind::Array)
+    sentinels = array_params;
+  std::vector<TypePtr> out;
+  for (size_t i = 0; i < params.size() && i < sentinels.size(); ++i) {
+    if (!params[i] || params[i]->kind != TypeKind::TypeParam) {
+      out.push_back(nullptr);
+      continue;
+    }
+    auto &original = std::get<TypeParamInfo>(params[i]->detail).param;
+    auto aligned = original;
+    aligned.id = sentinels[i].id;
+    aligned.name = sentinels[i].name;
+    out.push_back(make_type_param(std::move(aligned)));
+    renumber[original.id] = out.back();
+  }
+  return out;
+}
+
+// A stdlib method of every array or map.
+void Analyzer::attach_kind_method(const FuncDeclNode &fn, const TypePtr &fn_type,
+                                  const std::vector<TypeParam> &generic_params,
+                                  TypeKind kind,
+                                  const std::vector<TypePtr> &params) {
+  if (!is_stdlib) {
+    error(fn.receiver->name.span, "receiver methods on generic types can only "
+                                  "be defined in stdlib packages");
+    return;
+  }
+  auto &methods = kind_methods_[kind];
+  std::string name(fn.name.name);
+  if (std::ranges::any_of(methods,
+                          [&](const MethodInfo &m) { return m.name == name; }))
+    return;
+  std::unordered_map<uint32_t, TypePtr> renumber;
+  MethodInfo method{name, fn_type, fn.is_public};
+  method.receiver_params = sentinel_params(kind, params, renumber);
+  if (!renumber.empty())
+    method.signature = substitute(fn_type, renumber);
+  methods.push_back(std::move(method));
+  kind_method_decls_[kind][name] = KindMethodDecl{
+      &fn, fn_type, generic_params, is_kind_method_mutating(fn)};
 }
 
 void Analyzer::resolve_const_decl(const ConstDeclNode &c) {

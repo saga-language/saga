@@ -1,0 +1,5 @@
+// A map finds its key by hashing it, so a type parameter keys a map only when
+// its bound makes it Hashable.
+fn index<T>(k T) map{T: int} { {k: 1} }
+
+pub fn Main() void {}

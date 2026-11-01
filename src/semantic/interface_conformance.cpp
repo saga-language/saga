@@ -6,6 +6,8 @@
 // to name the method that is missing or mismatched rather than the interface.
 
 #include "semantic/analyzer.hpp"
+
+#include <algorithm>
 #include <format>
 
 namespace saga {
@@ -70,26 +72,26 @@ static bool signatures_match_with_self(const TypePtr &iface_sig,
 // Gather the methods visible on `concrete` from the analyzer's stdlib and
 // built-in tables.  Shared between satisfies_interface and the named-protocol
 // diagnostic so missing-method reports stay aligned with what the structural
-// match actually consulted.
-static std::vector<MethodInfo> collect_concrete_methods(
-    const TypePtr &concrete,
-    const std::unordered_map<const Type *, std::vector<MethodInfo>>
-        &type_methods,
-    const std::unordered_map<TypeKind, std::vector<MethodInfo>> &kind_methods,
-    const BuiltinTypes &builtins) {
+// match actually consulted.  A struct's method whose receiver bound the
+// instance misses is not one of its methods.
+std::vector<MethodInfo> Analyzer::concrete_methods(const TypePtr &concrete) {
   std::vector<MethodInfo> methods;
   if (!concrete)
     return methods;
 
+  if (concrete->kind == TypeKind::TypeParam)
+    return param_methods(concrete);
+
   if (concrete->kind == TypeKind::Struct) {
-    auto &s = std::get<StructTypeInfo>(concrete->detail);
-    methods = s.methods;
+    for (auto &m : std::get<StructTypeInfo>(concrete->detail).methods)
+      if (!unmet_receiver_bound(concrete, m.name))
+        methods.push_back(m);
     return methods;
   }
 
   const Type *raw = concrete.get();
-  auto tm_it = type_methods.find(raw);
-  if (tm_it == type_methods.end()) {
+  auto tm_it = type_methods_.find(raw);
+  if (tm_it == type_methods_.end()) {
     const Type *canonical = nullptr;
     switch (concrete->kind) {
     case TypeKind::Int:    canonical = builtins.int_type.get(); break;
@@ -99,17 +101,18 @@ static std::vector<MethodInfo> collect_concrete_methods(
     default: break;
     }
     if (canonical && canonical != raw)
-      tm_it = type_methods.find(canonical);
+      tm_it = type_methods_.find(canonical);
   }
-  if (tm_it != type_methods.end()) {
+  if (tm_it != type_methods_.end()) {
     for (auto &m : tm_it->second)
       methods.push_back(m);
   }
 
-  auto km_it = kind_methods.find(concrete->kind);
-  if (km_it != kind_methods.end()) {
+  auto km_it = kind_methods_.find(concrete->kind);
+  if (km_it != kind_methods_.end()) {
     for (auto &m : km_it->second)
-      methods.push_back(m);
+      if (!unmet_receiver_bound(concrete, m.name))
+        methods.push_back(m);
   }
 
   for (auto &m : builtin_methods(concrete->kind, builtins))
@@ -126,15 +129,14 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
     return false;
 
   auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
-  auto concrete_methods =
-      collect_concrete_methods(concrete, type_methods_, kind_methods_, builtins);
+  auto methods = concrete_methods(concrete);
 
   // Every interface method must be present on the concrete type with a
   // compatible signature.  Self-references to `iface` inside an interface
   // method signature stand for the concrete receiver type.
   for (auto &im : iface_info.methods) {
     bool found = false;
-    for (auto &cm : concrete_methods) {
+    for (auto &cm : methods) {
       if (cm.name == im.name) {
         found = true;
         if (im.signature && cm.signature) {
@@ -193,10 +195,6 @@ bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
                                          const std::string &context) {
   if (!concrete || is_invalid_type(concrete))
     return true;
-  // Inside a generic body the binding isn't known yet — the concrete check
-  // happens at every monomorphisation site.
-  if (concrete->kind == TypeKind::TypeParam)
-    return true;
 
   TypePtr iface;
   const char *proto_name = nullptr;
@@ -240,13 +238,12 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
   // Build the "missing methods" list against the same method table the
   // structural matcher consulted.
   auto &iface_info = std::get<InterfaceTypeInfo>(iface->detail);
-  auto concrete_methods =
-      collect_concrete_methods(concrete, type_methods_, kind_methods_, builtins);
+  auto methods = concrete_methods(concrete);
 
   std::vector<std::string> missing;
   for (auto &im : iface_info.methods) {
     bool ok = false;
-    for (auto &cm : concrete_methods) {
+    for (auto &cm : methods) {
       if (cm.name != im.name)
         continue;
       if (im.signature && cm.signature &&
@@ -256,8 +253,11 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
       ok = true;
       break;
     }
-    if (!ok)
-      missing.push_back(format_protocol_method(im.name, im.signature, iface));
+    if (ok)
+      continue;
+    missing.push_back(format_protocol_method(im.name, im.signature, iface));
+    if (auto unmet = unmet_receiver_bound(concrete, im.name))
+      missing.back() += " (" + *unmet + ")";
   }
 
   std::string list;
@@ -267,27 +267,13 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
     list += missing[i];
   }
   std::string ctx = context.empty() ? "" : (" (" + context + ")");
-  error(at, std::format(
-                "type {} does not satisfy {}{}: missing {}",
-                type_to_string(concrete), iface_name, ctx, list));
+  std::string fix;
+  if (is_unbounded_param(concrete))
+    fix = std::format("; bound it: {} {}", type_to_string(concrete),
+                      iface_name);
+  error(at, std::format("type {} does not satisfy {}{}: missing {}{}",
+                        type_to_string(concrete), iface_name, ctx, list, fix));
   return false;
-}
-
-bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
-                                          const std::string &context) {
-  if (!t || is_invalid_type(t))
-    return true;
-  if (t->kind == TypeKind::Array) {
-    auto &ai = std::get<ArrayTypeInfo>(t->detail);
-    return check_stringable_recursive(ai.element, at, context);
-  }
-  if (t->kind == TypeKind::Map) {
-    auto &mi = std::get<MapTypeInfo>(t->detail);
-    bool k = check_stringable_recursive(mi.key, at, context);
-    bool v = check_stringable_recursive(mi.value, at, context);
-    return k && v;
-  }
-  return check_satisfies_protocol(t, ProtocolKind::Stringable, at, context);
 }
 
 // ---------------------------------------------------------------------------

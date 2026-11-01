@@ -173,7 +173,7 @@ TEST(ProtocolDiag, ArrayOfNonStringableRejectedInInterpolation) {
 }
 
 TEST(ProtocolDiag, ArrayStringCallOnNonStringableElementRejected) {
-  // `.String()` on an Array<Bar> requires Bar : Stringable.
+  // An array's String() is bounded `array{T Stringable}`.
   auto r = Diag::from(R"(
     struct Bar { x int }
 
@@ -182,13 +182,13 @@ TEST(ProtocolDiag, ArrayStringCallOnNonStringableElementRejected) {
       a.String()
     }
   )");
-  EXPECT_TRUE(r.has("does not satisfy Stringable"));
+  EXPECT_TRUE(r.has("array{Bar} has no method 'String': it needs T "
+                    "Stringable, and T is Bar"));
 }
 
 TEST(ProtocolDiag, NestedArrayStringRecursiveCheck) {
-  // `[[Bar]]` is itself trivially "Stringable" via the Array shell, but the
-  // Phase 3 rule recurses through Array/Map so the inner Bar is required to
-  // satisfy Stringable.
+  // The inner array is not Stringable either, since its own String() needs
+  // Bar to be.
   auto r = Diag::from(R"(
     struct Bar { x int }
 
@@ -197,7 +197,7 @@ TEST(ProtocolDiag, NestedArrayStringRecursiveCheck) {
       a.String()
     }
   )");
-  EXPECT_TRUE(r.has("does not satisfy Stringable"));
+  EXPECT_TRUE(r.has("it needs T Stringable, and T is array{Bar}"));
 }
 
 TEST(ProtocolDiag, MapStringCallOnNonStringableValueRejected) {
@@ -210,7 +210,8 @@ TEST(ProtocolDiag, MapStringCallOnNonStringableValueRejected) {
       m.String()
     }
   )");
-  EXPECT_TRUE(r.has("does not satisfy Stringable"));
+  EXPECT_TRUE(r.has("map{int: Bar} has no method 'String': it needs V "
+                    "Stringable, and V is Bar"));
 }
 
 TEST(ProtocolDiag, StructWithStringAcceptedInInterpolation) {

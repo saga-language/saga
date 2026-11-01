@@ -1,0 +1,25 @@
+// An interface's own name in its signatures stands for whatever satisfies it.
+// Embedded, that is the embedder's satisfier: Cat's Matches(Cat) is the
+// Matches(Matcher) that Keyed takes from Matcher.
+import "std/io"
+
+interface Matcher {
+  Matches(Matcher) bool
+}
+
+interface Keyed {
+  Matcher
+  Key() int
+}
+
+struct Cat { id int }
+
+fn (c Cat) Key() int { c.id }
+fn (c Cat) Matches(o Cat) bool { c.id == o.id }
+
+fn same<T Keyed>(a T, b T) bool { a.Matches(b) }
+
+pub fn Main() void {
+  k Keyed = Cat{id: 7}
+  io.Println("{k.Key()} {same(Cat{id: 1}, Cat{id: 1})} {same(Cat{id: 1}, Cat{id: 2})}")
+}

@@ -1,0 +1,1 @@
+array{Bar} has no method 'String': it needs T Stringable, and T is Bar

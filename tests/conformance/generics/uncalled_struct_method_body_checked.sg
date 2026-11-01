@@ -1,0 +1,11 @@
+// A generic struct's method is checked at its declaration too, though no call
+// ever fixes its type arguments.
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T>) Get() T { value }
+
+pub fn Main() void {
+  _ := Box{value: 1}
+}

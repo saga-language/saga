@@ -20,39 +20,15 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
   if (!fn.body)
     return;
 
-  // Generic functions are analysed lazily, once per instantiation.
-  // Receiver methods on generic receiver types (Array/Map) still flow
-  // through the normal path because their T is the element type.
-  if (fn.generic) {
-    if (!fn.receiver)
-      return;
-    auto &rt = fn.receiver->type->data;
-    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
-                           std::get_if<MapTypeNode>(&rt);
-    if (!is_generic_recv)
-      return;
-  }
+  // A generic's body is resolved with the rest of it, as a template; only an
+  // Array/Map receiver method is resolved here (see check_func_decl_body).
+  if (fn.generic && !is_kind_receiver(fn))
+    return;
 
   push_scope(ScopeKind::Function);
+  enter_func_generics(fn);
 
-  // Enter generics if present.
-  if (fn.generic) {
-    enter_generics(*fn.generic);
-  }
-
-  // Declare the receiver if present.
-  if (fn.receiver) {
-    auto recv_type = resolve_type(*fn.receiver->type);
-    declare_local(Symbol::parameter(std::string(fn.receiver->name.name),
-                                    recv_type, fn.receiver->name.span));
-  }
-
-  // Set return types on the function scope.
-  if (fn.signature.return_type)
-    current_scope->return_types.push_back(resolve_type(*fn.signature.return_type));
-
-  // Declare parameters.
-  declare_parameters(fn.signature);
+  declare_signature(fn);
 
   // Resolve names in the body.
   auto &block = std::get<BlockNode>(fn.body->data);
@@ -639,18 +615,17 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
   if (!fn.body)
     return;
 
-  // Generic functions are type-checked lazily per instantiation.
-  // Receiver methods on generic receiver types (Array/Map) still flow
-  // through the eager path because their T is the element type.
+  // A generic's body is checked as a template, against its bounds. Receiver
+  // methods on Array/Map are the exception: their T is the element type, and
+  // codegen emits them once with T erased, from the tables this pass records.
   bool is_eager_kind_method = false;
   if (fn.generic) {
-    if (!fn.receiver)
+    if (!is_kind_receiver(fn)) {
+      if (auto tpl = generic_templates_.find(&fn);
+          tpl != generic_templates_.end())
+        check_generic_template(tpl->second);
       return;
-    auto &rt = fn.receiver->type->data;
-    bool is_generic_recv = std::get_if<ArrayTypeNode>(&rt) ||
-                           std::get_if<MapTypeNode>(&rt);
-    if (!is_generic_recv)
-      return;
+    }
     is_eager_kind_method = true;
   }
 
@@ -659,72 +634,67 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
   const FuncDeclNode *saved_eager_kind = current_eager_kind_method_decl_;
   if (is_eager_kind_method)
     current_eager_kind_method_decl_ = &fn;
+  size_t errors_before = errors.errors.size();
 
   push_scope(ScopeKind::Function);
+  enter_func_generics(fn);
+  declare_signature(fn);
+  check_function_block(fn, std::get<BlockNode>(fn.body->data));
+  pop_scope();
 
-  if (fn.generic)
-    enter_generics(*fn.generic);
+  current_eager_kind_method_decl_ = saved_eager_kind;
+  if (is_eager_kind_method)
+    record_template_check(fn, errors.errors.size() == errors_before);
+}
 
+void Analyzer::record_template_check(const FuncDeclNode &fn, bool passed) {
+  if (auto tpl = generic_templates_.find(&fn); tpl != generic_templates_.end())
+    tpl->second.body_check = passed ? GenericTemplate::BodyCheck::Passed
+                                    : GenericTemplate::BodyCheck::Failed;
+}
+
+void Analyzer::declare_signature(const FuncDeclNode &fn) {
   if (fn.receiver) {
     auto recv_type = resolve_type(*fn.receiver->type);
     declare_local(Symbol::parameter(std::string(fn.receiver->name.name),
                                     recv_type, fn.receiver->name.span));
   }
-
   if (fn.signature.return_type)
-    current_scope->return_types.push_back(resolve_type(*fn.signature.return_type));
-
+    current_scope->return_types.push_back(
+        resolve_type(*fn.signature.return_type));
   declare_parameters(fn.signature);
+}
 
-  auto &block = std::get<BlockNode>(fn.body->data);
-  // Tail-position for-expression with accumulator: pass the function's
-  // declared return type as the accumulator hint so the body of
-  // `for i : xs |acc| { acc += i }` typechecks against the return.
-  TypePtr tail_hint;
-  if (current_scope->return_types.size() == 1 &&
-      !types_equal(current_scope->return_types[0], builtins.void_type) &&
-      !block.stmts.empty() &&
-      std::get_if<ForExprNode>(&block.stmts.back()->data))
-    tail_hint = current_scope->return_types[0];
-
-  bool tail_shorthand =
-      current_scope->return_types.size() == 1 && !block.stmts.empty() &&
-      std::get_if<EnumShorthandNode>(&block.stmts.back()->data);
-
+// A tail `for` with an accumulator takes the return type as its hint, so
+// `for i : xs |acc| { acc += i }` checks against it; so does a tail
+// `.Variant`. A tail that always returns had its values checked by `return`.
+void Analyzer::check_function_block(const FuncDeclNode &fn,
+                                    const BlockNode &block) {
+  auto &returns = current_scope->return_types;
+  bool one_return = returns.size() == 1 && !block.stmts.empty();
+  auto *tail = one_return ? block.stmts.back().get() : nullptr;
   TypePtr body_type;
-  if (tail_hint) {
-    for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
-      check_expr(*block.stmts[i]);
-    auto &for_node = std::get<ForExprNode>(block.stmts.back()->data);
-    body_type = check_for_expr(for_node, tail_hint);
-    record_type(*block.stmts.back(), body_type);
-  } else if (tail_shorthand) {
-    for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
-      check_expr(*block.stmts[i]);
-    body_type = check_expr_expecting(*block.stmts.back(),
-                                     current_scope->return_types[0]);
+  if (tail && !types_equal(returns[0], builtins.void_type) &&
+      std::holds_alternative<ForExprNode>(tail->data)) {
+    check_leading_stmts(block);
+    body_type = check_for_expr(std::get<ForExprNode>(tail->data), returns[0]);
+    record_type(*tail, body_type);
+  } else if (tail && std::holds_alternative<EnumShorthandNode>(tail->data)) {
+    check_leading_stmts(block);
+    body_type = check_expr_expecting(*tail, returns[0]);
   } else {
     body_type = check_block(block);
   }
 
-  // Check that the tail expression matches the return type (if non-Void).
-  // If the last statement always returns (directly or through branches),
-  // the return values were already checked by check_return.
-  if (!current_scope->return_types.empty() && !block.stmts.empty()) {
-    bool tail_is_return = always_returns(*block.stmts.back());
-    if (!tail_is_return) {
-      auto &expected = current_scope->return_types;
-      if (expected.size() == 1 && !is_invalid_type(body_type)) {
-        if (!types_equal(expected[0], builtins.void_type)) {
-          expect_assignable(fn.body->span, expected[0], body_type,
-                            "return type");
-        }
-      }
-    }
-  }
+  if (one_return && !always_returns(*block.stmts.back()) &&
+      !is_invalid_type(body_type) &&
+      !types_equal(returns[0], builtins.void_type))
+    expect_assignable(fn.body->span, returns[0], body_type, "return type");
+}
 
-  pop_scope();
-  current_eager_kind_method_decl_ = saved_eager_kind;
+void Analyzer::check_leading_stmts(const BlockNode &block) {
+  for (size_t i = 0; i + 1 < block.stmts.size(); ++i)
+    check_expr(*block.stmts[i]);
 }
 
 } // namespace saga

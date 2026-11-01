@@ -1,0 +1,6 @@
+// A struct's bound is checked where it is instantiated, here by a literal.
+struct Box<T numeric> { v T }
+
+pub fn Main() void {
+  _b := Box{v: "s"}
+}

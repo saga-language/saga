@@ -1,0 +1,15 @@
+// Spec: a type satisfies an interface when it has each method with the
+// interface's signature; a method that only shares the name does not count.
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+
+pub fn (c Cat) Name() int { 7 }
+
+fn show(n Named) string { n.Name() }
+
+pub fn Main() void {
+  _ := show(Cat{})
+}

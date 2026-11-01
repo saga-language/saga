@@ -196,13 +196,43 @@ void Analyzer::reject_error_field_mutation(const Node &target) {
             "cannot assign to a field of an error (errors are immutable)");
 }
 
+// What `xs[i] += 1` does when the read misses is not decided, so the read is
+// left for the program to spell out.
+void Analyzer::reject_element_compound(Token::Kind op, const Node &target) {
+  error(target.span,
+        std::format("'{}' needs the element's current value, and reading an "
+                    "element can miss; read it with `or` and assign the "
+                    "result",
+                    operator_spelling(op)));
+}
+
+// An element assignment writes the slot, which holds the element; only reading
+// it can miss.
+TypePtr Analyzer::assigned_slot_type(const Node &target, TypePtr read_type) {
+  auto *idx = std::get_if<IndexExprNode>(&target.data);
+  if (!idx || std::holds_alternative<SliceNode>(idx->index->data))
+    return read_type;
+  auto object = recorded_type(*idx->object);
+  if (object && object->kind == TypeKind::Array)
+    return std::get<ArrayTypeInfo>(object->detail).element;
+  if (object && object->kind == TypeKind::Map)
+    return std::get<MapTypeInfo>(object->detail).value;
+  return read_type;
+}
+
 void Analyzer::check_assign(const AssignNode &node) {
   // Check each target and value.
   for (size_t i = 0; i < node.targets.size(); ++i) {
     reject_immutable_target(*node.targets[i], "assign to");
     reject_error_field_mutation(*node.targets[i]);
 
-    auto target_type = check_expr(*node.targets[i]);
+    auto target_type =
+        assigned_slot_type(*node.targets[i], check_expr(*node.targets[i]));
+    if (node.op != Token::Kind::Assignment &&
+        std::holds_alternative<IndexExprNode>(node.targets[i]->data)) {
+      reject_element_compound(node.op, *node.targets[i]);
+      continue;
+    }
     if (i < node.values.size()) {
       auto val_type = check_root_expr(*node.values[i]);
 
@@ -217,7 +247,8 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else if (node.op == Token::Kind::DivAssignment) {
         // Division assignment: x /= y — division can fail (div by zero),
         // so validate numeric but note the impure semantics.
-        if (!is_invalid_type(target_type) && !is_numeric(target_type)) {
+        if (!is_invalid_type(target_type) &&
+            !satisfies_constraint(target_type, TypeConstraint::Numeric)) {
           error(node.targets[i]->span,
                 std::format("/= requires numeric type, got {}",
                             type_to_string(target_type)));
@@ -229,7 +260,8 @@ void Analyzer::check_assign(const AssignNode &node) {
       } else {
         // Compound assignment: +=, -=, *=
         // Target must be numeric.
-        if (!is_invalid_type(target_type) && !is_numeric(target_type)) {
+        if (!is_invalid_type(target_type) &&
+            !satisfies_constraint(target_type, TypeConstraint::Numeric)) {
           error(node.targets[i]->span,
                 std::format("compound assignment requires numeric type, "
                             "got {}",
@@ -244,11 +276,21 @@ void Analyzer::check_assign(const AssignNode &node) {
   }
 }
 
+namespace {
+
+bool is_integer_slot(const TypePtr &t) {
+  return t->kind == TypeKind::Int ||
+         (t->kind == TypeKind::TypeParam &&
+          satisfies_constraint(t, TypeConstraint::Integer));
+}
+
+} // namespace
+
 void Analyzer::check_increment(const IncrementNode &node) {
   reject_immutable_target(*node.operand, "increment");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
-  if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
+  if (!is_invalid_type(t) && !is_integer_slot(t)) {
     error(node.span, std::format("increment requires integer type, got {}",
                                  type_to_string(t)));
   }
@@ -258,7 +300,7 @@ void Analyzer::check_decrement(const DecrementNode &node) {
   reject_immutable_target(*node.operand, "decrement");
   reject_error_field_mutation(*node.operand);
   auto t = check_expr(*node.operand);
-  if (!is_invalid_type(t) && t->kind != TypeKind::Int) {
+  if (!is_invalid_type(t) && !is_integer_slot(t)) {
     error(node.span, std::format("decrement requires integer type, got {}",
                                  type_to_string(t)));
   }

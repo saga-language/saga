@@ -1,1 +1,1 @@
-return type: expected int, got int | error
+return type: expected T, got T | error
