@@ -103,6 +103,31 @@ TEST(SgiRoundtrip, GenericStructParamIdsSurvive) {
   EXPECT_EQ(std::get<TypeParamInfo>(st.fields[0].type->detail).param.id, 42u);
 }
 
+TEST(SgiRoundtrip, GenericStructParamBoundsSurvive) {
+  auto named = make_interface_type(
+      "Named", {MethodInfo{"Name", make_func_type({}, make_string_type()),
+                           true, ""}});
+  TypeParam both{3, "T", TypeConstraint::Integer, {named}};
+  auto s = make_struct_type("Box",
+                            {FieldInfo{"value", make_type_param(both), true}},
+                            {}, {both, TypeParam{4, "U"}});
+  auto text = generate_sgi("pkg", {},
+                           {{"", "Named", named, true}, {"", "Box", s, true}});
+  EXPECT_NE(text.find("|T#3 integer Named, U#4|"), std::string::npos) << text;
+
+  auto parsed = parse_sgi(text);
+  ASSERT_TRUE(parsed.has_value());
+  auto &st = std::get<StructTypeInfo>(parsed->exports[0].type->detail);
+  ASSERT_EQ(st.type_params.size(), 2u);
+  EXPECT_EQ(st.type_params[0].constraint, TypeConstraint::Integer);
+  ASSERT_EQ(st.type_params[0].interfaces.size(), 1u);
+  EXPECT_EQ(st.type_params[0].interfaces[0]->kind, TypeKind::Interface);
+  EXPECT_TRUE(st.type_params[1].interfaces.empty());
+  auto &field = std::get<TypeParamInfo>(st.fields[0].type->detail).param;
+  EXPECT_EQ(field.constraint, TypeConstraint::Integer);
+  EXPECT_EQ(field.interfaces.size(), 1u);
+}
+
 TEST(SgiRoundtrip, GenericInterfaceParamIdsSurvive) {
   auto i = make_interface_type(
       "Seq",

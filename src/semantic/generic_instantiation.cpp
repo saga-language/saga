@@ -33,71 +33,7 @@ Analyzer::instantiate_generic_call(
   if (reject_void_bindings(bindings, call_span))
     return builtins.invalid_type;
 
-  // Validate each binding against the type-parameter's constraint, if any.
-  // Constraints are carried on the TypeParam nodes embedded in the function's
-  // parameter/return types — walk the type tree to recover them.
-  std::unordered_map<uint32_t, TypeConstraint> constraints;
-  std::unordered_map<uint32_t, TypePtr> bounds;
-  auto collect = [&](auto &self, const TypePtr &t) -> void {
-    if (!t) return;
-    if (t->kind == TypeKind::TypeParam) {
-      auto &info = std::get<TypeParamInfo>(t->detail);
-      if (info.param.constraint != TypeConstraint::None)
-        constraints[info.param.id] = info.param.constraint;
-      if (info.bound)
-        bounds[info.param.id] = *info.bound;
-      return;
-    }
-    switch (t->kind) {
-    case TypeKind::Array:
-      self(self, std::get<ArrayTypeInfo>(t->detail).element);
-      break;
-    case TypeKind::Map: {
-      auto &m = std::get<MapTypeInfo>(t->detail);
-      self(self, m.key);
-      self(self, m.value);
-      break;
-    }
-    case TypeKind::Func: {
-      auto &f = std::get<FuncTypeInfo>(t->detail);
-      for (auto &p : f.params) self(self, p);
-      if (f.return_type) self(self, f.return_type);
-      break;
-    }
-    case TypeKind::Union:
-      for (auto &a : std::get<UnionTypeInfo>(t->detail).alternatives)
-        self(self, a);
-      break;
-    default:
-      break;
-    }
-  };
-  for (auto &p : fn_info.params) collect(collect, p);
-  if (fn_info.return_type) collect(collect, fn_info.return_type);
-
-  bool constraint_violation = false;
-  for (auto &[id, concrete] : bindings) {
-    auto it = constraints.find(id);
-    if (it == constraints.end()) continue;
-    if (!satisfies_constraint(concrete, it->second)) {
-      error(call_span,
-            std::format("type {} does not satisfy constraint {}",
-                        type_to_string(concrete),
-                        constraint_name(it->second)));
-      constraint_violation = true;
-    }
-  }
-  for (auto &[id, concrete] : bindings) {
-    auto it = bounds.find(id);
-    if (it == bounds.end()) continue;
-    if (!concrete || is_invalid_type(concrete))
-      continue;
-    auto &ii = std::get<InterfaceTypeInfo>(it->second->detail);
-    if (!report_interface_unsatisfied(concrete, it->second, ii.name, call_span,
-                                      ""))
-      constraint_violation = true;
-  }
-  if (constraint_violation)
+  if (!bindings_meet_bounds(callee_type, bindings, call_span))
     return poison(call_span, "constraint violation left unreported");
 
   if (out_bindings)
@@ -107,6 +43,24 @@ Analyzer::instantiate_generic_call(
     return callee_type; // No type params to substitute.
 
   return substitute(callee_type, bindings);
+}
+
+// A generic's parameters, bounds and all, are the ones its signature names.
+bool Analyzer::bindings_meet_bounds(
+    const TypePtr &callee_type,
+    const std::unordered_map<uint32_t, TypePtr> &bindings, Span span) {
+  std::unordered_map<uint32_t, TypeParam> params;
+  any_type_param(callee_type, [&](const TypeParam &p) {
+    params.emplace(p.id, p);
+    return false;
+  });
+  bool met = true;
+  for (auto &[id, concrete] : bindings) {
+    auto it = params.find(id);
+    if (it != params.end() && concrete && !is_invalid_type(concrete))
+      met = report_unmet_bound(concrete, it->second, span) && met;
+  }
+  return met;
 }
 
 TypePtr Analyzer::instantiate_generic_struct(

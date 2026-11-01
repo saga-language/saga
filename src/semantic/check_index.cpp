@@ -285,69 +285,35 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
     return m.signature;
   }
 
-  // Named-protocol fallback for TypeParam values inside generic bodies.
-  // A method call on a value of TypeParam type is accepted if the called
-  // method belongs to a compiler-known protocol (Hashable, Stringable);
-  // satisfaction by the concrete type is verified at the monomorphisation
-  // site.  Self-typed positions in the protocol signature are rewritten to
-  // refer to the TypeParam.
-  if (obj_type->kind == TypeKind::TypeParam) {
-    auto subst_self = [](const TypePtr &sig, const TypePtr &iface,
-                          const TypePtr &concrete) -> TypePtr {
-      if (!sig || sig->kind != TypeKind::Func) return sig;
-      auto &fi = std::get<FuncTypeInfo>(sig->detail);
-      auto &iinfo = std::get<InterfaceTypeInfo>(iface->detail);
-      auto subst_one = [&](const TypePtr &t) -> TypePtr {
-        if (t && t->kind == TypeKind::Interface) {
-          auto &ti = std::get<InterfaceTypeInfo>(t->detail);
-          if (ti.name == iinfo.name &&
-              ti.origin_package == iinfo.origin_package)
-            return concrete;
-        }
-        return t;
-      };
-      std::vector<TypePtr> nparams;
-      for (auto &p : fi.params)  nparams.push_back(subst_one(p));
-      TypePtr nret = fi.return_type ? subst_one(fi.return_type) : nullptr;
-      auto out = make_func_type(std::move(nparams), std::move(nret));
-      std::get<FuncTypeInfo>(out->detail).is_variadic = fi.is_variadic;
-      return out;
-    };
-    auto try_protocol = [&](const TypePtr &iface) -> TypePtr {
-      if (!iface || iface->kind != TypeKind::Interface) return nullptr;
-      auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
-      for (auto &m : ii.methods)
-        if (m.name == field_name && m.signature)
-          return subst_self(m.signature, iface, obj_type);
-      return nullptr;
-    };
-    auto record_dispatch = [&]() {
-      if (current_eager_kind_method_decl_)
-        kind_method_uses_typeparam_dispatch_.insert(
-            current_eager_kind_method_decl_);
-    };
-    auto &tpinfo = std::get<TypeParamInfo>(obj_type->detail);
-    if (tpinfo.bound) {
-      if (auto t = try_protocol(*tpinfo.bound)) {
-        record_dispatch();
-        return t;
-      }
-      return nullptr;
-    }
-    if (auto t = try_protocol(builtins.stringable_iface)) {
-      record_dispatch();
-      return t;
-    }
-    if (auto t = try_protocol(builtins.hashable_iface)) {
-      record_dispatch();
-      return t;
-    }
-  }
+  if (obj_type->kind == TypeKind::TypeParam)
+    return resolve_param_method(obj_type, field_name);
 
   if (auto u = unwrap_structural_alias(obj_type);
       u && u->kind == TypeKind::Union)
     return resolve_union_method(u, field_name);
 
+  return nullptr;
+}
+
+// An unbounded parameter falls back to the compiler-known protocols, whose
+// satisfaction each instantiation checks.
+TypePtr Analyzer::resolve_param_method(const TypePtr &param,
+                                       const std::string &name) {
+  auto methods = concrete_methods(param);
+  if (std::get<TypeParamInfo>(param->detail).param.interfaces.empty())
+    for (auto &iface : {builtins.stringable_iface, builtins.hashable_iface})
+      for (auto &m : iface ? std::get<InterfaceTypeInfo>(iface->detail).methods
+                           : std::vector<MethodInfo>{})
+        methods.push_back(
+            {m.name, substitute_self(m.signature, iface, param), m.is_public});
+  for (auto &m : methods) {
+    if (m.name != name || !m.signature)
+      continue;
+    if (current_eager_kind_method_decl_)
+      kind_method_uses_typeparam_dispatch_.insert(
+          current_eager_kind_method_decl_);
+    return m.signature;
+  }
   return nullptr;
 }
 

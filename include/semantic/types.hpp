@@ -90,14 +90,18 @@ bool constraint_within(TypeConstraint inner, TypeConstraint outer);
 // ---------------------------------------------------------------------------
 // TypeParam — a single generic type variable.
 //
-//   |T|, |T, U|  →  each T / U is a TypeParam with a unique id.
-//   |T Integer|  →  T carries TypeConstraint::Integer.
+//   <T>, <T, U>  →  each T / U is a TypeParam with a unique id.
+//   <T integer>  →  T carries TypeConstraint::Integer.
+//   <T Named>    →  T carries the interface Named.
 // ---------------------------------------------------------------------------
 
 struct TypeParam {
   uint32_t id;           // unique within one analysis pass
   std::string name;      // source name, e.g. "T"
   TypeConstraint constraint = TypeConstraint::None;
+  /// Every one must be satisfied. More than one arises where a method's
+  /// receiver bound adds to the bound its type declares.
+  std::vector<TypePtr> interfaces;
 };
 
 // ---------------------------------------------------------------------------
@@ -207,7 +211,6 @@ struct UnionTypeInfo {
 
 struct TypeParamInfo {
   TypeParam param;
-  std::optional<TypePtr> bound;               // upper-bound constraint, if any
 };
 
 struct AliasTypeInfo {
@@ -326,8 +329,8 @@ TypePtr union_without(const TypePtr &u, const TypePtr &matched);
 /// and `Marker{}` are the same value. The analyzer admits the braceless form on
 /// this test and codegen builds the value on the same one.
 bool is_empty_shape(const TypePtr &t);
-TypePtr make_type_param(uint32_t id, const std::string &name,
-                        std::optional<TypePtr> bound = std::nullopt);
+TypePtr make_type_param(uint32_t id, const std::string &name);
+TypePtr make_type_param(TypeParam param);
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
                         std::vector<MethodInfo> methods = {},
                         std::string origin_package = "",
@@ -454,6 +457,12 @@ using SubstMemo = std::unordered_map<const Type *, TypePtr>;
 TypePtr substitute(const TypePtr &t,
                    const std::unordered_map<uint32_t, TypePtr> &bindings,
                    SubstMemo &memo);
+
+/// `sig` with `self` wherever it names `iface`: an interface's own name in its
+/// method signatures stands for whatever satisfies it, as in
+/// `Equals(Hashable) bool`.
+TypePtr substitute_self(const TypePtr &sig, const TypePtr &iface,
+                        const TypePtr &self);
 
 /// Attempt to infer type-parameter bindings by unifying `param_type` (which
 /// may contain TypeParam nodes) against `arg_type` (fully concrete).

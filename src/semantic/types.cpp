@@ -186,12 +186,13 @@ bool is_empty_shape(const TypePtr &t) {
   return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
 }
 
-TypePtr make_type_param(uint32_t id, const std::string &name,
-                        std::optional<TypePtr> bound) {
-  return std::make_shared<Type>(
-      TypeKind::TypeParam,
-      TypeParamInfo{TypeParam{id, name, TypeConstraint::None},
-                    std::move(bound)});
+TypePtr make_type_param(uint32_t id, const std::string &name) {
+  return make_type_param(TypeParam{id, name});
+}
+
+TypePtr make_type_param(TypeParam param) {
+  return std::make_shared<Type>(TypeKind::TypeParam,
+                                TypeParamInfo{std::move(param)});
 }
 
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
@@ -847,6 +848,29 @@ TypePtr substitute(const TypePtr &t, const Bindings &bindings) {
 TypePtr substitute(const TypePtr &t, const Bindings &bindings,
                    SubstMemo &memo) {
   return substitute_impl(t, bindings, memo);
+}
+
+// `.sgi` loads make fresh interface types, so identity is name and package.
+static bool names_interface(const TypePtr &t, const InterfaceTypeInfo &iface) {
+  if (!t || t->kind != TypeKind::Interface)
+    return false;
+  auto &info = std::get<InterfaceTypeInfo>(t->detail);
+  return info.name == iface.name && info.origin_package == iface.origin_package;
+}
+
+TypePtr substitute_self(const TypePtr &sig, const TypePtr &iface,
+                        const TypePtr &self) {
+  if (!sig || sig->kind != TypeKind::Func)
+    return sig;
+  auto &fi = std::get<FuncTypeInfo>(sig->detail);
+  auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+  auto one = [&](const TypePtr &t) { return names_interface(t, ii) ? self : t; };
+  std::vector<TypePtr> params;
+  for (auto &p : fi.params)
+    params.push_back(one(p));
+  return make_func_type(std::move(params),
+                        fi.return_type ? one(fi.return_type) : nullptr,
+                        fi.is_variadic);
 }
 
 static TypePtr substitute_impl(const TypePtr &t, const Bindings &bindings,

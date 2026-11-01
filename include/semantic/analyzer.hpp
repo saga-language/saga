@@ -582,6 +582,7 @@ public:
   /// Enter generic parameters into the current scope and return a mapping
   /// from their ids to the TypeParam types.  Call after push_scope.
   std::vector<TypeParam> enter_generics(const GenericNode &generic);
+  void bound_param(TypeParam &param, const IdentifierNode &bound);
   /// Once per declaration, before enter_generics.
   void reject_shadowed_types(const GenericNode &generic);
 
@@ -589,7 +590,16 @@ public:
   /// bounds a receiver parameter the instance's argument does not meet.
   std::optional<std::string> unmet_receiver_bound(const TypePtr &instance,
                                                   std::string_view name);
-  bool meets_param(const TypePtr &arg, const TypePtr &param);
+  std::optional<std::string>
+  unmet_receiver_params(const std::vector<TypePtr> &args,
+                        const std::vector<TypePtr> &params);
+  /// The part of `param`'s bound `arg` misses, as source spells it (`T
+  /// numeric`); none when `arg` meets all of it.
+  std::optional<std::string> unmet_bound(const TypePtr &arg,
+                                         const TypeParam &param);
+  /// False, with every unmet part reported, when `arg` misses `param`'s bound.
+  bool report_unmet_bound(const TypePtr &arg, const TypeParam &param,
+                          Span span);
 
   /// Collect current type bindings for substitution.
   std::unordered_map<uint32_t, TypePtr> current_type_bindings() const;
@@ -921,6 +931,7 @@ private:
   /// union satisfies some interface declaring `field_name` (every member
   /// satisfies it) and that method is Self-free (no interface-self in its
   /// params/return).  Returns the interface method's signature, else null.
+  TypePtr resolve_param_method(const TypePtr &param, const std::string &name);
   TypePtr resolve_union_method(const TypePtr &union_type,
                                const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
@@ -1084,6 +1095,9 @@ private:
 
   /// Instantiate a generic struct type: infer type-parameter bindings from
   /// field initializer values and return the fully substituted struct type.
+  bool bindings_meet_bounds(const TypePtr &callee_type,
+                            const std::unordered_map<uint32_t, TypePtr> &bindings,
+                            Span span);
   TypePtr instantiate_generic_struct(const TypePtr &struct_type,
                                      const std::vector<std::pair<std::string, TypePtr>> &field_types,
                                      Span span);

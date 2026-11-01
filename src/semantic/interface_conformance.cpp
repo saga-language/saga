@@ -6,6 +6,8 @@
 // to name the method that is missing or mismatched rather than the interface.
 
 #include "semantic/analyzer.hpp"
+
+#include <algorithm>
 #include <format>
 
 namespace saga {
@@ -67,6 +69,20 @@ static bool signatures_match_with_self(const TypePtr &iface_sig,
   return true;
 }
 
+// A type parameter's methods are its interfaces', where the parameter stands
+// for each interface's own name.
+static std::vector<MethodInfo> param_methods(const TypePtr &param) {
+  std::vector<MethodInfo> methods;
+  for (auto &iface : std::get<TypeParamInfo>(param->detail).param.interfaces)
+    for (auto &m : std::get<InterfaceTypeInfo>(iface->detail).methods)
+      if (std::ranges::none_of(methods, [&](const MethodInfo &have) {
+            return have.name == m.name;
+          }))
+        methods.push_back({m.name, substitute_self(m.signature, iface, param),
+                           m.is_public, m.origin_package});
+  return methods;
+}
+
 // Gather the methods visible on `concrete` from the analyzer's stdlib and
 // built-in tables.  Shared between satisfies_interface and the named-protocol
 // diagnostic so missing-method reports stay aligned with what the structural
@@ -77,12 +93,8 @@ std::vector<MethodInfo> Analyzer::concrete_methods(const TypePtr &concrete) {
   if (!concrete)
     return methods;
 
-  if (concrete->kind == TypeKind::TypeParam) {
-    auto &bound = std::get<TypeParamInfo>(concrete->detail).bound;
-    if (bound)
-      methods = std::get<InterfaceTypeInfo>((*bound)->detail).methods;
-    return methods;
-  }
+  if (concrete->kind == TypeKind::TypeParam)
+    return param_methods(concrete);
 
   if (concrete->kind == TypeKind::Struct) {
     for (auto &m : std::get<StructTypeInfo>(concrete->detail).methods)
@@ -122,15 +134,6 @@ std::vector<MethodInfo> Analyzer::concrete_methods(const TypePtr &concrete) {
   return methods;
 }
 
-// A type parameter's methods are its bound's, whose own type stands where the
-// bound's signatures name it.
-static TypePtr method_self(const TypePtr &concrete) {
-  if (concrete->kind != TypeKind::TypeParam)
-    return concrete;
-  auto &bound = std::get<TypeParamInfo>(concrete->detail).bound;
-  return bound ? *bound : concrete;
-}
-
 bool Analyzer::satisfies_interface(const TypePtr &concrete,
                                    const TypePtr &iface) {
   if (!concrete || !iface)
@@ -151,7 +154,7 @@ bool Analyzer::satisfies_interface(const TypePtr &concrete,
         found = true;
         if (im.signature && cm.signature) {
           if (!signatures_match_with_self(im.signature, cm.signature, iface,
-                                          method_self(concrete))) {
+                                          concrete)) {
             return false;
           }
         }
@@ -262,7 +265,7 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
         continue;
       if (im.signature && cm.signature &&
           !signatures_match_with_self(im.signature, cm.signature, iface,
-                                      method_self(concrete)))
+                                      concrete))
         break;
       ok = true;
       break;

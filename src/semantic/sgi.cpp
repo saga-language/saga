@@ -79,6 +79,14 @@ method_local_params(const TypePtr &t,
   return result;
 }
 
+/// ` numeric Named`: each part of the parameter's bound, space-led.
+static void write_bound_words(std::ostringstream &os, const TypeParam &param) {
+  if (param.constraint != TypeConstraint::None)
+    os << " " << constraint_name(param.constraint);
+  for (auto &iface : param.interfaces)
+    os << " " << type_to_sgi(iface);
+}
+
 static void write_type_params_decl(std::ostringstream &os,
                                     const std::vector<TypeParam> &params) {
   if (params.empty())
@@ -87,6 +95,7 @@ static void write_type_params_decl(std::ostringstream &os,
   for (size_t i = 0; i < params.size(); ++i) {
     if (i > 0) os << ", ";
     os << params[i].name << "#" << params[i].id;
+    write_bound_words(os, params[i]);
   }
   os << "|";
 }
@@ -242,21 +251,20 @@ static void write_func_export(std::ostringstream &os, const std::string &name,
   os << "\n";
 }
 
-/// `bound <method> <index> <constraint or interface>`, one per receiver
-/// parameter the method bounds, so an importer finds which instances have it.
+/// `bound <method> <index> <bound>...`, one per receiver parameter the method
+/// bounds, so an importer finds which instances have it.
 static void write_receiver_bounds(std::ostringstream &os,
                                   const MethodInfo &method) {
   for (size_t i = 0; i < method.receiver_params.size(); ++i) {
     auto &param = method.receiver_params[i];
     if (!param || param->kind != TypeKind::TypeParam)
       continue;
-    auto &info = std::get<TypeParamInfo>(param->detail);
-    if (info.param.constraint != TypeConstraint::None)
-      os << "  bound " << method.name << " " << i << " "
-         << constraint_name(info.param.constraint) << "\n";
-    else if (info.bound)
-      os << "  bound " << method.name << " " << i << " "
-         << type_to_sgi(*info.bound) << "\n";
+    auto &info = std::get<TypeParamInfo>(param->detail).param;
+    if (info.constraint == TypeConstraint::None && info.interfaces.empty())
+      continue;
+    os << "  bound " << method.name << " " << i;
+    write_bound_words(os, info);
+    os << "\n";
   }
 }
 
@@ -881,7 +889,7 @@ struct SgiParser {
 
     // Bare identifier matching a type-param in scope → TypeParam.
     if (auto tp = lookup_type_param(name))
-      return make_type_param(tp->id, tp->name);
+      return make_type_param(*tp);
 
     // Named type reference: check if it was already defined in this .sgi.
     // If so, return the real type so methods/fields are visible.
@@ -905,27 +913,41 @@ struct SgiParser {
     std::string mname = read_word();
     skip_whitespace();
     std::string index_word = read_word();
-    skip_whitespace();
-    size_t saved = pos;
-    auto constraint = constraint_from_name(read_word());
-    TypePtr bound;
-    if (constraint == TypeConstraint::None) {
-      pos = saved;
-      bound = parse_type();
-    }
-    skip_line();
     size_t index = index_word.empty() ? 0 : std::stoul(index_word);
-    if (index >= struct_params.size())
+    if (index >= struct_params.size()) {
+      skip_line();
       return;
+    }
+    TypeParam param{struct_params[index].id, struct_params[index].name};
+    parse_bound_words(param);
+    skip_line();
     for (auto &m : methods) {
       if (m.name != mname)
         continue;
-      auto &sp = struct_params[index];
-      auto param = make_type_param(
-          sp.id, sp.name, bound ? std::optional<TypePtr>(bound) : std::nullopt);
-      std::get<TypeParamInfo>(param->detail).param.constraint = constraint;
       m.receiver_params.resize(struct_params.size());
-      m.receiver_params[index] = param;
+      m.receiver_params[index] = make_type_param(param);
+    }
+  }
+
+  /// The bound words after a parameter, up to the `,` or `|` that ends it in a
+  /// declaration list, or the end of a `bound` line.
+  void parse_bound_words(TypeParam &param) {
+    while (true) {
+      skip_whitespace();
+      if (at_end() || content[pos] == ',' || content[pos] == '|' ||
+          content[pos] == '\n')
+        return;
+      size_t saved = pos;
+      auto constraint = constraint_from_name(read_word());
+      if (constraint != TypeConstraint::None) {
+        param.constraint = constraint;
+        continue;
+      }
+      pos = saved;
+      auto iface = parse_single_type();
+      if (!iface || pos == saved)
+        return;
+      param.interfaces.push_back(iface);
     }
   }
 
@@ -955,6 +977,7 @@ struct SgiParser {
           id = static_cast<uint32_t>(std::stoul(content.substr(start, pos - start)));
       }
       TypeParam tp{id, pname};
+      parse_bound_words(tp);
       params.push_back(tp);
       bind_type_param(tp);
       skip_whitespace();
