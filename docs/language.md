@@ -885,6 +885,34 @@ fn Greet<U Named>(x U) string { Describe(x) }  // ok
 fn Shout<U>(x U) string { Describe(x) }        // error: U does not satisfy Named
 ```
 
+#### Bounded structs
+
+A struct's type parameters are bounded the same way. The bound is checked
+wherever the struct is instantiated, by a literal or by a type that names it,
+and it holds in every method without the receiver repeating it:
+
+```
+struct Box<T numeric> {
+  value T
+}
+
+pub fn (b Box<T>) Twice() T { b.value + b.value }  // T is numeric here
+
+Box{value: 21}.Twice()      // 42
+Box{value: "saga"}          // error: type string does not satisfy constraint numeric
+fn Show(b Box<string>) {}   // error: the same
+```
+
+Like a call, a generic names a bounded struct only with a parameter whose own
+bound meets the struct's: `fn Wrap<T>(x T) Box<T>` is an error, and
+`fn Wrap<T integer>(x T) Box<T>` is not.
+
+A [receiver bound](#Methods-on-a-generic-struct) adds to the struct's. The
+method's parameter must meet both, so `fn (b Box<T integer>) Half() T` is a
+method of `Box<int>` and not of `Box<float>`. A receiver bound that leaves no
+type the struct admits, such as `float` on a struct declared `integer`, is an
+error.
+
 ## Type Aliases
 
 The `type` keyword is used to define a new type. Adjacency creates a 

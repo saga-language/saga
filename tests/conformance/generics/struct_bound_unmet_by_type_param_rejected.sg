@@ -1,0 +1,7 @@
+// A type parameter instantiates a bounded struct only when its own bound
+// is within the struct's; an unbounded T could be anything.
+struct Box<T numeric> { v T }
+
+fn wrap<T>(v T) Box<T> { Box{v: v} }
+
+pub fn Main() void {}

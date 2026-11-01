@@ -76,7 +76,7 @@ bool Analyzer::check_generic_template(GenericTemplate &tpl) {
   scratch.decl = tpl.decl;
   {
     TemplateBodyScope guard(*this, tpl, scratch, false);
-    enter_generics(*tpl.decl->generic);
+    enter_func_generics(*tpl.decl);
     check_template_body(*tpl.decl);
   }
   tpl.body_check = scratch.failed ? GenericTemplate::BodyCheck::Failed

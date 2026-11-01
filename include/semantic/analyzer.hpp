@@ -586,8 +586,16 @@ public:
 
   /// Enter generic parameters into the current scope and return a mapping
   /// from their ids to the TypeParam types.  Call after push_scope.
-  std::vector<TypeParam> enter_generics(const GenericNode &generic);
+  /// `declared[i]`, where given, is a bound the i-th parameter also holds.
+  std::vector<TypeParam>
+  enter_generics(const GenericNode &generic,
+                 const std::vector<TypeParam> &declared = {});
+  std::vector<TypeParam> enter_func_generics(const FuncDeclNode &fn);
+  std::optional<std::pair<TypeParam, Span>> read_type_param(const Node &node);
   void bound_param(TypeParam &param, const IdentifierNode &bound);
+  std::vector<TypeParam> declared_receiver_bounds(const ReceiverNode &receiver);
+  void add_bound(TypeParam &param, const TypeParam &declared, Span span);
+  void narrow_constraint(TypeParam &param, TypeConstraint adds, Span span);
   /// Once per declaration, before enter_generics.
   void reject_shadowed_types(const GenericNode &generic);
 

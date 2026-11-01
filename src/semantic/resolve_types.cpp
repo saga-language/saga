@@ -201,6 +201,15 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   if (resolving_structs_.count(info.name) && names_own_params(info, args))
     return base;
 
+  bool met = true;
+  for (size_t i = 0; i < args.size(); ++i)
+    if (!is_invalid_type(args[i]))
+      met = report_unmet_bound(args[i], info.type_params[i],
+                               node.type_args[i]->span) &&
+            met;
+  if (!met)
+    return builtins.invalid_type;
+
   // Build bindings and instantiate.
   std::unordered_map<uint32_t, TypePtr> bindings;
   for (size_t i = 0; i < info.type_params.size(); ++i)

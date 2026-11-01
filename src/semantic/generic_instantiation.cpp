@@ -96,11 +96,16 @@ TypePtr Analyzer::instantiate_generic_struct(
     return struct_type;
 
   std::vector<TypePtr> type_args;
+  bool met = true;
   for (auto &tp : info.type_params) {
     auto it = bindings.find(tp.id);
-    if (it != bindings.end())
-      type_args.push_back(it->second);
+    if (it == bindings.end())
+      continue;
+    type_args.push_back(it->second);
+    met = report_unmet_bound(it->second, tp, span) && met;
   }
+  if (!met)
+    return builtins.invalid_type;
 
   // Publish the shell before substituting fields, and map the declaration onto
   // it, so a field naming the struct again lands on this instantiation.

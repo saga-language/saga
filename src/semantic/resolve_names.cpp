@@ -26,11 +26,7 @@ void Analyzer::resolve_func_decl_body(const FuncDeclNode &fn) {
     return;
 
   push_scope(ScopeKind::Function);
-
-  // Enter generics if present.
-  if (fn.generic) {
-    enter_generics(*fn.generic);
-  }
+  enter_func_generics(fn);
 
   declare_signature(fn);
 
@@ -641,8 +637,7 @@ void Analyzer::check_func_decl_body(const FuncDeclNode &fn) {
   size_t errors_before = errors.errors.size();
 
   push_scope(ScopeKind::Function);
-  if (fn.generic)
-    enter_generics(*fn.generic);
+  enter_func_generics(fn);
   declare_signature(fn);
   check_function_block(fn, std::get<BlockNode>(fn.body->data));
   pop_scope();

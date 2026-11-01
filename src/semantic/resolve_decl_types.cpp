@@ -159,7 +159,7 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
   if (has_generics) {
     reject_shadowed_types(*fn.generic);
     push_scope(ScopeKind::Block);
-    generic_params = enter_generics(*fn.generic);
+    generic_params = enter_func_generics(fn);
   }
 
   auto fn_type = resolve_signature(fn.signature);
@@ -215,11 +215,12 @@ void Analyzer::resolve_func_decl(const FuncDeclNode &fn) {
                 auto arg_t = resolve_type(*gapp->type_args[i]);
                 receiver_params.push_back(arg_t);
                 if (arg_t && arg_t->kind == TypeKind::TypeParam) {
-                  auto &tp = std::get<TypeParamInfo>(arg_t->detail);
-                  remap[tp.param.id] =
-                      make_type_param(struct_info.type_params[i].id,
-                                      struct_info.type_params[i].name);
-                  id_remap[tp.param.id] = struct_info.type_params[i].id;
+                  auto aligned = std::get<TypeParamInfo>(arg_t->detail).param;
+                  aligned.id = struct_info.type_params[i].id;
+                  remap[std::get<TypeParamInfo>(arg_t->detail).param.id] =
+                      make_type_param(aligned);
+                  id_remap[std::get<TypeParamInfo>(arg_t->detail).param.id] =
+                      aligned.id;
                 }
               }
               if (!remap.empty())

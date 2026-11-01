@@ -5,6 +5,7 @@
 
 #include "semantic/analyzer.hpp"
 
+#include <algorithm>
 #include <format>
 
 namespace saga {
@@ -48,33 +49,93 @@ void Analyzer::reject_shadowed_types(const GenericNode &generic) {
   }
 }
 
-std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
+std::vector<TypeParam>
+Analyzer::enter_generics(const GenericNode &generic,
+                         const std::vector<TypeParam> &declared) {
   std::vector<TypeParam> params;
-  for (auto &tp_node : generic.type_params) {
-    std::string_view name;
-    Span span = tp_node->span;
-    TypeParam tp{fresh_type_param_id(), ""};
-
-    if (auto *node = std::get_if<TypeParamNode>(&tp_node->data)) {
-      name = node->name.name;
-      span = node->name.span;
-      if (node->constraint)
-        bound_param(tp, *node->constraint);
-    } else if (auto *ident = std::get_if<IdentifierNode>(&tp_node->data)) {
-      // Legacy / instantiation-position shape; no constraint slot.
-      name = ident->name;
-      span = ident->span;
-    } else {
-      continue; // shape unrecognised; analyzer cannot bind it
-    }
-
-    tp.name = std::string(name);
+  for (size_t i = 0; i < generic.type_params.size(); ++i) {
+    auto read = read_type_param(*generic.type_params[i]);
+    if (!read)
+      continue;
+    auto &[tp, span] = *read;
+    if (i < declared.size())
+      add_bound(tp, declared[i], span);
     auto tp_type = make_type_param(tp);
     declare(Symbol::type_param(tp.name, tp_type, span));
     current_scope->type_bindings[tp.id] = tp_type;
     params.push_back(std::move(tp));
   }
   return params;
+}
+
+std::vector<TypeParam> Analyzer::enter_func_generics(const FuncDeclNode &fn) {
+  if (!fn.generic)
+    return {};
+  if (!fn.receiver)
+    return enter_generics(*fn.generic);
+  return enter_generics(*fn.generic, declared_receiver_bounds(*fn.receiver));
+}
+
+std::optional<std::pair<TypeParam, Span>>
+Analyzer::read_type_param(const Node &node) {
+  TypeParam tp{fresh_type_param_id(), ""};
+  if (auto *param = std::get_if<TypeParamNode>(&node.data)) {
+    tp.name = std::string(param->name.name);
+    if (param->constraint)
+      bound_param(tp, *param->constraint);
+    return std::pair{std::move(tp), param->name.span};
+  }
+  // Legacy / instantiation-position shape; no constraint slot.
+  if (auto *ident = std::get_if<IdentifierNode>(&node.data)) {
+    tp.name = std::string(ident->name);
+    return std::pair{std::move(tp), ident->span};
+  }
+  return std::nullopt;
+}
+
+// A method is a method of every instance its type admits, so its receiver's
+// parameters hold to the bounds the type declares for them.
+std::vector<TypeParam>
+Analyzer::declared_receiver_bounds(const ReceiverNode &receiver) {
+  auto *app = std::get_if<GenericTypeAppNode>(&receiver.type->data);
+  if (!app)
+    return {};
+  auto *base = std::get_if<IdentifierNode>(&app->base_type->data);
+  if (!base)
+    return {};
+  ensure_type_resolved(std::string(base->name));
+  auto sym = lookup(std::string(base->name));
+  if (!sym || !sym->type || sym->type->kind != TypeKind::Struct)
+    return {};
+  return std::get<StructTypeInfo>(sym->type->detail).type_params;
+}
+
+// The parameter must meet both bounds.
+void Analyzer::add_bound(TypeParam &param, const TypeParam &declared,
+                         Span span) {
+  narrow_constraint(param, declared.constraint, span);
+  std::vector<TypePtr> interfaces;
+  for (auto &iface : declared.interfaces)
+    if (std::ranges::none_of(param.interfaces, [&](const TypePtr &t) {
+          return types_equal(t, iface);
+        }))
+      interfaces.push_back(iface);
+  interfaces.insert(interfaces.end(), param.interfaces.begin(),
+                    param.interfaces.end());
+  param.interfaces = std::move(interfaces);
+}
+
+// To the smaller of the two sets; disjoint sets admit no type at all.
+void Analyzer::narrow_constraint(TypeParam &param, TypeConstraint adds,
+                                 Span span) {
+  auto has = param.constraint;
+  if (adds == TypeConstraint::None || constraint_within(has, adds))
+    return;
+  if (has != TypeConstraint::None && !constraint_within(adds, has))
+    error(span, std::format("{} is declared {}, so it cannot also be {}",
+                            param.name, constraint_name(adds),
+                            constraint_name(has)));
+  param.constraint = adds;
 }
 
 void Analyzer::bound_param(TypeParam &param, const IdentifierNode &bound) {
