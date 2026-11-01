@@ -885,6 +885,21 @@ fn Greet<U Named>(x U) string { Describe(x) }  // ok
 fn Shout<U>(x U) string { Describe(x) }        // error: U does not satisfy Named
 ```
 
+A bound is also what lets a parameter be interpolated or key a map: `{x}` is
+`x.String()` and needs `T Stringable`, and a map key needs `T Hashable`. A
+constraint gives its parameter the methods every type in its set has, so
+`T numeric` interpolates and `T integer` keys a map, while `T float` keys none:
+
+```
+fn Show<T Stringable>(x T) string { "<{x}>" }        // ok
+fn Twice<T numeric>(x T) string { "{x}{x}" }         // ok
+fn Index<T integer>(k T) map{T: string} { {k: "v"} } // ok
+fn Bad<T>(x T) string { "{x}" }   // error: T does not satisfy Stringable
+```
+
+A generic body holds for every type its parameter stands for, so it cannot ask
+which one it has: `x is int` on a `T` is an error.
+
 #### Bounded structs
 
 A struct's type parameters are bounded the same way. The bound is checked
@@ -1039,6 +1054,10 @@ registry := {
 type EnvironmentMap = map{string: map{string: int}}
 staging EnvironmentMap = {}
 ```
+
+A map finds a key by hashing it, so its key type must be `Hashable`: it has
+`Hash() int64` and an `Equals` that agrees with it. The integers, strings and
+bools are; floats are not, since `NaN` is not equal to itself.
 
 ## Array and Map Access
 

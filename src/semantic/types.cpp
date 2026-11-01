@@ -186,6 +186,13 @@ bool is_empty_shape(const TypePtr &t) {
   return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
 }
 
+bool is_unbounded_param(const TypePtr &t) {
+  if (!t || t->kind != TypeKind::TypeParam)
+    return false;
+  auto &p = std::get<TypeParamInfo>(t->detail).param;
+  return p.constraint == TypeConstraint::None && p.interfaces.empty();
+}
+
 bool converts_to_string_natively(const TypePtr &t) {
   if (!t)
     return false;
@@ -874,11 +881,18 @@ static bool names_interface(const TypePtr &t, const InterfaceTypeInfo &iface) {
 
 TypePtr substitute_self(const TypePtr &sig, const TypePtr &iface,
                         const TypePtr &self) {
+  auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
+  return replace_in_signature(
+      sig, [&](const TypePtr &t) { return names_interface(t, ii); }, self);
+}
+
+TypePtr replace_in_signature(const TypePtr &sig,
+                             const std::function<bool(const TypePtr &)> &is,
+                             const TypePtr &with) {
   if (!sig || sig->kind != TypeKind::Func)
     return sig;
   auto &fi = std::get<FuncTypeInfo>(sig->detail);
-  auto &ii = std::get<InterfaceTypeInfo>(iface->detail);
-  auto one = [&](const TypePtr &t) { return names_interface(t, ii) ? self : t; };
+  auto one = [&](const TypePtr &t) { return is(t) ? with : t; };
   std::vector<TypePtr> params;
   for (auto &p : fi.params)
     params.push_back(one(p));

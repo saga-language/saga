@@ -300,17 +300,10 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
   return nullptr;
 }
 
-// An unbounded parameter falls back to the compiler-known protocols, whose
-// satisfaction each instantiation checks.
+// A type parameter has the methods its bound gives it and no others.
 TypePtr Analyzer::resolve_param_method(const TypePtr &param,
                                        const std::string &name) {
   auto methods = concrete_methods(param);
-  if (std::get<TypeParamInfo>(param->detail).param.interfaces.empty())
-    for (auto &iface : {builtins.stringable_iface, builtins.hashable_iface})
-      for (auto &m : iface ? std::get<InterfaceTypeInfo>(iface->detail).methods
-                           : std::vector<MethodInfo>{})
-        methods.push_back(
-            {m.name, substitute_self(m.signature, iface, param), m.is_public});
   for (auto &m : methods) {
     if (m.name != name || !m.signature)
       continue;

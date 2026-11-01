@@ -1,0 +1,5 @@
+// A constraint gives its parameter only what every type it admits has, and
+// no float is Hashable.
+fn index<T float>(k T) map{T: int} { {k: 1} }
+
+pub fn Main() void {}

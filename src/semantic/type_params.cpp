@@ -151,6 +151,59 @@ void Analyzer::bound_param(TypeParam &param, const IdentifierNode &bound) {
     param.interfaces.push_back(iface);
 }
 
+namespace {
+
+void add_method(std::vector<MethodInfo> &methods, MethodInfo method) {
+  if (std::ranges::none_of(methods, [&](const MethodInfo &have) {
+        return have.name == method.name;
+      }))
+    methods.push_back(std::move(method));
+}
+
+} // namespace
+
+// A type parameter's methods are its bound's: those every type its constraint
+// admits declares alike, and its interfaces'. The parameter stands for the
+// type each signature was declared on.
+std::vector<MethodInfo> Analyzer::param_methods(const TypePtr &param) {
+  auto &tp = std::get<TypeParamInfo>(param->detail).param;
+  auto methods = constraint_methods(tp.constraint, param);
+  for (auto &iface : tp.interfaces)
+    for (auto &m : std::get<InterfaceTypeInfo>(iface->detail).methods)
+      add_method(methods, {m.name, substitute_self(m.signature, iface, param),
+                           m.is_public, m.origin_package});
+  return methods;
+}
+
+// Every intrinsic of one kind has the same methods, so a constraint's are
+// those its kinds share.
+std::vector<MethodInfo> Analyzer::constraint_methods(TypeConstraint c,
+                                                     const TypePtr &param) {
+  std::vector<TypePtr> kinds;
+  if (c == TypeConstraint::Integer || c == TypeConstraint::Numeric)
+    kinds.push_back(builtins.int_type);
+  if (c == TypeConstraint::Float || c == TypeConstraint::Numeric)
+    kinds.push_back(builtins.float_type);
+  std::vector<MethodInfo> shared;
+  for (size_t i = 0; i < kinds.size(); ++i) {
+    auto own = concrete_methods(kinds[i]);
+    for (auto &m : own)
+      m.signature = replace_in_signature(
+          m.signature,
+          [&](const TypePtr &t) { return types_equal(t, kinds[i]); }, param);
+    if (i == 0) {
+      shared = std::move(own);
+      continue;
+    }
+    std::erase_if(shared, [&](const MethodInfo &m) {
+      return std::ranges::none_of(own, [&](const MethodInfo &o) {
+        return o.name == m.name && types_equal(o.signature, m.signature);
+      });
+    });
+  }
+  return shared;
+}
+
 std::optional<std::string> Analyzer::unmet_bound(const TypePtr &arg,
                                                  const TypeParam &param) {
   if (param.constraint != TypeConstraint::None &&

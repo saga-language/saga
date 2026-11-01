@@ -1,0 +1,5 @@
+// A generic body holds for every type its parameter stands for, so it cannot
+// ask which one it has.
+fn first<T>(x T) bool { x is int }
+
+pub fn Main() void {}

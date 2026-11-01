@@ -69,20 +69,6 @@ static bool signatures_match_with_self(const TypePtr &iface_sig,
   return true;
 }
 
-// A type parameter's methods are its interfaces', where the parameter stands
-// for each interface's own name.
-static std::vector<MethodInfo> param_methods(const TypePtr &param) {
-  std::vector<MethodInfo> methods;
-  for (auto &iface : std::get<TypeParamInfo>(param->detail).param.interfaces)
-    for (auto &m : std::get<InterfaceTypeInfo>(iface->detail).methods)
-      if (std::ranges::none_of(methods, [&](const MethodInfo &have) {
-            return have.name == m.name;
-          }))
-        methods.push_back({m.name, substitute_self(m.signature, iface, param),
-                           m.is_public, m.origin_package});
-  return methods;
-}
-
 // Gather the methods visible on `concrete` from the analyzer's stdlib and
 // built-in tables.  Shared between satisfies_interface and the named-protocol
 // diagnostic so missing-method reports stay aligned with what the structural
@@ -209,10 +195,6 @@ bool Analyzer::check_satisfies_protocol(const TypePtr &concrete,
                                          const std::string &context) {
   if (!concrete || is_invalid_type(concrete))
     return true;
-  // Inside a generic body the binding isn't known yet — the concrete check
-  // happens at every monomorphisation site.
-  if (concrete->kind == TypeKind::TypeParam)
-    return true;
 
   TypePtr iface;
   const char *proto_name = nullptr;
@@ -285,9 +267,12 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
     list += missing[i];
   }
   std::string ctx = context.empty() ? "" : (" (" + context + ")");
-  error(at, std::format(
-                "type {} does not satisfy {}{}: missing {}",
-                type_to_string(concrete), iface_name, ctx, list));
+  std::string fix;
+  if (is_unbounded_param(concrete))
+    fix = std::format("; bound it: {} {}", type_to_string(concrete),
+                      iface_name);
+  error(at, std::format("type {} does not satisfy {}{}: missing {}{}",
+                        type_to_string(concrete), iface_name, ctx, list, fix));
   return false;
 }
 

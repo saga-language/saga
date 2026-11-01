@@ -373,6 +373,16 @@ TypePtr Analyzer::check_is_expr(const IsExpr &node) {
   if (is_invalid_type(value_type) || is_invalid_type(test_type))
     return builtins.bool_type;
 
+  // The body is checked once for every type the parameter stands for, so no
+  // one of them can be singled out.
+  if (value_type->kind == TypeKind::TypeParam) {
+    error(node.value->span,
+          std::format("'is' cannot test {0}, a type parameter: the body "
+                      "must hold for every type {0} stands for",
+                      type_to_string(value_type)));
+    return builtins.bool_type;
+  }
+
   if (value_type->kind == TypeKind::Union) {
     auto &info = std::get<UnionTypeInfo>(value_type->detail);
     bool found = false;

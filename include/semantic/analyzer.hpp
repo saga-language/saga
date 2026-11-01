@@ -1131,6 +1131,9 @@ private:
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
   std::vector<MethodInfo> concrete_methods(const TypePtr &concrete);
+  std::vector<MethodInfo> param_methods(const TypePtr &param);
+  std::vector<MethodInfo> constraint_methods(TypeConstraint c,
+                                             const TypePtr &param);
 
   /// Resolve a `<T C>` constraint name that is not a built-in type-set
   /// (integer/float/numeric) to its interface bound.  A same-scope

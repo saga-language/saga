@@ -325,6 +325,8 @@ TypePtr make_union_type(std::vector<TypePtr> alternatives);
 /// codegen lowers it with the same answer, so the two cannot drift.
 TypePtr union_without(const TypePtr &u, const TypePtr &matched);
 
+bool is_unbounded_param(const TypePtr &t);
+
 /// A scalar the runtime turns into a string itself, with no String() call.
 bool converts_to_string_natively(const TypePtr &t);
 
@@ -466,6 +468,11 @@ TypePtr substitute(const TypePtr &t,
 /// `Equals(Hashable) bool`.
 TypePtr substitute_self(const TypePtr &sig, const TypePtr &iface,
                         const TypePtr &self);
+
+/// `sig` with `with` in each parameter and result position `is` picks.
+TypePtr replace_in_signature(const TypePtr &sig,
+                             const std::function<bool(const TypePtr &)> &is,
+                             const TypePtr &with);
 
 /// Attempt to infer type-parameter bindings by unifying `param_type` (which
 /// may contain TypeParam nodes) against `arg_type` (fully concrete).

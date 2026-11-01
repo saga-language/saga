@@ -1,13 +1,13 @@
 // Package map provides methods on the Map intrinsic type.
 // This is a stdlib package compiled with --stdlib; do not import directly.
 
-extern fn saga_map_size<K, V>(m map{K: V}) int
-extern fn saga_map_set<K, V>(m map{K: V}, key K, value V) void
-extern fn saga_map_get<K, V>(m map{K: V}, key K) V
-extern fn saga_map_has<K, V>(m map{K: V}, key K) bool
-extern fn saga_map_remove<K, V>(m map{K: V}, key K) void
-extern fn saga_map_keys<K, V>(m map{K: V}) array{K}
-extern fn saga_map_equals<K, V>(m map{K: V}, other map{K: V}) bool
+extern fn saga_map_size<K Hashable, V>(m map{K: V}) int
+extern fn saga_map_set<K Hashable, V>(m map{K: V}, key K, value V) void
+extern fn saga_map_get<K Hashable, V>(m map{K: V}, key K) V
+extern fn saga_map_has<K Hashable, V>(m map{K: V}, key K) bool
+extern fn saga_map_remove<K Hashable, V>(m map{K: V}, key K) void
+extern fn saga_map_keys<K Hashable, V>(m map{K: V}) array{K}
+extern fn saga_map_equals<K Hashable, V>(m map{K: V}, other map{K: V}) bool
 
 pub fn (m map{K: V}) Size() int {
   saga_map_size(m)
