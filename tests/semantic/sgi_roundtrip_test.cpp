@@ -128,6 +128,32 @@ TEST(SgiRoundtrip, GenericStructParamBoundsSurvive) {
   EXPECT_EQ(field.interfaces.size(), 1u);
 }
 
+TEST(SgiRoundtrip, BoundNamingPreludeProtocolReadsAsIt) {
+  auto shown = make_interface_type(
+      "Stringable", {MethodInfo{"String", make_func_type({}, make_string_type()),
+                                true, ""}});
+  auto parsed = parse_sgi("sgi 2\npackage lib\n\n"
+                          "struct |T#0 Stringable| Box {\n  pub v T\n}\n",
+                          nullptr, {shown});
+  ASSERT_TRUE(parsed.has_value());
+  auto &st = std::get<StructTypeInfo>(parsed->exports[0].type->detail);
+  ASSERT_EQ(st.type_params[0].interfaces.size(), 1u);
+  auto &bound = st.type_params[0].interfaces[0];
+  ASSERT_EQ(bound->kind, TypeKind::Interface);
+  EXPECT_EQ(std::get<InterfaceTypeInfo>(bound->detail).methods.size(), 1u);
+}
+
+TEST(SgiRoundtrip, BoundNamingNoInterfaceFailsToLoad) {
+  std::string error;
+  auto parsed = parse_sgi("sgi 2\npackage lib\n\n"
+                          "struct |T#0 Missing| Box {\n  pub v T\n}\n",
+                          &error);
+  EXPECT_FALSE(parsed.has_value());
+  EXPECT_NE(error.find("bound 'Missing' names no interface"),
+            std::string::npos)
+      << error;
+}
+
 TEST(SgiRoundtrip, GenericInterfaceParamIdsSurvive) {
   auto i = make_interface_type(
       "Seq",

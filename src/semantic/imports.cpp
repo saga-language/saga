@@ -159,7 +159,7 @@ Analyzer::load_import_from_sgi(const std::string &import_path, Span span) {
     return std::nullopt;
 
   std::string parse_err;
-  auto sgi = load_sgi(sgi_path, &parse_err);
+  auto sgi = load_sgi(sgi_path, &parse_err, prelude_types());
   if (!sgi) {
     error(span, std::format("failed to load interface for '{}' from '{}': {}",
                             import_path, sgi_path,

@@ -455,6 +455,8 @@ struct Analyzer {
   /// Load stdlib type packages (int, float, bool, string) from pre-compiled
   /// .sgi files and populate type_methods_.  Called automatically at the start
   /// of analysis when not in stdlib mode.
+  /// The types every `.sgi` may name without declaring.
+  std::vector<TypePtr> prelude_types() const;
   void load_prelude();
 
   // ── Import resolution ────────────────────────────────────────────────

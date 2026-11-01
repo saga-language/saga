@@ -570,6 +570,8 @@ struct SgiParser {
   // generic params; each method pushes its own local params. `parse_type`
   // resolves a bare `T` by walking this stack from innermost outward.
   std::vector<std::unordered_map<std::string, TypeParam>> type_param_scopes;
+  /// Every interface a parameter's bound names, to check once all are read.
+  std::vector<TypePtr> bounds;
 
   void push_type_param_scope() { type_param_scopes.emplace_back(); }
   void pop_type_param_scope() {
@@ -947,8 +949,29 @@ struct SgiParser {
       auto iface = parse_single_type();
       if (!iface || pos == saved)
         return;
+      bounds.push_back(iface);
       param.interfaces.push_back(iface);
     }
+  }
+
+  /// A name the file uses without declaring is left a stub; where the
+  /// prelude declares it, the stub becomes the prelude's type.
+  void fill_from_prelude(const SgiFile &sgi,
+                         const std::vector<TypePtr> &prelude) {
+    std::unordered_set<std::string> declared;
+    for (auto &exp : sgi.exports)
+      declared.insert(exp.name);
+    for (auto &t : prelude)
+      if (auto it = defined_types.find(type_to_sgi(t));
+          it != defined_types.end() && !declared.count(it->first))
+        *it->second = *t;
+  }
+
+  TypePtr non_interface_bound() const {
+    for (auto &b : bounds)
+      if (b->kind != TypeKind::Interface)
+        return b;
+    return nullptr;
   }
 
   /// Parse an optional `|T#id, U#id, ...|` declaration list. Returns the
@@ -1416,7 +1439,8 @@ struct SgiParser {
 } // anonymous namespace
 
 std::optional<SgiFile> parse_sgi(const std::string &content,
-                                  std::string *error_out) {
+                                  std::string *error_out,
+                                  const std::vector<TypePtr> &prelude) {
   auto fail = [&](std::string msg) -> std::optional<SgiFile> {
     if (error_out)
       *error_out = std::move(msg);
@@ -1537,6 +1561,12 @@ std::optional<SgiFile> parse_sgi(const std::string &content,
     }
   }
 
+  p.fill_from_prelude(sgi, prelude);
+  if (auto bad = p.non_interface_bound())
+    return fail(std::format("bound '{}' names no interface this file or the "
+                            "prelude declares",
+                            type_to_sgi(bad)));
+
   // Stamp origin_package on every reconstructed nominal type. Exports with
   // an explicit `@origin` use that; others default to the file's package.
   // Method origin_package mirrors the enclosing type's origin so that
@@ -1581,7 +1611,8 @@ std::optional<SgiFile> parse_sgi(const std::string &content,
 }
 
 std::optional<SgiFile> load_sgi(const std::string &path,
-                                 std::string *error_out) {
+                                 std::string *error_out,
+                                 const std::vector<TypePtr> &prelude) {
   std::ifstream in(path);
   if (!in) {
     if (error_out)
@@ -1590,7 +1621,7 @@ std::optional<SgiFile> load_sgi(const std::string &path,
   }
   std::ostringstream ss;
   ss << in.rdbuf();
-  return parse_sgi(ss.str(), error_out);
+  return parse_sgi(ss.str(), error_out, prelude);
 }
 
 TypePtr sgi_to_module_type(const SgiFile &sgi,

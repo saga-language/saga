@@ -230,6 +230,14 @@ void Analyzer::analyze(const Node &root) {
   report_deferred_bugs();
 }
 
+std::vector<TypePtr> Analyzer::prelude_types() const {
+  std::vector<TypePtr> types;
+  for (auto &t : {builtins.hashable_iface, builtins.stringable_iface})
+    if (t)
+      types.push_back(t);
+  return types;
+}
+
 void Analyzer::load_prelude() {
   if (!package_resolver)
     return;
@@ -293,7 +301,7 @@ void Analyzer::load_prelude() {
     std::string sgi_path = package_resolver->find_sgi_file(pkg);
     if (sgi_path.empty())
       continue;
-    auto sgi = load_sgi(sgi_path);
+    auto sgi = load_sgi(sgi_path, nullptr, prelude_types());
     if (!sgi)
       continue;
     for (auto &rm : sgi->receiver_methods) {
@@ -325,7 +333,7 @@ void Analyzer::load_prelude() {
     std::string sgi_path = package_resolver->find_sgi_file(pkg);
     if (sgi_path.empty())
       continue;
-    auto sgi = load_sgi(sgi_path);
+    auto sgi = load_sgi(sgi_path, nullptr, prelude_types());
     if (!sgi)
       continue;
     if (!sgi->source_dir.empty()) {
