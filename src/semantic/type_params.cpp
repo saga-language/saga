@@ -94,9 +94,14 @@ Analyzer::read_type_param(const Node &node) {
 }
 
 // A method is a method of every instance its type admits, so its receiver's
-// parameters hold to the bounds the type declares for them.
+// parameters hold to the bounds the type declares for them. A map's key is
+// Hashable: that is how a map finds it.
 std::vector<TypeParam>
 Analyzer::declared_receiver_bounds(const ReceiverNode &receiver) {
+  if (std::holds_alternative<MapTypeNode>(receiver.type->data) &&
+      builtins.hashable_iface)
+    return {TypeParam{0, "K", TypeConstraint::None, {builtins.hashable_iface}},
+            TypeParam{0, "V"}};
   auto *app = std::get_if<GenericTypeAppNode>(&receiver.type->data);
   if (!app)
     return {};

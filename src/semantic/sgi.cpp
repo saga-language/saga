@@ -430,6 +430,7 @@ static void write_receiver_methods(std::ostringstream &os,
     if (sig.return_type && sig.return_type->kind != TypeKind::Void)
       os << " " << type_to_sgi(sig.return_type);
     os << "\n";
+    write_receiver_bounds(os, method);
   }
   os << "}\n";
 }
@@ -910,23 +911,23 @@ struct SgiParser {
 
   /// The rest of a `bound <method> <index> <bound>` line.
   void parse_receiver_bound(std::vector<MethodInfo> &methods,
-                            const std::vector<TypeParam> &struct_params) {
+                            const std::vector<TypeParam> &receiver_params) {
     skip_whitespace();
     std::string mname = read_word();
     skip_whitespace();
     std::string index_word = read_word();
     size_t index = index_word.empty() ? 0 : std::stoul(index_word);
-    if (index >= struct_params.size()) {
+    if (index >= receiver_params.size()) {
       skip_line();
       return;
     }
-    TypeParam param{struct_params[index].id, struct_params[index].name};
+    TypeParam param{receiver_params[index].id, receiver_params[index].name};
     parse_bound_words(param);
     skip_line();
     for (auto &m : methods) {
       if (m.name != mname)
         continue;
-      m.receiver_params.resize(struct_params.size());
+      m.receiver_params.resize(receiver_params.size());
       m.receiver_params[index] = make_type_param(param);
     }
   }
@@ -1383,12 +1384,13 @@ struct SgiParser {
     skip_line();
 
     push_type_param_scope();
-    if (rm.type_name == "Array") {
-      bind_type_param({9990, "T"});
-    } else if (rm.type_name == "Map") {
-      bind_type_param({9991, "K"});
-      bind_type_param({9992, "V"});
-    }
+    std::vector<TypeParam> params;
+    if (rm.type_name == "Array")
+      params = {{9990, "T"}};
+    else if (rm.type_name == "Map")
+      params = {{9991, "K"}, {9992, "V"}};
+    for (auto &p : params)
+      bind_type_param(p);
 
     while (true) {
       skip_whitespace();
@@ -1416,6 +1418,8 @@ struct SgiParser {
         } else {
           skip_line();
         }
+      } else if (kw == "bound") {
+        parse_receiver_bound(rm.methods, params);
       } else if (kw == "fn") {
         // Private method — skip.
         push_type_param_scope();

@@ -610,6 +610,8 @@ public:
   std::optional<std::string>
   unmet_receiver_params(const std::vector<TypePtr> &args,
                         const std::vector<TypePtr> &params);
+  std::pair<const std::vector<MethodInfo> *, std::vector<TypePtr>>
+  instance_methods(const TypePtr &instance);
   /// The part of `param`'s bound `arg` misses, as source spells it (`T
   /// numeric`); none when `arg` meets all of it.
   std::optional<std::string> unmet_bound(const TypePtr &arg,
@@ -752,6 +754,9 @@ private:
       std::unordered_map<std::string, int> &state);
   void merge_embedded_methods(const TypePtr &target, const TypePtr &embedded,
                               const Node &embed_node);
+  void attach_kind_method(const FuncDeclNode &fn, const TypePtr &fn_type,
+                          const std::vector<TypeParam> &generic_params,
+                          TypeKind kind, const std::vector<TypePtr> &params);
   void resolve_const_decl(const ConstDeclNode &node);
   void resolve_type_decl(const TypeDeclNode &node);
 
@@ -1158,13 +1163,6 @@ private:
   /// diagnostic.  Returns `false` and reports an error on failure.
   bool check_satisfies_protocol(const TypePtr &concrete, ProtocolKind p,
                                 Span at, const std::string &context = "");
-
-  /// Recursively verify `t` is Stringable, descending into Array elements
-  /// and Map keys/values so that `[[Foo]]` requires `Foo` itself to be
-  /// Stringable rather than terminating at the trivially-Stringable Array.
-  /// Returns `false` and reports the named diagnostic on failure.
-  bool check_stringable_recursive(const TypePtr &t, Span at,
-                                  const std::string &context = "");
 
   // ── Assignment compatibility helper ──────────────────────────────────
 

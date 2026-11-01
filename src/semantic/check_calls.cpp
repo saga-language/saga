@@ -175,24 +175,6 @@ TypePtr Analyzer::check_call_expr(const CallExprNode &node,
           }
         }
       }
-
-      // Array.String() / Map.String() require their element/key/value types
-      // to satisfy Stringable (recursively for nested aggregates).  Phase 5
-      // will migrate these out of builtins; the named-protocol diagnostic
-      // here is the use-site enforcement promised by Phase 3.
-      if (sel->field.name == "String" && node.args.empty()) {
-        if (obj_sem->kind == TypeKind::Array) {
-          auto &arr = std::get<ArrayTypeInfo>(obj_sem->detail);
-          check_stringable_recursive(arr.element, sel->field.span,
-                                     "array element of .String() receiver");
-        } else if (obj_sem->kind == TypeKind::Map) {
-          auto &mp = std::get<MapTypeInfo>(obj_sem->detail);
-          check_stringable_recursive(mp.key, sel->field.span,
-                                     "map key of .String() receiver");
-          check_stringable_recursive(mp.value, sel->field.span,
-                                     "map value of .String() receiver");
-        }
-      }
     }
   }
 

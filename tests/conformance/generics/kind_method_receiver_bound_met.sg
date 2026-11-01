@@ -1,0 +1,8 @@
+// A receiver bound on an array or map method is met through the element, key
+// and value: an array of arrays of ints is Stringable because each layer is.
+import "std/io"
+
+pub fn Main() void {
+  io.Println([[1, 2], [3]].String())
+  io.Println({"k": [1]}.String())
+}

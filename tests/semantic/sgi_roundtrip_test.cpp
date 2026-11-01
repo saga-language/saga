@@ -374,6 +374,29 @@ TEST(SgiRoundtrip, ArrayReceiverMethodsUseSentinelT) {
   EXPECT_EQ(std::get<TypeParamInfo>(sig.return_type->detail).param.id, 9990u);
 }
 
+TEST(SgiRoundtrip, MapReceiverMethodBoundsSurvive) {
+  auto shown = make_interface_type(
+      "Stringable", {MethodInfo{"String", make_func_type({}, make_string_type()),
+                                true, ""}});
+  MethodInfo method{"String", make_func_type({}, make_string_type()), true, ""};
+  method.receiver_params = {
+      make_type_param(TypeParam{9991, "K", TypeConstraint::None, {shown}}),
+      make_type_param(9992, "V")};
+  SgiReceiverMethod rm{"Map", {method}};
+  auto text = generate_sgi("map", {}, {}, {rm});
+  EXPECT_NE(text.find("bound String 0 Stringable"), std::string::npos) << text;
+
+  auto parsed = parse_sgi(text, nullptr, {shown});
+  ASSERT_TRUE(parsed.has_value());
+  auto &params = parsed->receiver_methods[0].methods[0].receiver_params;
+  ASSERT_EQ(params.size(), 2u);
+  auto &key = std::get<TypeParamInfo>(params[0]->detail).param;
+  EXPECT_EQ(key.id, 9991u);
+  ASSERT_EQ(key.interfaces.size(), 1u);
+  EXPECT_EQ(key.interfaces[0]->kind, TypeKind::Interface);
+  EXPECT_EQ(params[1], nullptr);
+}
+
 // ---------------------------------------------------------------------------
 // P5: SGI parser rejects type-param shadowing in nested scopes (mirror of the
 // analyzer check)

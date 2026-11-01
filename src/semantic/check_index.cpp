@@ -266,6 +266,11 @@ TypePtr Analyzer::resolve_method_signature(const TypePtr &obj_type,
       if (!m.signature)
         return poison(span,
                       "kind method '" + field_name + "' has no signature");
+      if (auto unmet = unmet_receiver_bound(effective_type, field_name)) {
+        error(span, std::format("{} has no method '{}': {}",
+                                type_to_string(obj_type), field_name, *unmet));
+        return builtins.invalid_type;
+      }
       if (has_type_params(m.signature))
         return substitute_kind_method(effective_kind, effective_type,
                                       m.signature);

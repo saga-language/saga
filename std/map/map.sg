@@ -37,7 +37,7 @@ pub fn (m map{K: V}) Equals(other map{K: V}) bool {
   saga_map_equals(m, other)
 }
 
-pub fn (m map{K: V}) String() string {
+pub fn (m map{K Stringable: V Stringable}) String() string {
   if m.Size() == 0 { return "\{}" }
   s := "\{"
   first := true

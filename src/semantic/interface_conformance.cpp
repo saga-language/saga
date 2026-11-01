@@ -125,7 +125,8 @@ std::vector<MethodInfo> Analyzer::concrete_methods(const TypePtr &concrete) {
   auto km_it = kind_methods_.find(concrete->kind);
   if (km_it != kind_methods_.end()) {
     for (auto &m : km_it->second)
-      methods.push_back(m);
+      if (!unmet_receiver_bound(concrete, m.name))
+        methods.push_back(m);
   }
 
   for (auto &m : builtin_methods(concrete->kind, builtins))
@@ -270,8 +271,11 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
       ok = true;
       break;
     }
-    if (!ok)
-      missing.push_back(format_protocol_method(im.name, im.signature, iface));
+    if (ok)
+      continue;
+    missing.push_back(format_protocol_method(im.name, im.signature, iface));
+    if (auto unmet = unmet_receiver_bound(concrete, im.name))
+      missing.back() += " (" + *unmet + ")";
   }
 
   std::string list;
@@ -285,23 +289,6 @@ bool Analyzer::report_interface_unsatisfied(const TypePtr &concrete,
                 "type {} does not satisfy {}{}: missing {}",
                 type_to_string(concrete), iface_name, ctx, list));
   return false;
-}
-
-bool Analyzer::check_stringable_recursive(const TypePtr &t, Span at,
-                                          const std::string &context) {
-  if (!t || is_invalid_type(t))
-    return true;
-  if (t->kind == TypeKind::Array) {
-    auto &ai = std::get<ArrayTypeInfo>(t->detail);
-    return check_stringable_recursive(ai.element, at, context);
-  }
-  if (t->kind == TypeKind::Map) {
-    auto &mi = std::get<MapTypeInfo>(t->detail);
-    bool k = check_stringable_recursive(mi.key, at, context);
-    bool v = check_stringable_recursive(mi.value, at, context);
-    return k && v;
-  }
-  return check_satisfies_protocol(t, ProtocolKind::Stringable, at, context);
 }
 
 // ---------------------------------------------------------------------------
