@@ -2306,9 +2306,9 @@ NodePtr Parser::parse_bool_literal() {
 //
 //   StringLiteralNode
 //     StringFragmentNode   "hi {
-//     IdentifierNode       name
+//     CallExprNode         name.String()
 //     StringFragmentNode   }, you are {
-//     IdentifierNode       age
+//     CallExprNode         age.String()
 //     StringFragmentNode   } years old"
 //
 // On any unexpected token, an error is reported and a best-effort
@@ -2340,6 +2340,17 @@ void Parser::apply_block_margin(std::vector<NodePtr> &fragments,
       sf->margin = layout.margin;
 }
 
+// An interpolated value is converted the way any value is, by its String().
+NodePtr Parser::interpolation_call(NodePtr expr) {
+  if (!expr)
+    return expr;
+  auto span = expr->span;
+  auto callee = make_node<SelectorNode>(span, std::move(expr),
+                                        IdentifierNode{span, "String"}, true);
+  return make_node<CallExprNode>(span, std::move(callee),
+                                 std::vector<NodePtr>{});
+}
+
 NodePtr Parser::parse_string_literal() {
   auto start = mark();
   std::vector<NodePtr> fragments;
@@ -2358,8 +2369,7 @@ NodePtr Parser::parse_string_literal() {
     take_fragment(fragments, raws); // opening fragment ("...{)
 
     while (!is_at_end()) {
-      // Interpolated expression between the braces.
-      fragments.push_back(parse_expression());
+      fragments.push_back(interpolation_call(parse_expression()));
 
       if (check(Token::Kind::StringMiddle)) {
         take_fragment(fragments, raws); // more interpolations follow (}...{)

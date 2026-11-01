@@ -117,7 +117,8 @@ std::string unescape_string_fragment(const StringFragmentNode &frag);
 // A plain string with no interpolation has a single StringFragmentNode child.
 struct StringLiteralNode {
   Span span;
-  std::vector<NodePtr> fragments; // StringFragmentNode | any expression node
+  /// StringFragmentNode | the `x.String()` call an interpolated `{x}` reads as
+  std::vector<NodePtr> fragments;
 };
 
 // ArrayLiteral = "[" [ Expression { "," Expression } ] "]"
@@ -341,6 +342,8 @@ struct SelectorNode {
   Span span;
   NodePtr object;
   IdentifierNode field;
+  /// `{x}` in a string, which reads as `x.String()`.
+  bool interpolated = false;
 };
 
 // IfExpr = "if" [ InitClause ";" ] Expression Block [ "else" Block ]

@@ -186,6 +186,20 @@ bool is_empty_shape(const TypePtr &t) {
   return info.fields.empty() && info.embeds.empty() && info.type_params.empty();
 }
 
+bool converts_to_string_natively(const TypePtr &t) {
+  if (!t)
+    return false;
+  switch (t->kind) {
+  case TypeKind::String:
+  case TypeKind::Int:
+  case TypeKind::Float:
+  case TypeKind::Bool:
+    return true;
+  default:
+    return false;
+  }
+}
+
 TypePtr make_type_param(uint32_t id, const std::string &name) {
   return make_type_param(TypeParam{id, name});
 }

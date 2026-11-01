@@ -325,6 +325,9 @@ TypePtr make_union_type(std::vector<TypePtr> alternatives);
 /// codegen lowers it with the same answer, so the two cannot drift.
 TypePtr union_without(const TypePtr &u, const TypePtr &matched);
 
+/// A scalar the runtime turns into a string itself, with no String() call.
+bool converts_to_string_natively(const TypePtr &t);
+
 /// A struct with nothing to fill in. Its name alone constructs it, so `Marker`
 /// and `Marker{}` are the same value. The analyzer admits the braceless form on
 /// this test and codegen builds the value on the same one.

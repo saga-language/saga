@@ -317,6 +317,20 @@ TypePtr Analyzer::resolve_param_method(const TypePtr &param,
   return nullptr;
 }
 
+// `{x}` reads as `x.String()`, which exists when x is Stringable; the method
+// is then looked up as any other. A scalar needs none: the runtime converts
+// one itself.
+std::optional<TypePtr>
+Analyzer::check_interpolated(const SelectorNode &node,
+                             const TypePtr &obj_type) {
+  if (converts_to_string_natively(obj_type))
+    return make_func_type({}, builtins.string_type);
+  if (!check_satisfies_protocol(obj_type, ProtocolKind::Stringable,
+                                node.object->span, "interpolated expression"))
+    return builtins.invalid_type;
+  return std::nullopt;
+}
+
 TypePtr Analyzer::resolve_union_method(const TypePtr &union_type,
                                        const std::string &field_name) {
   auto &alts = std::get<UnionTypeInfo>(union_type->detail).alternatives;
@@ -395,6 +409,9 @@ TypePtr Analyzer::check_selector(const SelectorNode &node,
   auto obj_type = check_type_or_value_expr(*node.object);
   if (is_invalid_type(obj_type))
     return builtins.invalid_type;
+  if (node.interpolated)
+    if (auto settled = check_interpolated(node, obj_type))
+      return *settled;
 
   std::string field_name(node.field.name);
 

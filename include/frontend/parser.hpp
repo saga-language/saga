@@ -172,7 +172,8 @@ private:
   NodePtr parse_number(); // IntegerLiteral or FloatLiteral
   NodePtr parse_bool_literal();
   NodePtr parse_enum_shorthand();
-  NodePtr parse_string_literal(); // handles interpolation fragments
+  NodePtr parse_string_literal();
+  NodePtr interpolation_call(NodePtr expr); // handles interpolation fragments
   void take_fragment(std::vector<NodePtr> &fragments,
                      std::vector<RawFragment> &raws);
   void apply_block_margin(std::vector<NodePtr> &fragments,

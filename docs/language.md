@@ -1152,9 +1152,10 @@ io.Println("parity: {if n % 2 == 0 { "even" } else { "odd" }}")
 
 Multi-line strings interpolate on the same rule.
 
-Any type that implements a `Stringable` interface can be interpolated in a String.
-All the basic types can return their values as a string. Arrays and maps also
-implement a String() method to provide a representation of their data.
+An interpolated `{x}` is `x.String()`, so any `Stringable` value can be
+interpolated. All the basic types can return their values as a string. Arrays
+and maps also implement a String() method to provide a representation of their
+data.
 
 For a struct type to be used as an expression in an interpolation, it must
 implement the `Stringable` interface.

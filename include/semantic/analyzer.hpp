@@ -949,6 +949,8 @@ private:
   /// satisfies it) and that method is Self-free (no interface-self in its
   /// params/return).  Returns the interface method's signature, else null.
   TypePtr resolve_param_method(const TypePtr &param, const std::string &name);
+  std::optional<TypePtr> check_interpolated(const SelectorNode &node,
+                                            const TypePtr &obj_type);
   TypePtr resolve_union_method(const TypePtr &union_type,
                                const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);

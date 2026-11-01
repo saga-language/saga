@@ -255,14 +255,9 @@ TypePtr Analyzer::check_float_literal(const FloatLiteralNode &) {
 }
 
 TypePtr Analyzer::check_string_literal(const StringLiteralNode &node) {
-  // Each interpolated expression must satisfy Stringable so the runtime
-  // can invoke `.String()` on it.
-  for (auto &frag : node.fragments) {
-    if (std::holds_alternative<StringFragmentNode>(frag->data))
-      continue;
-    auto t = check_expr(*frag);
-    check_stringable_recursive(t, frag->span, "interpolated expression");
-  }
+  for (auto &frag : node.fragments)
+    if (!std::holds_alternative<StringFragmentNode>(frag->data))
+      check_expr(*frag);
   return builtins.string_type;
 }
 

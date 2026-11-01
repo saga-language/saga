@@ -35,14 +35,21 @@ llvm::Value *CodeGen::emit_interpolation(const StringLiteralNode &node) {
   return result->val;
 }
 
+// A piece is its value's String(); a scalar's is the runtime's conversion, and
+// a string is its own.
 CodeGen::InterpPiece CodeGen::interpolation_piece(const Node &frag) {
   if (auto *sf = std::get_if<StringFragmentNode>(&frag.data)) {
     auto text = unescape_string_fragment(*sf);
     return {text.empty() ? nullptr : make_string_constant(text), false};
   }
-  auto sem = semantic_type(frag);
-  auto *val = emit_borrowed(frag);
-  if (sem && sem->kind == TypeKind::String)
+  auto &value = *std::get<SelectorNode>(
+                     std::get<CallExprNode>(frag.data).callee->data)
+                     .object;
+  auto sem = semantic_type(value);
+  if (!converts_to_string_natively(sem))
+    return {emit_expr(frag), true};
+  auto *val = emit_borrowed(value);
+  if (sem->kind == TypeKind::String)
     return {val, false};
   return {emit_to_string(val, sem), true};
 }
@@ -79,8 +86,7 @@ llvm::Value *CodeGen::emit_to_string(llvm::Value *val, const TypePtr &sem) {
     return builder.CreateCall(fn, {ext}, "bstr");
   }
   default:
-    // For types we can't convert, return an empty string placeholder.
-    return make_string_constant("");
+    return nullptr;
   }
 }
 
