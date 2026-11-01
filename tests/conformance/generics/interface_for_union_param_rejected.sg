@@ -1,0 +1,16 @@
+// A union holds only concrete types, so an interface cannot stand for a
+// parameter the generic writes into one. The call is where that is known.
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+
+pub fn (c Cat) Name() string { "cat" }
+
+fn wrap<T>(x T) T | error { x }
+
+pub fn Main() void {
+  n Named = Cat{}
+  _r := wrap(n)
+}

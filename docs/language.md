@@ -696,6 +696,9 @@ argument does not meet a bound, never because of what the body does with it.
 A type parameter with no bound can be assigned, passed, returned, stored and
 captured; anything more it gets from its [bound](#Bounded-generics).
 
+A type argument may be an interface, except for a parameter the generic writes
+into a union such as `T | error`: a union holds only concrete types.
+
 A type argument is inferred from the values at the use site and is never
 written there — there is no `Box<int>{...}` form:
 

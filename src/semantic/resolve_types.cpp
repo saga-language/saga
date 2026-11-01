@@ -112,8 +112,10 @@ TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
     auto rt = resolve_type(*t);
     alts.push_back(rt);
 
-    // Rule 1 — concrete types only. A TypeParam is allowed (concrete after
-    // instantiation); an interface (by any alias) is not.
+    // Rule 1 — concrete types only. A TypeParam is allowed, and no interface
+    // may then stand for it.
+    if (rt && rt->kind == TypeKind::TypeParam)
+      note_union_param(rt);
     if (auto u = unwrap_alias(rt); u && u->kind == TypeKind::Interface) {
       error(t->span,
             std::format("a type union may only contain concrete types; "

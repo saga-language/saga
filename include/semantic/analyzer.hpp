@@ -314,7 +314,22 @@ struct Analyzer {
                                 // body is re-analysed at a user-package
                                 // instantiation site.
     BodyCheck body_check = BodyCheck::Unchecked;
+    /// The type_params the generic writes into a union, which no interface
+    /// may stand for.
+    std::unordered_set<uint32_t> in_unions;
   };
+
+  /// The generic whose declaration is being checked, and the parameters that
+  /// check entered, in its type_params' order.
+  struct UnionWatch {
+    GenericTemplate *tpl = nullptr;
+    std::vector<TypeParam> entered;
+  };
+  UnionWatch union_watch_;
+  void note_union_param(const TypePtr &param);
+  bool union_bindings_concrete(const GenericTemplate &tpl,
+                               const std::unordered_map<uint32_t, TypePtr> &bindings,
+                               const Node &call_node);
 
   /// Generic templates collected during the signature pass, keyed by
   /// declaration: free functions, and methods on a generic struct or on
