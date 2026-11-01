@@ -275,91 +275,16 @@ void Analyzer::load_prelude() {
         return;
   }
 
-  // --- Scalar types (Int, Float, Bool, String) ---
-  static const std::string scalar_pkgs[] = {
-    "std/int", "std/float", "std/bool", "std/string"
-  };
-  auto get_canonical = [this](const std::string &type_name) -> const Type * {
-    if (type_name == "Int")    return builtins.int_type.get();
-    if (type_name == "Int8")   return builtins.int8_type.get();
-    if (type_name == "Int16")  return builtins.int16_type.get();
-    if (type_name == "Int32")  return builtins.int32_type.get();
-    if (type_name == "Int64")  return builtins.int64_type.get();
-    if (type_name == "Uint8")  return builtins.uint8_type.get();
-    if (type_name == "Uint16") return builtins.uint16_type.get();
-    if (type_name == "Uint32") return builtins.uint32_type.get();
-    if (type_name == "Uint64") return builtins.uint64_type.get();
-    if (type_name == "Float")   return builtins.float_type.get();
-    if (type_name == "Float32") return builtins.float32_type.get();
-    if (type_name == "Float64") return builtins.float64_type.get();
-    if (type_name == "Bool")    return builtins.bool_type.get();
-    if (type_name == "String")  return builtins.string_type.get();
-    return nullptr;
-  };
-
-  for (auto &pkg : scalar_pkgs) {
+  for (auto *pkg : {"std/int", "std/float", "std/bool", "std/string",
+                    "std/array", "std/map"}) {
     std::string sgi_path = package_resolver->find_sgi_file(pkg);
     if (sgi_path.empty())
       continue;
     auto sgi = load_sgi(sgi_path, nullptr, prelude_types());
     if (!sgi)
       continue;
-    for (auto &rm : sgi->receiver_methods) {
-      const Type *canonical = get_canonical(rm.type_name);
-      if (!canonical)
-        continue;
-      for (auto &method : rm.methods) {
-        // Avoid duplicate methods (idempotent if load_prelude called twice).
-        auto &vec = type_methods_[canonical];
-        bool dup = false;
-        for (auto &existing : vec) {
-          if (existing.name == method.name) { dup = true; break; }
-        }
-        if (!dup)
-          vec.push_back(method);
-      }
-    }
-  }
-
-  // --- Generic types (Array, Map) ---
-  static const std::string generic_pkgs[] = {"std/array", "std/map"};
-  auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
-    if (tn == "Array") return TypeKind::Array;
-    if (tn == "Map")   return TypeKind::Map;
-    return std::nullopt;
-  };
-
-  for (auto &pkg : generic_pkgs) {
-    std::string sgi_path = package_resolver->find_sgi_file(pkg);
-    if (sgi_path.empty())
-      continue;
-    auto sgi = load_sgi(sgi_path, nullptr, prelude_types());
-    if (!sgi)
-      continue;
-    if (!sgi->source_dir.empty()) {
-      auto last_slash = pkg.rfind('/');
-      std::string pkg_short = (last_slash != std::string::npos)
-                                  ? pkg.substr(last_slash + 1)
-                                  : pkg;
-      package_resolver->source_dirs[pkg_short] = sgi->source_dir;
-      package_resolver->source_dirs[pkg] = sgi->source_dir;
-    }
-    for (auto &rm : sgi->receiver_methods) {
-      auto kind_opt = get_recv_kind(rm.type_name);
-      if (!kind_opt)
-        continue;
-      auto kind = *kind_opt;
-      for (auto &method : rm.methods) {
-        // Normalize stub type params to sentinels (T→9990, K→9991, V→9992).
-        auto sig = normalize_generic_receiver_sig(method.signature, kind);
-        auto &vec = kind_methods_[kind];
-        bool dup = false;
-        for (auto &e : vec)
-          if (e.name == method.name) { dup = true; break; }
-        if (!dup)
-          vec.push_back({method.name, sig, method.is_public});
-      }
-    }
+    register_source_dir(pkg, *sgi);
+    merge_sgi_receiver_methods(*sgi);
   }
 }
 

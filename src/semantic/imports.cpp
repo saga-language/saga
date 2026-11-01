@@ -103,50 +103,52 @@ Analyzer::resolve_import_cached(const std::string &import_path, Span span) {
   return std::nullopt;
 }
 
-void Analyzer::merge_sgi_receiver_methods(const SgiFile &sgi) {
-  auto get_canonical = [this](const std::string &tn) -> const Type * {
-    if (tn == "Int")    return builtins.int_type.get();
-    if (tn == "Int8")   return builtins.int8_type.get();
-    if (tn == "Int16")  return builtins.int16_type.get();
-    if (tn == "Int32")  return builtins.int32_type.get();
-    if (tn == "Int64")  return builtins.int64_type.get();
-    if (tn == "Uint8")  return builtins.uint8_type.get();
-    if (tn == "Uint16") return builtins.uint16_type.get();
-    if (tn == "Uint32") return builtins.uint32_type.get();
-    if (tn == "Uint64") return builtins.uint64_type.get();
-    if (tn == "Float")  return builtins.float_type.get();
-    if (tn == "Bool")   return builtins.bool_type.get();
-    if (tn == "String") return builtins.string_type.get();
-    return nullptr;
-  };
-  auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
-    if (tn == "Array") return TypeKind::Array;
-    if (tn == "Map")   return TypeKind::Map;
-    return std::nullopt;
-  };
-  auto push_unique = [](std::vector<MethodInfo> &vec,
-                        const MethodInfo &method) {
-    for (auto &e : vec)
-      if (e.name == method.name)
-        return;
-    vec.push_back(method);
-  };
+namespace {
 
+std::optional<TypeKind> generic_receiver_kind(std::string_view name) {
+  if (name == "Array")
+    return TypeKind::Array;
+  if (name == "Map")
+    return TypeKind::Map;
+  return std::nullopt;
+}
+
+void push_unique(std::vector<MethodInfo> &methods, MethodInfo method) {
+  for (auto &e : methods)
+    if (e.name == method.name)
+      return;
+  methods.push_back(std::move(method));
+}
+
+} // namespace
+
+void Analyzer::merge_sgi_receiver_methods(const SgiFile &sgi) {
   for (auto &rm : sgi.receiver_methods) {
-    if (const Type *canonical = get_canonical(rm.type_name)) {
+    if (const Type *intrinsic = builtins.named_intrinsic(rm.type_name)) {
       for (auto &method : rm.methods)
-        push_unique(type_methods_[canonical], method);
+        push_unique(type_methods_[intrinsic], method);
       continue;
     }
-    if (auto kind_opt = get_recv_kind(rm.type_name)) {
-      auto kind = *kind_opt;
-      for (auto &method : rm.methods) {
-        auto sig = normalize_generic_receiver_sig(method.signature, kind);
-        push_unique(kind_methods_[kind],
-                    {method.name, sig, method.is_public});
-      }
+    auto kind = generic_receiver_kind(rm.type_name);
+    if (!kind)
+      continue;
+    for (auto method : rm.methods) {
+      method.signature = normalize_generic_receiver_sig(method.signature, *kind);
+      push_unique(kind_methods_[*kind], std::move(method));
     }
   }
+}
+
+void Analyzer::register_source_dir(const std::string &import_path,
+                                   const SgiFile &sgi) {
+  if (sgi.source_dir.empty())
+    return;
+  auto last_slash = import_path.rfind('/');
+  std::string pkg_short = last_slash != std::string::npos
+                              ? import_path.substr(last_slash + 1)
+                              : import_path;
+  package_resolver->source_dirs[pkg_short] = sgi.source_dir;
+  package_resolver->source_dirs[import_path] = sgi.source_dir;
 }
 
 std::optional<TypePtr>
@@ -171,14 +173,7 @@ Analyzer::load_import_from_sgi(const std::string &import_path, Span span) {
   package_resolver->cache[import_path] = module_type;
   package_resolver->sgi_resolved_dirs[import_path] =
       fs::path(sgi_path).parent_path().string();
-  if (!sgi->source_dir.empty()) {
-    auto last_slash = import_path.rfind('/');
-    std::string pkg_short = (last_slash != std::string::npos)
-                                ? import_path.substr(last_slash + 1)
-                                : import_path;
-    package_resolver->source_dirs[pkg_short] = sgi->source_dir;
-    package_resolver->source_dirs[import_path] = sgi->source_dir;
-  }
+  register_source_dir(import_path, *sgi);
   merge_sgi_receiver_methods(*sgi);
   return module_type;
 }
@@ -214,14 +209,6 @@ void Analyzer::merge_sub_analyzer_receiver_methods(const Analyzer &sub) {
     default: return nullptr;
     }
   };
-  auto push_unique = [](std::vector<MethodInfo> &vec,
-                        const MethodInfo &method) {
-    for (auto &e : vec)
-      if (e.name == method.name)
-        return;
-    vec.push_back(method);
-  };
-
   for (auto &[sub_type_ptr, methods] : sub.type_methods_) {
     const Type *our_type = map_scalar_to_canonical(sub_type_ptr);
     if (!our_type)

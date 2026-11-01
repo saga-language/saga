@@ -529,6 +529,8 @@ private:
   /// Merge stdlib receiver methods from a sub-analyzer or sgi into our
   /// own type_methods_ / kind_methods_ tables.
   void merge_sgi_receiver_methods(const struct SgiFile &sgi);
+  void register_source_dir(const std::string &import_path,
+                           const struct SgiFile &sgi);
   void merge_sub_analyzer_receiver_methods(const Analyzer &sub);
 
   /// Ensure the origin package's source has been parsed and analysed,
