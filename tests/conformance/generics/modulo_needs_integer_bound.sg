@@ -1,0 +1,6 @@
+// Spec: `%` is defined on integers only, so a float bound does not permit it.
+fn Rem<T float>(a T, b T) T { a % b }
+
+pub fn Main() void {
+  _ := Rem(5.5, 2.0)
+}

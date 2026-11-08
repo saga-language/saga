@@ -77,6 +77,10 @@ struct BuiltinTypes {
 
   /// Initialise all built-in type singletons.
   void init();
+
+  /// The intrinsic a `.sgi` `methods` block names (`Int32`, `String`); null
+  /// for any other name.
+  const Type *named_intrinsic(std::string_view name) const;
 };
 
 // ---------------------------------------------------------------------------

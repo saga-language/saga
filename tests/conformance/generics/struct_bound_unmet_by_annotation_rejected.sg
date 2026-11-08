@@ -1,0 +1,6 @@
+// A struct's bound is checked where it is instantiated, here by a type.
+struct Box<T numeric> { v T }
+
+fn show(_b Box<string>) void {}
+
+pub fn Main() void {}

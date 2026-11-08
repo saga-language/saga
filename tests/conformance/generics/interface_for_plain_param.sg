@@ -1,0 +1,17 @@
+// An interface may stand for a parameter the generic keeps out of unions.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+
+pub fn (c Cat) Name() string { "cat" }
+
+fn keep<T>(x T) T { x }
+
+pub fn Main() void {
+  n Named = Cat{}
+  io.Println(keep(n).Name())
+}

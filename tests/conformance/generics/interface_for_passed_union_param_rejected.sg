@@ -1,0 +1,21 @@
+// A parameter passed on to a generic that writes it into a union takes on
+// the same rule, so the call to outer is the one refused.
+interface Named {
+  Name() string
+}
+
+struct Cat {}
+
+pub fn (c Cat) Name() string { "cat" }
+
+fn wrap<T>(x T) T | error { x }
+
+fn outer<T>(x T) void {
+  _r := wrap(x)
+}
+
+pub fn Main() void {
+  n Named = Cat{}
+  outer(n)
+  outer(Cat{})
+}

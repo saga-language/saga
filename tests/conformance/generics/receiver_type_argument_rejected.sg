@@ -1,0 +1,9 @@
+// A method is declared on every instance of its type, so a receiver names the
+// type's parameters, not a type.
+struct Node<T> {
+  value T
+}
+
+pub fn (n Node<int>) Get() int { n.value }
+
+pub fn Main() void {}

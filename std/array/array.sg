@@ -42,7 +42,7 @@ pub fn (a array{T}) Equals(other array{T}) bool {
   saga_array_equals(a, other)
 }
 
-pub fn (a array{T}) String() string {
+pub fn (a array{T Stringable}) String() string {
   if a.Size() == 0 { return "[]" }
   s := "["
   first := true

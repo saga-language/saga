@@ -1,0 +1,1 @@
+lib.sg:5:31] Error: operator '+' needs a bound on T: T numeric

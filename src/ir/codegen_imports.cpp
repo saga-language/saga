@@ -93,12 +93,13 @@ void CodeGen::materialize_import(const TypePtr &module_type) {
       struct_fields[key] = std::move(fnames);
       named_sem_types[key] = exp.type;
 
-      // Forward-declare non-generic methods and populate struct_method_links.
+      // A generic struct's methods are all generic, whether or not their
+      // signature names a parameter, and are specialised at each call.
+      if (!sinfo.type_params.empty())
+        break;
       for (auto &m : sinfo.methods) {
         if (!m.signature || m.signature->kind != TypeKind::Func)
           continue;
-        if (has_type_params(m.signature))
-          continue; // generic methods are handled at call sites (P6)
 
         std::string link_name = mangle(origin, sinfo.name + "__" + m.name);
         struct_method_links[key].push_back({link_name, m.name});

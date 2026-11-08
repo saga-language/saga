@@ -1,0 +1,7 @@
+// Spec: an operator on a type parameter needs a bound that permits it, even
+// where every type the program binds would.
+fn Sum<T>(a T, b T) T { a + b }
+
+pub fn Main() void {
+  _ := Sum(1, 2)
+}

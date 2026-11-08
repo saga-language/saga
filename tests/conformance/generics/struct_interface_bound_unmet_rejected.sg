@@ -1,0 +1,10 @@
+// An interface bound on a struct is checked where it is instantiated.
+interface Named {
+  Name() string
+}
+
+struct Shelf<T Named> { item T }
+
+pub fn Main() void {
+  _s := Shelf{item: 3}
+}

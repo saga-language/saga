@@ -2558,6 +2558,18 @@ TEST_F(ParserDeclCoverageTest, StructDecl_QualifiedEmbed) {
 
 class ParserExprCoverageTest : public ::testing::Test {};
 
+// `{name}` reads as `name.String()`: the identifier it converts, or "" when
+// the fragment has some other shape.
+static std::string_view interpolated_name(const Node &frag) {
+  auto *call = std::get_if<CallExprNode>(&frag.data);
+  auto *sel = call ? std::get_if<SelectorNode>(&call->callee->data) : nullptr;
+  if (!sel || !sel->interpolated || sel->field.name != "String" ||
+      !call->args.empty())
+    return "";
+  auto *id = std::get_if<IdentifierNode>(&sel->object->data);
+  return id ? id->name : "";
+}
+
 TEST_F(ParserExprCoverageTest, StringInterpolation_Single) {
   auto r = ExprResult::from("\"hello {name}\"");
   EXPECT_TRUE(r.errors.empty());
@@ -2567,9 +2579,7 @@ TEST_F(ParserExprCoverageTest, StringInterpolation_Single) {
   ASSERT_EQ(n->fragments.size(), 3);
   auto *f0 = std::get_if<StringFragmentNode>(&n->fragments[0]->data);
   ASSERT_NE(f0, nullptr);
-  auto *expr = std::get_if<IdentifierNode>(&n->fragments[1]->data);
-  ASSERT_NE(expr, nullptr);
-  EXPECT_EQ(expr->name, "name");
+  EXPECT_EQ(interpolated_name(*n->fragments[1]), "name");
   auto *f2 = std::get_if<StringFragmentNode>(&n->fragments[2]->data);
   ASSERT_NE(f2, nullptr);
 }
@@ -2581,12 +2591,8 @@ TEST_F(ParserExprCoverageTest, StringInterpolation_Multiple) {
   ASSERT_NE(n, nullptr);
   // StringStart + expr + StringMiddle + expr + StringEnd = 5 fragments
   ASSERT_EQ(n->fragments.size(), 5);
-  auto *e1 = std::get_if<IdentifierNode>(&n->fragments[1]->data);
-  ASSERT_NE(e1, nullptr);
-  EXPECT_EQ(e1->name, "x");
-  auto *e3 = std::get_if<IdentifierNode>(&n->fragments[3]->data);
-  ASSERT_NE(e3, nullptr);
-  EXPECT_EQ(e3->name, "y");
+  EXPECT_EQ(interpolated_name(*n->fragments[1]), "x");
+  EXPECT_EQ(interpolated_name(*n->fragments[3]), "y");
 }
 
 TEST_F(ParserExprCoverageTest, BinaryDivide) {

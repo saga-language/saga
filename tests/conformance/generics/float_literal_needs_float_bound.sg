@@ -1,0 +1,6 @@
+// A float literal fits `float` but not every type `numeric` admits.
+fn Scale<T numeric>(x T) T { x * 0.5 }
+
+pub fn Main() void {
+  _ := Scale(2.0)
+}

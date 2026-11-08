@@ -1,0 +1,7 @@
+// An array's String() is declared `fn (a array{T Stringable})`, so it is a
+// method only of the arrays whose element is Stringable.
+struct Bar { x int }
+
+pub fn Main() void {
+  _s := [Bar{x: 1}].String()
+}

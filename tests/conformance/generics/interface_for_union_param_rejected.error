@@ -1,0 +1,1 @@
+Named cannot stand for T: wrap writes T into a union, and a union holds only concrete types

@@ -12,6 +12,7 @@
 
 #include <list>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -296,13 +297,15 @@ struct Analyzer {
   /// `Next() T | Error`.  Codegen reads this to emit the protocol-based loop.
   std::unordered_map<const Node *, TypePtr> iterable_next_elem_type;
 
-  // ── Generic free-function templates (lazy body-analysis) ─────────────
+  // ── Generic templates ────────────────────────────────────────────────
 
-  /// A generic free function's body is not analysed at declaration time;
-  /// it is re-analysed once per distinct binding tuple at instantiation
-  /// time. The signature pass stores the AST and the lexical scope the
-  /// body should resolve names against.
+  /// A generic's body is checked once against its bounds, then again per
+  /// distinct binding tuple for the concrete tables codegen reads. The
+  /// signature pass stores the AST and the lexical scope the body resolves
+  /// names against.
   struct GenericTemplate {
+    enum class BodyCheck : uint8_t { Unchecked, Checking, Passed, Failed };
+
     const FuncDeclNode *decl;   // body reachable via decl->body
     Scope::Ptr decl_scope;      // scope visible to the body when declared
     std::vector<TypeParam> type_params; // ordered (id, name) pairs
@@ -310,12 +313,27 @@ struct Analyzer {
                                 // intrinsic-call gate honours this when the
                                 // body is re-analysed at a user-package
                                 // instantiation site.
+    BodyCheck body_check = BodyCheck::Unchecked;
+    /// The type_params the generic writes into a union, which no interface
+    /// may stand for.
+    std::unordered_set<uint32_t> in_unions;
   };
 
-  /// Generic free-function templates collected during the signature pass.
-  /// Keyed by FuncDeclNode*.  Receiver methods on intrinsic types are
-  /// handled separately via type_methods_/kind_methods_ and are not
-  /// stored here.
+  /// The generic whose declaration is being checked, and the parameters that
+  /// check entered, in its type_params' order.
+  struct UnionWatch {
+    GenericTemplate *tpl = nullptr;
+    std::vector<TypeParam> entered;
+  };
+  UnionWatch union_watch_;
+  void note_union_param(const TypePtr &param);
+  bool union_bindings_concrete(const GenericTemplate &tpl,
+                               const std::unordered_map<uint32_t, TypePtr> &bindings,
+                               const Node &call_node);
+
+  /// Generic templates collected during the signature pass, keyed by
+  /// declaration: free functions, and methods on a generic struct or on
+  /// Array/Map.
   std::unordered_map<const FuncDeclNode *, GenericTemplate> generic_templates_;
 
   /// Reverse map: signature TypePtr → FuncDeclNode*.  Populated during the
@@ -400,9 +418,14 @@ struct Analyzer {
   /// Set by Analyzer::Silence; makes error() a no-op.
   bool silenced_ = false;
 
-  /// Set while re-analysing a generic body that a previous instantiation has
-  /// already reported on.
-  bool suppress_unread_reports_ = false;
+  /// Each pass resolves a declaration's type nodes against its own scope, so
+  /// one mistake would otherwise be reported once per pass.
+  std::set<std::pair<std::size_t, std::string>> reported_;
+
+  /// Set while checking a generic body under concrete bindings. Its
+  /// declaration check has already reported what holds for every
+  /// instantiation: unread locals, writes through a constant.
+  bool instantiating_checked_body_ = false;
 
   // ── Next unique id for type parameters ───────────────────────────────
   uint32_t next_type_param_id = 0;
@@ -447,6 +470,8 @@ struct Analyzer {
   /// Load stdlib type packages (int, float, bool, string) from pre-compiled
   /// .sgi files and populate type_methods_.  Called automatically at the start
   /// of analysis when not in stdlib mode.
+  /// The types every `.sgi` may name without declaring.
+  std::vector<TypePtr> prelude_types() const;
   void load_prelude();
 
   // ── Import resolution ────────────────────────────────────────────────
@@ -519,6 +544,8 @@ private:
   /// Merge stdlib receiver methods from a sub-analyzer or sgi into our
   /// own type_methods_ / kind_methods_ tables.
   void merge_sgi_receiver_methods(const struct SgiFile &sgi);
+  void register_source_dir(const std::string &import_path,
+                           const struct SgiFile &sgi);
   void merge_sub_analyzer_receiver_methods(const Analyzer &sub);
 
   /// Ensure the origin package's source has been parsed and analysed,
@@ -578,7 +605,35 @@ public:
 
   /// Enter generic parameters into the current scope and return a mapping
   /// from their ids to the TypeParam types.  Call after push_scope.
-  std::vector<TypeParam> enter_generics(const GenericNode &generic);
+  /// `declared[i]`, where given, is a bound the i-th parameter also holds.
+  std::vector<TypeParam>
+  enter_generics(const GenericNode &generic,
+                 const std::vector<TypeParam> &declared = {});
+  std::vector<TypeParam> enter_func_generics(const FuncDeclNode &fn);
+  std::optional<std::pair<TypeParam, Span>> read_type_param(const Node &node);
+  void bound_param(TypeParam &param, const IdentifierNode &bound);
+  std::vector<TypeParam> declared_receiver_bounds(const ReceiverNode &receiver);
+  void add_bound(TypeParam &param, const TypeParam &declared, Span span);
+  void narrow_constraint(TypeParam &param, TypeConstraint adds, Span span);
+  /// Once per declaration, before enter_generics.
+  void reject_shadowed_types(const GenericNode &generic);
+
+  /// Why `instance` lacks the method `name` its declaration has: the method
+  /// bounds a receiver parameter the instance's argument does not meet.
+  std::optional<std::string> unmet_receiver_bound(const TypePtr &instance,
+                                                  std::string_view name);
+  std::optional<std::string>
+  unmet_receiver_params(const std::vector<TypePtr> &args,
+                        const std::vector<TypePtr> &params);
+  std::pair<const std::vector<MethodInfo> *, std::vector<TypePtr>>
+  instance_methods(const TypePtr &instance);
+  /// The part of `param`'s bound `arg` misses, as source spells it (`T
+  /// numeric`); none when `arg` meets all of it.
+  std::optional<std::string> unmet_bound(const TypePtr &arg,
+                                         const TypeParam &param);
+  /// False, with every unmet part reported, when `arg` misses `param`'s bound.
+  bool report_unmet_bound(const TypePtr &arg, const TypeParam &param,
+                          Span span);
 
   /// Collect current type bindings for substitution.
   std::unordered_map<uint32_t, TypePtr> current_type_bindings() const;
@@ -587,6 +642,8 @@ public:
 
   /// Associate a resolved type with an AST node.
   void record_type(const Node &node, TypePtr type);
+  /// The type `record_type` gave `node` in the current view, or null.
+  TypePtr recorded_type(const Node &node) const;
 
   /// Associate a resolved symbol with an AST node.
   void record_symbol(const Node &node, const Symbol &sym);
@@ -707,11 +764,14 @@ private:
       const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
       std::unordered_map<std::string, int> &state);
   void merge_embed(
-      InterfaceTypeInfo &info, const Node &embed_node,
+      const TypePtr &target, const Node &embed_node,
       const std::unordered_map<std::string, const InterfaceDeclNode *> &by_name,
       std::unordered_map<std::string, int> &state);
-  void merge_embedded_methods(InterfaceTypeInfo &target,
-                              const TypePtr &embedded, const Node &embed_node);
+  void merge_embedded_methods(const TypePtr &target, const TypePtr &embedded,
+                              const Node &embed_node);
+  void attach_kind_method(const FuncDeclNode &fn, const TypePtr &fn_type,
+                          const std::vector<TypeParam> &generic_params,
+                          TypeKind kind, const std::vector<TypePtr> &params);
   void resolve_const_decl(const ConstDeclNode &node);
   void resolve_type_decl(const TypeDeclNode &node);
 
@@ -724,6 +784,10 @@ private:
 
   // Phase 4: Type-check function/method bodies.
   void check_func_decl_body(const FuncDeclNode &fn);
+  void record_template_check(const FuncDeclNode &fn, bool passed);
+  void declare_signature(const FuncDeclNode &fn);
+  void check_function_block(const FuncDeclNode &fn, const BlockNode &block);
+  void check_leading_stmts(const BlockNode &block);
 
   /// Returns true if a node always terminates via `return` on every
   /// control-flow path (e.g. if/else where both branches return, or
@@ -832,7 +896,8 @@ private:
   std::unordered_set<const Node *> closures_writing_captures_;
 
   void attach_receiver_method(const TypePtr &owner, const FuncDeclNode &fn,
-                              const TypePtr &signature);
+                              const TypePtr &signature,
+                              std::vector<TypePtr> receiver_params = {});
   void push_closure_frame(const FuncExprNode &node, const Node &parent);
   void push_body_frame();
   void pop_writer_frame();
@@ -903,6 +968,9 @@ private:
   /// union satisfies some interface declaring `field_name` (every member
   /// satisfies it) and that method is Self-free (no interface-self in its
   /// params/return).  Returns the interface method's signature, else null.
+  TypePtr resolve_param_method(const TypePtr &param, const std::string &name);
+  std::optional<TypePtr> check_interpolated(const SelectorNode &node,
+                                            const TypePtr &obj_type);
   TypePtr resolve_union_method(const TypePtr &union_type,
                                const std::string &field_name);
   TypePtr check_if_expr(const IfExprNode &node);
@@ -936,6 +1004,8 @@ private:
   /// Reports and poisons a binding whose type still holds an inference hole.
   TypePtr resolve_binding_type(TypePtr type, Span span);
   void check_assign(const AssignNode &node);
+  TypePtr assigned_slot_type(const Node &target, TypePtr read_type);
+  void reject_element_compound(Token::Kind op, const Node &target);
   void reject_error_field_mutation(const Node &target);
 
   /// The identifier a write target is rooted at, walking selector and index
@@ -978,6 +1048,15 @@ private:
   /// operation cannot fail and its type is the plain result rather than a union
   /// carrying an error that can never arrive.
   bool divisor_is_known_nonzero(const Node &rhs);
+
+  /// An operator on a type parameter, or nullopt for one the bound does not
+  /// govern (`&&`, `||`).
+  std::optional<TypePtr> check_type_param_binary(const BinaryExprNode &node,
+                                                 const TypePtr &lhs,
+                                                 const TypePtr &rhs);
+  bool param_admits_operator(Token::Kind op, const TypePtr &param, Span span);
+  TypePtr type_param_quotient(const BinaryExprNode &node,
+                              const TypePtr &param);
 
   // Struct operator overloading helper.
   TypePtr check_struct_binary_expr(const BinaryExprNode &node,
@@ -1029,17 +1108,35 @@ private:
       Span call_span,
       std::unordered_map<uint32_t, TypePtr> *out_bindings = nullptr);
 
-  /// Drive Phase 3 and Phase 4 over a generic free function's body with
-  /// the given bindings.  Reuses a cached BodyInstantiation on match (or
-  /// when a re-entrant call re-arrives during in-progress analysis).
+  /// Drive Phase 3 and Phase 4 over a generic's body with the given
+  /// bindings.  Reuses a cached BodyInstantiation on match (or when a
+  /// re-entrant call re-arrives during in-progress analysis).  Null when the
+  /// bindings are abstract or the body fails its declaration check.
   /// `call_node` is pushed onto instantiation_stack_ for error traces.
   BodyInstantiation *instantiate_generic_body(
       const FuncDeclNode &fn,
       const std::unordered_map<uint32_t, TypePtr> &bindings,
       const Node &call_node);
 
+  /// Check a generic's body once against its bounds; false if it failed.
+  bool check_generic_template(GenericTemplate &tpl);
+
+  /// Whether `type` still names a type parameter the generic `fn` declares.
+  bool leaves_own_params(const TypePtr &type, const FuncDeclNode *fn) const;
+
+  class TemplateBodyScope;
+  void check_template_body(const FuncDeclNode &fn);
+  void bind_type_params(const std::vector<TypeParam> &params,
+                        const std::unordered_map<uint32_t, TypePtr> &bindings);
+  BodyInstantiation *
+  cached_instantiation(const FuncDeclNode &fn,
+                       const std::unordered_map<uint32_t, TypePtr> &bindings);
+
   /// Instantiate a generic struct type: infer type-parameter bindings from
   /// field initializer values and return the fully substituted struct type.
+  bool bindings_meet_bounds(const TypePtr &callee_type,
+                            const std::unordered_map<uint32_t, TypePtr> &bindings,
+                            Span span);
   TypePtr instantiate_generic_struct(const TypePtr &struct_type,
                                      const std::vector<std::pair<std::string, TypePtr>> &field_types,
                                      Span span);
@@ -1048,6 +1145,10 @@ private:
 
   /// Check whether `concrete` satisfies every method in `iface`.
   bool satisfies_interface(const TypePtr &concrete, const TypePtr &iface);
+  std::vector<MethodInfo> concrete_methods(const TypePtr &concrete);
+  std::vector<MethodInfo> param_methods(const TypePtr &param);
+  std::vector<MethodInfo> constraint_methods(TypeConstraint c,
+                                             const TypePtr &param);
 
   /// Resolve a `<T C>` constraint name that is not a built-in type-set
   /// (integer/float/numeric) to its interface bound.  A same-scope
@@ -1080,13 +1181,6 @@ private:
   /// diagnostic.  Returns `false` and reports an error on failure.
   bool check_satisfies_protocol(const TypePtr &concrete, ProtocolKind p,
                                 Span at, const std::string &context = "");
-
-  /// Recursively verify `t` is Stringable, descending into Array elements
-  /// and Map keys/values so that `[[Foo]]` requires `Foo` itself to be
-  /// Stringable rather than terminating at the trivially-Stringable Array.
-  /// Returns `false` and reports the named diagnostic on failure.
-  bool check_stringable_recursive(const TypePtr &t, Span at,
-                                  const std::string &context = "");
 
   // ── Assignment compatibility helper ──────────────────────────────────
 

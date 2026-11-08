@@ -1,0 +1,18 @@
+// A generic body reads its receiver types from the instantiation it is
+// checked in, so a writing call on a constant there is caught as anywhere.
+struct Counter {
+  n int
+}
+
+pub fn (c Counter) Bump() void { c.n = c.n + 1 }
+
+const start = Counter{n: 1}
+
+fn Keep<T>(x T) T {
+  start.Bump()
+  x
+}
+
+pub fn Main() void {
+  _ := Keep(1)
+}

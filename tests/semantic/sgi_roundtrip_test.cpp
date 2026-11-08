@@ -103,6 +103,57 @@ TEST(SgiRoundtrip, GenericStructParamIdsSurvive) {
   EXPECT_EQ(std::get<TypeParamInfo>(st.fields[0].type->detail).param.id, 42u);
 }
 
+TEST(SgiRoundtrip, GenericStructParamBoundsSurvive) {
+  auto named = make_interface_type(
+      "Named", {MethodInfo{"Name", make_func_type({}, make_string_type()),
+                           true, ""}});
+  TypeParam both{3, "T", TypeConstraint::Integer, {named}};
+  auto s = make_struct_type("Box",
+                            {FieldInfo{"value", make_type_param(both), true}},
+                            {}, {both, TypeParam{4, "U"}});
+  auto text = generate_sgi("pkg", {},
+                           {{"", "Named", named, true}, {"", "Box", s, true}});
+  EXPECT_NE(text.find("|T#3 integer Named, U#4|"), std::string::npos) << text;
+
+  auto parsed = parse_sgi(text);
+  ASSERT_TRUE(parsed.has_value());
+  auto &st = std::get<StructTypeInfo>(parsed->exports[0].type->detail);
+  ASSERT_EQ(st.type_params.size(), 2u);
+  EXPECT_EQ(st.type_params[0].constraint, TypeConstraint::Integer);
+  ASSERT_EQ(st.type_params[0].interfaces.size(), 1u);
+  EXPECT_EQ(st.type_params[0].interfaces[0]->kind, TypeKind::Interface);
+  EXPECT_TRUE(st.type_params[1].interfaces.empty());
+  auto &field = std::get<TypeParamInfo>(st.fields[0].type->detail).param;
+  EXPECT_EQ(field.constraint, TypeConstraint::Integer);
+  EXPECT_EQ(field.interfaces.size(), 1u);
+}
+
+TEST(SgiRoundtrip, BoundNamingPreludeProtocolReadsAsIt) {
+  auto shown = make_interface_type(
+      "Stringable", {MethodInfo{"String", make_func_type({}, make_string_type()),
+                                true, ""}});
+  auto parsed = parse_sgi("sgi 2\npackage lib\n\n"
+                          "struct |T#0 Stringable| Box {\n  pub v T\n}\n",
+                          nullptr, {shown});
+  ASSERT_TRUE(parsed.has_value());
+  auto &st = std::get<StructTypeInfo>(parsed->exports[0].type->detail);
+  ASSERT_EQ(st.type_params[0].interfaces.size(), 1u);
+  auto &bound = st.type_params[0].interfaces[0];
+  ASSERT_EQ(bound->kind, TypeKind::Interface);
+  EXPECT_EQ(std::get<InterfaceTypeInfo>(bound->detail).methods.size(), 1u);
+}
+
+TEST(SgiRoundtrip, BoundNamingNoInterfaceFailsToLoad) {
+  std::string error;
+  auto parsed = parse_sgi("sgi 2\npackage lib\n\n"
+                          "struct |T#0 Missing| Box {\n  pub v T\n}\n",
+                          &error);
+  EXPECT_FALSE(parsed.has_value());
+  EXPECT_NE(error.find("bound 'Missing' names no interface"),
+            std::string::npos)
+      << error;
+}
+
 TEST(SgiRoundtrip, GenericInterfaceParamIdsSurvive) {
   auto i = make_interface_type(
       "Seq",
@@ -321,6 +372,29 @@ TEST(SgiRoundtrip, ArrayReceiverMethodsUseSentinelT) {
   EXPECT_EQ(std::get<TypeParamInfo>(sig.params[0]->detail).param.id, 9990u);
   ASSERT_EQ(sig.return_type->kind, TypeKind::TypeParam);
   EXPECT_EQ(std::get<TypeParamInfo>(sig.return_type->detail).param.id, 9990u);
+}
+
+TEST(SgiRoundtrip, MapReceiverMethodBoundsSurvive) {
+  auto shown = make_interface_type(
+      "Stringable", {MethodInfo{"String", make_func_type({}, make_string_type()),
+                                true, ""}});
+  MethodInfo method{"String", make_func_type({}, make_string_type()), true, ""};
+  method.receiver_params = {
+      make_type_param(TypeParam{9991, "K", TypeConstraint::None, {shown}}),
+      make_type_param(9992, "V")};
+  SgiReceiverMethod rm{"Map", {method}};
+  auto text = generate_sgi("map", {}, {}, {rm});
+  EXPECT_NE(text.find("bound String 0 Stringable"), std::string::npos) << text;
+
+  auto parsed = parse_sgi(text, nullptr, {shown});
+  ASSERT_TRUE(parsed.has_value());
+  auto &params = parsed->receiver_methods[0].methods[0].receiver_params;
+  ASSERT_EQ(params.size(), 2u);
+  auto &key = std::get<TypeParamInfo>(params[0]->detail).param;
+  EXPECT_EQ(key.id, 9991u);
+  ASSERT_EQ(key.interfaces.size(), 1u);
+  EXPECT_EQ(key.interfaces[0]->kind, TypeKind::Interface);
+  EXPECT_EQ(params[1], nullptr);
 }
 
 // ---------------------------------------------------------------------------

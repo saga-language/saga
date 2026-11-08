@@ -1,0 +1,24 @@
+// A struct's bound holds wherever its parameter appears, its methods included:
+// Box's T is numeric in Twice without the receiver saying so, and Shelf's T
+// has Named's methods.
+import "std/io"
+
+interface Named {
+  Name() string
+}
+
+struct Cat { name string }
+
+fn (c Cat) Name() string { c.name }
+
+struct Box<T numeric> { v T }
+
+fn (b Box<T>) Twice() T { b.v + b.v }
+
+struct Shelf<T Named> { item T }
+
+fn (s Shelf<T>) Label() string { "[{s.item.Name()}]" }
+
+pub fn Main() void {
+  io.Println("{Box{v: 21}.Twice()} {Box{v: 0.25}.Twice()} {Shelf{item: Cat{name: "tom"}}.Label()}")
+}

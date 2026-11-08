@@ -1,0 +1,19 @@
+// A bound is what makes a parameter Stringable or Hashable: an interface that
+// says so, or a constraint whose every type is.
+import "std/io"
+
+struct Point { x, y int }
+
+pub fn (p Point) String() string { "({p.x}, {p.y})" }
+
+fn show<T Stringable>(x T) string { "<{x}>" }
+
+fn twice<T numeric>(x T) string { "{x}{x}" }
+
+fn index<T integer>(k T) map{T: string} { {k: "v"} }
+
+fn same<T integer>(a T, b T) bool { a.Equals(b) }
+
+pub fn Main() void {
+  io.Println("{show(Point{x: 1, y: 2})} {twice(1.5)} {index(3)} {same(4, 4)}")
+}

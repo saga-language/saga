@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -78,21 +79,29 @@ std::string_view constraint_name(TypeConstraint c);
 /// does not match any built-in constraint.
 TypeConstraint constraint_from_name(std::string_view name);
 
-/// True if `t` is a member of the named constraint's type set.
-/// Always false for TypeConstraint::None — None is meaningless as a check.
+/// True if `t` is a member of the named constraint's type set, or a type
+/// parameter bounded by a constraint within it. Always false for
+/// TypeConstraint::None — None is meaningless as a check.
 bool satisfies_constraint(const TypePtr &t, TypeConstraint c);
+
+/// Whether every type `inner` admits is one `outer` admits.
+bool constraint_within(TypeConstraint inner, TypeConstraint outer);
 
 // ---------------------------------------------------------------------------
 // TypeParam — a single generic type variable.
 //
-//   |T|, |T, U|  →  each T / U is a TypeParam with a unique id.
-//   |T Integer|  →  T carries TypeConstraint::Integer.
+//   <T>, <T, U>  →  each T / U is a TypeParam with a unique id.
+//   <T integer>  →  T carries TypeConstraint::Integer.
+//   <T Named>    →  T carries the interface Named.
 // ---------------------------------------------------------------------------
 
 struct TypeParam {
   uint32_t id;           // unique within one analysis pass
   std::string name;      // source name, e.g. "T"
   TypeConstraint constraint = TypeConstraint::None;
+  /// Every one must be satisfied. More than one arises where a method's
+  /// receiver bound adds to the bound its type declares.
+  std::vector<TypePtr> interfaces;
 };
 
 // ---------------------------------------------------------------------------
@@ -155,6 +164,9 @@ struct MethodInfo {
   /// The body writes through the receiver, so the call needs somewhere for
   /// the write to land — a constant has nowhere.
   bool mutates_receiver = false;
+  /// A generic struct's method: its receiver's type parameters, in the
+  /// struct's order, each carrying the bound the method puts on it.
+  std::vector<TypePtr> receiver_params;
 };
 
 struct StructTypeInfo {
@@ -199,7 +211,6 @@ struct UnionTypeInfo {
 
 struct TypeParamInfo {
   TypeParam param;
-  std::optional<TypePtr> bound;               // upper-bound constraint, if any
 };
 
 struct AliasTypeInfo {
@@ -314,12 +325,17 @@ TypePtr make_union_type(std::vector<TypePtr> alternatives);
 /// codegen lowers it with the same answer, so the two cannot drift.
 TypePtr union_without(const TypePtr &u, const TypePtr &matched);
 
+bool is_unbounded_param(const TypePtr &t);
+
+/// A scalar the runtime turns into a string itself, with no String() call.
+bool converts_to_string_natively(const TypePtr &t);
+
 /// A struct with nothing to fill in. Its name alone constructs it, so `Marker`
 /// and `Marker{}` are the same value. The analyzer admits the braceless form on
 /// this test and codegen builds the value on the same one.
 bool is_empty_shape(const TypePtr &t);
-TypePtr make_type_param(uint32_t id, const std::string &name,
-                        std::optional<TypePtr> bound = std::nullopt);
+TypePtr make_type_param(uint32_t id, const std::string &name);
+TypePtr make_type_param(TypeParam param);
 TypePtr make_alias_type(const std::string &name, TypePtr underlying,
                         std::vector<MethodInfo> methods = {},
                         std::string origin_package = "",
@@ -359,6 +375,9 @@ bool is_enum_valued(const TypePtr &t);
 
 /// True if `t` is a numeric type (Int or Float).
 bool is_numeric(const TypePtr &t);
+
+/// Whether an untyped literal fits every type the parameter `param` admits.
+bool literal_fits_param(const TypePtr &literal, const TypePtr &param);
 
 /// True if `t` is a type that supports ordering comparisons.
 bool is_ordered(const TypePtr &t);
@@ -444,6 +463,17 @@ TypePtr substitute(const TypePtr &t,
                    const std::unordered_map<uint32_t, TypePtr> &bindings,
                    SubstMemo &memo);
 
+/// `sig` with `self` wherever it names `iface`: an interface's own name in its
+/// method signatures stands for whatever satisfies it, as in
+/// `Equals(Hashable) bool`.
+TypePtr substitute_self(const TypePtr &sig, const TypePtr &iface,
+                        const TypePtr &self);
+
+/// `sig` with `with` in each parameter and result position `is` picks.
+TypePtr replace_in_signature(const TypePtr &sig,
+                             const std::function<bool(const TypePtr &)> &is,
+                             const TypePtr &with);
+
 /// Attempt to infer type-parameter bindings by unifying `param_type` (which
 /// may contain TypeParam nodes) against `arg_type` (fully concrete).
 /// Returns true on success and populates `out`.  On conflict returns false.
@@ -453,6 +483,14 @@ bool unify(const TypePtr &param_type, const TypePtr &arg_type,
 /// Returns true if the type (or any nested type within it) contains at
 /// least one TypeParam node.
 bool has_type_params(const TypePtr &t);
+
+/// Whether any type parameter `t` mentions satisfies `pred`.
+bool any_type_param(const TypePtr &t,
+                    const std::function<bool(const TypeParam &)> &pred);
+
+/// The methods a struct or alias declares; an instance's are its
+/// declaration's, which alone record what each method writes and bounds.
+std::vector<MethodInfo> *declared_methods(const TypePtr &type);
 
 /// Two struct types that came from the same declaration. A generic
 /// instantiation is a fresh type each time it is resolved, so identity is the

@@ -18,19 +18,6 @@ namespace saga {
 
 namespace {
 
-// An instance's methods are its declaration's.
-std::vector<MethodInfo> *declared_methods(const TypePtr &type) {
-  if (!type) return nullptr;
-  if (type->kind == TypeKind::Struct) {
-    auto &info = std::get<StructTypeInfo>(type->detail);
-    return info.declaration ? declared_methods(info.declaration)
-                            : &info.methods;
-  }
-  if (type->kind == TypeKind::Alias)
-    return &std::get<AliasTypeInfo>(type->detail).methods;
-  return nullptr;
-}
-
 // A struct's own method wins over a promoted one, and an alias's over its
 // underlying type's: the order dispatch finds them in.
 std::optional<bool> declared_writes(const TypePtr &type,
@@ -74,12 +61,14 @@ bool Analyzer::method_mutates_receiver(const TypePtr &type,
 
 void Analyzer::attach_receiver_method(const TypePtr &owner,
                                       const FuncDeclNode &fn,
-                                      const TypePtr &signature) {
+                                      const TypePtr &signature,
+                                      std::vector<TypePtr> receiver_params) {
   auto recv = fn.receiver->name.name;
   declared_methods(owner)->push_back(
       {std::string(fn.name.name), signature, fn.is_public,
        current_package_name(),
-       fn.body && writes_through_binding(*fn.body, recv)});
+       fn.body && writes_through_binding(*fn.body, recv),
+       std::move(receiver_params)});
   if (fn.body)
     receiver_methods_.push_back({owner, &fn});
 }

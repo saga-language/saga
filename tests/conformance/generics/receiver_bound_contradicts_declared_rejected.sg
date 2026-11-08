@@ -1,0 +1,7 @@
+// A receiver's bound adds to the one its type declares. Integer and float
+// share no type, so no instance could have this method.
+struct Box<T integer> { v T }
+
+fn (b Box<T float>) Get() T { b.v }
+
+pub fn Main() void {}

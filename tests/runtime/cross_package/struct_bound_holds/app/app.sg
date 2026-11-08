@@ -1,0 +1,11 @@
+import "std/io"
+import "lib"
+
+struct Cat { name string }
+
+pub fn (c Cat) Name() string { c.name }
+
+pub fn Main() void {
+  io.Println("{lib.Box{v: 21}.Twice()}")
+  io.Println(lib.Shelf{item: Cat{name: "tom"}}.Label())
+}

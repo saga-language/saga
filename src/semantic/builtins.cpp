@@ -321,4 +321,21 @@ void register_builtins(Scope::Ptr global_scope, BuiltinTypes &types) {
   }
 }
 
+const Type *BuiltinTypes::named_intrinsic(std::string_view name) const {
+  static const std::pair<std::string_view, TypePtr BuiltinTypes::*> table[] = {
+      {"Int", &BuiltinTypes::int_type},       {"Int8", &BuiltinTypes::int8_type},
+      {"Int16", &BuiltinTypes::int16_type},   {"Int32", &BuiltinTypes::int32_type},
+      {"Int64", &BuiltinTypes::int64_type},   {"Uint8", &BuiltinTypes::uint8_type},
+      {"Uint16", &BuiltinTypes::uint16_type}, {"Uint32", &BuiltinTypes::uint32_type},
+      {"Uint64", &BuiltinTypes::uint64_type}, {"Float", &BuiltinTypes::float_type},
+      {"Float32", &BuiltinTypes::float32_type},
+      {"Float64", &BuiltinTypes::float64_type},
+      {"Bool", &BuiltinTypes::bool_type},     {"String", &BuiltinTypes::string_type},
+  };
+  for (auto &[n, member] : table)
+    if (n == name)
+      return (this->*member).get();
+  return nullptr;
+}
+
 } // namespace saga

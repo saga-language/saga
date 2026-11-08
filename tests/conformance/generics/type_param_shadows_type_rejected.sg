@@ -1,0 +1,11 @@
+// A type parameter is a binding, and shadowing is an error: inside the method
+// the type `Point` would be unreachable.
+struct Point {}
+
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<Point>) Get() Point { b.value }
+
+pub fn Main() void {}

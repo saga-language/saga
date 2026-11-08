@@ -1,0 +1,12 @@
+// Spec: a method that bounds its receiver's parameter is a method of only the
+// instances that meet the bound.
+struct Box<T> {
+  value T
+}
+
+pub fn (b Box<T numeric>) Twice() T { b.value + b.value }
+
+pub fn Main() void {
+  b := Box{value: "saga"}
+  _ := b.Twice()
+}

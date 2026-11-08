@@ -1,0 +1,4 @@
+// Interpolating `{x}` calls x.String(), which an unbounded T does not have.
+fn show<T>(x T) string { "{x}" }
+
+pub fn Main() void {}

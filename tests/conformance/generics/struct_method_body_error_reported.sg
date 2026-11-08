@@ -1,6 +1,5 @@
-// A generic method's body is checked when the first call fixes its type
-// arguments — which is during emission, after the analyzer's own pass. The
-// error still has to reach the user rather than be built into the binary.
+// A generic method's body is checked at its declaration, with T abstract, so
+// the error names T rather than the type the call binds it to.
 import "std/io"
 
 struct Stack<T> {

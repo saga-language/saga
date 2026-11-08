@@ -116,7 +116,7 @@ struct MCG {
 
 TEST(Monomorph, PositiveSpike_IntStringBool) {
   auto r = MR::from(
-      "pub fn eq<T>(a T, b T) bool { a.Equals(b) }\n"
+      "pub fn eq<T Hashable>(a T, b T) bool { a.Equals(b) }\n"
       "pub fn Main() void {\n"
       "  eq(5, 5)\n"
       "  eq(\"hi\", \"hi\")\n"
@@ -138,32 +138,28 @@ TEST(Monomorph, NegativeSpike_MissingMethod) {
   EXPECT_TRUE(r.has_err("no member 'Equals'")) << r.all_errors();
 }
 
-TEST(Monomorph, NegativeSpike_ErrorBacktrace) {
+TEST(Monomorph, NegativeSpike_ErrorAtDeclarationNotCallChain) {
+  // An unbounded T has no Equals, which is the declaration's error; the
+  // calls through outer reach a body already reported, so nothing names them.
   auto r = MR::from(
       "struct Point { x int\n y int }\n"
       "pub fn inner<T>(a T, b T) bool { a.Equals(b) }\n"
       "pub fn outer<T>(a T, b T) bool { inner(a, b) }\n"
       "pub fn Main() void { outer(Point{x: 1, y: 2}, Point{x: 3, y: 4}) }");
-  EXPECT_FALSE(r.ok());
-  EXPECT_TRUE(r.has_err("no member 'Equals'")) << r.all_errors();
-  // The error should contain at least two "instantiated from" frames.
-  std::string errs = r.all_errors();
-  size_t first = errs.find("instantiated from");
-  ASSERT_NE(first, std::string::npos) << "Expected backtrace frame";
-  size_t second = errs.find("instantiated from", first + 1);
-  EXPECT_NE(second, std::string::npos)
-      << "Expected two backtrace frames, got:\n" << errs;
+  EXPECT_TRUE(r.has_err("type T has no member 'Equals'")) << r.all_errors();
+  EXPECT_EQ(r.all_errors().find("instantiated from"), std::string::npos)
+      << r.all_errors();
 }
 
 // ===========================================================================
-// Uninstantiated spike — broken body, never called
+// A body is checked at its declaration, called or not
 // ===========================================================================
 
-TEST(Monomorph, UninstantiatedSpike) {
+TEST(Monomorph, UninstantiatedBodyIsChecked) {
   auto r = MR::from(
       "pub fn broken<T>(a T) void { a.NoSuchMethod() }\n"
       "pub fn Main() void {}");
-  EXPECT_TRUE(r.ok()) << r.all_errors();
+  EXPECT_TRUE(r.has_err("no member 'NoSuchMethod'")) << r.all_errors();
 }
 
 // ===========================================================================

@@ -1,0 +1,7 @@
+// Integer division by a variable can fail and float division cannot, so under
+// `numeric` the quotient has no one type for the body to be checked against.
+fn Div<T numeric>(a T, b T) T { a / b }
+
+pub fn Main() void {
+  _ := Div(6, 3)
+}

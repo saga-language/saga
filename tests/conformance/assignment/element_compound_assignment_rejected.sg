@@ -1,0 +1,6 @@
+// `xs[i] += 1` needs the element first, and reading an element can miss.
+// What a miss should do is not settled, so the program reads it itself.
+pub fn Main() void {
+  xs := [1, 2]
+  xs[0] += 5
+}

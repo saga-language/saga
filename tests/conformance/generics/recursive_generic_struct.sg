@@ -17,9 +17,9 @@ pub fn (n Node<T>) Count() int {
   }
 }
 
-pub fn (n Node<int>) Sum() int {
+pub fn (n Node<T numeric>) Sum() T {
   t := n.tail
-  if t is Node<int> {
+  if t is Node<T> {
     n.value + t.Sum()
   } else {
     n.value

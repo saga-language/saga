@@ -1,0 +1,8 @@
+// A value interpolates only when it is Stringable.
+import "std/io"
+
+struct Point { x, y int }
+
+pub fn Main() void {
+  io.Println("{Point{x: 1, y: 2}}")
+}

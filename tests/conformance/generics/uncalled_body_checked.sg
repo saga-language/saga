@@ -1,0 +1,5 @@
+// A generic's body is checked at its declaration, whether or not anything
+// calls it.
+pub fn Identity<T>(x T) T { valu }
+
+pub fn Main() void {}

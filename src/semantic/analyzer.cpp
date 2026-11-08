@@ -230,6 +230,14 @@ void Analyzer::analyze(const Node &root) {
   report_deferred_bugs();
 }
 
+std::vector<TypePtr> Analyzer::prelude_types() const {
+  std::vector<TypePtr> types;
+  for (auto &t : {builtins.hashable_iface, builtins.stringable_iface})
+    if (t)
+      types.push_back(t);
+  return types;
+}
+
 void Analyzer::load_prelude() {
   if (!package_resolver)
     return;
@@ -267,91 +275,16 @@ void Analyzer::load_prelude() {
         return;
   }
 
-  // --- Scalar types (Int, Float, Bool, String) ---
-  static const std::string scalar_pkgs[] = {
-    "std/int", "std/float", "std/bool", "std/string"
-  };
-  auto get_canonical = [this](const std::string &type_name) -> const Type * {
-    if (type_name == "Int")    return builtins.int_type.get();
-    if (type_name == "Int8")   return builtins.int8_type.get();
-    if (type_name == "Int16")  return builtins.int16_type.get();
-    if (type_name == "Int32")  return builtins.int32_type.get();
-    if (type_name == "Int64")  return builtins.int64_type.get();
-    if (type_name == "Uint8")  return builtins.uint8_type.get();
-    if (type_name == "Uint16") return builtins.uint16_type.get();
-    if (type_name == "Uint32") return builtins.uint32_type.get();
-    if (type_name == "Uint64") return builtins.uint64_type.get();
-    if (type_name == "Float")   return builtins.float_type.get();
-    if (type_name == "Float32") return builtins.float32_type.get();
-    if (type_name == "Float64") return builtins.float64_type.get();
-    if (type_name == "Bool")    return builtins.bool_type.get();
-    if (type_name == "String")  return builtins.string_type.get();
-    return nullptr;
-  };
-
-  for (auto &pkg : scalar_pkgs) {
+  for (auto *pkg : {"std/int", "std/float", "std/bool", "std/string",
+                    "std/array", "std/map"}) {
     std::string sgi_path = package_resolver->find_sgi_file(pkg);
     if (sgi_path.empty())
       continue;
-    auto sgi = load_sgi(sgi_path);
+    auto sgi = load_sgi(sgi_path, nullptr, prelude_types());
     if (!sgi)
       continue;
-    for (auto &rm : sgi->receiver_methods) {
-      const Type *canonical = get_canonical(rm.type_name);
-      if (!canonical)
-        continue;
-      for (auto &method : rm.methods) {
-        // Avoid duplicate methods (idempotent if load_prelude called twice).
-        auto &vec = type_methods_[canonical];
-        bool dup = false;
-        for (auto &existing : vec) {
-          if (existing.name == method.name) { dup = true; break; }
-        }
-        if (!dup)
-          vec.push_back(method);
-      }
-    }
-  }
-
-  // --- Generic types (Array, Map) ---
-  static const std::string generic_pkgs[] = {"std/array", "std/map"};
-  auto get_recv_kind = [](const std::string &tn) -> std::optional<TypeKind> {
-    if (tn == "Array") return TypeKind::Array;
-    if (tn == "Map")   return TypeKind::Map;
-    return std::nullopt;
-  };
-
-  for (auto &pkg : generic_pkgs) {
-    std::string sgi_path = package_resolver->find_sgi_file(pkg);
-    if (sgi_path.empty())
-      continue;
-    auto sgi = load_sgi(sgi_path);
-    if (!sgi)
-      continue;
-    if (!sgi->source_dir.empty()) {
-      auto last_slash = pkg.rfind('/');
-      std::string pkg_short = (last_slash != std::string::npos)
-                                  ? pkg.substr(last_slash + 1)
-                                  : pkg;
-      package_resolver->source_dirs[pkg_short] = sgi->source_dir;
-      package_resolver->source_dirs[pkg] = sgi->source_dir;
-    }
-    for (auto &rm : sgi->receiver_methods) {
-      auto kind_opt = get_recv_kind(rm.type_name);
-      if (!kind_opt)
-        continue;
-      auto kind = *kind_opt;
-      for (auto &method : rm.methods) {
-        // Normalize stub type params to sentinels (T→9990, K→9991, V→9992).
-        auto sig = normalize_generic_receiver_sig(method.signature, kind);
-        auto &vec = kind_methods_[kind];
-        bool dup = false;
-        for (auto &e : vec)
-          if (e.name == method.name) { dup = true; break; }
-        if (!dup)
-          vec.push_back({method.name, sig, method.is_public});
-      }
-    }
+    register_source_dir(pkg, *sgi);
+    merge_sgi_receiver_methods(*sgi);
   }
 }
 
@@ -396,7 +329,7 @@ static std::vector<const Symbol *> unread_symbols(const Scope &scope,
 }
 
 void Analyzer::report_unread_locals(const Scope &scope) {
-  if (suppress_unread_reports_)
+  if (instantiating_checked_body_)
     return;
 
   for (const Symbol *sym : unread_symbols(scope, SymbolKind::Variable))
@@ -451,74 +384,6 @@ std::optional<Symbol> Analyzer::lookup(const std::string &name) const {
   return current_scope->lookup(name);
 }
 
-// ===========================================================================
-// Type-parameter helpers
-// ===========================================================================
-
-uint32_t Analyzer::fresh_type_param_id() { return next_type_param_id++; }
-
-TypePtr Analyzer::resolve_constraint_bound(const IdentifierNode &constraint) {
-  if (auto sym = lookup(std::string(constraint.name))) {
-    if (sym->type && sym->type->kind == TypeKind::Interface)
-      return sym->type;
-    error(constraint.span,
-          std::format("'{}' is not an interface — a constraint must be an "
-                      "interface or one of integer, float, numeric",
-                      constraint.name));
-    return nullptr;
-  }
-  if (constraint.name == "Stringable" && builtins.stringable_iface)
-    return builtins.stringable_iface;
-  if (constraint.name == "Hashable" && builtins.hashable_iface)
-    return builtins.hashable_iface;
-  error(constraint.span,
-        std::format("unknown type constraint '{}' — expected an interface or "
-                    "one of integer, float, numeric",
-                    constraint.name));
-  return nullptr;
-}
-
-std::vector<TypeParam> Analyzer::enter_generics(const GenericNode &generic) {
-  std::vector<TypeParam> params;
-  for (auto &tp_node : generic.type_params) {
-    std::string_view name;
-    Span span = tp_node->span;
-    TypeConstraint constraint = TypeConstraint::None;
-    TypePtr bound;
-
-    if (auto *tp = std::get_if<TypeParamNode>(&tp_node->data)) {
-      name = tp->name.name;
-      span = tp->name.span;
-      if (tp->constraint) {
-        constraint = constraint_from_name(tp->constraint->name);
-        if (constraint == TypeConstraint::None)
-          bound = resolve_constraint_bound(*tp->constraint);
-      }
-    } else if (auto *ident = std::get_if<IdentifierNode>(&tp_node->data)) {
-      // Legacy / instantiation-position shape; no constraint slot.
-      name = ident->name;
-      span = ident->span;
-    } else {
-      continue; // shape unrecognised; analyzer cannot bind it
-    }
-
-    uint32_t id = fresh_type_param_id();
-    TypeParam tp{id, std::string(name), constraint};
-    auto tp_type = make_type_param(
-        id, tp.name, bound ? std::optional<TypePtr>(bound) : std::nullopt);
-    if (tp_type) {
-      auto &info = std::get<TypeParamInfo>(tp_type->detail);
-      info.param.constraint = constraint;
-    }
-
-    declare(Symbol::type_param(tp.name, tp_type, span));
-    current_scope->type_bindings[id] = tp_type;
-
-    params.push_back(std::move(tp));
-  }
-  return params;
-}
-
 std::unordered_map<uint32_t, TypePtr> Analyzer::current_type_bindings() const {
   return current_scope->all_type_bindings();
 }
@@ -533,6 +398,13 @@ void Analyzer::record_type(const Node &node, TypePtr type) {
   } else {
     node_types[&node] = std::move(type);
   }
+}
+
+TypePtr Analyzer::recorded_type(const Node &node) const {
+  auto &types =
+      current_instantiation_ ? current_instantiation_->node_types : node_types;
+  auto it = types.find(&node);
+  return it == types.end() ? nullptr : it->second;
 }
 
 void Analyzer::record_symbol(const Node &node, const Symbol &sym) {
@@ -573,7 +445,8 @@ void Analyzer::error(Span span, const std::string &message) {
                         fileset.position_at(call_node->span.start));
   }
 
-  errors.report_error(pos, full);
+  if (reported_.emplace(span.start, full).second)
+    errors.report_error(pos, full);
 }
 
 TypePtr Analyzer::poison(Span span, std::string reason) {

@@ -689,6 +689,16 @@ fn Identity<T>(x T) T { x }
 Generics are monomorphic. The compiler emits one copy per concrete type
 argument, so every argument must be known at compile time.
 
+A generic's body is checked once, where it is declared, with each type
+parameter standing for any type its bound admits. An error in the body is
+reported whether or not anything calls it, and a call fails only when its type
+argument does not meet a bound, never because of what the body does with it.
+A type parameter with no bound can be assigned, passed, returned, stored and
+captured; anything more it gets from its [bound](#Bounded-generics).
+
+A type argument may be an interface, except for a parameter the generic writes
+into a union such as `T | error`: a union holds only concrete types.
+
 A type argument is inferred from the values at the use site and is never
 written there — there is no `Box<int>{...}` form:
 
@@ -743,12 +753,28 @@ pub fn (p Pair<A, B>) Second() B { p.second }
 p := Pair{first: 1, second: "two"}
 ```
 
-Every type parameter a method uses must come from its receiver — that is the
-only place a call site has anything to bind one from. A method that declares
-its own is rejected:
+Every type parameter a method uses comes from its receiver — that is the only
+place a call site has anything to bind one from — so a method has no
+type-parameter list of its own:
 
 ```
-pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: U is unbound
+pub fn (b Box<T>) Map<U>(f fn(T) U) U { f(b.value) }  // error: no list here
+```
+
+A method is declared on every instance of its type, so the receiver names the
+type's parameters, never a type: `fn (n Node<int>) Sum()` is an error. Like any
+binding, a parameter may not shadow a type of the same name.
+
+A method may bound its receiver's parameter, by the same adjacency as any
+[bounded generic](#Bounded-generics). It is then a method of only the
+instances whose arguments meet the bound; on any other it is not callable and
+does not count toward an interface:
+
+```
+pub fn (b Box<T numeric>) Twice() T { b.value + b.value }
+
+Box{value: 21}.Twice()      // 42
+Box{value: "saga"}.Twice()  // error: Box<string> has no method 'Twice'
 ```
 
 A signature may name a generic struct, including the receiver's own type. The
@@ -808,16 +834,33 @@ value — only in a constraint slot.
 Each constraint implicitly permits the operators that are valid across every
 member of its set:
 
-- `integer`: `+`, `-`, `*`, `/`, `%`, comparison (`<`, `<=`, `>`, `>=`,
-  `==`, `!=`), bitwise (`&`, `|`, `^`, `<<`, `>>`)
-- `float`: `+`, `-`, `*`, `/`, comparison
-- `numeric`: `+`, `-`, `*`, `/`, comparison (no `%` or bitwise — not
+- `integer`: `+`, `-`, `*`, `/`, `%`, `**`, comparison (`<`, `<=`, `>`, `>=`,
+  `==`, `!=`), bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`), `++` and `--`
+- `float`: `+`, `-`, `*`, `/`, `**`, comparison
+- `numeric`: `+`, `-`, `*`, `/`, `**`, comparison (no `%` or bitwise — not
   valid on floats)
 
 Inside a function with a constrained generic, the listed operators are usable
-on the constrained type without further declaration. The compiler validates at
-instantiation that the actual type belongs to the constraint set; if not, the
-call fails with an error naming both the constraint and the offending type.
+on the constrained type without further declaration, and no others are. Both
+operands are the type parameter, except that a literal works with it when it
+fits every member of the set: an integer literal under any of the three
+constraints, a float literal only under `float`.
+
+```
+fn Poly<T numeric>(x T) T { x * x + 1 }   // ok
+fn Scale<T numeric>(x T) T { x * 0.5 }    // error: 0.5 is not every numeric
+fn Sum<T>(a T, b T) T { a + b }           // error: + needs a bound on T
+```
+
+Division keeps the result type of the set it divides: `T | error` under
+`integer`, since an integer divisor can be zero, and `T` under `float`. Under
+`numeric` the two disagree, so `/` there needs a divisor the compiler can see is
+non-zero (`x / 2`), for which both give `T`.
+
+The compiler checks at each call that the type argument belongs to the
+constraint set; if not, the call fails with an error naming both the constraint
+and the offending type. A type parameter meets a constraint when its own does:
+`integer` and `float` are both within `numeric`.
 
 An interface is also nameable as a constraint, which is how a generic requires
 behaviour rather than a built-in type set. The bound's methods are callable on
@@ -836,6 +879,57 @@ fn Describe<T Named>(x T) string { x.Name() }
 
 Describe(Cat{})  // cat
 ```
+
+A type parameter satisfies an interface bound through its own, so a generic
+passes its parameter on only to generics whose bounds its bound meets:
+
+```
+fn Greet<U Named>(x U) string { Describe(x) }  // ok
+fn Shout<U>(x U) string { Describe(x) }        // error: U does not satisfy Named
+```
+
+A bound is also what lets a parameter be interpolated or key a map: `{x}` is
+`x.String()` and needs `T Stringable`, and a map key needs `T Hashable`. A
+constraint gives its parameter the methods every type in its set has, so
+`T numeric` interpolates and `T integer` keys a map, while `T float` keys none:
+
+```
+fn Show<T Stringable>(x T) string { "<{x}>" }        // ok
+fn Twice<T numeric>(x T) string { "{x}{x}" }         // ok
+fn Index<T integer>(k T) map{T: string} { {k: "v"} } // ok
+fn Bad<T>(x T) string { "{x}" }   // error: T does not satisfy Stringable
+```
+
+A generic body holds for every type its parameter stands for, so it cannot ask
+which one it has: `x is int` on a `T` is an error.
+
+#### Bounded structs
+
+A struct's type parameters are bounded the same way. The bound is checked
+wherever the struct is instantiated, by a literal or by a type that names it,
+and it holds in every method without the receiver repeating it:
+
+```
+struct Box<T numeric> {
+  value T
+}
+
+pub fn (b Box<T>) Twice() T { b.value + b.value }  // T is numeric here
+
+Box{value: 21}.Twice()      // 42
+Box{value: "saga"}          // error: type string does not satisfy constraint numeric
+fn Show(b Box<string>) {}   // error: the same
+```
+
+Like a call, a generic names a bounded struct only with a parameter whose own
+bound meets the struct's: `fn Wrap<T>(x T) Box<T>` is an error, and
+`fn Wrap<T integer>(x T) Box<T>` is not.
+
+A [receiver bound](#Methods-on-a-generic-struct) adds to the struct's. The
+method's parameter must meet both, so `fn (b Box<T integer>) Half() T` is a
+method of `Box<int>` and not of `Box<float>`. A receiver bound that leaves no
+type the struct admits, such as `float` on a struct declared `integer`, is an
+error.
 
 ## Type Aliases
 
@@ -964,6 +1058,10 @@ type EnvironmentMap = map{string: map{string: int}}
 staging EnvironmentMap = {}
 ```
 
+A map finds a key by hashing it, so its key type must be `Hashable`: it has
+`Hash() int64` and an `Equals` that agrees with it. The integers, strings and
+bools are; floats are not, since `NaN` is not equal to itself.
+
 ## Array and Map Access
 
 Accessing an entry in an array or map uses the same syntax: `[expr]`. With 
@@ -1076,9 +1174,12 @@ io.Println("parity: {if n % 2 == 0 { "even" } else { "odd" }}")
 
 Multi-line strings interpolate on the same rule.
 
-Any type that implements a `Stringable` interface can be interpolated in a String.
-All the basic types can return their values as a string. Arrays and maps also
-implement a String() method to provide a representation of their data.
+An interpolated `{x}` is `x.String()`, so any `Stringable` value can be
+interpolated. All the basic types can return their values as a string. An array
+or map is `Stringable` when its elements are, or its keys and values: its
+`String()` is declared `fn (a array{T Stringable}) String() string`, a
+[receiver bound](#Methods-on-a-generic-struct), so `[1, 2]` interpolates and an
+array of a struct without `String()` does not.
 
 For a struct type to be used as an expression in an interpolation, it must
 implement the `Stringable` interface.
@@ -1251,9 +1352,9 @@ struct Node<T> {
 Walk a recursive shape by narrowing, the same as any other union:
 
 ```
-fn (n Node) Sum() int {
+fn (n Node<T numeric>) Sum() T {
   t := n.tail
-  if t is Node {
+  if t is Node<T> {
     n.value + t.Sum()
   } else {
     n.value

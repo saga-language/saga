@@ -112,8 +112,10 @@ TypePtr Analyzer::resolve_union_type(const UnionTypeNode &node) {
     auto rt = resolve_type(*t);
     alts.push_back(rt);
 
-    // Rule 1 — concrete types only. A TypeParam is allowed (concrete after
-    // instantiation); an interface (by any alias) is not.
+    // Rule 1 — concrete types only. A TypeParam is allowed, and no interface
+    // may then stand for it.
+    if (rt && rt->kind == TypeKind::TypeParam)
+      note_union_param(rt);
     if (auto u = unwrap_alias(rt); u && u->kind == TypeKind::Interface) {
       error(t->span,
             std::format("a type union may only contain concrete types; "
@@ -200,6 +202,15 @@ Analyzer::resolve_generic_type_app(const GenericTypeAppNode &node) {
   // snapshot an empty field list.
   if (resolving_structs_.count(info.name) && names_own_params(info, args))
     return base;
+
+  bool met = true;
+  for (size_t i = 0; i < args.size(); ++i)
+    if (!is_invalid_type(args[i]))
+      met = report_unmet_bound(args[i], info.type_params[i],
+                               node.type_args[i]->span) &&
+            met;
+  if (!met)
+    return builtins.invalid_type;
 
   // Build bindings and instantiate.
   std::unordered_map<uint32_t, TypePtr> bindings;
