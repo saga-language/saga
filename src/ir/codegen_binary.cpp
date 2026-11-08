@@ -61,9 +61,9 @@ const FuncTypeInfo *operator_method_signature(const StructTypeInfo &info,
 
 llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
                                        const Node &parent) {
-  auto lhs_sem = semantic_type(*node.lhs);
-  if (auto rhs_sem = semantic_type(*node.rhs);
-      compares_errors(node.op, lhs_sem, rhs_sem))
+  auto lhs_sem = operand_type(*node.lhs);
+  auto rhs_sem = operand_type(*node.rhs);
+  if (compares_errors(node.op, lhs_sem, rhs_sem))
     return emit_error_equality(node, lhs_sem, rhs_sem);
   if (lhs_sem && lhs_sem->kind == TypeKind::Struct)
     if (auto *method = struct_operator_method_of(parent))
@@ -277,7 +277,7 @@ llvm::Value *CodeGen::emit_struct_binary_op(const BinaryExprNode &node,
 
   auto *callee =
       forward_declare_method(struct_method_link_name(info, method), *method_fi);
-  auto *self = emit_borrowed(*node.lhs);
+  auto *self = emit_borrowed_operand(*node.lhs);
   auto *rhs_val = emit_argument(
       *node.rhs, method_fi->params.empty() ? nullptr : method_fi->params[0],
       true);
