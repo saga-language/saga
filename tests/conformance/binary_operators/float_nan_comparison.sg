@@ -1,0 +1,13 @@
+// Spec: floats compare as IEEE 754 says: NaN is unequal to everything, itself
+// included, and unordered against everything.
+import "std/io"
+
+pub fn Main() void {
+  zero := 0.0
+  nan := zero / zero
+
+  io.Println("{nan != nan} {nan == nan}")
+  io.Println("{nan != 1.5} {1.5 != nan}")
+  io.Println("{nan < 1.5} {nan > 1.5} {nan <= 1.5} {nan >= 1.5}")
+  io.Println("{1.5 != 1.5} {1.5 != 2.5} {1.5 == 1.5}")
+}

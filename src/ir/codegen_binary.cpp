@@ -25,7 +25,7 @@ std::optional<Comparison> comparison_of(Token::Kind op) {
   case K::Equal:
     return Comparison{P::ICMP_EQ, P::FCMP_OEQ, "eq"};
   case K::NotEqual:
-    return Comparison{P::ICMP_NE, P::FCMP_ONE, "ne"};
+    return Comparison{P::ICMP_NE, P::FCMP_UNE, "ne"};
   case K::LessThan:
     return Comparison{P::ICMP_SLT, P::FCMP_OLT, "lt"};
   case K::LessThanEqual:
