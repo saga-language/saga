@@ -61,6 +61,8 @@ const FuncTypeInfo *operator_method_signature(const StructTypeInfo &info,
 
 llvm::Value *CodeGen::emit_binary_expr(const BinaryExprNode &node,
                                        const Node &parent) {
+  if (node.op == Token::Kind::LogicalAnd || node.op == Token::Kind::LogicalOr)
+    return emit_logical_expr(node);
   auto lhs_sem = operand_type(*node.lhs);
   auto rhs_sem = operand_type(*node.rhs);
   if (compares_errors(node.op, lhs_sem, rhs_sem))
@@ -146,10 +148,6 @@ llvm::Value *CodeGen::emit_int_op(Token::Kind op, llvm::Value *lhs,
     return emit_int_division(op, lhs, rhs, parent);
   case K::Pow:
     return emit_int_pow(lhs, rhs);
-  case K::LogicalAnd:
-    return builder.CreateAnd(lhs, rhs, "and");
-  case K::LogicalOr:
-    return builder.CreateOr(lhs, rhs, "or");
   case K::BitwiseAnd:
     return builder.CreateAnd(lhs, rhs, "band");
   case K::BitwiseOr:

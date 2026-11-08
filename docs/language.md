@@ -2235,6 +2235,16 @@ Arithmetic operators apply to numeric types (`+` also concatenates strings).
 Enums and errors are identity/data types: they support equality but no
 arithmetic, and they cannot overload it.
 
+### Short-circuit evaluation
+
+`&&` and `||` run their right operand only when the left has not settled the
+answer. `false && f()` and `true || f()` never call `f`, and a right operand
+that does not run cannot fail:
+
+```
+ok := i < xs.Size() && xs[i] > 0 or { false }  // no miss when the guard is false
+```
+
 ### Operator overloading
 
 A struct gives an operator meaning by declaring the method that operator looks

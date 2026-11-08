@@ -799,6 +799,7 @@ private:
   llvm::Function *get_or_declare_memcmp();
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
+  llvm::Value *emit_logical_expr(const BinaryExprNode &node);
   llvm::Value *as_condition(llvm::Value *val);
   void start_block(llvm::BasicBlock *block);
 
