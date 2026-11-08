@@ -144,6 +144,7 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   int add = Parser::infix_binding_power(Token::Kind::Add);
   int bitwise = Parser::infix_binding_power(Token::Kind::BitwiseAnd);
   int cmp = Parser::infix_binding_power(Token::Kind::Equal);
+  int is = Parser::infix_binding_power(Token::Kind::Is);
   int land = Parser::infix_binding_power(Token::Kind::LogicalAnd);
   int lor = Parser::infix_binding_power(Token::Kind::LogicalOr);
   int or_bp = Parser::infix_binding_power(Token::Kind::Or);
@@ -153,8 +154,9 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   EXPECT_GT(mul, add);
   EXPECT_GT(add, bitwise);
   EXPECT_GT(bitwise, cmp);
+  EXPECT_EQ(cmp, is);
   EXPECT_GT(cmp, land);
-  EXPECT_GT(land, lor);
+  EXPECT_EQ(land, lor);
   EXPECT_GT(lor, or_bp);
   EXPECT_GT(or_bp, 0);
 }
@@ -2015,24 +2017,62 @@ TEST_F(ParserInfixTest, BinaryComparison) {
 }
 
 TEST_F(ParserInfixTest, BinaryLogical) {
-  // a && b || c  →  (a && b) || c
-  auto r = ExprResult::from("a && b || c");
+  // a && b && c  →  (a && b) && c
+  auto r = ExprResult::from("a && b && c");
   EXPECT_TRUE(r.errors.empty());
-  auto *lor = r.as<BinaryExprNode>();
-  ASSERT_NE(lor, nullptr);
-  EXPECT_EQ(lor->op, Token::Kind::LogicalOr);
-  auto *land = std::get_if<BinaryExprNode>(&lor->lhs->data);
-  ASSERT_NE(land, nullptr);
-  EXPECT_EQ(land->op, Token::Kind::LogicalAnd);
+  auto *outer = r.as<BinaryExprNode>();
+  ASSERT_NE(outer, nullptr);
+  EXPECT_EQ(outer->op, Token::Kind::LogicalAnd);
+  auto *inner = std::get_if<BinaryExprNode>(&outer->lhs->data);
+  ASSERT_NE(inner, nullptr);
+  EXPECT_EQ(inner->op, Token::Kind::LogicalAnd);
 }
 
 TEST_F(ParserInfixTest, BinaryBitwise) {
-  auto r = ExprResult::from("a & b | c ^ d");
+  // a | b | c  →  (a | b) | c
+  auto r = ExprResult::from("a | b | c");
   EXPECT_TRUE(r.errors.empty());
-  auto *top = r.as<BinaryExprNode>();
-  ASSERT_NE(top, nullptr);
-  // All bitwise ops share bp=60, so left-associative: ((a & b) | c) ^ d
-  EXPECT_EQ(top->op, Token::Kind::BitwiseXor);
+  auto *outer = r.as<BinaryExprNode>();
+  ASSERT_NE(outer, nullptr);
+  EXPECT_EQ(outer->op, Token::Kind::BitwiseOr);
+  EXPECT_NE(std::get_if<BinaryExprNode>(&outer->lhs->data), nullptr);
+}
+
+TEST_F(ParserInfixTest, IsBindsAsAComparison) {
+  // a && b is T  →  a && (b is T)
+  auto r = ExprResult::from("a && b is T");
+  EXPECT_TRUE(r.errors.empty());
+  auto *logical = r.as<BinaryExprNode>();
+  ASSERT_NE(logical, nullptr);
+  EXPECT_EQ(logical->op, Token::Kind::LogicalAnd);
+  EXPECT_NE(std::get_if<IsExpr>(&logical->rhs->data), nullptr);
+}
+
+TEST_F(ParserInfixTest, MixesWithNoOrderNeedParentheses) {
+  const char *mixes[] = {
+      "a || b && c", "a && b || c",  "a == b == c", "a < b == c",
+      "a == b is T", "a is T == b",  "a is T is U", "a | b & c",
+      "a & b | c",   "a ^ b | c",    "a << b >> c", "a << b | c",
+      "a << b + c",  "a + b << c",   "a & b + c",   "a * b | c",
+      "a ** b & c",  "-a ** b",      "!a ** b",     "~a ** b",
+  };
+  for (const char *mix : mixes)
+    EXPECT_FALSE(ExprResult::from(mix).errors.empty()) << mix;
+}
+
+TEST_F(ParserInfixTest, OrderedMixesNeedNoParentheses) {
+  const char *mixes[] = {
+      "a + b * c",      "a * b ** c",     "a - b + c",     "a * b % c",
+      "a < b && c > d", "a && b == c",    "a == b && c",   "a && b is T",
+      "a is T && b",    "a + b is T",     "a & b == c",    "a == b & c",
+      "a | b | c",      "a & b & c",      "a ^ b ^ c",     "a << b << c",
+      "a || b || c",    "a && b && c",    "b ** -c",       "a ** b ** c",
+      "-a * b",         "~a & b",         "(a || b) && c", "a || (b && c)",
+      "(a == b) == c",  "(a == b) is T",  "(a | b) & c",   "(a + b) & c",
+      "a & (b + c)",    "(-a) ** b",      "-(a ** b)",
+  };
+  for (const char *mix : mixes)
+    EXPECT_TRUE(ExprResult::from(mix).errors.empty()) << mix;
 }
 
 TEST_F(ParserInfixTest, BinaryModulo) {

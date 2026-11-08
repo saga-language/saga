@@ -1,0 +1,30 @@
+// Spec: an order exists only where readers already know it or where only one
+// grouping can compile (docs/language.md, Precedence).
+import "std/io"
+
+fn tests_int(x int | string, flag bool) bool {
+  flag && x is int
+}
+
+fn tests_first(x int | string, flag bool) bool {
+  x is int && flag
+}
+
+pub fn Main() void {
+  io.Println("{1 + 2 * 3} {2 * 3 ** 2} {2 ** 3 ** 2} {2.0 ** -1.0}")
+
+  yes := true
+  no := false
+  io.Println("{1 < 2 && 3 > 2} {6 & 2 == 2} {no && no == no}")
+
+  io.Println("{tests_int(1, true)} {tests_int("a", true)} {tests_int(1, false)}")
+  io.Println("{tests_first(1, true)} {tests_first("a", true)} {tests_first(1, false)}")
+  io.Println("{no && yes is bool} {yes && yes is bool}")
+
+  io.Println("{(yes || no) && no} {yes || (no && no)}")
+  io.Println("{(1 == 1) == true} {(1 == 2) == false}")
+  io.Println("{(1 | 2) & 0} {1 | (2 & 0)}")
+  io.Println("{(1 << 2) + 3} {1 << (2 + 3)}")
+  io.Println("{(-2) ** 2} {-(2 ** 2)}")
+  io.Println("{1 | 2 | 4} {1 << 2 << 3} {7 & 6 & 3} {1 ^ 2 ^ 3}")
+}

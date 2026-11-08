@@ -2228,12 +2228,50 @@ operator.
   `**` (exponential), `%` (modulus)
 **Bitwise**: `&` (AND), `|` (OR), `^` (XOR), `~` (NOT), `<<` (Left shift),
   `>>` (Right shift)
-**Logical**: `==` (Equal), `!=` (Not Equal), `>` (Greater), `<` (Less), 
-  `>=` (Greater than or Equal), `<=` (Less than or Equal), `&&` (and), `||` (or)
+**Comparison**: `==` (Equal), `!=` (Not Equal), `>` (Greater), `<` (Less),
+  `>=` (Greater than or Equal), `<=` (Less than or Equal), `is` (Type test)
+**Logical**: `&&` (and), `||` (or)
 
 Arithmetic operators apply to numeric types (`+` also concatenates strings).
 Enums and errors are identity/data types: they support equality but no
 arithmetic, and they cannot overload it.
+
+### Precedence
+
+Operators bind in this order, tightest first:
+
+| Level | Operators |
+|---|---|
+| Unary | `!` `-` `~` |
+| Power | `**` |
+| Multiply | `*` `/` `%` |
+| Add | `+` `-` |
+| Bitwise | `&` `\|` `^` `<<` `>>` |
+| Comparison | `==` `!=` `>` `<` `>=` `<=` `is` |
+| Logical | `&&` `\|\|` |
+| Or | `or` |
+
+An order exists only where readers already know it, as in `a + b * c`, or where
+only one grouping can compile, as in `a < b && c > d`, because `b && c` is not
+something `<` can take. So a comparison forms a clause and a logical operator
+joins clauses: `ready && count == 0` and `ready && x is int` read the way they
+would in a sentence, and `a && b == c` is `a && (b == c)` even when `b` and `c`
+are bools.
+
+Any other mix has no order, and is an error until parentheses say which part
+goes first:
+
+```
+a || b && c      // error: && and || have no order
+a == b == c      // error: comparisons do not chain
+a == b is bool   // error: is is a comparison
+a | b & c        // error: bitwise operators have no order among themselves
+a << b + c       // error: nor with arithmetic
+-a ** b          // error: (-a) ** b or -(a ** b)?
+```
+
+One operator repeated needs no parentheses: `a | b | c` and `a && b && c` group
+from the left, and `a ** b ** c` from the right.
 
 ### Short-circuit evaluation
 

@@ -165,6 +165,10 @@ private:
   /// Parse a "left denotation" — infix/postfix position: binary ops,
   /// call, index, selector, `or`.
   NodePtr parse_infix(NodePtr lhs, int bp);
+  NodePtr parse_is_expr(NodePtr lhs);
+  NodePtr parse_binary_expr(NodePtr lhs, int bp);
+  void report_grouping_error(const Token &op,
+                             const std::optional<std::string> &message);
 
   // ── Primary / Atom Expressions ───────────────────────────────────────
 

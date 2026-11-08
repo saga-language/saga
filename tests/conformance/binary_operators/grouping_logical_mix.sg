@@ -1,0 +1,6 @@
+// Spec: && and || have no order between them (docs/language.md, Precedence).
+import "std/io"
+
+pub fn Main() void {
+  io.Println("{true || false && false}")
+}

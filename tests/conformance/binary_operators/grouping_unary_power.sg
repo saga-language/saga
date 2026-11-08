@@ -1,0 +1,7 @@
+// Spec: a unary on the left of ** could apply to the base or the result
+// (docs/language.md, Precedence).
+import "std/io"
+
+pub fn Main() void {
+  io.Println("{-2 ** 2}")
+}

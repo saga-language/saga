@@ -1,0 +1,7 @@
+// Spec: a bitwise operator has no order with arithmetic
+// (docs/language.md, Precedence).
+import "std/io"
+
+pub fn Main() void {
+  io.Println("{1 << 2 + 3}")
+}

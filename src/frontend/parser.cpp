@@ -3,6 +3,7 @@
 
 #include "frontend/parser.hpp"
 #include "frontend/ast.hpp"
+#include "frontend/operator_grouping.hpp"
 #include "frontend/token.hpp"
 
 #include <string>
@@ -596,17 +597,16 @@ Span Parser::span_from(size_t start) const {
 // A return value of 0 means the token is not an infix operator and the
 // Pratt loop should stop.
 //
-// Precedence levels (highest to lowest, matching AGENTS.md and grammar.md):
+// Precedence levels (highest to lowest, matching grammar.md). Operands the table
+// can't order are refused in operator_grouping.cpp.
 //
 //   100  Access:      .  [  (
 //    90  Power:       **               (right-associative: see parse_infix)
 //    80  Multiply:    *  /  %
 //    70  Add:         +  -
 //    60  Bitwise:     &  |  ^  <<  >>
-//    50  Comparison:  ==  !=  >  <  >=  <=
-//    40  Logical AND: &&
-//    30  Logical OR:  ||
-//    25  Slice:       ..
+//    50  Comparison:  ==  !=  >  <  >=  <=  is
+//    40  Logical:     &&  ||
 //    20  Or clause:   or
 int Parser::infix_binding_power(Token::Kind kind) {
   switch (kind) {
@@ -647,19 +647,15 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::LessThanEqual:
   case Token::Kind::GreaterThan:
   case Token::Kind::GreaterThanEqual:
+  case Token::Kind::Is:
     return 50;
 
   // 7. Logical
   case Token::Kind::LogicalAnd:
-    return 40;
   case Token::Kind::LogicalOr:
-    return 30;
+    return 40;
 
-  // 9. Type test (`is`) — looser than logical, tighter than `or`
-  case Token::Kind::Is:
-    return 23;
-
-  // 10. Or clause (error resolution)
+  // 8. Or clause (error resolution)
   case Token::Kind::Or:
     return 20;
 
@@ -679,8 +675,8 @@ int Parser::infix_binding_power(Token::Kind kind) {
 // it binds to the expression on its right.
 //
 // All prefix operators sit between Access (100) and Power (90) in the
-// precedence hierarchy, so `- 2 ** 3` parses as `(-2) ** 3`, matching the
-// grammar's stated ordering (Unary > Power).
+// precedence hierarchy, so a unary on the left of `**` is seen as its base, and
+// refused there (operator_grouping.cpp).
 //
 // Operators: ! (logical not), - (arithmetic negation), ~ (bitwise not)
 int Parser::prefix_binding_power(Token::Kind kind) {
@@ -1317,9 +1313,8 @@ NodePtr Parser::parse_prefix() {
   // Grammar: UnaryExpr = unary_operator PrimaryExpr
   //          unary_operator = "!" | "-" | "~"
   //
-  // All three share rbp = 95, placing them above Power (90) so that
-  // `-2 ** 3` parses as `(-2) ** 3`, and below Access (100) so that
-  // `-arr[0]` parses as `-(arr[0])`.
+  // All three share rbp = 95, placing them above Power (90) and below Access
+  // (100) so that `-arr[0]` parses as `-(arr[0])`.
   case Token::Kind::Not:
   case Token::Kind::Sub:
   case Token::Kind::BitwiseNot: {
@@ -1423,34 +1418,42 @@ NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
   case Token::Kind::Or:
     return parse_or_expr(std::move(lhs));
 
-  // Type test: `value is Type` — RHS is a Type, not an expression.
-  case Token::Kind::Is: {
-    advance(); // consume "is"
-    NodePtr type = parse_type();
-    if (!type)
-      return nullptr;
-    return make_node<IsExpr>(span_from(start_offset), std::move(lhs),
-                             std::move(type));
-  }
+  case Token::Kind::Is:
+    return parse_is_expr(std::move(lhs));
 
-  case Token::Kind::Pow: {
-    Token op = advance();
-    NodePtr rhs = parse_expr_bp(bp - 1);
-    if (!rhs)
-      return nullptr;
-    return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
-                                     op.kind, std::move(rhs));
+  default:
+    return parse_binary_expr(std::move(lhs), bp);
   }
+}
 
-  default: {
-    Token op = advance();
-    NodePtr rhs = parse_expr_bp(bp);
-    if (!rhs)
-      return nullptr;
-    return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
-                                     op.kind, std::move(rhs));
-  }
-  }
+// `value is Type` — the right side is a Type, not an expression.
+NodePtr Parser::parse_is_expr(NodePtr lhs) {
+  auto start_offset = lhs->span.start;
+  Token op = advance();
+  report_grouping_error(op, left_operand_grouping_error(op.kind, *lhs));
+  NodePtr type = parse_type();
+  if (!type)
+    return nullptr;
+  return make_node<IsExpr>(span_from(start_offset), std::move(lhs),
+                           std::move(type));
+}
+
+NodePtr Parser::parse_binary_expr(NodePtr lhs, int bp) {
+  auto start_offset = lhs->span.start;
+  Token op = advance();
+  NodePtr rhs = parse_expr_bp(op.kind == Token::Kind::Pow ? bp - 1 : bp);
+  if (!rhs)
+    return nullptr;
+  report_grouping_error(op, left_operand_grouping_error(op.kind, *lhs));
+  report_grouping_error(op, right_operand_grouping_error(op.kind, *rhs));
+  return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
+                                   op.kind, std::move(rhs));
+}
+
+void Parser::report_grouping_error(const Token &op,
+                                   const std::optional<std::string> &message) {
+  if (message)
+    errors.report_error(fileset.position_at(op.offset), *message);
 }
 
 // parse_selector — Selector = PrimaryExpr "." Identifier

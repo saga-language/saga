@@ -93,10 +93,15 @@ TypeList    = Type { "," Type } ;
 //   4. Multiply:  * / %
 //   5. Add:       + -
 //   6. Bitwise:   & | ^ << >>
-//   7. Compare:   == != > < >= <=
+//   7. Compare:   == != > < >= <= is
 //   8. Logical:   && ||              (lazy / short-circuit)
-//   9. Type test: is
-//  10. Or:        or
+//   9. Or:        or
+//
+// These mixes have no order and are errors without parentheses:
+//   - && beside ||
+//   - two Compare operators, as in a == b == c or a == b is T
+//   - a Bitwise operator beside a different one or beside any arithmetic
+//   - a Unary operator on the left of **
 //
 // Precedence is enforced by the parser; the productions below are flat (an
 // operator grammar) and defer to the table above, matching the implementation.
@@ -178,10 +183,11 @@ break_statement = "break" [ Expression ] ;
 next_statement  = "next" ;                       // continue
 
 assignment_operator = ":=" | "=" | "+=" | "-=" | "*=" | "/=" ;
-binary_operator     = arithmetic_operator | bitwise_operator | logical_operator ;
+binary_operator     = arithmetic_operator | bitwise_operator | comparison_operator | logical_operator ;
 arithmetic_operator = "+" | "-" | "*" | "/" | "**" | "%" ;
 bitwise_operator    = "&" | "|" | "^" | "~" | "<<" | ">>" ;
-logical_operator    = "==" | "!=" | ">" | "<" | ">=" | "<=" | "&&" | "||" ;
+comparison_operator = "==" | "!=" | ">" | "<" | ">=" | "<=" ;
+logical_operator    = "&&" | "||" ;
 unary_operator      = "!" | "-" | "~" ;
 
 /* Identifiers / visibility */

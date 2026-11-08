@@ -1,0 +1,7 @@
+// Spec: `is` is a comparison, and comparisons do not chain
+// (docs/language.md, Precedence).
+import "std/io"
+
+pub fn Main() void {
+  io.Println("{true == false is bool}")
+}
