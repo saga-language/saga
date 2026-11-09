@@ -1,0 +1,13 @@
+// Spec: a `|` beside an accumulator pipe belongs to the pipe, and any other
+// arithmetic or bitwise operator still works there.
+import "std/io"
+
+pub fn Main() void {
+  n := 3
+  add := for i : 1..n + 1 |acc int = n - 1| { acc += i }
+  multiply := for i : 0..n * 2 |acc int = n << 1| { acc += i }
+  xor := for i : 0..n ^ 1 |acc int = n ^ 1| { acc += i }
+  bit_or := for i : 0..n & 2 |acc int = (n | 4)| { acc += i }
+  bound := for i : 0..(n | 4) |acc int| { acc += i }
+  io.Println("{add} {multiply} {xor} {bit_or} {bound}")
+}

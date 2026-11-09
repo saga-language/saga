@@ -157,6 +157,7 @@ private:
   /// Pratt expression parser core.  `min_bp` is the minimum binding
   /// power the caller will accept (0 for top-level).
   NodePtr parse_expr_bp(int min_bp);
+  NodePtr parse_expr_before_pipe();
 
   /// Parse a "null denotation" — prefix position: literals, identifiers,
   /// unary ops, grouped expressions, if/for/switch/fn/spawn/import.
@@ -201,8 +202,9 @@ private:
 
   NodePtr parse_call_args(NodePtr callee);      // after "("
   NodePtr parse_index_or_slice(NodePtr object); // after "["
-  /// `low ".." high`, positioned on the "..", fencing the high bound at max_bp.
-  NodePtr parse_range(NodePtr low, size_t start, int max_bp);
+  /// `low ".." high`, positioned on the "..", reading high with parse_bound.
+  NodePtr parse_range(NodePtr low, size_t start,
+                      NodePtr (Parser::*parse_bound)());
   NodePtr parse_selector(NodePtr object);       // after "."
   NodePtr parse_or_expr(NodePtr expr);          // after "or"
   std::optional<IdentifierNode> parse_pipe();   // "|" ident "|"

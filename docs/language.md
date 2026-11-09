@@ -2068,6 +2068,10 @@ product := for i : arr |acc = 1| { acc *= i }          // => 24
 offset := for i : arr |acc int = 100| { acc += i }     // => 110
 ```
 
+In a `for` header, a `|` beside the pipe belongs to the pipe. A bitwise-or, a
+comparison or a logical operator in the subject or the initializer goes in
+parentheses: `for i : 0..(n | 4) |acc int = (a == b)| { ... }`.
+
 Without an initializer it starts at the zero value of its type, which for a
 collection is the empty one and not a null:
 

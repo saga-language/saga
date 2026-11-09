@@ -1265,6 +1265,21 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
   return lhs;
 }
 
+// A "|" here opens or closes a pipe, so a bitwise-or needs parentheses. Nothing
+// looser than "|" is admitted: its right operand would read the pipe as an
+// operator, out of reach of this check.
+NodePtr Parser::parse_expr_before_pipe() {
+  const int min_bp = infix_binding_power(Token::Kind::BitwiseOr) - 1;
+  NodePtr lhs = parse_prefix();
+  while (lhs && !check(Token::Kind::BitwiseOr)) {
+    int bp = infix_binding_power(current.kind);
+    if (bp <= min_bp)
+      break;
+    lhs = parse_infix(std::move(lhs), bp);
+  }
+  return lhs;
+}
+
 // parse_prefix — null denotation (nud): tokens that begin an expression.
 //
 // Dispatch table (Group 1 — no parse_block dependency):
@@ -2426,9 +2441,7 @@ std::optional<AccumulatorNode> Parser::parse_accumulator_pipe() {
   std::optional<NodePtr> init;
   if (check(Token::Kind::Assignment)) {
     advance();
-    // parse_expr_bp(60) stops before the closing "|", which is an infix
-    // bitwise-or at that power.  Parenthesise one that is genuinely wanted.
-    init = parse_expr_bp(60);
+    init = parse_expr_before_pipe();
   }
 
   expect(Token::Kind::BitwiseOr); // consume closing "|"
@@ -2606,12 +2619,13 @@ NodePtr Parser::parse_group_expr() {
 // parse_range — Range = Expression ".." Expression
 //
 // The low bound is already in hand; the caller is positioned on the "..".
-// max_bp fences the high bound the same way the caller fenced the low one.
-NodePtr Parser::parse_range(NodePtr low, size_t start, int max_bp) {
+// parse_bound reads the high bound the same way the caller read the low one.
+NodePtr Parser::parse_range(NodePtr low, size_t start,
+                            NodePtr (Parser::*parse_bound)()) {
   advance(); // consume ".."
   skip_terminators();
 
-  NodePtr high = parse_expr_bp(max_bp);
+  NodePtr high = (this->*parse_bound)();
   if (!high)
     return nullptr;
 
@@ -2633,7 +2647,8 @@ NodePtr Parser::parse_array_literal() {
     // `[0..10]` generates its elements rather than listing them, so a ".." at
     // the first one is the whole literal.
     if (elements.size() == 1 && check(Token::Kind::DotDot)) {
-      NodePtr range = parse_range(std::move(elements.front()), start, 0);
+      NodePtr range = parse_range(std::move(elements.front()), start,
+                                  &Parser::parse_expression);
       skip_terminators_before(Token::Kind::RightBracket);
       expect(Token::Kind::RightBracket);
       return range;
@@ -3354,16 +3369,13 @@ NodePtr Parser::parse_for_expr() {
       }
 
       expect(Token::Kind::Colon);
-      // parse_expr_bp(60): stop before "{" (bp 1) AND before "|" (bp 60).
-      // BitwiseOr would otherwise consume the accumulator pipe "|acc|" as
-      // an infix operator.  Bitwise operations on iterables are not
-      // meaningful; parenthesise if ever needed: `for i : (a | b) |acc|`.
       auto iterable_start = mark();
-      NodePtr iterable = parse_expr_bp(60);
+      NodePtr iterable = parse_expr_before_pipe();
 
       // `for i : 0..10` counts instead of iterating a collection.
       if (check(Token::Kind::DotDot))
-        iterable = parse_range(std::move(iterable), iterable_start, 60);
+        iterable = parse_range(std::move(iterable), iterable_start,
+                               &Parser::parse_expr_before_pipe);
 
       mode = make_node<ForRangeClauseNode>(
           span_from(mode_start), std::move(vars), std::move(iterable));
