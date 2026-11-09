@@ -2246,36 +2246,37 @@ Operators bind in this order, tightest first:
 
 | Level | Operators |
 |---|---|
-| Unary | `!` `-` `~` |
 | Power | `**` |
-| Multiply | `*` `/` `%` |
-| Add | `+` `-` |
-| Bitwise | `&` `\|` `^` `<<` `>>` |
+| Unary | `!` `-` `~` |
+| Multiply | `*` `/` `%` `<<` `>>` `&` |
+| Add | `+` `-` `\|` `^` |
 | Comparison | `==` `!=` `>` `<` `>=` `<=` `is` |
-| Logical | `&&` `\|\|` |
+| Logical and | `&&` |
+| Logical or | `\|\|` |
 | Or | `or` |
 
-An order exists only where readers already know it, as in `a + b * c`, or where
-only one grouping can compile, as in `a < b && c > d`, because `b && c` is not
-something `<` can take. So a comparison forms a clause and a logical operator
-joins clauses: `ready && count == 0` and `ready && x is int` read the way they
-would in a sentence, and `a && b == c` is `a && (b == c)` even when `b` and `c`
-are bools.
-
-Any other mix has no order, and is an error until parentheses say which part
-goes first:
+Operators on one level group from the left, so `a - b + c` is `(a - b) + c`, and
+only `**` groups from the right. No mix of operators requires parentheses, though
+they are always allowed. Each of these parses as its comment says:
 
 ```
-a || b && c      // error: && and || have no order
-a == b == c      // error: comparisons do not chain
-a == b is bool   // error: is is a comparison
-a | b & c        // error: bitwise operators have no order among themselves
-a << b + c       // error: nor with arithmetic
--a ** b          // error: (-a) ** b or -(a ** b)?
+-2 ** 2              // -(2 ** 2), which is -4
+a * b ** c           // a * (b ** c)
+1 << 2 + 3           // (1 << 2) + 3, which is 7
+1 + 2 << 3           // 1 + (2 << 3), which is 17
+1 + 2 & 2            // 1 + (2 & 2), which is 3
+1 | 2 & 0            // 1 | (2 & 0), which is 1
+1 | 2 ^ 3            // (1 | 2) ^ 3, which is 0
+ready && count == 0  // ready && (count == 0)
+ready && x is int    // ready && (x is int)
+a == b == c          // (a == b) == c
+a == b is bool       // (a == b) is bool
+a || b && c          // a || (b && c)
 ```
 
-One operator repeated needs no parentheses: `a | b | c` and `a && b && c` group
-from the left, and `a ** b ** c` from the right.
+A shift multiplies or divides by a power of two and `&` multiplies single bits, so
+they sit with `*`. `|` and `^` are the matching additions, so they sit with `+`.
+`&&` over `||` is the same AND over OR as `&` over `|`.
 
 ### Short-circuit evaluation
 

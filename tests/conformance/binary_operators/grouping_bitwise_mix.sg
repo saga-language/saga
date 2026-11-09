@@ -1,7 +1,0 @@
-// Spec: bitwise operators have no order among themselves
-// (docs/language.md, Precedence).
-import "std/io"
-
-pub fn Main() void {
-  io.Println("{1 | 2 & 0}")
-}

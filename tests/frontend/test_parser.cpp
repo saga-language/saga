@@ -142,7 +142,6 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   int pow = Parser::infix_binding_power(Token::Kind::Pow);
   int mul = Parser::infix_binding_power(Token::Kind::Multiply);
   int add = Parser::infix_binding_power(Token::Kind::Add);
-  int bitwise = Parser::infix_binding_power(Token::Kind::BitwiseAnd);
   int cmp = Parser::infix_binding_power(Token::Kind::Equal);
   int is = Parser::infix_binding_power(Token::Kind::Is);
   int land = Parser::infix_binding_power(Token::Kind::LogicalAnd);
@@ -152,11 +151,10 @@ TEST_F(ParserPrattTest, InfixBP_PrecedenceOrder) {
   EXPECT_GT(access, pow);
   EXPECT_GT(pow, mul);
   EXPECT_GT(mul, add);
-  EXPECT_GT(add, bitwise);
-  EXPECT_GT(bitwise, cmp);
+  EXPECT_GT(add, cmp);
   EXPECT_EQ(cmp, is);
   EXPECT_GT(cmp, land);
-  EXPECT_EQ(land, lor);
+  EXPECT_GT(land, lor);
   EXPECT_GT(lor, or_bp);
   EXPECT_GT(or_bp, 0);
 }
@@ -175,20 +173,20 @@ TEST_F(ParserPrattTest, InfixBP_SameLevelOperators_EqualBP) {
             Parser::infix_binding_power(Token::Kind::Divide));
   EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Multiply),
             Parser::infix_binding_power(Token::Kind::Modulo));
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Multiply),
+            Parser::infix_binding_power(Token::Kind::BitwiseAnd));
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Multiply),
+            Parser::infix_binding_power(Token::Kind::LeftShift));
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Multiply),
+            Parser::infix_binding_power(Token::Kind::RightShift));
 
   // Additive
   EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Add),
             Parser::infix_binding_power(Token::Kind::Sub));
-
-  // Bitwise
-  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::BitwiseAnd),
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Add),
             Parser::infix_binding_power(Token::Kind::BitwiseOr));
-  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::BitwiseAnd),
+  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Add),
             Parser::infix_binding_power(Token::Kind::BitwiseXor));
-  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::BitwiseAnd),
-            Parser::infix_binding_power(Token::Kind::LeftShift));
-  EXPECT_EQ(Parser::infix_binding_power(Token::Kind::BitwiseAnd),
-            Parser::infix_binding_power(Token::Kind::RightShift));
 
   // Comparison
   EXPECT_EQ(Parser::infix_binding_power(Token::Kind::Equal),
@@ -218,11 +216,11 @@ TEST_F(ParserPrattTest, PrefixBP_UnaryOperators_EqualBP) {
             Parser::prefix_binding_power(Token::Kind::BitwiseNot));
 }
 
-// Unary prefix must bind more tightly than ** so that `-2 ** 3 == (-2) ** 3`.
-// (Grammar section 2 places Unary above Power.)
-TEST_F(ParserPrattTest, PrefixBP_HigherThanPow) {
-  EXPECT_GT(Parser::prefix_binding_power(Token::Kind::Sub),
+TEST_F(ParserPrattTest, PrefixBP_BetweenPowAndMultiply) {
+  EXPECT_LT(Parser::prefix_binding_power(Token::Kind::Sub),
             Parser::infix_binding_power(Token::Kind::Pow));
+  EXPECT_GT(Parser::prefix_binding_power(Token::Kind::Sub),
+            Parser::infix_binding_power(Token::Kind::Multiply));
 }
 
 // Prefix binding must be lower than access operators so that `-arr[0]`
@@ -2036,43 +2034,6 @@ TEST_F(ParserInfixTest, BinaryBitwise) {
   ASSERT_NE(outer, nullptr);
   EXPECT_EQ(outer->op, Token::Kind::BitwiseOr);
   EXPECT_NE(std::get_if<BinaryExprNode>(&outer->lhs->data), nullptr);
-}
-
-TEST_F(ParserInfixTest, IsBindsAsAComparison) {
-  // a && b is T  →  a && (b is T)
-  auto r = ExprResult::from("a && b is T");
-  EXPECT_TRUE(r.errors.empty());
-  auto *logical = r.as<BinaryExprNode>();
-  ASSERT_NE(logical, nullptr);
-  EXPECT_EQ(logical->op, Token::Kind::LogicalAnd);
-  EXPECT_NE(std::get_if<IsExpr>(&logical->rhs->data), nullptr);
-}
-
-TEST_F(ParserInfixTest, MixesWithNoOrderNeedParentheses) {
-  const char *mixes[] = {
-      "a || b && c", "a && b || c",  "a == b == c", "a < b == c",
-      "a == b is T", "a is T == b",  "a is T is U", "a | b & c",
-      "a & b | c",   "a ^ b | c",    "a << b >> c", "a << b | c",
-      "a << b + c",  "a + b << c",   "a & b + c",   "a * b | c",
-      "a ** b & c",  "-a ** b",      "!a ** b",     "~a ** b",
-  };
-  for (const char *mix : mixes)
-    EXPECT_FALSE(ExprResult::from(mix).errors.empty()) << mix;
-}
-
-TEST_F(ParserInfixTest, OrderedMixesNeedNoParentheses) {
-  const char *mixes[] = {
-      "a + b * c",      "a * b ** c",     "a - b + c",     "a * b % c",
-      "a < b && c > d", "a && b == c",    "a == b && c",   "a && b is T",
-      "a is T && b",    "a + b is T",     "a & b == c",    "a == b & c",
-      "a | b | c",      "a & b & c",      "a ^ b ^ c",     "a << b << c",
-      "a || b || c",    "a && b && c",    "b ** -c",       "a ** b ** c",
-      "-a * b",         "~a & b",         "(a || b) && c", "a || (b && c)",
-      "(a == b) == c",  "(a == b) is T",  "(a | b) & c",   "(a + b) & c",
-      "a & (b + c)",    "(-a) ** b",      "-(a ** b)",
-  };
-  for (const char *mix : mixes)
-    EXPECT_TRUE(ExprResult::from(mix).errors.empty()) << mix;
 }
 
 TEST_F(ParserInfixTest, BinaryModulo) {

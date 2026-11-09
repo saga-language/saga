@@ -1,5 +1,5 @@
-// Spec: an order exists only where readers already know it or where only one
-// grouping can compile (docs/language.md, Precedence).
+// Spec: precedence decides every mix and parentheses are never required
+// (docs/language.md, Precedence).
 import "std/io"
 
 fn tests_int(x int | string, flag bool) bool {
@@ -10,21 +10,37 @@ fn tests_first(x int | string, flag bool) bool {
   x is int && flag
 }
 
+fn chained(x int | string) bool {
+  x is int is bool && x is int == true
+}
+
+fn heard(name string, answer bool) bool {
+  io.Println("ran {name}")
+  answer
+}
+
 pub fn Main() void {
-  io.Println("{1 + 2 * 3} {2 * 3 ** 2} {2 ** 3 ** 2} {2.0 ** -1.0}")
+  io.Println("{1 + 2 * 3} {2 * 3 ** 2} {2 ** 3 ** 2} {10 - 3 + 2} {2.0 ** -1.0}")
+
+  io.Println("{-2 ** 2} {(-2) ** 2} {-3 ** 2 + 1} {~1 ** 2} {2.0 ** -2.0 * 4.0}")
+  io.Println("{-2 * 3 + 1} {~1 & 3} {!false == true}")
+
+  io.Println("{1 << 2 + 3} {1 + 2 << 3} {1 + 2 & 2} {3 | 1 + 1} {5 ^ 1 - 1} {2 * 3 & 2}")
+  io.Println("{1 | 2 & 0} {6 ^ 3 & 1} {1 | 2 ^ 3} {1 << 2 & 3} {3 & 2 << 1}")
+  io.Println("{1 | 2 | 4} {1 << 2 << 3} {7 & 6 & 3} {1 ^ 2 ^ 3}")
 
   yes := true
   no := false
   io.Println("{1 < 2 && 3 > 2} {6 & 2 == 2} {no && no == no}")
-
+  io.Println("{1 == 1 == true} {1 == 2 == false} {1 < 2 == true} {1 == 2 is bool}")
   io.Println("{tests_int(1, true)} {tests_int("a", true)} {tests_int(1, false)}")
   io.Println("{tests_first(1, true)} {tests_first("a", true)} {tests_first(1, false)}")
-  io.Println("{no && yes is bool} {yes && yes is bool}")
+  io.Println("{no && yes is bool} {yes && yes is bool} {chained(1)}")
 
-  io.Println("{(yes || no) && no} {yes || (no && no)}")
-  io.Println("{(1 == 1) == true} {(1 == 2) == false}")
-  io.Println("{(1 | 2) & 0} {1 | (2 & 0)}")
-  io.Println("{(1 << 2) + 3} {1 << (2 + 3)}")
-  io.Println("{(-2) ** 2} {-(2 ** 2)}")
-  io.Println("{1 | 2 | 4} {1 << 2 << 3} {7 & 6 & 3} {1 ^ 2 ^ 3}")
+  io.Println("{yes || no && no} {(yes || no) && no} {yes && yes || no && no}")
+  io.Println("{no && yes || yes}")
+
+  io.Println("{yes || heard("left", yes) && heard("right", yes)}")
+  io.Println("{no || heard("left", no) && heard("right", yes)}")
+  io.Println("{no || heard("left", yes) && heard("right", no)}")
 }

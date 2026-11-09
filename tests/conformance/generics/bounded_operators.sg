@@ -7,7 +7,7 @@ fn Halve<T numeric>(x T) T { x / 2 }
 fn Ordered<T numeric>(a T, b T) bool { a < b && a != b }
 fn Neg<T numeric>(x T) T { -x }
 
-fn Mix<T integer>(a T, b T) T { (((a % 8) & b) | (a << 1)) ^ ~b }
+fn Mix<T integer>(a T, b T) T { (a % 8) & b | (a << 1) ^ ~b }
 fn Step<T integer>(x T) T {
   y := x
   y++

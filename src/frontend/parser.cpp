@@ -3,7 +3,6 @@
 
 #include "frontend/parser.hpp"
 #include "frontend/ast.hpp"
-#include "frontend/operator_grouping.hpp"
 #include "frontend/token.hpp"
 
 #include <string>
@@ -597,17 +596,17 @@ Span Parser::span_from(size_t start) const {
 // A return value of 0 means the token is not an infix operator and the
 // Pratt loop should stop.
 //
-// Precedence levels (highest to lowest, matching grammar.md). Operands the table
-// can't order are refused in operator_grouping.cpp.
+// Precedence levels (highest to lowest, matching grammar.md):
 //
-//   100  Access:      .  [  (
-//    90  Power:       **               (right-associative: see parse_infix)
-//    80  Multiply:    *  /  %
-//    70  Add:         +  -
-//    60  Bitwise:     &  |  ^  <<  >>
-//    50  Comparison:  ==  !=  >  <  >=  <=  is
-//    40  Logical:     &&  ||
-//    20  Or clause:   or
+//   100  Access:       .  [  (
+//    90  Power:        **                  (right-associative: see parse_infix)
+//    85  Unary:        !  -  ~             (see prefix_binding_power)
+//    80  Multiply:     *  /  %  <<  >>  &
+//    70  Add:          +  -  |  ^
+//    50  Comparison:   ==  !=  >  <  >=  <=  is
+//    40  Logical and:  &&
+//    30  Logical or:   ||
+//    20  Or clause:    or
 int Parser::infix_binding_power(Token::Kind kind) {
   switch (kind) {
   // 1. Access (postfix)
@@ -625,22 +624,19 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::Multiply:
   case Token::Kind::Divide:
   case Token::Kind::Modulo:
+  case Token::Kind::BitwiseAnd:
+  case Token::Kind::LeftShift:
+  case Token::Kind::RightShift:
     return 80;
 
   // 4. Additive
   case Token::Kind::Add:
   case Token::Kind::Sub:
-    return 70;
-
-  // 5. Bitwise
-  case Token::Kind::BitwiseAnd:
   case Token::Kind::BitwiseOr:
   case Token::Kind::BitwiseXor:
-  case Token::Kind::LeftShift:
-  case Token::Kind::RightShift:
-    return 60;
+    return 70;
 
-  // 6. Comparison
+  // 5. Comparison
   case Token::Kind::Equal:
   case Token::Kind::NotEqual:
   case Token::Kind::LessThan:
@@ -650,16 +646,17 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::Is:
     return 50;
 
-  // 7. Logical
+  // 6. Logical
   case Token::Kind::LogicalAnd:
-  case Token::Kind::LogicalOr:
     return 40;
+  case Token::Kind::LogicalOr:
+    return 30;
 
-  // 8. Or clause (error resolution)
+  // 7. Or clause (error resolution)
   case Token::Kind::Or:
     return 20;
 
-  // 10. Struct initialiser  — "{" after a type expression begins a struct
+  // 8. Struct initialiser  — "{" after a type expression begins a struct
   // literal.  bp = 1 is the lowest non-zero value, ensuring that any
   // expression context that must stop before a "{ body }" block can do so
   // by calling parse_expr_bp(1) instead of parse_expression().
@@ -674,19 +671,16 @@ int Parser::infix_binding_power(Token::Kind kind) {
 // Map a prefix operator token to its right binding power — i.e. how tightly
 // it binds to the expression on its right.
 //
-// All prefix operators sit between Access (100) and Power (90) in the
-// precedence hierarchy, so a unary on the left of `**` is seen as its base, and
-// refused there (operator_grouping.cpp).
+// Below Power, so `-2 ** 2` is `-(2 ** 2)`, and above Multiply, so `-a * b` is
+// `(-a) * b`.
 //
 // Operators: ! (logical not), - (arithmetic negation), ~ (bitwise not)
 int Parser::prefix_binding_power(Token::Kind kind) {
   switch (kind) {
   case Token::Kind::Not:
-    return 95; // !
   case Token::Kind::Sub:
-    return 95; // -
   case Token::Kind::BitwiseNot:
-    return 95; // ~
+    return 85;
   default:
     return 0;
   }
@@ -1328,8 +1322,8 @@ NodePtr Parser::parse_prefix() {
   // Grammar: UnaryExpr = unary_operator PrimaryExpr
   //          unary_operator = "!" | "-" | "~"
   //
-  // All three share rbp = 95, placing them above Power (90) and below Access
-  // (100) so that `-arr[0]` parses as `-(arr[0])`.
+  // All three share rbp = 85, below Power (90) and Access (100), so that
+  // `-a ** b` parses as `-(a ** b)` and `-arr[0]` as `-(arr[0])`.
   case Token::Kind::Not:
   case Token::Kind::Sub:
   case Token::Kind::BitwiseNot: {
@@ -1444,8 +1438,7 @@ NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
 // `value is Type` — the right side is a Type, not an expression.
 NodePtr Parser::parse_is_expr(NodePtr lhs) {
   auto start_offset = lhs->span.start;
-  Token op = advance();
-  report_grouping_error(op, left_operand_grouping_error(op.kind, *lhs));
+  advance(); // consume "is"
   NodePtr type = parse_type();
   if (!type)
     return nullptr;
@@ -1459,16 +1452,8 @@ NodePtr Parser::parse_binary_expr(NodePtr lhs, int bp) {
   NodePtr rhs = parse_expr_bp(op.kind == Token::Kind::Pow ? bp - 1 : bp);
   if (!rhs)
     return nullptr;
-  report_grouping_error(op, left_operand_grouping_error(op.kind, *lhs));
-  report_grouping_error(op, right_operand_grouping_error(op.kind, *rhs));
   return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
                                    op.kind, std::move(rhs));
-}
-
-void Parser::report_grouping_error(const Token &op,
-                                   const std::optional<std::string> &message) {
-  if (message)
-    errors.report_error(fileset.position_at(op.offset), *message);
 }
 
 // parse_selector — Selector = PrimaryExpr "." Identifier
