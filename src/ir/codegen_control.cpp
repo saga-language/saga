@@ -1,8 +1,8 @@
 // Copyright 2026 Rob Thornton
 // SPDX-License-Identifier: MIT
 
-// Group and if/else expressions. Each branch of an if ends in the one join
-// the conditional's value is taken from (codegen_join.cpp).
+// Group, if/else and logical expressions. Each branch ends in the one join the
+// conditional's value is taken from (codegen_join.cpp).
 
 #include "ir/codegen.hpp"
 
@@ -71,6 +71,27 @@ llvm::Value *CodeGen::emit_if_expr(const IfExprNode &node, const Node &parent) {
   emit_if_branch(join, node.else_block ? node.else_block->get() : nullptr,
                  else_narrowing(narrowing));
   return finish_join(join, "ifval");
+}
+
+llvm::Value *CodeGen::emit_logical_expr(const BinaryExprNode &node) {
+  auto *lhs = as_condition(emit_borrowed_operand(*node.lhs));
+  if (!lhs)
+    return nullptr;
+  bool is_and = node.op == Token::Kind::LogicalAnd;
+  auto *rhs_bb = llvm::BasicBlock::Create(
+      context, "logic.rhs", builder.GetInsertBlock()->getParent());
+  auto *settled_bb = llvm::BasicBlock::Create(context, "logic.settled");
+  builder.CreateCondBr(lhs, is_and ? rhs_bb : settled_bb,
+                       is_and ? settled_bb : rhs_bb);
+
+  auto bool_sem = analyzer.builtins.bool_type;
+  auto join = open_join("logic.merge", bool_sem, Ownership::Borrowed);
+  builder.SetInsertPoint(rhs_bb);
+  auto *rhs = as_condition(emit_borrowed_operand(*node.rhs));
+  close_branch(join, rhs, bool_sem, node.rhs.get());
+  start_block(settled_bb);
+  close_branch(join, builder.getInt1(!is_and), bool_sem, nullptr);
+  return finish_join(join, "logic");
 }
 
 // A missing else is a branch with no value, which yields the zero value.

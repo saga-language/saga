@@ -87,16 +87,20 @@ TypeList    = Type { "," Type } ;
 /* Expressions */
 
 // Precedence (highest to lowest)
-//   1. Access:    . [] ()  and the safe forms ?. ?[] ?()
-//   2. Unary:     ! - ~
-//   3. Power:     **                 (right-associative)
-//   4. Multiply:  * / %
-//   5. Add:       + -
-//   6. Bitwise:   & | ^ << >>
-//   7. Compare:   == != > < >= <=
-//   8. Logical:   && ||              (lazy / short-circuit)
-//   9. Type test: is
-//  10. Or:        or
+//   1. Access:       . [] ()  and the safe forms ?. ?[] ?()
+//   2. Power:        **                 (right-associative)
+//   3. Unary:        ! - ~
+//   4. Multiply:     * / % << >> &
+//   5. Add:          + - | ^
+//   6. Compare:      == != > < >= <= is
+//   7. Logical and:  &&                 (lazy / short-circuit)
+//   8. Logical or:   ||                 (lazy / short-circuit)
+//   9. Or:           or
+//
+// Operators on one level group from the left, except **. Parentheses are never
+// required by a mix of operators. In a for header, "|" beside the accumulator
+// pipe belongs to the pipe, so a bitwise-or, a comparison or a logical operator
+// in the subject or the initializer goes in parentheses.
 //
 // Precedence is enforced by the parser; the productions below are flat (an
 // operator grammar) and defer to the table above, matching the implementation.
@@ -178,10 +182,11 @@ break_statement = "break" [ Expression ] ;
 next_statement  = "next" ;                       // continue
 
 assignment_operator = ":=" | "=" | "+=" | "-=" | "*=" | "/=" ;
-binary_operator     = arithmetic_operator | bitwise_operator | logical_operator ;
+binary_operator     = arithmetic_operator | bitwise_operator | comparison_operator | logical_operator ;
 arithmetic_operator = "+" | "-" | "*" | "/" | "**" | "%" ;
 bitwise_operator    = "&" | "|" | "^" | "~" | "<<" | ">>" ;
-logical_operator    = "==" | "!=" | ">" | "<" | ">=" | "<=" | "&&" | "||" ;
+comparison_operator = "==" | "!=" | ">" | "<" | ">=" | "<=" ;
+logical_operator    = "&&" | "||" ;
 unary_operator      = "!" | "-" | "~" ;
 
 /* Identifiers / visibility */

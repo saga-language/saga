@@ -2068,6 +2068,10 @@ product := for i : arr |acc = 1| { acc *= i }          // => 24
 offset := for i : arr |acc int = 100| { acc += i }     // => 110
 ```
 
+In a `for` header, a `|` beside the pipe belongs to the pipe. A bitwise-or, a
+comparison or a logical operator in the subject or the initializer goes in
+parentheses: `for i : 0..(n | 4) |acc int = (a == b)| { ... }`.
+
 Without an initializer it starts at the zero value of its type, which for a
 collection is the empty one and not a null:
 
@@ -2228,12 +2232,61 @@ operator.
   `**` (exponential), `%` (modulus)
 **Bitwise**: `&` (AND), `|` (OR), `^` (XOR), `~` (NOT), `<<` (Left shift),
   `>>` (Right shift)
-**Logical**: `==` (Equal), `!=` (Not Equal), `>` (Greater), `<` (Less), 
-  `>=` (Greater than or Equal), `<=` (Less than or Equal), `&&` (and), `||` (or)
+**Comparison**: `==` (Equal), `!=` (Not Equal), `>` (Greater), `<` (Less),
+  `>=` (Greater than or Equal), `<=` (Less than or Equal), `is` (Type test)
+**Logical**: `&&` (and), `||` (or)
 
 Arithmetic operators apply to numeric types (`+` also concatenates strings).
 Enums and errors are identity/data types: they support equality but no
 arithmetic, and they cannot overload it.
+
+### Precedence
+
+Operators bind in this order, tightest first:
+
+| Level | Operators |
+|---|---|
+| Power | `**` |
+| Unary | `!` `-` `~` |
+| Multiply | `*` `/` `%` `<<` `>>` `&` |
+| Add | `+` `-` `\|` `^` |
+| Comparison | `==` `!=` `>` `<` `>=` `<=` `is` |
+| Logical and | `&&` |
+| Logical or | `\|\|` |
+| Or | `or` |
+
+Operators on one level group from the left, so `a - b + c` is `(a - b) + c`, and
+only `**` groups from the right. No mix of operators requires parentheses, though
+they are always allowed. Each of these parses as its comment says:
+
+```
+-2 ** 2              // -(2 ** 2), which is -4
+a * b ** c           // a * (b ** c)
+1 << 2 + 3           // (1 << 2) + 3, which is 7
+1 + 2 << 3           // 1 + (2 << 3), which is 17
+1 + 2 & 2            // 1 + (2 & 2), which is 3
+1 | 2 & 0            // 1 | (2 & 0), which is 1
+1 | 2 ^ 3            // (1 | 2) ^ 3, which is 0
+ready && count == 0  // ready && (count == 0)
+ready && x is int    // ready && (x is int)
+a == b == c          // (a == b) == c
+a == b is bool       // (a == b) is bool
+a || b && c          // a || (b && c)
+```
+
+A shift multiplies or divides by a power of two and `&` multiplies single bits, so
+they sit with `*`. `|` and `^` are the matching additions, so they sit with `+`.
+`&&` over `||` is the same AND over OR as `&` over `|`.
+
+### Short-circuit evaluation
+
+`&&` and `||` run their right operand only when the left has not settled the
+answer. `false && f()` and `true || f()` never call `f`, and a right operand
+that does not run cannot fail:
+
+```
+ok := i < xs.Size() && xs[i] > 0 or { false }  // no miss when the guard is false
+```
 
 ### Operator overloading
 

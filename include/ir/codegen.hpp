@@ -742,6 +742,18 @@ private:
                                const Node &parent);
   llvm::Value *emit_binary_expr(const BinaryExprNode &node,
                                 const Node &parent);
+  llvm::Value *emit_string_op(Token::Kind op, llvm::Value *lhs,
+                              llvm::Value *rhs);
+  llvm::Value *emit_numeric_op(Token::Kind op, llvm::Value *lhs,
+                               llvm::Value *rhs, const Node &parent);
+  llvm::Value *emit_float_op(Token::Kind op, llvm::Value *lhs, llvm::Value *rhs,
+                             const Node &parent);
+  llvm::Value *emit_int_op(Token::Kind op, llvm::Value *lhs, llvm::Value *rhs,
+                           const Node &parent);
+  llvm::Value *emit_float_division(llvm::Value *lhs, llvm::Value *rhs,
+                                   const Node &parent);
+  llvm::Value *emit_int_division(Token::Kind op, llvm::Value *lhs,
+                                 llvm::Value *rhs, const Node &parent);
   /// Integer division or remainder that answers a zero divisor with an error
   /// instead of faulting. Result is the `T | error` the analyzer gave the
   /// expression.
@@ -787,6 +799,7 @@ private:
   llvm::Function *get_or_declare_memcmp();
   llvm::Value *emit_group_expr(const GroupExprNode &node);
   llvm::Value *emit_if_expr(const IfExprNode &node, const Node &parent);
+  llvm::Value *emit_logical_expr(const BinaryExprNode &node);
   llvm::Value *as_condition(llvm::Value *val);
   void start_block(llvm::BasicBlock *block);
 

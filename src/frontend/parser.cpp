@@ -596,18 +596,17 @@ Span Parser::span_from(size_t start) const {
 // A return value of 0 means the token is not an infix operator and the
 // Pratt loop should stop.
 //
-// Precedence levels (highest to lowest, matching AGENTS.md and grammar.md):
+// Precedence levels (highest to lowest, matching grammar.md):
 //
-//   100  Access:      .  [  (
-//    90  Power:       **               (right-associative: see parse_infix)
-//    80  Multiply:    *  /  %
-//    70  Add:         +  -
-//    60  Bitwise:     &  |  ^  <<  >>
-//    50  Comparison:  ==  !=  >  <  >=  <=
-//    40  Logical AND: &&
-//    30  Logical OR:  ||
-//    25  Slice:       ..
-//    20  Or clause:   or
+//   100  Access:       .  [  (
+//    90  Power:        **                  (right-associative: see parse_infix)
+//    85  Unary:        !  -  ~             (see prefix_binding_power)
+//    80  Multiply:     *  /  %  <<  >>  &
+//    70  Add:          +  -  |  ^
+//    50  Comparison:   ==  !=  >  <  >=  <=  is
+//    40  Logical and:  &&
+//    30  Logical or:   ||
+//    20  Or clause:    or
 int Parser::infix_binding_power(Token::Kind kind) {
   switch (kind) {
   // 1. Access (postfix)
@@ -625,45 +624,39 @@ int Parser::infix_binding_power(Token::Kind kind) {
   case Token::Kind::Multiply:
   case Token::Kind::Divide:
   case Token::Kind::Modulo:
+  case Token::Kind::BitwiseAnd:
+  case Token::Kind::LeftShift:
+  case Token::Kind::RightShift:
     return 80;
 
   // 4. Additive
   case Token::Kind::Add:
   case Token::Kind::Sub:
-    return 70;
-
-  // 5. Bitwise
-  case Token::Kind::BitwiseAnd:
   case Token::Kind::BitwiseOr:
   case Token::Kind::BitwiseXor:
-  case Token::Kind::LeftShift:
-  case Token::Kind::RightShift:
-    return 60;
+    return 70;
 
-  // 6. Comparison
+  // 5. Comparison
   case Token::Kind::Equal:
   case Token::Kind::NotEqual:
   case Token::Kind::LessThan:
   case Token::Kind::LessThanEqual:
   case Token::Kind::GreaterThan:
   case Token::Kind::GreaterThanEqual:
+  case Token::Kind::Is:
     return 50;
 
-  // 7. Logical
+  // 6. Logical
   case Token::Kind::LogicalAnd:
     return 40;
   case Token::Kind::LogicalOr:
     return 30;
 
-  // 9. Type test (`is`) — looser than logical, tighter than `or`
-  case Token::Kind::Is:
-    return 23;
-
-  // 10. Or clause (error resolution)
+  // 7. Or clause (error resolution)
   case Token::Kind::Or:
     return 20;
 
-  // 10. Struct initialiser  — "{" after a type expression begins a struct
+  // 8. Struct initialiser  — "{" after a type expression begins a struct
   // literal.  bp = 1 is the lowest non-zero value, ensuring that any
   // expression context that must stop before a "{ body }" block can do so
   // by calling parse_expr_bp(1) instead of parse_expression().
@@ -678,19 +671,16 @@ int Parser::infix_binding_power(Token::Kind kind) {
 // Map a prefix operator token to its right binding power — i.e. how tightly
 // it binds to the expression on its right.
 //
-// All prefix operators sit between Access (100) and Power (90) in the
-// precedence hierarchy, so `- 2 ** 3` parses as `(-2) ** 3`, matching the
-// grammar's stated ordering (Unary > Power).
+// Below Power, so `-2 ** 2` is `-(2 ** 2)`, and above Multiply, so `-a * b` is
+// `(-a) * b`.
 //
 // Operators: ! (logical not), - (arithmetic negation), ~ (bitwise not)
 int Parser::prefix_binding_power(Token::Kind kind) {
   switch (kind) {
   case Token::Kind::Not:
-    return 95; // !
   case Token::Kind::Sub:
-    return 95; // -
   case Token::Kind::BitwiseNot:
-    return 95; // ~
+    return 85;
   default:
     return 0;
   }
@@ -1269,6 +1259,21 @@ NodePtr Parser::parse_expr_bp(int min_bp) {
   return lhs;
 }
 
+// A "|" here opens or closes a pipe, so a bitwise-or needs parentheses. Nothing
+// looser than "|" is admitted: its right operand would read the pipe as an
+// operator, out of reach of this check.
+NodePtr Parser::parse_expr_before_pipe() {
+  const int min_bp = infix_binding_power(Token::Kind::BitwiseOr) - 1;
+  NodePtr lhs = parse_prefix();
+  while (lhs && !check(Token::Kind::BitwiseOr)) {
+    int bp = infix_binding_power(current.kind);
+    if (bp <= min_bp)
+      break;
+    lhs = parse_infix(std::move(lhs), bp);
+  }
+  return lhs;
+}
+
 // parse_prefix — null denotation (nud): tokens that begin an expression.
 //
 // Dispatch table (Group 1 — no parse_block dependency):
@@ -1317,9 +1322,8 @@ NodePtr Parser::parse_prefix() {
   // Grammar: UnaryExpr = unary_operator PrimaryExpr
   //          unary_operator = "!" | "-" | "~"
   //
-  // All three share rbp = 95, placing them above Power (90) so that
-  // `-2 ** 3` parses as `(-2) ** 3`, and below Access (100) so that
-  // `-arr[0]` parses as `-(arr[0])`.
+  // All three share rbp = 85, below Power (90) and Access (100), so that
+  // `-a ** b` parses as `-(a ** b)` and `-arr[0]` as `-(arr[0])`.
   case Token::Kind::Not:
   case Token::Kind::Sub:
   case Token::Kind::BitwiseNot: {
@@ -1423,34 +1427,33 @@ NodePtr Parser::parse_infix(NodePtr lhs, int bp) {
   case Token::Kind::Or:
     return parse_or_expr(std::move(lhs));
 
-  // Type test: `value is Type` — RHS is a Type, not an expression.
-  case Token::Kind::Is: {
-    advance(); // consume "is"
-    NodePtr type = parse_type();
-    if (!type)
-      return nullptr;
-    return make_node<IsExpr>(span_from(start_offset), std::move(lhs),
-                             std::move(type));
-  }
+  case Token::Kind::Is:
+    return parse_is_expr(std::move(lhs));
 
-  case Token::Kind::Pow: {
-    Token op = advance();
-    NodePtr rhs = parse_expr_bp(bp - 1);
-    if (!rhs)
-      return nullptr;
-    return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
-                                     op.kind, std::move(rhs));
+  default:
+    return parse_binary_expr(std::move(lhs), bp);
   }
+}
 
-  default: {
-    Token op = advance();
-    NodePtr rhs = parse_expr_bp(bp);
-    if (!rhs)
-      return nullptr;
-    return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
-                                     op.kind, std::move(rhs));
-  }
-  }
+// `value is Type` — the right side is a Type, not an expression.
+NodePtr Parser::parse_is_expr(NodePtr lhs) {
+  auto start_offset = lhs->span.start;
+  advance(); // consume "is"
+  NodePtr type = parse_type();
+  if (!type)
+    return nullptr;
+  return make_node<IsExpr>(span_from(start_offset), std::move(lhs),
+                           std::move(type));
+}
+
+NodePtr Parser::parse_binary_expr(NodePtr lhs, int bp) {
+  auto start_offset = lhs->span.start;
+  Token op = advance();
+  NodePtr rhs = parse_expr_bp(op.kind == Token::Kind::Pow ? bp - 1 : bp);
+  if (!rhs)
+    return nullptr;
+  return make_node<BinaryExprNode>(span_from(start_offset), std::move(lhs),
+                                   op.kind, std::move(rhs));
 }
 
 // parse_selector — Selector = PrimaryExpr "." Identifier
@@ -2423,9 +2426,7 @@ std::optional<AccumulatorNode> Parser::parse_accumulator_pipe() {
   std::optional<NodePtr> init;
   if (check(Token::Kind::Assignment)) {
     advance();
-    // parse_expr_bp(60) stops before the closing "|", which is an infix
-    // bitwise-or at that power.  Parenthesise one that is genuinely wanted.
-    init = parse_expr_bp(60);
+    init = parse_expr_before_pipe();
   }
 
   expect(Token::Kind::BitwiseOr); // consume closing "|"
@@ -2603,12 +2604,13 @@ NodePtr Parser::parse_group_expr() {
 // parse_range — Range = Expression ".." Expression
 //
 // The low bound is already in hand; the caller is positioned on the "..".
-// max_bp fences the high bound the same way the caller fenced the low one.
-NodePtr Parser::parse_range(NodePtr low, size_t start, int max_bp) {
+// parse_bound reads the high bound the same way the caller read the low one.
+NodePtr Parser::parse_range(NodePtr low, size_t start,
+                            NodePtr (Parser::*parse_bound)()) {
   advance(); // consume ".."
   skip_terminators();
 
-  NodePtr high = parse_expr_bp(max_bp);
+  NodePtr high = (this->*parse_bound)();
   if (!high)
     return nullptr;
 
@@ -2630,7 +2632,8 @@ NodePtr Parser::parse_array_literal() {
     // `[0..10]` generates its elements rather than listing them, so a ".." at
     // the first one is the whole literal.
     if (elements.size() == 1 && check(Token::Kind::DotDot)) {
-      NodePtr range = parse_range(std::move(elements.front()), start, 0);
+      NodePtr range = parse_range(std::move(elements.front()), start,
+                                  &Parser::parse_expression);
       skip_terminators_before(Token::Kind::RightBracket);
       expect(Token::Kind::RightBracket);
       return range;
@@ -3351,16 +3354,13 @@ NodePtr Parser::parse_for_expr() {
       }
 
       expect(Token::Kind::Colon);
-      // parse_expr_bp(60): stop before "{" (bp 1) AND before "|" (bp 60).
-      // BitwiseOr would otherwise consume the accumulator pipe "|acc|" as
-      // an infix operator.  Bitwise operations on iterables are not
-      // meaningful; parenthesise if ever needed: `for i : (a | b) |acc|`.
       auto iterable_start = mark();
-      NodePtr iterable = parse_expr_bp(60);
+      NodePtr iterable = parse_expr_before_pipe();
 
       // `for i : 0..10` counts instead of iterating a collection.
       if (check(Token::Kind::DotDot))
-        iterable = parse_range(std::move(iterable), iterable_start, 60);
+        iterable = parse_range(std::move(iterable), iterable_start,
+                               &Parser::parse_expr_before_pipe);
 
       mode = make_node<ForRangeClauseNode>(
           span_from(mode_start), std::move(vars), std::move(iterable));

@@ -1,0 +1,86 @@
+// Spec: `&&` and `||` run their right operand only when the left has not
+// settled the answer (docs/language.md, Short-circuit evaluation).
+import "std/io"
+
+struct Gate {
+  open bool
+}
+
+fn (g Gate) Open() bool {
+  g.open
+}
+
+fn loud(name string, answer bool) bool {
+  io.Println("ran {name}")
+  answer
+}
+
+fn text(n int) string {
+  "n{n}"
+}
+
+fn guarded(xs array{int}) bool | error {
+  xs.Size() > 0 && xs[0] > 0
+}
+
+fn promoted(xs array{int}, look bool) bool | error {
+  look && xs[9]? > 0
+}
+
+fn escapes(xs array{int}, look bool) bool {
+  look && (xs[9] or { return true }) > 0
+}
+
+pub fn Main() void {
+  a := false && loud("a", true)
+  b := true && loud("b", false)
+  c := true || loud("c", true)
+  d := false || loud("d", true)
+  io.Println("{a} {b} {c} {d}")
+
+  e := loud("e1", false) && loud("e2", true) && loud("e3", true)
+  f := loud("f1", true) || loud("f2", true) || loud("f3", true)
+  io.Println("{e} {f}")
+
+  empty array{int}
+  g := guarded(empty) or { true }
+  h := guarded([1]) or { false }
+  io.Println("{g} {h}")
+
+  i := false && empty[9] > 0 or { true }
+  j := true || empty[9] > 0 or { false }
+  k := true && empty[9] > 0 or { true }
+  io.Println("{i} {j} {k}")
+
+  l := promoted(empty, false) or { true }
+  m := promoted(empty, true) or { true }
+  io.Println("{l} {m}")
+
+  n := escapes(empty, false)
+  o := escapes(empty, true)
+  io.Println("{n} {o}")
+
+  if false && loud("if", true) {
+    io.Println("unreachable")
+  }
+  count := 0
+  for count < 2 && loud("for", true) {
+    count++
+  }
+  io.Println("{count}")
+
+  flags := [true, false]
+  p := flags[0] && flags[1] or { true }
+  q := flags[1] || flags[0] or { false }
+  io.Println("{p} {q}")
+
+  r := false && text(1).Size() > 0
+  s := true && text(2).Size() > 0
+  t := true && (if s { u := text(3)  u.Size() > 0 } else { false })
+  io.Println("{r} {s} {t}")
+
+  gate := Gate{open: true}
+  v := !gate.Open() && loud("v", true)
+  w := gate.Open() || loud("w", true)
+  io.Println("{v} {w}")
+}

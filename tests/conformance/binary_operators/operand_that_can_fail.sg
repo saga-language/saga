@@ -1,0 +1,55 @@
+// Spec: an operand that can fail bubbles its error, and the operator works on
+// the value underneath (docs/language.md, Error unions).
+import "std/io"
+
+struct Money {
+  cents int
+}
+
+fn (m Money) Add(o Money) Money {
+  Money{cents: m.cents + o.cents}
+}
+
+fn (m Money) Equals(o Money) bool {
+  m.cents == o.cents
+}
+
+fn lookup(names map{string: string}, key string) string | error {
+  names[key]?
+}
+
+pub fn Main() void {
+  s := "ab"
+  names := ["{s}c", "b"]
+
+  equal := names[0] == "abc" or { false }
+  unequal := names[0] != "abc" or { true }
+  io.Println("{equal} {unequal}")
+
+  less := names[1] < "a" or { true }
+  greater := names[1] > "a" or { false }
+  at_most := names[1] <= "b" or { false }
+  at_least := names[1] >= "c" or { true }
+  io.Println("{less} {greater} {at_most} {at_least}")
+
+  joined := names[0] + "!" or { "missed" }
+  io.Println(joined)
+
+  missed_compare := names[5] == "abc" or { true }
+  missed_join := names[5] + "!" or { "missed" }
+  io.Println("{missed_compare} {missed_join}")
+
+  by_key := {"k": "{s}c"}
+  from_map := by_key["k"] == "abc" or { false }
+  from_call := lookup(by_key, "k") == "abc" or { false }
+  io.Println("{from_map} {from_call}")
+
+  one := Money{cents: 1}
+  two := Money{cents: 2}
+  purse := [one]
+  sum := purse[0] + two or { Money{cents: 0} }
+  io.Println("{sum.cents}")
+  same := purse[0] == one or { false }
+  missed_sum := purse[5] + two or { Money{cents: 0} }
+  io.Println("{same} {missed_sum.cents}")
+}
